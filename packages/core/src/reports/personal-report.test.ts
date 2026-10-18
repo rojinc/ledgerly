@@ -24,6 +24,8 @@ const share = (part: Partial<ReportShare> & Pick<ReportShare, 'groupId' | 'kind'
   ...part,
 })
 
+// If ledger.md#worked-examples changes, change these shares in the same PR
+// (testing.md#golden-examples).
 // ledger.md#worked-examples, with "me" as Alice in the house, the worker at Acme
 // and the lender to Sam, plus $1,000 of personal income.
 const worked: ReportShare[] = [
@@ -118,15 +120,20 @@ describe('buildPersonalReport', () => {
     ])
   })
 
-  it('puts spending with no category under none, never other', () => {
+  it('puts spending with no category under none, never other, and takes any key', () => {
     const shares = [
       share({ groupId: 'house', kind: 'expense', receivedCents: 400 }),
       share({ groupId: 'house', kind: 'expense', category: '', receivedCents: 100 }),
-      share({ groupId: 'house', kind: 'expense', category: undefined, receivedCents: 50 }),
+      share({ groupId: 'house', kind: 'expense', category: '__proto__', receivedCents: 50 }),
       share({ groupId: 'house', kind: 'expense', category: 'other', receivedCents: 25 }),
     ]
     const [report] = buildPersonalReport('me', shares, groups)
-    expect(report?.spendingByCategory).toEqual({ none: 550, other: 25 })
+    // Keys stay in the order the shares came in, and `__proto__` is an ordinary key.
+    expect(Object.entries(report?.spendingByCategory ?? {})).toEqual([
+      ['none', 500],
+      ['__proto__', 50],
+      ['other', 25],
+    ])
   })
 
   it('counts payments as income only in employer groups, and income only in the personal group', () => {
@@ -187,7 +194,7 @@ describe('buildPersonalReport', () => {
           personId: pick(['me', 'me', 'bob']),
           groupId: pick(currencies).id,
           kind: pick(TRANSACTION_KINDS),
-          category: pick([...CATEGORIES, null, undefined]),
+          category: pick([...CATEGORIES, null, '', '__proto__', 'constructor']),
           givenCents: cents(),
           receivedCents: cents(),
         }),

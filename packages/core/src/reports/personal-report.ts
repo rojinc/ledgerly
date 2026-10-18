@@ -1,25 +1,24 @@
 import type { GroupType, TransactionKind } from '../constants/domain'
+import type { Shares } from '../generated/rows'
 
 // ledger.md#reports: one person's reports, summed from their shares, one set per
 // currency (ledger.md#currency). Callers fetch the shares; nothing here does I/O.
 
-/** The copied share columns a report needs (data-model.md#shares). */
-export type ReportShare = {
-  personId: string
-  groupId: string
-  date: string
-  kind: string
-  category?: string | null
-  givenCents: number
-  receivedCents: number
-}
+/** The share columns a report needs, including the copied ones (data-model.md#shares). */
+export type ReportShare = Pick<
+  Shares,
+  'personId' | 'groupId' | 'date' | 'kind' | 'category' | 'givenCents' | 'receivedCents'
+>
 
 export type ReportGroup = { id: string; type: GroupType; currency: string }
 
 export type PersonalReport = {
   currency: string
   spendingCents: number
-  /** Spending per category; spending with no category is under `none`. */
+  /**
+   * Spending per category, with no category under `none`. Keys are in the order the
+   * shares came in.
+   */
   spendingByCategory: Record<string, number>
   earningsCents: number
   moneyReceivedCents: number
@@ -61,9 +60,11 @@ function addShare(report: PersonalReport, share: ReportShare, groupType: GroupTy
 }
 
 /**
- * The reports for `personId` over `shares`, one per currency, sorted by currency.
- * Other people's shares are ignored. Every share of theirs needs its group in
- * `groups`: dropping it silently would hide money, so a missing group throws.
+ * The reports for `personId` over `shares`, one per currency in which they have a
+ * share, sorted by currency. A currency whose shares count toward no report (only
+ * adjustments, say) gets an all-zero entry. Other people's shares are ignored. Every
+ * share of `personId`'s needs its group in `groups`: dropping it silently would hide
+ * money, so a missing group throws.
  */
 export function buildPersonalReport(
   personId: string,
@@ -81,7 +82,8 @@ export function buildPersonalReport(
       report = {
         currency: group.currency,
         spendingCents: 0,
-        spendingByCategory: {},
+        // No prototype, so a category named like `__proto__` is just another key.
+        spendingByCategory: Object.create(null),
         earningsCents: 0,
         moneyReceivedCents: 0,
         incomeCents: 0,
