@@ -1,7 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    // ES2023 like core, whose money/format.ts the email templates use.
+    // ES2023 like core, whose money/format.ts this package imports.
     "lib": ["ES2023"],
     "types": ["node"]
   },
