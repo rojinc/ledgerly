@@ -5,10 +5,10 @@ import {
   updateProfileBodySchema,
 } from '@ledgerly/core/schemas/identity'
 import { useForm } from 'react-hook-form'
+import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
-import { Field, TextField } from './field'
-import { schemaResolver } from './schema-resolver'
+import { Field, TextField } from '../../ui/field'
 
 const TEXT_KEYS = [
   'businessName',

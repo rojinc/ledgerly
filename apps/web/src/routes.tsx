@@ -4,6 +4,7 @@ import { LoginPage } from './features/auth/login-page'
 import { RedirectIfSignedIn, RequireAuth } from './features/auth/route-guards'
 import { SignupPage } from './features/auth/signup-page'
 import { VerifyEmailPage } from './features/auth/verify-email-page'
+import { groupRoutes } from './features/groups/routes'
 import { ProfilePage } from './features/profile/profile-page'
 import { HomePage } from './home-page'
 
@@ -25,6 +26,7 @@ export const routes: RouteObject[] = [
         children: [
           { index: true, element: <HomePage /> },
           { path: 'profile', element: <ProfilePage /> },
+          groupRoutes,
         ],
       },
     ],

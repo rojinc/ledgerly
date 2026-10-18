@@ -1,10 +1,10 @@
 import type { Profiles } from '@ledgerly/core/generated/rows'
 import { type UpdateProfileBody, updateProfileBodySchema } from '@ledgerly/core/schemas/identity'
 import { useForm } from 'react-hook-form'
+import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
-import { SelectField, TextField } from './field'
-import { schemaResolver } from './schema-resolver'
+import { SelectField, TextField } from '../../ui/field'
 
 export type ProfileValues = {
   displayName: string
