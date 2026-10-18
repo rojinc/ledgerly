@@ -1,29 +1,50 @@
-import { TZDate } from '@date-fns/tz'
+import { tzOffset } from '@date-fns/tz'
 import { addDays, type LocalDate } from './local-date'
 
-function checked(date: TZDate, timeZone: string): TZDate {
-  if (Number.isNaN(date.getTime())) throw new RangeError(`Unknown time zone: "${timeZone}"`)
-  return date
+const MS_PER_MINUTE = 60_000
+
+function assertTimeZone(timeZone: string): void {
+  // Intl throws on names that aren't IANA zones, e.g. "Mars/Base" or "Mars/Base+10".
+  try {
+    if (typeof timeZone !== 'string') throw new TypeError()
+    new Intl.DateTimeFormat('en', { timeZone })
+  } catch {
+    throw new RangeError('Unknown time zone')
+  }
 }
 
 /** Today's date in `timeZone` at the instant `now`. */
 export function localToday(timeZone: string, now: Date): LocalDate {
-  const local = checked(new TZDate(now.getTime(), timeZone), timeZone)
-  const month = String(local.getMonth() + 1).padStart(2, '0')
-  const day = String(local.getDate()).padStart(2, '0')
-  return `${local.getFullYear()}-${month}-${day}` as LocalDate
+  assertTimeZone(timeZone)
+  const parts = new Intl.DateTimeFormat('en', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(now)
+  const part = (type: string) =>
+    (parts.find((p) => p.type === type) as Intl.DateTimeFormatPart).value
+  return `${part('year').padStart(4, '0')}-${part('month')}-${part('day')}` as LocalDate
 }
 
 /**
  * When a period's statement is drafted: 06:00 local time on the day after
- * `periodEnd`, as a UTC ISO instant (statements.md#periods).
+ * `periodEnd`, as a UTC ISO instant (statements.md#periods). Worked out from
+ * the zone's UTC offsets only, so the machine's timezone never matters.
  */
 export function closeAtFor(periodEnd: LocalDate, timeZone: string): string {
+  assertTimeZone(timeZone)
   const [year, month, day] = addDays(periodEnd, 1).split('-').map(Number) as [
     number,
     number,
     number,
   ]
-  const closeAt = checked(new TZDate(year, month - 1, day, 6, 0, 0, timeZone), timeZone)
-  return new Date(closeAt.getTime()).toISOString()
+  const wall = new Date(0)
+  wall.setUTCFullYear(year, month - 1, day)
+  wall.setUTCHours(6)
+  // 06:00 on the wall clock, read as if it were UTC; subtract the zone's offset
+  // at that moment. Asking twice lands on the right side of a DST change.
+  const offsetAt = (time: number) => tzOffset(timeZone, new Date(time)) * MS_PER_MINUTE
+  const guess = wall.getTime() - offsetAt(wall.getTime())
+  return new Date(wall.getTime() - offsetAt(guess)).toISOString()
 }

@@ -16,6 +16,7 @@ export function periodFor(
   if (cycle === 'monthly') {
     return { start: `${date.slice(0, 8)}01` as LocalDate, end: endOfMonth(date) }
   }
+  if (cycle !== 'weekly' && cycle !== 'fortnightly') throw new RangeError('Unknown cycle')
   if (anchor === null) throw new RangeError(`A ${cycle} cycle needs an anchor date`)
   const length = cycle === 'weekly' ? 7 : 14
   const start = addDays(anchor, Math.floor(daysBetween(anchor, date) / length) * length)

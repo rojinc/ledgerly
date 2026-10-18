@@ -25,6 +25,10 @@ describe('localToday', () => {
 
   it('rejects an unknown time zone', () => {
     expect(() => localToday('Mars/Base', at('2026-10-18T00:00:00Z'))).toThrow(RangeError)
+    expect(() => localToday('Mars/Base+10', at('2026-10-18T00:00:00Z'))).toThrow(RangeError)
+    expect(() => localToday(undefined as unknown as string, at('2026-10-18T00:00:00Z'))).toThrow(
+      RangeError,
+    )
   })
 })
 
@@ -41,7 +45,24 @@ describe('closeAtFor', () => {
     expect(closeAtFor(parseLocalDate('2027-04-03'), SYDNEY)).toBe('2027-04-03T20:00:00.000Z') // 4 Apr, +10
   })
 
+  it('handles half-hour and 45-minute offsets', () => {
+    // Adelaide is +10:30 in summer, Kathmandu +05:45, Lord Howe +11 in summer and +10:30 in winter.
+    expect(closeAtFor(parseLocalDate('2026-10-31'), 'Australia/Adelaide')).toBe(
+      '2026-10-31T19:30:00.000Z',
+    )
+    expect(closeAtFor(parseLocalDate('2026-10-31'), 'Asia/Kathmandu')).toBe(
+      '2026-11-01T00:15:00.000Z',
+    )
+    expect(closeAtFor(parseLocalDate('2026-10-31'), 'Australia/Lord_Howe')).toBe(
+      '2026-10-31T19:00:00.000Z',
+    )
+    expect(closeAtFor(parseLocalDate('2026-07-31'), 'Australia/Lord_Howe')).toBe(
+      '2026-07-31T19:30:00.000Z',
+    )
+  })
+
   it('rejects an unknown time zone', () => {
     expect(() => closeAtFor(parseLocalDate('2026-10-31'), 'Mars/Base')).toThrow(RangeError)
+    expect(() => closeAtFor(parseLocalDate('2026-10-31'), 'Mars/Base+10')).toThrow(RangeError)
   })
 })

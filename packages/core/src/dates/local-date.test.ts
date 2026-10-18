@@ -53,6 +53,13 @@ describe('addDays', () => {
     expect(addDays(d('2026-10-29'), 0)).toBe('2026-10-29')
   })
 
+  it('rejects fractional counts and results outside years 0000–9999', () => {
+    expect(() => addDays(d('2026-10-29'), 1.5)).toThrow(RangeError)
+    expect(() => addDays(d('2026-10-29'), Number.NaN)).toThrow(RangeError)
+    expect(() => addDays(d('9999-12-31'), 1)).toThrow(RangeError)
+    expect(() => addDays(d('0000-01-01'), -1)).toThrow(RangeError)
+  })
+
   it('is not moved by Australian daylight saving changes', () => {
     expect(addDays(d('2026-10-03'), 1)).toBe('2026-10-04')
     expect(addDays(d('2026-10-04'), 1)).toBe('2026-10-05')

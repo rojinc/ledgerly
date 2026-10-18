@@ -59,6 +59,12 @@ describe('periodFor', () => {
     })
   })
 
+  it('rejects a cycle without periods', () => {
+    expect(() => periodFor('none' as 'weekly', d('2026-10-05'), d('2026-10-18'))).toThrow(
+      RangeError,
+    )
+  })
+
   it('needs an anchor for weekly and fortnightly cycles', () => {
     expect(() => periodFor('weekly', null, d('2026-10-18'))).toThrow(RangeError)
     expect(() => periodFor('fortnightly', null, d('2026-10-18'))).toThrow(RangeError)

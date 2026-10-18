@@ -36,12 +36,15 @@ export function isLocalDate(value: unknown): value is LocalDate {
 }
 
 export function parseLocalDate(text: string): LocalDate {
-  if (!isLocalDate(text)) throw new RangeError(`Not a calendar date (YYYY-MM-DD): "${text}"`)
+  if (!isLocalDate(text)) throw new RangeError('Not a calendar date (YYYY-MM-DD)')
   return text
 }
 
 export function addDays(date: LocalDate, days: number): LocalDate {
-  return fromDayNumber(toDayNumber(date) + days)
+  const result = Number.isInteger(days) ? fromDayNumber(toDayNumber(date) + days) : ''
+  if (!isLocalDate(result))
+    throw new RangeError('addDays needs a whole number of days within years 0000–9999')
+  return result
 }
 
 /** Days from `from` to `to`: `daysBetween('2026-10-01', '2026-10-04')` is 3. */
