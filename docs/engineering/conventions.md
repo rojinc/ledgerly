@@ -55,9 +55,12 @@ Use the words from the [glossary](../product/glossary.md), in code and in UI tex
 ## Functions
 
 - One route per file in `src/routes/`. Each file exports its zod schema and handler.
-- Every write that touches more than one row uses a TablesDB transaction (`withTransaction()` helper).
+- Every write goes through `withTransaction()` from `packages/server`, even a single row, so all writes share one path (and one fake in tests). Bulk jobs over 90 writes use `writeInBatches()`.
+- `await tx.write(...)` stages its writes at once. To guard a row, for example never to change a locked transaction (I-7): stage the write to that row first, then read it with `transactionId: tx.id` and check it. A change by anyone else after the write was staged makes the commit fail with 409; a change before staging doesn't, so never check first and stage later.
+- `requireMember()` reads outside the transaction: it authorizes the request as it starts. If a route depends on a row staying as it was until the commit, guard that row with the pattern above.
+- Declare routes with `route(method, '/path/:id', handler)`: `ctx.params` is typed from the path.
 - Handlers are thin: validate → authorize → call core → write → respond. Business rules live in `packages/core`.
-- Log one structured line per request: `{ fn, route, status, ms, code? }`. No personal data ([security](../architecture/security-and-privacy.md)).
+- Log one structured line per request: `{ fn, route, status, ms, code?, cause? }`, where `cause` is the name (never the message) of the error behind a 5xx. `createHandler` does this. No personal data ([security](../architecture/security-and-privacy.md)).
 
 ## React
 
