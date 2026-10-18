@@ -149,3 +149,4 @@ Changes to occurrences themselves (edit, void, post) go through the `ledger` fun
   - Every start writes a fresh `rev` to the group row and to the person's personal group row ([concurrency](ledger.md#concurrency)). So of two starts at once, in one group or in two, only one succeeds.
   - A timer left running in an archived group doesn't count, because it can no longer be stopped or voided.
 - A retried start with the same `id` returns the timer. A retried stop with the same break returns the posted shift.
+- A group can't be archived while a timer is running in it (`CONFLICT`). The archive writes a fresh `rev` to the group row and then checks for running timers, so a start and an archive at the same moment can't leave a running timer in an archived group.
