@@ -70,7 +70,7 @@ Scheduled jobs run with the server key and no caller. They write as the system a
 
 ## Storage
 
-- `receipts`: any signed-in user can upload. The client must set `read("team:<groupId>")` on the file. The `ledger` function checks, before attaching a file to a transaction, that the file's permissions match that transaction's group.
+- `receipts`: any signed-in user can upload. The client must set `read("team:<groupId>")` on the file. The `ledger` function checks, before attaching a file to a transaction, that the file's permissions match that transaction's group, then resets them to exactly `read("team:<groupId>")`. That removes any `update` or `delete` the uploader granted themselves, so nobody can swap or delete a receipt behind a locked transaction.
 - `statements`: only the `statements` function writes. Files are readable by the group's team.
 
 ## Function execute permissions

@@ -17,7 +17,7 @@ Step-by-step journeys through the product. Each step names the function route it
 
 ## 3. A normal Thursday, extra hours, or a missed day
 
-- **Normal day:** the user does nothing. After the day ends in the group's timezone, the scheduler posts the shift (group setting `autoPostShifts`).
+- **Normal day:** the user does nothing. After the day ends in the group's timezone, the scheduler posts the shift (schedule setting `autoPost`).
 - **Worked 2 extra hours:** the user opens the shift and changes 5h to 7h → `ledger PATCH /transactions/{id}`. The occurrence is marked `overridden`, so later schedule changes won't touch it.
 - **Extra hours at a different rate:** add a second shift on the same day → `ledger POST /transactions`.
 - **Didn't go:** void the shift with a reason → `ledger POST /transactions/{id}/void`. The voided row stays, so the scheduler never re-creates it.
@@ -66,6 +66,6 @@ Step-by-step journeys through the product. Each step names the function route it
 
 ## 10. Personal rent with a reminder
 
-1. Personal → **New recurring bill**: rent, $400, weekly on Monday, payee "Landlord" → `scheduler POST /schedules` with `kind: bill`.
+1. Personal → **New recurring bill**: description "Rent", category `rent`, $400, weekly on Monday → `scheduler POST /schedules` with `kind: bill`. (There is no payee field; the landlord isn't a member of the personal group.)
 2. The scheduler creates each week's bill as `due`. A reminder email goes out 2 days before.
 3. The user taps **Mark paid** → `ledger POST /transactions/{id}/post`. If autopay is on in the schedule (`autoPost`), it is posted automatically on the due date.

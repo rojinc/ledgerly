@@ -21,7 +21,7 @@ These must hold for every posted transaction, always. `packages/core` exports `a
 
 1. **I-1 Balanced:** Σ `givenCents` = Σ `receivedCents` = `totalCents`. So the nets in a transaction always add up to 0.
 2. **I-2 Integers:** every amount is an integer number of cents. No floats are ever stored.
-3. **I-3 Members only:** every share's person is a member of the transaction's group, and the transaction date falls between their `joinedOn` and `leftOn` (inclusive). Placeholders count as members.
+3. **I-3 Members only:** every share's person has a `members` row in the transaction's group, whatever its status. Placeholders and people who have left count. Join and leave dates don't limit who can be in a transaction: a bill paid after someone moved out, a settle-up from a former housemate and a back-dated entry are all valid. The dates only decide `days` weights ([Days present](#days-present)).
 4. **I-4 One sign:** for a normal transaction every amount is ≥ 0. For a refund (`totalCents` < 0) every amount is ≤ 0. Signs are never mixed within one transaction, except in `adjustment`.
 5. **I-5 One share per person:** at most one share per person per transaction.
 6. **I-6 Only posted counts:** only `posted` transactions have shares. `scheduled`, `running`, `due` and `void` transactions have none.
@@ -113,6 +113,8 @@ Every split ends with `allocate(totalCents, weights)`:
 
 The result always sums to exactly `totalCents`. Example: `allocate(1000, [1, 1, 1])` → `[334, 333, 333]`.
 
+Limits (constants in `packages/core`): every amount is at most `MAX_AMOUNT_CENTS` = 10,000,000,000 ($100M) in size, and `weights` are integers from 1 to 10,000. So `total × weight` stays far below `Number.MAX_SAFE_INTEGER` and step 1 is exact. The zod schemas reject anything larger.
+
 Other rounding rules:
 
 - Shift amount: `Math.round(minutes × rateCents / 60)`, so half a cent rounds up.
@@ -138,6 +140,7 @@ Rules:
 
 - Shares are **rebuilt completely** on every write. In one database transaction the function deletes the old share rows and creates the new ones. Never patch a single share.
 - Each share copies `groupId`, `date`, `kind` and `category` from its transaction so the main queries need one index. Because shares are always rebuilt, these copies can't drift. ([D-007](decisions.md))
+- A person whose given and received are both 0 (for example 1 cent split three ways) gets no share row.
 
 ## Balances
 
@@ -165,7 +168,8 @@ All reports are sums over the user's shares. Nothing is copied into the personal
 | --- | --- |
 | My spending | Σ `receivedCents` where kind ∈ {expense, bill}, by category |
 | Earnings | Σ `givenCents` where kind = shift |
-| Money received | Σ `receivedCents` where kind = payment |
+| Money received | Σ `receivedCents` where kind = payment (includes settle-ups and loan repayments) |
+| Income (F-54) | Σ `receivedCents` where kind = payment in `employer` groups, plus personal income |
 | Money paid out | Σ `givenCents` where kind ∈ {expense, bill, payment, loan} |
 | Personal income | Σ `totalCents` of `income` transactions in P's personal group |
 | Owed to me / I owe | per-group balances, positive and negative |
