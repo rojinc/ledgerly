@@ -10,7 +10,7 @@ import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroups } from '../groups/use-groups'
 import { elapsedText } from './shift-values'
-import { useStartTimer, useStopTimer, useToday } from './use-shifts'
+import { useMyRoles, useStartTimer, useStopTimer, useToday } from './use-shifts'
 
 /** The time now, once a second, for the running duration. */
 function useNow(): number {
@@ -37,6 +37,7 @@ export function TodayPage() {
   const groups = useGroups()
   const employers = groups.data?.filter((group) => group.type === 'employer')
   const today = useToday(employers, personId)
+  const roles = useMyRoles(employers, personId)
   const todayKey = queryKeys.today(
     userId,
     (employers ?? []).map((group) => group.$id),
@@ -47,9 +48,13 @@ export function TodayPage() {
   const stop = useStopTimer(todayKey)
   const [startId, setStartId] = useState(() => ID.unique())
   const [startGroupId, setStartGroupId] = useState('')
+  const [breakMinutes, setBreakMinutes] = useState('')
 
-  if (!employers || !today.data) {
-    const failed = (groups.isError && !groups.data) || (today.isError && !today.data)
+  if (!employers || !today.data || !roles.data) {
+    const failed =
+      (groups.isError && !groups.data) ||
+      (today.isError && !today.data) ||
+      (roles.isError && !roles.data)
     return (
       <div className="flex flex-col gap-6">
         <h1 className="text-2xl font-semibold">Today</h1>
@@ -60,7 +65,11 @@ export function TodayPage() {
             </p>
             <Button
               variant="outline"
-              onClick={() => (groups.isError ? groups.refetch() : today.refetch())}
+              onClick={() => {
+                if (groups.isError) void groups.refetch()
+                if (today.isError) void today.refetch()
+                if (roles.isError) void roles.refetch()
+              }}
             >
               Try again
             </Button>
@@ -76,11 +85,16 @@ export function TodayPage() {
 
   const byId = new Map(employers.map((group) => [group.$id, group]))
   const open = employers.filter((group) => !group.archivedAt)
+  // permissions.md: admins and members add shifts; only admins time them (the function checks).
+  const adders = open.filter((group) =>
+    ['admin', 'member'].includes(roles.data.get(group.$id) ?? ''),
+  )
+  const starters = open.filter((group) => roles.data.get(group.$id) === 'admin')
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-semibold">Today</h1>
-        {open.length > 0 && (
+        {adders.length > 0 && (
           <Link
             to="/shifts/new"
             className="inline-flex h-10 items-center rounded-md border border-input px-4 text-sm font-medium outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
@@ -101,17 +115,35 @@ export function TodayPage() {
           shift={today.data.running}
           group={byId.get(today.data.running.groupId)}
           stop={stop}
+          // Stopped: an earlier start error no longer applies.
+          onStopped={() => start.reset()}
+          breakMinutes={breakMinutes}
+          onBreak={setBreakMinutes}
         />
-      ) : (
+      ) : starters.length === 0 ? null : (
         <StartTimer
-          groups={open}
+          groups={starters}
+          // The optimistic stop shows Start at once; starting before it lands would conflict.
+          disabled={stop.isPending}
           start={start}
           groupId={
-            open.some((group) => group.$id === startGroupId) ? startGroupId : (open[0]?.$id ?? '')
+            starters.some((group) => group.$id === startGroupId)
+              ? startGroupId
+              : (starters[0]?.$id ?? '')
           }
           onGroup={setStartGroupId}
           onStart={(groupId) =>
-            start.mutate({ id: startId, groupId }, { onSuccess: () => setStartId(ID.unique()) })
+            start.mutate(
+              { id: startId, groupId },
+              {
+                onSuccess: () => {
+                  setStartId(ID.unique())
+                  setBreakMinutes('')
+                  // A new timer: the last one's stop error no longer applies.
+                  stop.reset()
+                },
+              },
+            )
           }
         />
       )}
@@ -160,12 +192,14 @@ export function TodayPage() {
 function StartTimer({
   groups,
   start,
+  disabled,
   groupId,
   onGroup,
   onStart,
 }: {
   groups: Groups[]
   start: ReturnType<typeof useStartTimer>
+  disabled: boolean
   groupId: string
   onGroup: (groupId: string) => void
   onStart: (groupId: string) => void
@@ -199,7 +233,11 @@ function StartTimer({
           {start.error.message}
         </p>
       )}
-      <Button className="self-start" disabled={start.isPending} onClick={() => onStart(groupId)}>
+      <Button
+        className="self-start"
+        disabled={start.isPending || disabled}
+        onClick={() => onStart(groupId)}
+      >
         Start
       </Button>
     </section>
@@ -210,13 +248,18 @@ function RunningTimer({
   shift,
   group,
   stop,
+  onStopped,
+  breakMinutes,
+  onBreak,
 }: {
   shift: Transactions
   group: Groups | undefined
   stop: ReturnType<typeof useStopTimer>
+  onStopped: () => void
+  breakMinutes: string
+  onBreak: (text: string) => void
 }) {
   const now = useNow()
-  const [breakMinutes, setBreakMinutes] = useState('')
   const [error, setError] = useState<string>()
   const started = shift.startedAt ? Date.parse(shift.startedAt) : now
   return (
@@ -241,10 +284,15 @@ function RunningTimer({
             return
           }
           setError(undefined)
-          stop.mutate({
-            transactionId: shift.$id,
-            ...(text === '' ? {} : { breakMinutes: Number(text) }),
-          })
+          stop.mutate(
+            { transactionId: shift.$id, ...(text === '' ? {} : { breakMinutes: Number(text) }) },
+            {
+              onSuccess: () => {
+                onBreak('')
+                onStopped()
+              },
+            },
+          )
         }}
       >
         <TextField
@@ -252,7 +300,7 @@ function RunningTimer({
           inputMode="numeric"
           label="Break (minutes)"
           value={breakMinutes}
-          onChange={(event) => setBreakMinutes(event.target.value)}
+          onChange={(event) => onBreak(event.target.value)}
           error={error ? { type: 'validate', message: error } : undefined}
         />
         {stop.isError && (
@@ -263,6 +311,12 @@ function RunningTimer({
         <Button type="submit" className="self-start" disabled={stop.isPending}>
           Stop
         </Button>
+        <Link
+          to={`/shifts/${shift.$id}`}
+          className="self-start text-sm underline underline-offset-4"
+        >
+          Can’t stop it? Open the shift to void it
+        </Link>
       </form>
     </section>
   )

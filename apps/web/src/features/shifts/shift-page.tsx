@@ -14,7 +14,13 @@ import { centsToText } from '../groups/employer-form'
 import { useGroup, useGroups, useMyMember } from '../groups/use-groups'
 import { ShiftForm } from './shift-form'
 import { type ShiftValues, toShiftValues } from './shift-values'
-import { useConfirmShift, useSaveShift, useTransaction, useVoidShift } from './use-shifts'
+import {
+  useConfirmShift,
+  useMyRoles,
+  useSaveShift,
+  useTransaction,
+  useVoidShift,
+} from './use-shifts'
 
 /** The group's default hourly rate as text, or empty when it has none. */
 export function defaultRate(group: Groups): string {
@@ -51,7 +57,11 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 
 /** `/shifts/new?groupId=&date=`: a shift in one of the user's employer groups. */
 export function NewShiftPage() {
+  const userId = useCurrentUser().data?.$id ?? ''
+  const personId = useBootstrap(userId).data?.personId ?? ''
   const groups = useGroups()
+  const open = groups.data?.filter((group) => group.type === 'employer' && !group.archivedAt)
+  const roles = useMyRoles(open, personId)
   const [params] = useSearchParams()
   const navigate = useNavigate()
   const save = useSaveShift()
@@ -59,14 +69,18 @@ export function NewShiftPage() {
   const [id] = useState(() => ID.unique())
 
   let content: ReactNode
-  if (!groups.data) {
-    content = groups.isError ? (
-      <Message alert>We couldn’t load your groups. Reload the page to try again.</Message>
-    ) : (
-      <Message>Loading…</Message>
-    )
+  if (!open || !roles.data) {
+    content =
+      (groups.isError && !groups.data) || (roles.isError && !roles.data) ? (
+        <Message alert>We couldn’t load your groups. Reload the page to try again.</Message>
+      ) : (
+        <Message>Loading…</Message>
+      )
   } else {
-    const employers = groups.data.filter((group) => group.type === 'employer' && !group.archivedAt)
+    // permissions.md: admins and members add shifts; an employer is a viewer.
+    const employers = open.filter((group) =>
+      ['admin', 'member'].includes(roles.data.get(group.$id) ?? ''),
+    )
     const first = employers.find((group) => group.$id === params.get('groupId')) ?? employers[0]
     if (!first) {
       content = (
@@ -116,7 +130,7 @@ export function NewShiftPage() {
 const STATUS: Record<Transactions['status'], string> = {
   scheduled: 'Scheduled: not confirmed yet.',
   due: 'Due.',
-  running: 'The timer is running. Stop it on the Today screen.',
+  running: 'The timer is running. Stop it on the Today screen, or void it here.',
   posted: 'Confirmed.',
   void: 'Voided.',
 }
@@ -189,10 +203,12 @@ function ShiftDetails({ row }: { row: Transactions }) {
           )}
           submitLabel="Save"
           rateFor={defaultRate}
+          storedMinutes={shift.minutes}
           onSave={(body) => save.mutateAsync({ body, isNew: false })}
         />
       )}
-      {open && row.status !== 'void' && row.status !== 'running' && (
+      {/* A running timer can be voided too: one left on for more than a day can't be stopped. */}
+      {open && row.status !== 'void' && (
         <VoidShift voidShift={voidShift} reason={reason} onReason={setReason} />
       )}
     </>

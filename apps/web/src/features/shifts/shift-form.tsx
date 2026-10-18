@@ -18,6 +18,11 @@ type Props = {
   /** The group's default rate as text, for a new shift whose group changes. */
   rateFor: (group: Groups) => string
   onSave: (body: TransactionInput) => Promise<unknown>
+  /**
+   * An existing shift's paid minutes. A timer stores whole minutes it ran, which can be a
+   * minute off end − start − break, so they're kept until the times or break change.
+   */
+  storedMinutes?: number
 }
 
 const ERROR_FIELD: Record<string, keyof ShiftValues> = {
@@ -32,14 +37,10 @@ const ERROR_FIELD: Record<string, keyof ShiftValues> = {
 
 /** Schema errors on the fields the form shows, in plain words. */
 function shiftResolver(
-  currencyOf: (groupId: string) => string,
-  id: string,
+  toBody: (values: ShiftValues) => ReturnType<typeof toShiftBody>,
 ): Resolver<ShiftValues, unknown, TransactionInput> {
   return async (values, context, options) => {
-    const currency = currencyOf(values.groupId)
-    const resolve = schemaResolver<ShiftValues, TransactionInput>(transactionInputSchema, (v) =>
-      toShiftBody(v, id, currency),
-    )
+    const resolve = schemaResolver<ShiftValues, TransactionInput>(transactionInputSchema, toBody)
     const result = await resolve(values, context, options)
     const found = result.errors as FieldErrors
     const errors: Record<string, { type: string; message: string }> = {}
@@ -49,6 +50,9 @@ function shiftResolver(
     if (values.timing === 'times') {
       if (!values.startTime) add('startTime', 'Required')
       if (!values.endTime) add('endTime', 'Required')
+      if (values.startTime && values.startTime === values.endTime) {
+        add('endTime', 'The end must differ from the start')
+      }
       const breakText = values.breakMinutes.trim()
       if (breakText !== '' && !/^\d+$/.test(breakText)) add('breakMinutes', 'Enter whole minutes')
       if (
@@ -84,20 +88,40 @@ function shiftResolver(
   }
 }
 
-export function ShiftForm({ groups, id, defaultValues, submitLabel, rateFor, onSave }: Props) {
+export function ShiftForm({
+  groups,
+  id,
+  defaultValues,
+  submitLabel,
+  rateFor,
+  onSave,
+  storedMinutes,
+}: Props) {
   const byId = new Map(groups.map((group) => [group.$id, group]))
   const currencyOf = (groupId: string) => byId.get(groupId)?.currency ?? 'AUD'
+  const toBody = (values: ShiftValues) => {
+    const body = toShiftBody(values, id, currencyOf(values.groupId))
+    const sameTimes =
+      values.timing === 'times' &&
+      values.timing === defaultValues.timing &&
+      values.startTime === defaultValues.startTime &&
+      values.endTime === defaultValues.endTime &&
+      values.breakMinutes.trim() === defaultValues.breakMinutes.trim()
+    return storedMinutes !== undefined && sameTimes && body.shift
+      ? { ...body, shift: { ...body.shift, minutes: storedMinutes } }
+      : body
+  }
   const form = useForm<ShiftValues, unknown, TransactionInput>({
-    resolver: shiftResolver(currencyOf, id),
+    resolver: shiftResolver(toBody),
     defaultValues,
   })
   const { errors, isSubmitting, isSubmitSuccessful, isDirty } = form.formState
   const values = form.watch()
-  const minutes = paidMinutes(values)
   const currency = currencyOf(values.groupId)
+  const minutes = toBody(values).shift?.minutes ?? Number.NaN
   let pay: string | undefined
   try {
-    const { shift } = toShiftBody(values, id, currency)
+    const { shift } = toBody(values)
     if (shift && Number.isInteger(shift.minutes) && shift.minutes >= 0) {
       pay = formatMoney(shiftAmountCents(shift.minutes, shift.rateCents), currency)
     }

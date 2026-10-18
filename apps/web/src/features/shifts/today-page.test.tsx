@@ -1,4 +1,4 @@
-import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Query } from 'appwrite'
@@ -68,12 +68,39 @@ function isRunningQuery(queries: string[]) {
   return queries.includes(Query.equal('status', 'running'))
 }
 
-/** listRows answers with `shifts` for the day query and `running` for the running-timer query. */
+// The caller's role in each group, as their member rows say.
+let roles: Record<string, Members['role']> = {}
+
+/**
+ * listRows answers `members` with `roles`, and `transactions` with `shifts` for the day query
+ * and `running` for the running-timer query.
+ */
 function mockRows(shifts: Transactions[], running: Transactions[] = []) {
-  listRows.mockImplementation((async ({ queries }: { queries: string[] }) => {
+  listRows.mockImplementation((async ({
+    tableId,
+    queries,
+  }: {
+    tableId: string
+    queries: string[]
+  }) => {
+    if (tableId === 'members') {
+      const rows = Object.entries(roles).map(([groupId, role]) => ({
+        groupId,
+        personId: 'p1',
+        role,
+        status: 'active',
+      }))
+      return { total: rows.length, rows }
+    }
     const rows = isRunningQuery(queries) ? running : shifts
     return { total: rows.length, rows }
   }) as never)
+}
+
+function transactionLists() {
+  return listRows.mock.calls.filter(
+    ([params]) => (params as unknown as { tableId: string }).tableId === 'transactions',
+  ).length
 }
 
 function renderPage() {
@@ -115,6 +142,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(NOW)
   mockGroups([acme, bistro])
+  roles = { g1: 'admin', g2: 'admin' }
 })
 
 afterEach(() => {
@@ -167,6 +195,15 @@ describe('TodayPage', () => {
       Query.orderAsc('date'),
       Query.limit(100),
     ])
+    expect(listRows).toHaveBeenCalledWith({
+      databaseId: 'main',
+      tableId: 'members',
+      queries: [
+        Query.equal('groupId', ['g1', 'g2']),
+        Query.equal('personId', 'p1'),
+        Query.limit(100),
+      ],
+    })
     expect(screen.getByRole('link', { name: 'Add a shift' }).getAttribute('href')).toBe(
       '/shifts/new',
     )
@@ -363,5 +400,140 @@ describe('TodayPage', () => {
     )
     expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Add a shift' })).toBeNull()
+  })
+
+  it('has no Start and no Add a shift for an employer who only views the groups', async () => {
+    roles = { g1: 'viewer', g2: 'viewer' }
+    mockRows([shift('s1', { description: 'Café' })])
+    renderPage()
+    expect(await screen.findByText('Café')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Timer' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Add a shift' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'New employer' })).toBeNull()
+  })
+
+  it('lets a member add a shift but not start the timer', async () => {
+    roles = { g1: 'member' }
+    mockRows([])
+    renderPage()
+    expect(await screen.findByRole('link', { name: 'Add a shift' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
+  })
+
+  it('starts the timer only in groups where the caller is an admin', async () => {
+    roles = { g1: 'member', g2: 'admin' }
+    mockRows([])
+    call.mockReturnValue(new Promise(() => {}))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    // One group to start in: no employer picker.
+    expect(screen.queryByLabelText('Employer')).toBeNull()
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({ groupId: 'g2' })
+  })
+
+  it('links the running timer to its shift, to void it', async () => {
+    mockRows([], [running])
+    renderPage()
+    expect(
+      (
+        await screen.findByRole('link', { name: 'Can’t stop it? Open the shift to void it' })
+      ).getAttribute('href'),
+    ).toBe('/shifts/r1')
+  })
+
+  it('keeps the typed break after a failed stop', async () => {
+    mockRows([], [running])
+    const pending = deferred<Result<unknown>>()
+    call.mockReturnValue(pending.promise)
+    renderPage()
+    fireEvent.change(await screen.findByLabelText('Break (minutes)'), { target: { value: '30' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy()
+    await act(async () => pending.resolve(failure('The shift is locked.')))
+    await settle()
+    expect((screen.getByLabelText('Break (minutes)') as HTMLInputElement).value).toBe('30')
+  })
+
+  it('disables Start while a stop is on its way', async () => {
+    mockRows([], [running])
+    call.mockReturnValue(new Promise(() => {}))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+    const start = (await screen.findByRole('button', { name: 'Start' })) as HTMLButtonElement
+    expect(start.disabled).toBe(true)
+  })
+
+  it('reloads today after a failed start, to show a timer started elsewhere', async () => {
+    mockRows([])
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'A timer is already running.' },
+    })
+    renderPage()
+    const start = await screen.findByRole('button', { name: 'Start' })
+    const before = transactionLists()
+    mockRows([], [running])
+    fireEvent.click(start)
+    expect(await screen.findByRole('heading', { name: 'Timer running · Acme Cafe' })).toBeTruthy()
+    await waitFor(() => expect(transactionLists()).toBeGreaterThan(before))
+    expect(screen.getByRole('timer').textContent).toBe('0:01:05')
+  })
+
+  it('clears the break after a successful start', async () => {
+    mockRows([], [running])
+    call.mockResolvedValueOnce(failure('Not running any more.'))
+    const queryClient = renderPage()
+    fireEvent.change(await screen.findByLabelText('Break (minutes)'), { target: { value: '15' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    await waitFor(() =>
+      expect((screen.getByLabelText('Break (minutes)') as HTMLInputElement).value).toBe('15'),
+    )
+    // It was stopped on another device: today reloads without it.
+    mockRows([])
+    await act(() => queryClient.invalidateQueries({ queryKey: ['today'] }))
+    call.mockResolvedValueOnce(ok(running))
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    mockRows([], [shift('r2', { status: 'running', startedAt: NOW.toISOString() })])
+    await act(() => queryClient.invalidateQueries({ queryKey: ['today'] }))
+    await waitFor(() => expect(screen.getByRole('timer').textContent).toBe('0:00:00'))
+    expect((screen.getByLabelText('Break (minutes)') as HTMLInputElement).value).toBe('')
+  })
+
+  it('a new timer doesn’t show the stop error of the timer before it', async () => {
+    mockRows([], [running])
+    call.mockResolvedValueOnce(failure('Not running any more.'))
+    const queryClient = renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Not running any more.')
+    mockRows([])
+    await act(() => queryClient.invalidateQueries({ queryKey: ['today'] }))
+    call.mockResolvedValueOnce(ok(running))
+    mockRows([], [shift('r2', { status: 'running', startedAt: NOW.toISOString() })])
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    await settle()
+    expect(screen.getByRole('heading', { name: 'Timer running · Acme Cafe' })).toBeTruthy()
+    expect(screen.queryByRole('alert')?.textContent).toBeUndefined()
+  })
+
+  it('Start doesn’t show the start error of an earlier attempt after a stop', async () => {
+    mockRows([])
+    call.mockResolvedValueOnce(failure('A timer is already running.'))
+    renderPage()
+    const start = await screen.findByRole('button', { name: 'Start' })
+    // The failed start reloads today, which finds the timer started on another device.
+    mockRows([], [running])
+    fireEvent.click(start)
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    call.mockResolvedValueOnce(ok(running))
+    mockRows([])
+    fireEvent.click(stop)
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    await settle()
+    expect(screen.getByRole('button', { name: 'Start' })).toBeTruthy()
+    expect(screen.queryByRole('alert')?.textContent).toBeUndefined()
   })
 })

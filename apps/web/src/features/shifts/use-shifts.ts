@@ -1,6 +1,6 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Items, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import type {
   StartTimerBody,
   StopTimerBody,
@@ -33,8 +33,36 @@ export function useTransaction(id: string) {
   })
 }
 
+/**
+ * The caller's role in each of `groups`, from their own member rows (permissions.md): who may
+ * add shifts (admin, member) and start the timer (admin). The function checks again.
+ */
+export function useMyRoles(groups: Groups[] | undefined, personId: string) {
+  const ids = (groups ?? []).map((group) => group.$id)
+  return useQuery({
+    queryKey: queryKeys.myRoles(personId, ids),
+    enabled: groups !== undefined && personId !== '',
+    queryFn: async () => {
+      const roles = new Map<string, Members['role']>()
+      for (let index = 0; index < ids.length; index += PAGE) {
+        const { rows } = await tablesDB.listRows<Members>({
+          databaseId: DATABASE_ID,
+          tableId: 'members',
+          queries: [
+            Query.equal('groupId', ids.slice(index, index + PAGE)),
+            Query.equal('personId', personId),
+            Query.limit(PAGE),
+          ],
+        })
+        for (const row of rows) if (row.status !== 'placeholder') roles.set(row.groupId, row.role)
+      }
+      return roles
+    },
+  })
+}
+
 export type Today = {
-  /** Shifts dated today in each group's own time zone, by date then start. */
+  /** Shifts dated today in each group's own time zone, by date then ID. */
   shifts: Transactions[]
   /** The caller's running timer, whatever day it started on (scheduling.md#timer-shifts). */
   running: Transactions | undefined
@@ -182,7 +210,11 @@ export function useStartTimer(todayKey: readonly unknown[]) {
       }
       return () => queryClient.setQueryData(todayKey, before)
     },
-    onError: (_error, _body, rollback) => rollback?.(),
+    onError: (_error, _body, rollback) => {
+      rollback?.()
+      // A CONFLICT names a timer already running, maybe started on another device: show it.
+      void queryClient.invalidateQueries({ queryKey: ['today'] })
+    },
     onSuccess: (view) => refresh(queryClient, view),
   })
 }
@@ -197,7 +229,11 @@ export function useStopTimer(todayKey: readonly unknown[]) {
       if (before) queryClient.setQueryData<Today>(todayKey, { ...before, running: undefined })
       return () => queryClient.setQueryData(todayKey, before)
     },
-    onError: (_error, _body, rollback) => rollback?.(),
+    onError: (_error, _body, rollback) => {
+      rollback?.()
+      // "Not running any more": show the timer as it is now.
+      void queryClient.invalidateQueries({ queryKey: ['today'] })
+    },
     onSuccess: (view) => refresh(queryClient, view),
   })
 }

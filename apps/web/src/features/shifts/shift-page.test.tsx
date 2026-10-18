@@ -1,6 +1,7 @@
 import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { Query } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
@@ -23,6 +24,7 @@ vi.mock('../groups/use-groups', () => ({
 
 const call = vi.mocked(callFunction)
 const getRow = vi.mocked(tablesDB.getRow)
+const listRows = vi.mocked(tablesDB.listRows)
 const groupsHook = vi.mocked(useGroups)
 const groupHook = vi.mocked(useGroup)
 const memberHook = vi.mocked(useMyMember)
@@ -115,6 +117,23 @@ function mockGroup(group: Groups, role: Members['role'] | null = 'admin') {
   } as ReturnType<typeof useMyMember>)
 }
 
+/** The caller's member rows: `members` answers with these; nothing else is listed here. */
+function mockRoles(
+  roles: Record<string, Members['role']>,
+  status: Record<string, Members['status']> = {},
+) {
+  listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+    if (tableId !== 'members') throw new Error(`Unexpected listRows on ${tableId}`)
+    const rows = Object.entries(roles).map(([groupId, role]) => ({
+      groupId,
+      personId: 'p1',
+      role,
+      status: status[groupId] ?? 'active',
+    }))
+    return { total: rows.length, rows }
+  }) as never)
+}
+
 function mockRow(row: Transactions) {
   getRow.mockResolvedValue(row as never)
 }
@@ -134,6 +153,13 @@ function renderAt(path: string) {
     </QueryClientProvider>,
   )
   return { router, queryClient }
+}
+
+/** Renders the new-shift page and waits for the groups and roles to load. */
+async function renderNew(path: string) {
+  const rendered = renderAt(path)
+  await waitFor(() => expect(screen.queryByText('Loading…')).toBeNull())
+  return rendered
 }
 
 function type(label: string | RegExp, value: string) {
@@ -171,6 +197,7 @@ beforeEach(() => {
   vi.setSystemTime(NOW)
   mockGroups([acme])
   mockGroup(acme)
+  mockRoles({ g1: 'admin', g2: 'member' })
 })
 
 afterEach(() => {
@@ -186,7 +213,7 @@ describe('NewShiftPage', () => {
     )
     getRow.mockImplementation((async ({ rowId }: { rowId: string }) =>
       shiftRow({ $id: rowId })) as never)
-    const { router } = renderAt('/shifts/new')
+    const { router } = await renderNew('/shifts/new')
     expect(screen.getByRole('heading', { name: 'New shift' })).toBeTruthy()
     // One employer: no employer picker.
     expect(screen.queryByLabelText('Employer')).toBeNull()
@@ -228,7 +255,7 @@ describe('NewShiftPage', () => {
   ])('sends hours %j as %i minutes with no times or break', async (hours, minutes) => {
     call.mockResolvedValue(view(shiftRow()))
     mockRow(shiftRow())
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     type('Break (minutes)', '30')
     fireEvent.click(screen.getByLabelText('Hours'))
     type('Hours worked', hours)
@@ -240,7 +267,7 @@ describe('NewShiftPage', () => {
   it('counts an end before the start as the next day', async () => {
     call.mockResolvedValue(view(shiftRow()))
     mockRow(shiftRow())
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     type('Start', '22:00')
     type('End', '06:00')
     fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
@@ -253,14 +280,14 @@ describe('NewShiftPage', () => {
     })
   })
 
-  it('uses the date in the URL instead of today', () => {
-    renderAt('/shifts/new?date=2026-09-30')
+  it('uses the date in the URL instead of today', async () => {
+    await renderNew('/shifts/new?date=2026-09-30')
     expect(input('Date').value).toBe('2026-09-30')
   })
 
-  it('takes today in the chosen group’s own time zone', () => {
+  it('takes today in the chosen group’s own time zone', async () => {
     mockGroups([acme, bistro])
-    renderAt('/shifts/new?groupId=g2')
+    await renderNew('/shifts/new?groupId=g2')
     expect(input('Employer').value).toBe('g2')
     expect(input('Date').value).toBe('2026-10-18')
     expect(input('Hourly rate (USD)').value).toBe('30.00')
@@ -270,7 +297,7 @@ describe('NewShiftPage', () => {
     mockGroups([acme, bistro])
     call.mockResolvedValue(view(shiftRow()))
     mockRow(shiftRow())
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     expect(input('Employer').value).toBe('g1')
     expect(input('Hourly rate (AUD)').value).toBe('25.50')
     type('Employer', 'g2')
@@ -292,7 +319,7 @@ describe('NewShiftPage', () => {
   })
 
   it('shows Required on a missing start and end and sends nothing', async () => {
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
     expect((await screen.findAllByText('Required')).map((error) => error.id)).toEqual([
       'startTime-error',
@@ -305,7 +332,7 @@ describe('NewShiftPage', () => {
   })
 
   it('refuses a break longer than the shift', async () => {
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     type('Start', '09:00')
     type('End', '10:00')
     type('Break (minutes)', '90')
@@ -318,7 +345,7 @@ describe('NewShiftPage', () => {
   })
 
   it('refuses a break that isn’t whole minutes', async () => {
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     type('Start', '09:00')
     type('End', '10:00')
     type('Break (minutes)', '1.5')
@@ -333,7 +360,7 @@ describe('NewShiftPage', () => {
     ['7:75', 'Enter hours like 7.5 or 7:30'],
     ['25', 'At most 24 hours'],
   ])('shows an inline error for the hours %j and sends nothing', async (hours, message) => {
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     fireEvent.click(screen.getByLabelText('Hours'))
     type('Hours worked', hours)
     fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
@@ -347,7 +374,7 @@ describe('NewShiftPage', () => {
     ['abc', 'Enter an amount like 25.50'],
     ['25.555', 'Enter an amount like 25.50'],
   ])('shows an inline error for the rate %j and sends nothing', async (rate, message) => {
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     type('Start', '09:00')
     type('End', '17:00')
     type('Hourly rate (AUD)', rate)
@@ -364,7 +391,7 @@ describe('NewShiftPage', () => {
       view(shiftRow({ $id: (body as { id: string }).id })),
     )
     mockRow(shiftRow())
-    const { router } = renderAt('/shifts/new')
+    const { router } = await renderNew('/shifts/new')
     type('Start', '09:00')
     type('End', '17:00')
     fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
@@ -376,19 +403,19 @@ describe('NewShiftPage', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/shifts/${sentBody(0).id}`))
   })
 
-  it('links to a new employer when the user has no employer groups', () => {
+  it('links to a new employer when the user has no employer groups', async () => {
     mockGroups([
       employer('g3', 'Flat', { type: 'house' }),
       employer('g4', 'Old job', { archivedAt: '2026-01-01T00:00:00.000Z' }),
     ])
-    renderAt('/shifts/new')
+    await renderNew('/shifts/new')
     expect(screen.getByRole('link', { name: 'New employer' }).getAttribute('href')).toBe(
       '/groups/new-employer',
     )
     expect(screen.queryByRole('button', { name: 'Add shift' })).toBeNull()
   })
 
-  it('says when the groups are loading or could not be loaded', () => {
+  it('says when the groups are loading or could not be loaded', async () => {
     mockGroups(undefined)
     renderAt('/shifts/new')
     expect(screen.getByRole('status').textContent).toBe('Loading…')
@@ -396,6 +423,64 @@ describe('NewShiftPage', () => {
     mockGroups(undefined, true)
     renderAt('/shifts/new')
     expect(screen.getByRole('alert').textContent).toMatch(/couldn’t load your groups/)
+    cleanup()
+    mockGroups([acme])
+    listRows.mockRejectedValue(new Error('offline'))
+    renderAt('/shifts/new')
+    expect((await screen.findByRole('alert')).textContent).toMatch(/couldn’t load your groups/)
+  })
+
+  it('refuses an end equal to the start and sends nothing', async () => {
+    await renderNew('/shifts/new')
+    type('Start', '09:00')
+    type('End', '09:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    expect((await screen.findByText('The end must differ from the start')).id).toBe('endTime-error')
+    expect(input('End').getAttribute('aria-describedby')).toBe('endTime-hint endTime-error')
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('reads the caller’s roles from their member rows', async () => {
+    mockGroups([acme, bistro])
+    await renderNew('/shifts/new')
+    expect(listRows).toHaveBeenCalledWith({
+      databaseId: 'main',
+      tableId: 'members',
+      queries: [
+        Query.equal('groupId', ['g1', 'g2']),
+        Query.equal('personId', 'p1'),
+        Query.limit(100),
+      ],
+    })
+  })
+
+  it('leaves out groups where the caller is a viewer or only a placeholder', async () => {
+    const cafe = employer('g5', 'Cafe Five')
+    mockGroups([acme, bistro, cafe])
+    mockRoles({ g1: 'viewer', g2: 'member', g5: 'admin' }, { g5: 'placeholder' })
+    await renderNew('/shifts/new?groupId=g1')
+    // Only Bistro is left, so there's no employer picker and the shift goes there.
+    expect(screen.queryByLabelText('Employer')).toBeNull()
+    expect(input('Hourly rate (USD)').value).toBe('30.00')
+  })
+
+  it('lists only the groups the caller may add shifts to', async () => {
+    const cafe = employer('g5', 'Cafe Five')
+    mockGroups([acme, bistro, cafe])
+    mockRoles({ g1: 'admin', g2: 'viewer', g5: 'member' })
+    await renderNew('/shifts/new')
+    const options = [...(screen.getByLabelText('Employer') as HTMLSelectElement).options]
+    expect(options.map((option) => option.value)).toEqual(['g1', 'g5'])
+  })
+
+  it('links to a new employer when the caller only views their employer groups', async () => {
+    mockGroups([acme, bistro])
+    mockRoles({ g1: 'viewer' })
+    await renderNew('/shifts/new')
+    expect(screen.getByRole('link', { name: 'New employer' }).getAttribute('href')).toBe(
+      '/groups/new-employer',
+    )
+    expect(screen.queryByRole('button', { name: 'Add shift' })).toBeNull()
   })
 })
 
@@ -488,14 +573,71 @@ describe('ShiftPage', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
-  it('sends a running shift to the Today screen', async () => {
+  it('shows a running shift with only the void form', async () => {
     mockRow(shiftRow({ status: 'running', startedAt: '2026-10-18T21:00:00.000Z' }))
     renderAt('/shifts/t1')
     expect(
-      await screen.findByText('The timer is running. Stop it on the Today screen.'),
+      await screen.findByText(
+        'The timer is running. Stop it on the Today screen, or void it here.',
+      ),
     ).toBeTruthy()
-    expect(screen.queryByRole('textbox')).toBeNull()
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(screen.queryByLabelText('Start')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Confirm as worked' })).toBeNull()
+    expect(screen.getAllByRole('textbox').map((box) => box.id)).toEqual(['voidReason'])
+  })
+
+  it('voids a running shift with POST /void', async () => {
+    mockRow(shiftRow({ status: 'running', startedAt: '2026-10-17T21:00:00.000Z' }))
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Reason for voiding')
+    type('Reason for voiding', 'Forgot to stop it')
+    fireEvent.click(screen.getByRole('button', { name: 'Void shift' }))
+    expect(await screen.findByText('Voided. Reason: Forgot to stop it')).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call).toHaveBeenCalledWith('ledger', 'POST', '/transactions/t1/void', {
+      reason: 'Forgot to stop it',
+    })
+  })
+
+  it('keeps a timer’s stored minutes when the times and break are unchanged', async () => {
+    const timed = { minutes: 29, rateCents: 2550, startTime: '09:00', endTime: '09:30' }
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))
+    call.mockResolvedValue(view(shiftRow()))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    expect(screen.getByText(/^0 h 29 min paid · /)).toBeTruthy()
+    type('Description', 'Timed shift')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sentBody().shift).toStrictEqual(timed)
+    expect(sentBody().description).toBe('Timed shift')
+  })
+
+  it('works the minutes out again once a time changes', async () => {
+    const timed = { minutes: 29, rateCents: 2550, startTime: '09:00', endTime: '09:30' }
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))
+    call.mockResolvedValue(view(shiftRow()))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    type('End', '10:00')
+    expect(screen.getByText(/^1 h 0 min paid · /)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sentBody().shift).toStrictEqual({ ...timed, minutes: 60, endTime: '10:00' })
+  })
+
+  it('works the minutes out again once the break changes', async () => {
+    const timed = { minutes: 29, rateCents: 2550, startTime: '09:00', endTime: '09:30' }
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))
+    call.mockResolvedValue(view(shiftRow()))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    type('Break (minutes)', '5')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sentBody().shift).toStrictEqual({ ...timed, minutes: 25, breakMinutes: 5 })
   })
 
   it('confirms a scheduled shift at once, then with POST /post', async () => {
