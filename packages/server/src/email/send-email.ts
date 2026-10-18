@@ -14,13 +14,14 @@ export type Email = {
   text: string
   replyTo?: string
   attachments?: Attachment[]
-  /** Resend sends one email per key within 24 hours, so a retried send isn't delivered twice. */
+  /** One per email: Resend sends one email per key within 24 hours, so a retry isn't delivered twice. */
   idempotencyKey?: string
 }
 
 /**
- * A send that failed. `type` is `missing_config` or Resend's error name, `status` its HTTP
- * status. The message never holds addresses, subjects or bodies, so it is safe to log.
+ * Every way a send fails. `type` is `missing_config`, `timeout`, `network` or Resend's error
+ * name; `status` is Resend's HTTP status, when it answered. The message never holds addresses,
+ * subjects or bodies, so it is safe to log.
  */
 export class EmailError extends Error {
   override name = 'EmailError'
@@ -41,7 +42,7 @@ export class EmailError extends Error {
 export async function sendEmail(email: Email): Promise<{ id?: string }> {
   const apiKey = requireEnv('RESEND_API_KEY')
   const from = requireEnv('EMAIL_FROM')
-  const response = await fetch(RESEND_URL, {
+  const request: RequestInit = {
     method: 'POST',
     headers: {
       authorization: `Bearer ${apiKey}`,
@@ -62,7 +63,16 @@ export async function sendEmail(email: Email): Promise<{ id?: string }> {
       })),
     }),
     signal: AbortSignal.timeout(TIMEOUT_MS),
-  })
+  }
+  let response: Response
+  try {
+    response = await fetch(RESEND_URL, request)
+  } catch (thrown) {
+    // The timeout rejects with a TimeoutError; DNS, TLS and dropped connections with others.
+    // Either way the email may still have gone out, so a retry needs the same idempotencyKey.
+    const type = thrown instanceof Error && thrown.name === 'TimeoutError' ? 'timeout' : 'network'
+    throw new EmailError(`Resend could not be reached: ${type}`, type)
+  }
   const body = (await response.json().catch(() => null)) as { id?: unknown; name?: unknown } | null
   if (!response.ok) {
     const type =
@@ -74,11 +84,11 @@ export async function sendEmail(email: Email): Promise<{ id?: string }> {
 
 function requireEnv(name: 'RESEND_API_KEY' | 'EMAIL_FROM'): string {
   const value = process.env[name]
-  if (!value) {
+  if (!value?.trim()) {
     throw new EmailError(
       `${name} is not set. Add it as an Appwrite project variable (environments-and-deploys.md).`,
       'missing_config',
     )
   }
-  return value
+  return value.trim()
 }

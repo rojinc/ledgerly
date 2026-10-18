@@ -12,6 +12,8 @@ export type EmailContent = {
 }
 
 const LOCALE = 'en-AU'
+// An ISO date and time with `Z` or an offset, as Appwrite stores datetimes.
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/
 const MONTHS = [
   'January',
   'February',
@@ -72,7 +74,7 @@ export function invoiceEmail(input: {
       `Please find attached invoice ${input.displayNumber} from ${input.issuerName} for ${period}.`,
       input.balanceDueCents > 0
         ? `${amount} is due by ${longDate(input.dueOn)}.`
-        : `The balance is ${amount}, so there is nothing to pay.`,
+        : nothingToPay(input.balanceDueCents, input.currency),
       'If you have any questions, reply to this email.',
     ]),
     // The prefix is user-typed; keep the file name to characters every mail client accepts.
@@ -114,6 +116,11 @@ export function timerRunningEmail(input: {
   url: string
 }): EmailContent {
   const started = new Date(input.startedAt)
+  // Without a time or an offset, Date guesses (UTC midnight, or the machine's timezone) and
+  // the email shows a made-up time.
+  if (!INSTANT.test(input.startedAt) || Number.isNaN(started.getTime())) {
+    throw new RangeError('startedAt must be an ISO date and time, e.g. 2026-10-15T21:02:00.000Z')
+  }
   const since = `${dayLabel(localToday(input.timeZone, started))}, ${clockTime(started, input.timeZone)}`
   return message(
     'Your timer is still running',
@@ -133,6 +140,8 @@ function message(
   paragraphs: string[],
   link?: { label: string; url: string },
 ): EmailContent {
+  // Links are built from APP_URL; anything else (javascript:, data:) is a bug.
+  if (link && !/^https?:\/\//.test(link.url)) throw new RangeError('Email links must be http(s)')
   const html = [
     '<!doctype html>',
     '<html><body style="font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.5; color: #1f2933;">',
@@ -147,6 +156,13 @@ function message(
     '--\nSent with Ledgerly.',
   ].join('\n\n')
   return { subject: subject.replace(/\s+/g, ' ').trim(), html, text }
+}
+
+// To the employer: a negative balance due means they paid more than they owed.
+function nothingToPay(balanceDueCents: number, currency: string): string {
+  return balanceDueCents < 0
+    ? `You have a credit of ${formatMoney(-balanceDueCents, currency, LOCALE)}, so there is nothing to pay.`
+    : 'There is nothing to pay this time.'
 }
 
 function escapeHtml(text: string): string {
@@ -175,10 +191,11 @@ function dayLabel(date: LocalDate): string {
   return `${WEEKDAYS[weekdayOf(date) - 1]} ${day} ${month}`
 }
 
-/** `October` for a whole month, else `1–7 October` or `28 September – 4 October`. */
+/** `October` for a whole month, else `16 October`, `1–7 October` or `28 September – 4 October`. */
 function periodLabel(start: LocalDate, end: LocalDate): string {
   const from = dateParts(start)
   const to = dateParts(end)
+  if (start === end) return `${from.day} ${from.month}`
   if (from.day === 1 && end === endOfMonth(start)) return from.month
   if (start.slice(0, 7) === end.slice(0, 7)) return `${from.day}–${to.day} ${to.month}`
   return `${from.day} ${from.month} – ${to.day} ${to.month}`

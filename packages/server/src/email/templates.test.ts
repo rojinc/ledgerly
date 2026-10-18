@@ -62,6 +62,8 @@ describe('statementReadyEmail', () => {
     ['2028-02-01', '2028-02-29', 'Your February invoice for Acme is ready to review'],
     // Starts on the 1st but stops before the month ends.
     ['2026-10-01', '2026-10-14', 'Your 1–14 October invoice for Acme is ready to review'],
+    // One day, for example a reissue.
+    ['2026-10-16', '2026-10-16', 'Your 16 October invoice for Acme is ready to review'],
   ])('names the period %s to %s', (start, end, subject) => {
     expect(ready('invoice', start, end).subject).toBe(subject)
   })
@@ -95,14 +97,14 @@ describe('invoiceEmail', () => {
     expect(content.text).toContain('for 28 December – 3 January 2027.')
   })
 
-  it.each([0, -2_000])('says there is nothing to pay when the balance is %i', (cents) => {
+  it.each([
+    [0, 'There is nothing to pay this time.'],
+    // The employer paid more than they owed.
+    [-2_000, 'You have a credit of $20.00, so there is nothing to pay.'],
+  ])('says there is nothing to pay when the balance is %i', (cents, line) => {
     const content = invoiceEmail({ ...invoice, balanceDueCents: cents })
     expect(content.text).not.toContain('is due by')
-    expect(content.text).toContain(
-      cents === 0
-        ? 'The balance is $0.00, so there is nothing to pay.'
-        : 'The balance is -$20.00, so there is nothing to pay.',
-    )
+    expect(content.text).toContain(line)
   })
 
   it('formats other currencies by their own decimals', () => {
@@ -168,6 +170,24 @@ describe('timerRunningEmail', () => {
       'running since Thursday 15 October, 10:02 pm.',
     )
   })
+
+  // A plain date would otherwise show as 11:00 am, a time nobody started at.
+  it('reads an offset as well as Z', () => {
+    expect(timer('2026-10-16T08:02:00.000+11:00').text).toContain(
+      'running since Friday 16 October, 8:02 am.',
+    )
+  })
+
+  it.each([
+    '2026-10-16',
+    'not a time',
+    '2026-10-16T25:00:00Z',
+    // No Z or offset: Date would read it in the machine's timezone.
+    '2026-10-16T10:00',
+    '2026-10-16T10:00:00.000',
+  ])('refuses %j', (startedAt) => {
+    expect(() => timer(startedAt)).toThrow('startedAt must be an ISO date and time')
+  })
 })
 
 describe('user-typed text', () => {
@@ -188,4 +208,13 @@ describe('user-typed text', () => {
     expect(content.html).not.toContain('<b>')
     expect(content.html).toContain('href="https://app.example/s?a=1&amp;b=&quot;2&quot;"')
   })
+
+  it.each(['javascript:alert(1)', 'data:text/html,hi', '/relative/path'])(
+    'refuses a link to %s',
+    (url) => {
+      expect(() =>
+        shiftToConfirmEmail({ groupName: 'Acme', date: day('2026-10-15'), url }),
+      ).toThrow('Email links must be http(s)')
+    },
+  )
 })
