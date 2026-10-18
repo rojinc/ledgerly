@@ -112,7 +112,7 @@ Each route parses its body with its schema from `packages/core/src/schemas/` bef
 - **Lists:** at most 10 `receiptFileIds` (the ledger function checks each file) and 366 `exdates`.
 - **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365.
 - **Business details:** `abn` (11), `bsb` (6) and `accountNumber` (up to 12) are stored as digits only. Spaces and dashes are dropped.
-- **Schedules:** `rrule` parts are upper-case RFC 5545 names with valid values, each used once, never both `COUNT` and `UNTIL`, and no `BYHOUR`, `BYMINUTE` or `BYSECOND`. The preview `count` is 1–100.
+- **Schedules:** `rrule` is one of the shapes in [Rules the UI builds](scheduling.md#rules-the-ui-builds): weekly on plain `BYDAY` codes with an optional `INTERVAL` of 1–4, or monthly on a `BYMONTHDAY` of 1–28 or `-1`, either with an optional `COUNT` (1–500) or `UNTIL=YYYYMMDD`, not both. `startsOn`, `endsOn` and `exdates` are on or after 2000-01-01. The preview `count` is 1–100.
 - **Invites:** `POST /invites/accept` takes any token text up to 128 characters. A malformed token is just an unknown one, so it returns `INVITE_INVALID`.
 
 ---
@@ -196,7 +196,7 @@ type ScheduleInput = {
   kind: 'shift' | 'bill' | 'expense' | 'income'
   description: string
   template: Omit<TransactionInput, 'id' | 'groupId' | 'date' | 'kind' | 'description'>
-  rrule: string                 // RFC 5545; FREQ DAILY/WEEKLY/MONTHLY/YEARLY only (scheduling.md)
+  rrule: string                 // RFC 5545; only the shapes in scheduling.md#rules-the-ui-builds
   startsOn: LocalDate
   endsOn?: LocalDate
   exdates?: LocalDate[]
