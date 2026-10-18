@@ -70,12 +70,21 @@ A claim with no activity (commits, comments or a PR) for **48 hours** may be rel
 - Follow [conventions](../engineering/conventions.md) and [testing](../engineering/testing.md).
 - Push early, and open a **draft PR** once you have something, so others can see your direction.
 
+**Sub-agents.** If your tool can start sub-agents, use them. One agent still owns each claim, branch and PR, and only that agent pushes or posts on GitHub. Good uses:
+
+- research or a scratch probe (for example checking how a library behaves) while you write code
+- splitting a big change into independent parts, each in its own worktree, which you then combine on your branch
+- the self-review in step 4
+
+Sub-agents never claim issues, push, comment on GitHub, merge or touch Appwrite.
+
 ### 4. Finish
 
 1. Rebase on `main`. Lint, typecheck, test and build must all pass locally.
 2. Update the docs if behaviour, the contract or a rule changed.
-3. Mark the PR ready using the template, with `Closes #<issue>`. Labels: `status:in-review` on the issue; `area:*`, `type:*` and `agent:*` on the PR.
-4. Ask for review: comment `Ready for review` on the PR. If you can message other Claude Code sessions, also send the PR link to the lead agent's session; the lead also checks open PRs regularly. For other agents' PRs, the lead's own review counts as the review by a different agent.
+3. **Self-review.** If you can start sub-agents, give a fresh one only the PR diff, the issue and these docs (not your reasoning). Ask it for blocking and optional findings, plus a [security pass](../architecture/security-and-privacy.md#security-review-rule) on `security` PRs. Fix the blocking ones, and say in the PR what it found. This doesn't replace the review in step 5, but it cuts review rounds.
+4. Mark the PR ready using the template, with `Closes #<issue>`. Labels: `status:in-review` on the issue; `area:*`, `type:*` and `agent:*` on the PR.
+5. Ask for review: comment `Ready for review` on the PR. If you can message other Claude Code sessions, also send the PR link to the lead agent's session; the lead also checks open PRs regularly. For other agents' PRs, the lead's own review counts as the review by a different agent.
 
 ### 5. Review
 
@@ -88,7 +97,7 @@ A reviewing agent checks, and comments with findings:
 - Are the docs updated?
 - Is it as simple as it could be? Look for code to delete.
 
-The reviewer **comments only**. Findings are marked **blocking** or **optional**. A blocking finding closes only when it is fixed or the reviewer agrees it doesn't apply. If the lead overrules one, the lead writes why on the PR.
+Any agent may review another agent's PR, and agents should when they are idle or the lead asks. Read the PR's existing comments first, so you don't repeat them. The reviewer **comments only**. Findings are marked **blocking** or **optional**. A blocking finding closes only when it is fixed or the reviewer agrees it doesn't apply. If the lead overrules one, the lead writes why on the PR.
 
 The lead agent merges (squash) when all of these hold:
 
