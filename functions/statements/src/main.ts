@@ -7,9 +7,12 @@ import {
   route,
 } from '@ledgerly/server/http/create-handler'
 import { draftDueStatements } from './routes/draft-due'
+import { finalizeRoute } from './routes/finalize'
 import { previewStatement } from './routes/preview'
 import { refreshStatement } from './routes/refresh'
 import { reissueStatement } from './routes/reissue'
+import { sendRoute } from './routes/send'
+import { voidRoute } from './routes/void'
 import { type Services, servicesFromRequest } from './services'
 
 // The commit this bundle was built from (scripts/build-functions.mjs).
@@ -31,6 +34,15 @@ export function statementsRoutes(
     ),
     route('POST', '/statements/:id/refresh', async (ctx) =>
       refreshStatement(services(ctx), requireUser(ctx.userId), ctx.params.id),
+    ),
+    route('POST', '/statements/:id/finalize', async (ctx) =>
+      finalizeRoute(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
+    ),
+    route('POST', '/statements/:id/send', async (ctx) =>
+      sendRoute(services(ctx), requireUser(ctx.userId), ctx.params.id),
+    ),
+    route('POST', '/statements/:id/void', async (ctx) =>
+      voidRoute(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
     ),
     route('POST', '/statements/reissue', async (ctx) =>
       reissueStatement(services(ctx), requireUser(ctx.userId), ctx.body),

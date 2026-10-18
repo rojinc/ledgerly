@@ -1,0 +1,292 @@
+import type { Statements } from '@ledgerly/core/generated/rows'
+import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import {
+  failure,
+  fakes,
+  job,
+  NOW,
+  ok,
+  payment,
+  rowsOf,
+  shift,
+  snapshotClosing,
+  statement,
+} from './harness'
+
+let errors: string[]
+beforeEach(() => {
+  errors = []
+  vi.spyOn(console, 'error').mockImplementation((line: string) => {
+    errors.push(line)
+  })
+})
+afterEach(() => vi.restoreAllMocks())
+
+type Services = ReturnType<typeof fakes>
+
+// October: Sam worked 4 hours ($100.00), Acme paid $30.00; a November shift isn't in it.
+const october = () =>
+  rowsOf(
+    shift('s1', '2026-10-02', 240),
+    payment('p1', '2026-10-15', 3000),
+    shift('s2', '2026-11-03', 60),
+    { statements: [statement('st1')] },
+  )
+
+const finalize = (services: Services, send = false, id = 'st1', user = 'u-sam') =>
+  ok<Statements>(services, 'POST', `/statements/${id}/finalize`, { send }, user)
+
+const stored = (services: Services, id = 'st1') =>
+  services.db.rows('statements').find((row) => row.$id === id) as unknown as Statements
+const locks = (services: Services) =>
+  Object.fromEntries(services.db.rows('transactions').map((row) => [row.$id, row.statementId]))
+const lastNumber = (services: Services) => services.db.rows('profiles')[0]?.lastInvoiceNumber
+
+describe('POST /statements/{id}/finalize', () => {
+  it('numbers the invoice, locks what it covers, stores the PDF and marks it final', async () => {
+    const services = fakes(october())
+    const final = await finalize(services)
+    expect(final).toMatchObject({
+      status: 'final',
+      number: 10,
+      displayNumber: 'INV-0010',
+      // 07:00 on 2 November in Sydney; 14 days' terms.
+      issuedOn: '2026-11-02',
+      dueOn: '2026-11-16',
+      pdfFileId: 'st1',
+      finalizedBy: 'sam',
+      sentAt: null,
+    })
+    expect(stored(services)).toMatchObject(final)
+    expect(lastNumber(services)).toBe(10)
+    expect(locks(services)).toEqual({ s1: 'st1', p1: 'st1', s2: null })
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.invoice).toEqual({
+      balanceDueCents: 7000,
+      paymentTermsDays: 14,
+      dueOn: '2026-11-16',
+    })
+    const pdf = services.files.stored.get('st1')
+    expect(pdf).toMatchObject({ name: 'INV-0010.pdf', permissions: ['read("team:job")'] })
+    expect(
+      Buffer.from(pdf?.content ?? [])
+        .subarray(0, 5)
+        .toString(),
+    ).toBe('%PDF-')
+    expect(services.db.rows('activity')).toMatchObject([
+      {
+        actorPersonId: 'sam',
+        action: 'statement.finalized',
+        summary: 'Invoice INV-0010 finalized',
+      },
+    ])
+    expect(services.sent).toEqual([])
+  })
+
+  it('stages the group row with the finalizing status, for the ledger (ledger.md#concurrency)', async () => {
+    const services = fakes(october())
+    const stage = vi.spyOn(services.db, 'createOperations')
+    await finalize(services)
+    expect(stage.mock.calls[0]?.[0].operations).toEqual([
+      expect.objectContaining({
+        tableId: 'statements',
+        rowId: 'st1',
+        data: { status: 'finalizing' },
+      }),
+      expect.objectContaining({ tableId: 'groups', rowId: 'job', data: { type: 'employer' } }),
+    ])
+  })
+
+  it('gives the same result when finalized twice, numbering and uploading once', async () => {
+    const services = fakes(october())
+    const upload = vi.spyOn(services.files, 'upload')
+    const first = await finalize(services)
+    const again = await finalize(services)
+    expect(again).toEqual(first)
+    expect(lastNumber(services)).toBe(10)
+    expect(upload).toHaveBeenCalledTimes(1)
+    expect(services.db.rows('activity')).toHaveLength(1)
+  })
+
+  it('goes on after an interruption at the lock step, and numbers only once', async () => {
+    // 95 shifts: locking takes two batches of at most 90 writes.
+    const shifts = Array.from({ length: 95 }, (_, index) =>
+      shift(`s${String(index).padStart(3, '0')}`, '2026-10-10', 60),
+    )
+    const services = fakes(rowsOf(...shifts, { statements: [statement('st1')] }))
+    const commit = services.db.updateTransaction.bind(services.db)
+    let commits = 0
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      // Commits: 1 finalizing, 2 the number, 3 and 4 the lock batches.
+      if (params.commit && ++commits === 4) throw new Error('The function was stopped')
+      return commit(params)
+    })
+    expect(
+      (await failure(services, 'POST', '/statements/st1/finalize', { send: false })).code,
+    ).toBe('INTERNAL')
+    expect(stored(services)).toMatchObject({ status: 'finalizing', number: 10 })
+    expect(Object.values(locks(services)).filter((lock) => lock === 'st1')).toHaveLength(90)
+
+    const final = await finalize(services)
+    expect(final).toMatchObject({ status: 'final', number: 10, displayNumber: 'INV-0010' })
+    expect(lastNumber(services)).toBe(10)
+    expect(Object.values(locks(services)).every((lock) => lock === 'st1')).toBe(true)
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.lines).toHaveLength(95)
+    expect(snapshot.invoice?.balanceDueCents).toBe(95 * 2500)
+  })
+
+  it('keeps the first issue date when an interrupted finalize runs again the next day', async () => {
+    const services = fakes(october())
+    vi.spyOn(services.files, 'upload').mockRejectedValueOnce(new Error('Storage is down'))
+    await failure(services, 'POST', '/statements/st1/finalize', { send: false })
+    expect(stored(services)).toMatchObject({
+      status: 'finalizing',
+      issuedOn: '2026-11-02',
+      pdfFileId: null,
+    })
+    services.now = new Date(NOW.getTime() + 24 * 60 * 60 * 1000)
+    const final = await finalize(services)
+    expect(final).toMatchObject({ status: 'final', issuedOn: '2026-11-02', dueOn: '2026-11-16' })
+    expect(services.files.stored.has('st1')).toBe(true)
+  })
+
+  it('unlocks everything and goes back to draft when the check fails', async () => {
+    // September's final invoice says Acme owes $50.00, but no locked share backs that up.
+    const services = fakes(
+      rowsOf(shift('s1', '2026-10-02', 240), {
+        statements: [
+          statement('st-sep', {
+            periodStart: '2026-09-01',
+            periodEnd: '2026-09-30',
+            status: 'final',
+            snapshotJson: snapshotClosing(
+              { start: '2026-09-01', end: '2026-09-30' },
+              { acme: -5000, sam: 5000 },
+            ),
+          }),
+          statement('st1'),
+        ],
+      }),
+    )
+    const response = await failure(services, 'POST', '/statements/st1/finalize', { send: false })
+    expect(response.code).toBe('INVARIANT_VIOLATION')
+    expect(stored(services)).toMatchObject({ status: 'draft', number: 10, issuedOn: null })
+    expect(locks(services)).toEqual({ s1: null })
+    expect(services.files.stored.size).toBe(0)
+    expect(errors).toEqual(['statements: statement st1 failed its check: fresh'])
+  })
+
+  it('takes the next number when another invoice took this one meanwhile', async () => {
+    const services = fakes(october())
+    const stage = services.db.createOperations.bind(services.db)
+    let stagings = 0
+    vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+      // The second staging is the number: another finalize for Sam commits 10 just before.
+      if (++stagings === 2) {
+        const { $id } = await services.db.createTransaction()
+        await stage({
+          transactionId: $id,
+          operations: [
+            {
+              action: 'update',
+              databaseId: 'main',
+              tableId: 'profiles',
+              rowId: 'u-sam',
+              data: { lastInvoiceNumber: 10 },
+            },
+          ],
+        })
+        await services.db.updateTransaction({ transactionId: $id, commit: true })
+      }
+      return stage(params)
+    })
+    expect(
+      (await failure(services, 'POST', '/statements/st1/finalize', { send: false })).code,
+    ).toBe('CONFLICT')
+    expect(stored(services)).toMatchObject({ status: 'finalizing', number: null })
+    expect((await finalize(services)).displayNumber).toBe('INV-0011')
+    expect(lastNumber(services)).toBe(11)
+  })
+
+  it('finalizes only the oldest unfinished statement of the group', async () => {
+    const services = fakes({
+      statements: [
+        statement('st1'),
+        statement('st2', { periodStart: '2026-11-01', periodEnd: '2026-11-30' }),
+      ],
+    })
+    expect(
+      (await failure(services, 'POST', '/statements/st2/finalize', { send: false })).code,
+    ).toBe('CONFLICT')
+    expect(stored(services, 'st2').status).toBe('draft')
+  })
+
+  it.each([
+    ['a void statement', { status: 'void' }, 'u-sam', 'VALIDATION_FAILED'],
+    ['someone outside the group', {}, 'u-dan', 'NOT_A_MEMBER'],
+  ])('refuses %s', async (_case, extra, user, code) => {
+    const services = fakes({ statements: [statement('st1', extra)] })
+    expect(
+      (await failure(services, 'POST', '/statements/st1/finalize', { send: false }, user)).code,
+    ).toBe(code)
+  })
+
+  it('refuses a house divide until divides come, and a member who is not an admin', async () => {
+    const services = fakes({
+      statements: [statement('st-house', { groupId: 'house', type: 'divide' })],
+    })
+    const asAdmin = await failure(
+      services,
+      'POST',
+      '/statements/st-house/finalize',
+      { send: false },
+      'u-alice',
+    )
+    const asMember = await failure(
+      services,
+      'POST',
+      '/statements/st-house/finalize',
+      { send: false },
+      'u-bob',
+    )
+    expect([asAdmin.code, asMember.code]).toEqual(['VALIDATION_FAILED', 'FORBIDDEN'])
+  })
+
+  it('emails the invoice when asked to send it', async () => {
+    const services = fakes(october())
+    const final = await finalize(services, true)
+    expect(final.sentAt).toBe(NOW.toISOString())
+    expect(
+      services.sent.map(({ to, replyTo, idempotencyKey }) => ({ to, replyTo, idempotencyKey })),
+    ).toEqual([
+      {
+        to: ['billing@acme.example'],
+        replyTo: 'sam@example.com',
+        idempotencyKey: 'invoice-st1-first',
+      },
+      { to: 'sam@example.com', replyTo: undefined, idempotencyKey: 'invoice-st1-first-copy' },
+    ])
+    expect(services.sent[0]).toMatchObject({ subject: 'Invoice INV-0010 from Sam Cleans' })
+    expect(services.sent[0]?.attachments?.[0]?.filename).toBe('INV-0010.pdf')
+  })
+})
+
+describe('auto-finalize (the statements job)', () => {
+  it('finalizes a new draft at once when the group asks for it, without sending it', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-02', 120)),
+      groups: [job({ autoFinalize: true })],
+    })
+    expect(await ok(services, 'POST', '/', undefined, null)).toEqual({ drafted: 1, failed: 0 })
+    expect(services.db.rows('statements')[0]).toMatchObject({
+      status: 'final',
+      displayNumber: 'INV-0010',
+      finalizedBy: null,
+      sentAt: null,
+    })
+    // Only the "ready to review" email.
+    expect(services.sent).toHaveLength(1)
+  })
+})

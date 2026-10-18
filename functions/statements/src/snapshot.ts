@@ -36,7 +36,8 @@ export function statementTypeOf(group: Groups): Statements['type'] {
  * A group's snapshot for `period` (statements.md#snapshot): every posted transaction that isn't
  * locked and is dated on or before the period end, plus those already locked to `statementId`
  * (an interrupted finalize, step 3). The opening is the closing of the latest final statement
- * that ends before this period does. Returns the IDs of the transactions it covers too.
+ * that ends before this period does. Also returns the IDs of the transactions not locked yet,
+ * which finalize step 4 locks.
  */
 export async function computeSnapshot(
   db: Db,
@@ -44,7 +45,7 @@ export async function computeSnapshot(
   period: DateRange,
   now: Date,
   statementId?: string,
-): Promise<{ snapshot: StatementSnapshot; transactionIds: string[] }> {
+): Promise<{ snapshot: StatementSnapshot; unlockedIds: string[] }> {
   const type = statementTypeOf(group)
   const [members, unlocked, locked, previous] = await Promise.all([
     listAll<Members>(db, TABLES.members, [Query.equal('groupId', group.$id)]),
@@ -84,7 +85,7 @@ export async function computeSnapshot(
     ...(type === 'invoice' ? await invoiceParties(db, group, members) : {}),
     generatedAt: now.toISOString(),
   })
-  return { snapshot, transactionIds: transactions.map((row) => row.$id) }
+  return { snapshot, unlockedIds: unlocked.map((row) => row.$id) }
 }
 
 /** The snapshot of the latest final statement ending before `period` does, if there is one. */
@@ -109,7 +110,8 @@ async function previousFinal(
   return row ? statementSnapshotSchema.parse(JSON.parse(row.snapshotJson)) : undefined
 }
 
-async function sharesOf(
+/** The shares of `transactions`, by transaction ID. */
+export async function sharesOf(
   db: Db,
   transactions: readonly Transactions[],
 ): Promise<Map<string, Shares[]>> {

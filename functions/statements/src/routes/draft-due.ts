@@ -1,5 +1,6 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
-import type { Groups } from '@ledgerly/core/generated/rows'
+import type { Groups, Statements } from '@ledgerly/core/generated/rows'
+import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { statementReadyEmail } from '@ledgerly/server/email/templates'
@@ -9,6 +10,7 @@ import { closeAfter, closingPeriod } from '../period'
 import type { Services } from '../services'
 import { activityWrite, getRowOrNull, teamRead } from '../shared'
 import { computeSnapshot, statementTypeOf } from '../snapshot'
+import { finalizeStatement } from './finalize'
 
 // Inside the function's 300 s timeout (environments-and-deploys.md): what's left waits an hour.
 const BUDGET_MS = 240_000
@@ -113,7 +115,28 @@ async function draftFor(
     throw error
   }
   await emailAdmins(services, group, statementId, period)
+  if (autoFinalizes(group)) {
+    const draft = await db.getRow<Statements>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.statements,
+      rowId: statementId,
+    })
+    try {
+      // No actor: the job finalizes it. Sending stays the admin's call.
+      await finalizeStatement(services, group, draft, null, false)
+    } catch (error) {
+      // The draft stays for an admin to finalize.
+      console.error(
+        `statements: auto-finalize failed for statement ${statementId}: ${describe(error)}`,
+      )
+    }
+  }
   return true
+}
+
+function autoFinalizes(group: Groups): boolean {
+  const settings = groupSettingsSchema.parse(JSON.parse(group.settingsJson))
+  return 'autoFinalize' in settings && settings.autoFinalize
 }
 
 /** "Your October invoice for Acme is ready to review", to every joined admin. Best effort. */

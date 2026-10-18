@@ -1,7 +1,8 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
+import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/schemas/statements'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
-import type { Write } from '@ledgerly/server/appwrite/transaction'
+import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
 
@@ -136,4 +137,30 @@ export function activityWrite(
     },
     permissions: teamRead(groupId),
   }
+}
+
+export function snapshotOf(statement: Statements): StatementSnapshot {
+  return statementSnapshotSchema.parse(JSON.parse(statement.snapshotJson))
+}
+
+/**
+ * Writes `data` to the statement (with any `also` writes), then checks the stored row still has
+ * the status read before, so a finalize, void or refresh that got in first is never
+ * overwritten. Returns the statement as written.
+ */
+export async function updateStatement(
+  db: Db,
+  statement: Statements,
+  data: Partial<Statements>,
+  also: Write[] = [],
+): Promise<Statements> {
+  await withTransaction(db, async (tx) => {
+    await tx.write(
+      { action: 'update', tableId: TABLES.statements, rowId: statement.$id, data },
+      ...also,
+    )
+    const stored = await getRowOrNull<Statements>(db, TABLES.statements, statement.$id)
+    if (stored?.status !== statement.status) throw tryAgain()
+  })
+  return { ...statement, ...data }
 }
