@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+/* shadcn/ui tokens, light theme only for now */
+@theme {
+  --color-background: oklch(1 0 0);
+  --color-foreground: oklch(0.21 0.04 265);
+  --color-muted: oklch(0.97 0.01 250);
+  --color-muted-foreground: oklch(0.45 0.03 257);
+  --color-primary: oklch(0.21 0.04 265);
+  --color-primary-foreground: oklch(0.98 0 0);
+  --color-secondary: oklch(0.97 0.01 250);
+  --color-secondary-foreground: oklch(0.21 0.04 265);
+  --color-destructive: oklch(0.58 0.22 27);
+  --color-border: oklch(0.93 0.01 256);
+  --color-input: oklch(0.87 0.02 256);
+  --color-ring: oklch(0.55 0.03 257);
+}
+
+body {
+  @apply bg-background text-foreground antialiased;
+}
