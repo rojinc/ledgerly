@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { AppwriteException } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -41,7 +41,7 @@ function renderAt(path: string) {
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
-  return router
+  return { router, queryClient }
 }
 
 describe('route guards', () => {
@@ -53,7 +53,7 @@ describe('route guards', () => {
 
   it('sends a signed-out user to /login and remembers where they were going', async () => {
     getUser.mockRejectedValue(new AppwriteException('No session', 401))
-    const router = renderAt('/secret?tab=2#top')
+    const { router } = renderAt('/secret?tab=2#top')
     expect(await screen.findByText('Login page')).toBeTruthy()
     expect(router.state.location.state).toEqual({ from: '/secret?tab=2#top' })
   })
@@ -107,6 +107,50 @@ describe('route guards', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByText('Secret page')).toBeTruthy()
     expect(screen.getByText('We found 1 group you were added to.')).toBeTruthy()
+  })
+
+  it('retries a CONFLICT', async () => {
+    getUser.mockResolvedValue({ $id: 'u1' } as never)
+    call.mockResolvedValueOnce({ ok: false, error: { code: 'CONFLICT', message: 'Again' } })
+    call.mockResolvedValueOnce(bootstrapped())
+    renderAt('/secret')
+    expect(await screen.findByText('Secret page')).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not retry a VALIDATION_FAILED', async () => {
+    getUser.mockResolvedValue({ $id: 'u1' } as never)
+    call.mockResolvedValue({ ok: false, error: { code: 'VALIDATION_FAILED', message: 'Bad' } })
+    renderAt('/secret')
+    expect(await screen.findByText(/couldn’t set up your account/)).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the app up when a background refetch of bootstrap fails', async () => {
+    getUser.mockResolvedValue({ $id: 'u1' } as never)
+    call.mockResolvedValueOnce(bootstrapped())
+    const { queryClient } = renderAt('/secret')
+    expect(await screen.findByText('Secret page')).toBeTruthy()
+    // As after verifying an email, which re-runs bootstrap.
+    call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Boom' } })
+    await queryClient.invalidateQueries({ queryKey: ['bootstrap', 'u1'] })
+    expect(queryClient.getQueryState(['bootstrap', 'u1'])?.status).toBe('error')
+    // Let React render the failed refetch before looking.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    expect(screen.getByText('Secret page')).toBeTruthy()
+    expect(screen.queryByText(/couldn’t set up your account/)).toBeNull()
+  })
+
+  it('shows the error, not the login form, when the user refetch after signing in fails', async () => {
+    getUser.mockRejectedValueOnce(new AppwriteException('No session', 401))
+    const { router, queryClient } = renderAt('/login')
+    expect(await screen.findByText('Login page')).toBeTruthy()
+    // Signed in, but Appwrite can't be reached when the app asks who it is.
+    getUser.mockRejectedValue(new TypeError('Failed to fetch'))
+    await queryClient.invalidateQueries({ queryKey: ['currentUser'] })
+    await router.navigate('/secret')
+    expect(await screen.findByText(/couldn’t reach Ledgerly/)).toBeTruthy()
+    expect(router.state.location.pathname).toBe('/secret')
   })
 
   it('sends a signed-in user away from /login', async () => {
