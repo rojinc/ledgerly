@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { isLocalDate } from '../dates/local-date'
 import { checkDateOrder, descriptionSchema, idSchema, localDateSchema } from './common'
 import { checkKindRules, transactionTemplateSchema } from './ledger'
 
@@ -32,12 +33,18 @@ function weekdays(value: string): boolean {
 
 const positive = (value: string) => /^[1-9]\d{0,3}$/.test(value)
 
+/** A date `20301231`, or a date and time `20301231T000000Z`, on a real calendar day. */
+function untilDate(value: string): boolean {
+  const [, year, month, day] = /^(\d{4})(\d{2})(\d{2})(T\d{6}Z?)?$/.exec(value) ?? []
+  return isLocalDate(`${year}-${month}-${day}`)
+}
+
 // RFC 5545 §3.3.10 rule parts and their values, minus BYHOUR, BYMINUTE and BYSECOND:
 // rules finer than a day only repeat the same date and can be very slow to expand
 // (scheduling.md). FREQ is checked after the loop.
 const RRULE_PARTS = new Map<string, (value: string) => boolean>([
   ['FREQ', () => true],
-  ['UNTIL', (value) => /^\d{8}(T\d{6}Z?)?$/.test(value)],
+  ['UNTIL', untilDate],
   ['COUNT', positive],
   ['INTERVAL', positive],
   ['BYDAY', weekdays],

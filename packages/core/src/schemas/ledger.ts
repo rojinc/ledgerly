@@ -145,6 +145,11 @@ const PART_KINDS: Record<Part, readonly TransactionKind[]> = {
   totalCents: ['expense', 'bill', 'payment', 'loan', 'income', 'adjustment'],
 }
 
+/** `a shift`, `an expense`. */
+function withArticle(kind: TransactionKind): string {
+  return `${/^[aeiou]/.test(kind) ? 'an' : 'a'} ${kind}`
+}
+
 // These kinds also need the part named after them.
 const OWN_PARTS = ['shift', 'bill', 'payment', 'adjustment'] as const
 
@@ -173,11 +178,11 @@ export function checkKindRules(
 
   for (const part of Object.keys(PART_KINDS) as Part[]) {
     if (input[part] !== undefined && !PART_KINDS[part].includes(kind)) {
-      issue(`Not allowed for a ${kind}`, part)
+      issue(`Not allowed for ${withArticle(kind)}`, part)
     }
   }
   const ownPart = OWN_PARTS.find((part) => part === kind)
-  if (ownPart && input[ownPart] === undefined) issue(`Required for a ${kind}`, ownPart)
+  if (ownPart && input[ownPart] === undefined) issue(`Required for ${withArticle(kind)}`, ownPart)
   // With items, the total is their sum.
   if (kind !== 'shift' && input.totalCents === undefined && input.items === undefined) {
     issue('Required unless the transaction has items', 'totalCents')
@@ -228,7 +233,8 @@ export const transactionInputSchema = z
   })
   .superRefine((input, ctx) => {
     checkKindRules(input.kind, input, ctx)
-    checkOneOffBill(input, ctx)
+    // On any other kind, `bill` is already reported as not allowed.
+    if (input.kind === 'bill') checkOneOffBill(input, ctx)
   })
 
 export type TransactionInput = z.infer<typeof transactionInputSchema>
