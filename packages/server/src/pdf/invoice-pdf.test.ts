@@ -98,6 +98,12 @@ const details: InvoiceDetails = {
   issuedOn: d('2026-11-01'),
 }
 
+// Each page's text, with whitespace collapsed.
+async function pageTexts(pdf: Buffer): Promise<string[]> {
+  const { text } = await extractText(await getDocumentProxy(new Uint8Array(pdf)))
+  return text.map((page) => page.replace(/\s+/g, ' '))
+}
+
 async function pdfText(pdf: Buffer): Promise<string> {
   const { text } = await extractText(await getDocumentProxy(new Uint8Array(pdf)), {
     mergePages: true,
@@ -143,9 +149,9 @@ describe('renderInvoicePdf', () => {
       // 3. Opening balance
       'Opening balance (from the previous invoice) $500.00',
       // 4. Work and charges, by date
-      '1 Oct 2026 Thursday shift 5.00 $25.00/h $125.00',
+      '1 Oct 2026 Thursday shift 5:00 $25.00/h $125.00',
       '10 Oct 2026 Cleaning supplies $40.00',
-      '29 Oct 2026 Thursday shift 7.00 $25.00/h $175.00',
+      '29 Oct 2026 Thursday shift 7:00 $25.00/h $175.00',
       'Total work and charges $715.00',
       // 5. Payments received, negative
       '20 Oct 2026 Payment -$500.00',
@@ -259,6 +265,29 @@ describe('renderInvoicePdf', () => {
     const pdf = await renderInvoicePdf(snapshot, details)
     expect(await textBeyondPage(pdf)).toEqual([])
     expect(await pdfText(pdf)).toContain('Total work and charges $165.00')
+  })
+
+  it('prints every line of long notes, with the heading on the page of the first', async () => {
+    const notes = Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join('\n')
+    const snapshot = goldenSnapshot({ ...fullBusiness, invoiceNotes: notes })
+    const pages = await pageTexts(await renderInvoicePdf(snapshot, details))
+    expect(pages.length).toBeGreaterThan(1)
+    expect(pages.some((page) => page.includes('Notes Line 1 Line 2'))).toBe(true)
+    expect(pages.join(' ')).toContain('Line 79 Line 80')
+  })
+
+  it('shows hours as h:mm, so 20 minutes reads 0:20', async () => {
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      lines: [
+        line('2026-10-01', 'shift', 1000, [share('worker', 1000, 0), share('employer', 0, 1000)], {
+          description: 'Short call',
+          shift: { minutes: 20, rateCents: 3000 },
+        }),
+      ],
+    })
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    expect(text).toContain('1 Oct 2026 Short call 0:20 $30.00/h $10.00')
   })
 
   it('refuses a divide', async () => {

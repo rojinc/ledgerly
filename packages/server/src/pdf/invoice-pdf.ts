@@ -105,7 +105,7 @@ export async function renderInvoicePdf(
         },
       ],
     },
-    { text: 'Bill to', style: 'heading' },
+    heading('Bill to'),
     { text: recipient.name, bold: true },
     ...recipient.emails,
     amountLine('Opening balance (from the previous invoice)', money(openingCents)),
@@ -113,14 +113,14 @@ export async function renderInvoicePdf(
 
   if (charges.length > 0) {
     content.push(
-      { text: 'Work and charges', style: 'heading' },
+      heading('Work and charges'),
       table(
         [60, '*', 40, 60, 70],
         ['Date', 'Description', 'Hours', 'Rate', 'Amount'],
         charges.map((line) => [
           formatDate(line.date),
           lineText(line),
-          line.shift ? (line.shift.minutes / 60).toFixed(2) : '',
+          line.shift ? hoursText(line.shift.minutes) : '',
           line.shift ? `${money(line.shift.rateCents)}/h` : '',
           money(owed(line)),
         ]),
@@ -130,7 +130,7 @@ export async function renderInvoicePdf(
   }
   if (credits.length > 0) {
     content.push(
-      { text: 'Payments received and deductions', style: 'heading' },
+      heading('Payments received and deductions'),
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
@@ -150,7 +150,7 @@ export async function renderInvoicePdf(
   }
   if (records.length > 0) {
     content.push(
-      { text: 'For your records', style: 'heading' },
+      heading('For your records'),
       // Usually purchases on the employer's card for work: they don't change the balance.
       { text: "Not charged: these don't change the balance due.", color: MUTED },
       table(
@@ -160,12 +160,12 @@ export async function renderInvoicePdf(
       ),
     )
   }
-  // Short sections stay on one page, so a heading is never left at the bottom of the last.
+  // How to pay is a few short lines, so it stays on one page.
   if (invoice.balanceDueCents > 0) {
     content.push({
       unbreakable: true,
       stack: [
-        { text: 'How to pay', style: 'heading' },
+        heading('How to pay'),
         ...present([
           business.bank &&
             `Bank transfer: ${business.bank.accountName}, BSB ${business.bank.bsb.replace(/^(\d{3})(\d{3})$/, '$1-$2')}, account ${business.bank.accountNumber}`,
@@ -176,10 +176,8 @@ export async function renderInvoicePdf(
     })
   }
   if (business.invoiceNotes) {
-    content.push({
-      unbreakable: true,
-      stack: [{ text: 'Notes', style: 'heading' }, business.invoiceNotes],
-    })
+    // Not unbreakable: notes taller than a page would be dropped, heading and all.
+    content.push(heading('Notes'), business.invoiceNotes)
   }
 
   const doc: TDocumentDefinitions = {
@@ -193,6 +191,9 @@ export async function renderInvoicePdf(
       heading: { fontSize: 12, bold: true, margin: [0, 14, 0, 4] },
       balance: { fontSize: 14, bold: true },
     },
+    // A heading never ends a page: it moves to the next page with what follows it.
+    pageBreakBefore: (node, nodes) =>
+      node.headlineLevel === 1 && nodes.getFollowingNodesOnPage().length === 0,
     footer: (page, pages) => ({
       text: `${details.displayNumber} · page ${page} of ${pages}`,
       alignment: 'center',
@@ -214,6 +215,15 @@ function present(texts: (string | false | undefined)[]): string[] {
 function lineText(line: Line): string {
   const text = line.description || KIND_LABELS[line.kind] || line.kind
   return text.replace(/\S{20}(?=\S)/g, '$&\u200B')
+}
+
+function heading(text: string): Content {
+  return { text, style: 'heading', headlineLevel: 1 }
+}
+
+/** `7:30` for 450 minutes: exact, where decimal hours would print 20 minutes as 0.33. */
+function hoursText(minutes: number): string {
+  return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, '0')}`
 }
 
 function terms(days: number): string {
