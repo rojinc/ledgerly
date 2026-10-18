@@ -272,6 +272,16 @@ describe('FakeDb transactions', () => {
     }
   })
 
+  it('drops undefined keys when staging, as the SDK does, so an update leaves those columns', async () => {
+    const db = new FakeDb({
+      transactions: [{ $id: 't1', description: 'Rent', totalCents: 100 }],
+    })
+    await commit(db, [
+      op('update', 'transactions', 't1', { description: undefined, totalCents: 200 }),
+    ])
+    expect(db.rows('transactions')[0]).toMatchObject({ description: 'Rent', totalCents: 200 })
+  })
+
   it('shows staged writes to reads that pass the transactionId, and only to them', async () => {
     const db = new FakeDb({ members: [{ $id: 'm1', ...rowsFor.member('g1', 'p1') }] })
     const { $id } = await db.createTransaction()
