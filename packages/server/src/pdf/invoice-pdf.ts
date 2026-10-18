@@ -37,7 +37,7 @@ type Line = StatementSnapshot['lines'][number]
 
 /**
  * The statement row's number and issue date, which the snapshot doesn't hold. The due date
- * is worked out here as `issuedOn` plus the payment terms (statements.md#2-finalize, step 7),
+ * is worked out here as `issuedOn` plus the payment terms (statements.md#2-finalize, step 6),
  * so the PDF's dates and terms always agree.
  */
 export type InvoiceDetails = { displayNumber: string; issuedOn: LocalDate }
