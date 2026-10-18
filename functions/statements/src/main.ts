@@ -1,12 +1,15 @@
 import { requireUser } from '@ledgerly/server/auth/require-member'
+import { AppError } from '@ledgerly/server/http/app-error'
 import {
   createHandler,
   type Route,
   type RouteContext,
   route,
 } from '@ledgerly/server/http/create-handler'
+import { draftDueStatements } from './routes/draft-due'
 import { previewStatement } from './routes/preview'
 import { refreshStatement } from './routes/refresh'
+import { reissueStatement } from './routes/reissue'
 import { type Services, servicesFromRequest } from './services'
 
 // The commit this bundle was built from (scripts/build-functions.mjs).
@@ -18,11 +21,19 @@ export function statementsRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'statements', version }), { public: true }),
+    // Appwrite runs the cron as POST / (statements.md#1-draft). Never for a person.
+    route('POST', '/', async (ctx) => {
+      if (!ctx.scheduled) throw new AppError('FORBIDDEN', 'Only the statements job runs this.')
+      return draftDueStatements(services(ctx))
+    }),
     route('POST', '/statements/preview', async (ctx) =>
       previewStatement(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
     route('POST', '/statements/:id/refresh', async (ctx) =>
       refreshStatement(services(ctx), requireUser(ctx.userId), ctx.params.id),
+    ),
+    route('POST', '/statements/reissue', async (ctx) =>
+      reissueStatement(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
   ]
 }

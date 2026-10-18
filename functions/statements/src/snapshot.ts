@@ -1,5 +1,4 @@
 import type { DateRange, LocalDate } from '@ledgerly/core/dates/local-date'
-import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
 import type {
   Groups,
   Members,
@@ -31,16 +30,6 @@ export function statementTypeOf(group: Groups): Statements['type'] {
   if (group.type === 'employer') return 'invoice'
   if (group.type === 'house') return 'divide'
   throw invalid('Only employer and house groups have statements.')
-}
-
-/**
- * The period of the group's cycle that ends on `end`, starting where that cycle's period
- * containing `end` starts. A group with no cycle counts in calendar months.
- */
-export function periodEndingOn(group: Groups, end: LocalDate): DateRange {
-  const cycle: PeriodCycle = group.statementCycle === 'none' ? 'monthly' : group.statementCycle
-  const anchor = group.cycleAnchor as LocalDate | null
-  return { start: periodFor(cycle, anchor, end).start, end }
 }
 
 /**

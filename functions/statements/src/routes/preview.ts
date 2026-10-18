@@ -2,9 +2,10 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { previewStatementBodySchema } from '@ledgerly/core/schemas/statements'
 import { requireMember } from '@ledgerly/server/auth/require-member'
+import { periodEndingOn } from '../period'
 import type { Services } from '../services'
 import { parseBody } from '../shared'
-import { computeSnapshot, periodEndingOn } from '../snapshot'
+import { computeSnapshot } from '../snapshot'
 
 /**
  * `statements POST /statements/preview` (any member): the snapshot a statement ending on
