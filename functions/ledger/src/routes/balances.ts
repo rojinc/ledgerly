@@ -1,8 +1,8 @@
-import type { Shares } from '@ledgerly/core/generated/rows'
+import type { Groups, Shares } from '@ledgerly/core/generated/rows'
 import { type Net, netsFromShares } from '@ledgerly/core/settle/nets'
 import { suggestTransfers, type Transfer } from '@ledgerly/core/settle/suggest-transfers'
 import type { Db } from '@ledgerly/server/appwrite/client'
-import { TABLES } from '@ledgerly/server/appwrite/tables'
+import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
@@ -22,33 +22,40 @@ export const groupBalances = route(
   'GET',
   '/groups/:groupId/balances',
   async ({ userId, params, db }): Promise<Balances> => {
-    await requireMember(db, userId, params.groupId, { allowArchived: true })
-    // The shares are read a page at a time, so a write that commits between two pages can tear
-    // one read. It is read again; shares that still don't add up to 0 are broken (I-1).
-    let broken = false
+    let { group } = await requireMember(db, userId, params.groupId, { allowArchived: true })
+    // The shares are read a page at a time. Every write of shares also writes a fresh `rev` to
+    // the group row (ledger.md#concurrency), so the same `rev` before and after means no write
+    // committed in between: the read is whole. Otherwise it is read again.
     for (let read = 0; read < READS; read++) {
-      const people = await readNets(db, params.groupId)
-      broken = people !== undefined
-      if (!people) continue
-      try {
-        return { people, transfers: suggestTransfers(people) }
-      } catch (error) {
-        if (!(error instanceof RangeError)) throw error
+      const shares = await readShares(db, group.$id)
+      const after = await db.getRow<Groups>({
+        databaseId: DATABASE_ID,
+        tableId: TABLES.groups,
+        rowId: group.$id,
+      })
+      if (shares && after.rev === group.rev) {
+        const people = netsFromShares(shares)
+        try {
+          return { people, transfers: suggestTransfers(people) }
+        } catch (error) {
+          // A whole read that doesn't add up to 0 (I-1).
+          if (error instanceof RangeError) {
+            throw new AppError('INVARIANT_VIOLATION', 'This group’s balances don’t add up.')
+          }
+          throw error
+        }
       }
+      group = after
     }
-    throw broken
-      ? new AppError('INVARIANT_VIOLATION', 'This group’s balances don’t add up.')
-      : new AppError('CONFLICT', 'The group changed while it was read. Try again.')
+    throw new AppError('CONFLICT', 'The group changed while it was read. Try again.')
   },
 )
 
-/** The nets from every share in the group, or undefined when a page's cursor row was deleted. */
-async function readNets(db: Db, groupId: string): Promise<Net[] | undefined> {
+/** Every share in the group, or undefined when a page's cursor row was deleted meanwhile. */
+async function readShares(db: Db, groupId: string): Promise<Shares[] | undefined> {
   try {
-    const shares = await listAll<Shares>(db, TABLES.shares, [Query.equal('groupId', groupId)])
-    return netsFromShares(shares)
+    return await listAll<Shares>(db, TABLES.shares, [Query.equal('groupId', groupId)])
   } catch (error) {
-    // The last share of a page was deleted (a void or an edit) before the next page was read.
     if (error instanceof AppwriteException && error.type === 'general_cursor_not_found') {
       return undefined
     }

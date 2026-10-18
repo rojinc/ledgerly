@@ -58,6 +58,22 @@ function manyShares() {
 const deleteShares = (...ids: string[]) =>
   ids.map((rowId) => ({ action: 'delete', databaseId: 'main', tableId: 'shares', rowId }))
 
+const updateShare = (rowId: string, personId: string) => ({
+  action: 'update',
+  databaseId: 'main',
+  tableId: 'shares',
+  rowId,
+  data: { personId },
+})
+
+let revs = 0
+
+/** A ledger write committed at once: its changes, and a fresh `rev` on the group row. */
+function ledgerWrite(db: Db, ...operations: object[]) {
+  const guard = { action: 'update', databaseId: 'main', tableId: 'groups', rowId: 'house' }
+  return commitNow(db, [...operations, { ...guard, data: { rev: `rev${++revs}` } }])
+}
+
 describe('GET /groups/{groupId}/balances', () => {
   it('nets each person’s shares and suggests the transfers that settle them', async () => {
     const db = seed()
@@ -136,14 +152,14 @@ describe('GET /groups/{groupId}/balances', () => {
     })
   })
 
-  it('reads again when a write between two pages tears the read', async () => {
+  it('reads again when a write commits between two pages', async () => {
     const db = seed({ shares: manyShares() })
     const list = db.listRows.bind(db)
     let pages = 0
     vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
       // t50 is voided after page 1, which had its first share; page 2 misses its last one.
       if (params.tableId === 'shares' && ++pages === 2) {
-        await commitNow(db, deleteShares('first', 'last'))
+        await ledgerWrite(db, ...deleteShares('first', 'last'))
       }
       return list(params)
     })
@@ -156,14 +172,33 @@ describe('GET /groups/{groupId}/balances', () => {
     expect(pages).toBe(4)
   })
 
+  it('reads again even when the torn read adds up to 0', async () => {
+    const db = seed({ shares: manyShares() })
+    const list = db.listRows.bind(db)
+    let pages = 0
+    vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
+      // t50 is edited from "Bob pays Alice" to "Cara pays Bob", reusing its two share rows. Page 1
+      // saw its first share before, and page 2 its last one after: −100 for Alice, +100 for Cara.
+      if (params.tableId === 'shares' && ++pages === 2) {
+        await ledgerWrite(db, updateShare('first', 'bob'), updateShare('last', 'cara'))
+      }
+      return list(params)
+    })
+    expect((await balances(db)).body.data?.people).toEqual([
+      { personId: 'alice', netCents: -5000 },
+      { personId: 'bob', netCents: 4900 },
+      { personId: 'cara', netCents: 100 },
+    ])
+  })
+
   it('reads again when the row a page ended on was deleted before the next page', async () => {
     const db = seed({ shares: manyShares() })
     const list = db.listRows.bind(db)
-    let page = 0
+    let pages = 0
     vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
-      if (params.tableId === 'shares' && ++page === 2) {
+      if (params.tableId === 'shares' && ++pages === 2) {
         // t49 is voided: its first share is the row page 1 ended on.
-        await commitNow(db, deleteShares('s49a', 's49b'))
+        await ledgerWrite(db, ...deleteShares('s49a', 's49b'))
       }
       return list(params)
     })
@@ -174,7 +209,18 @@ describe('GET /groups/{groupId}/balances', () => {
     ])
   })
 
-  it('gives CONFLICT when every read is torn that way', async () => {
+  it('gives CONFLICT when a write commits during every read', async () => {
+    const db = seed({ shares: manyShares() })
+    const list = db.listRows.bind(db)
+    const spy = vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
+      if (params.tableId === 'shares') await ledgerWrite(db)
+      return list(params)
+    })
+    expect((await balances(db)).body.error?.code).toBe('CONFLICT')
+    expect(spy.mock.calls.filter(([params]) => params.tableId === 'shares')).toHaveLength(6)
+  })
+
+  it('gives CONFLICT when every read loses its cursor row', async () => {
     const db = seed({ shares: manyShares() })
     const list = db.listRows.bind(db)
     vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
@@ -189,14 +235,14 @@ describe('GET /groups/{groupId}/balances', () => {
     expect((await balances(db)).body.error?.code).toBe('CONFLICT')
   })
 
-  it('reports shares that never add up as INVARIANT_VIOLATION', async () => {
+  it('reports a whole read that doesn’t add up as INVARIANT_VIOLATION at once', async () => {
     const db = seed({ shares: manyShares().slice(1) })
     const spy = vi.spyOn(db, 'listRows')
     const response = await balances(db)
     expect(response.status).toBe(500)
     expect(response.body.error?.code).toBe('INVARIANT_VIOLATION')
-    // Three reads of two pages each.
-    expect(spy.mock.calls.filter(([params]) => params.tableId === 'shares')).toHaveLength(6)
+    // One read of two pages.
+    expect(spy.mock.calls.filter(([params]) => params.tableId === 'shares')).toHaveLength(2)
   })
 
   it('is for every member, viewers and archived groups included', async () => {
@@ -209,5 +255,12 @@ describe('GET /groups/{groupId}/balances', () => {
     expect((await balances(db, 'house', 'u-dan')).body.error?.code).toBe('NOT_A_MEMBER')
     expect((await balances(db, 'house', null)).body.error?.code).toBe('UNAUTHENTICATED')
     expect((await balances(db, 'nope')).body.error?.code).toBe('NOT_A_MEMBER')
+  })
+
+  it('is not for a placeholder, even one with an account', async () => {
+    const db = seed()
+    const persons = { action: 'update', databaseId: 'main', tableId: 'persons', rowId: 'pat' }
+    await commitNow(db, [{ ...persons, data: { userId: 'u-pat' } }])
+    expect((await balances(db, 'house', 'u-pat')).body.error?.code).toBe('NOT_A_MEMBER')
   })
 })

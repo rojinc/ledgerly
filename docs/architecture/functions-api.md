@@ -141,8 +141,8 @@ What every write does, in **one TablesDB transaction**:
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
 - `people` has one entry per person with shares in the group, sorted by `personId`. Anyone else is at 0.
-- It reads the shares a page at a time. If a write commits between two pages and the read doesn't add up, it reads again, up to 3 times.
-- Shares that still don't add up give `INVARIANT_VIOLATION`. A read that keeps losing its page cursor gives `CONFLICT`.
+- It reads the shares a page at a time, then the group row again. Every write of shares writes a fresh `rev` to the group row ([concurrency](ledger.md#concurrency)). So if `rev` changed, or a page's cursor row was deleted, a write committed during the read, and it reads again. After 3 reads like that, it gives `CONFLICT`.
+- A whole read whose shares don't add up to 0 gives `INVARIANT_VIOLATION`.
 
 A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
 

@@ -23,6 +23,31 @@ const jobWith = (changes: Record<string, unknown>) =>
   GROUPS.map((group) => (group.$id === 'job' ? { ...group, ...changes } : group))
 const shiftOf = (db: Db) => JSON.parse(rows.transactions(db)[0]?.inputJson ?? '{}').shift
 
+/** Another request's transaction, committed at once. */
+async function commitNow(db: Db, operations: object[]) {
+  const { $id } = await db.createTransaction()
+  await db.createOperations({ transactionId: $id, operations })
+  await db.updateTransaction({ transactionId: $id, commit: true })
+}
+
+const update = (tableId: string, rowId: string, data: Record<string, unknown>) => ({
+  action: 'update',
+  databaseId: 'main',
+  tableId,
+  rowId,
+  data,
+})
+
+const finalizing = {
+  $id: 'st1',
+  groupId: 'job',
+  type: 'employer',
+  periodStart: '2026-10-12',
+  periodEnd: '2026-10-18',
+  status: 'finalizing',
+  snapshotJson: '{}',
+}
+
 // A second employer group, where Sam works for Bolt.
 const secondJob = {
   groups: [...GROUPS, { ...GROUPS[1], $id: 'job2', name: 'Bolt' }],
@@ -100,6 +125,23 @@ describe('POST /timer/start', () => {
     })
   })
 
+  it('doesn’t count a timer left running in an archived group, which can’t be stopped', async () => {
+    const db = seed(secondJob)
+    await startTimer(db)
+    await commitNow(db, [update('groups', 'job', { archivedAt: '2026-10-18T02:00:00.000Z' })])
+    later(60)
+    expect((await stopTimer(db)).body.error?.code).toBe('ARCHIVED')
+    const response = await startTimer(db, start({ id: 'tm2', groupId: 'job2' }))
+    expect(response.status).toBe(200)
+    expect(response.body.data?.transaction.status).toBe('running')
+  })
+
+  it('is LOCKED while a statement covering today is finalizing', async () => {
+    const db = seed({ statements: [finalizing] })
+    expect((await startTimer(db)).body.error?.code).toBe('LOCKED')
+    expect(rows.transactions(db)).toEqual([])
+  })
+
   it('starts a new timer once the last one has stopped', async () => {
     const db = seed()
     await startTimer(db)
@@ -138,6 +180,14 @@ describe('POST /timer/start', () => {
     }
     await call(db, 'POST', '/transactions', shift, 'u-sam')
     expect((await startTimer(db, start({ id: 'sh1' }))).body.error?.code).toBe('CONFLICT')
+  })
+
+  it('refuses a retry with the same ID in another group', async () => {
+    const db = seed(secondJob)
+    await startTimer(db)
+    const response = await startTimer(db, start({ groupId: 'job2' }))
+    expect(response.body.error?.code).toBe('CONFLICT')
+    expect(rows.transactions(db)).toHaveLength(1)
   })
 
   it('refuses a voided timer’s ID', async () => {
@@ -302,13 +352,7 @@ describe('POST /timer/stop', () => {
         member('m-acme', 'job', 'acme', 'member'),
       ],
     })
-    const { $id } = await db.createTransaction()
-    const update = { action: 'update', databaseId: 'main', tableId: 'persons', rowId: 'acme' }
-    await db.createOperations({
-      transactionId: $id,
-      operations: [{ ...update, data: { userId: 'u-acme' } }],
-    })
-    await db.updateTransaction({ transactionId: $id, commit: true })
+    await commitNow(db, [update('persons', 'acme', { userId: 'u-acme' })])
     await startTimer(db)
     later(60)
     const acme = await call(db, 'POST', '/timer/stop', { transactionId: 'tm1' }, 'u-acme')
@@ -319,23 +363,25 @@ describe('POST /timer/stop', () => {
   })
 
   it('is LOCKED while a statement covering its day is finalizing', async () => {
-    const db = seed({
-      statements: [
-        {
-          $id: 'st1',
-          groupId: 'job',
-          type: 'employer',
-          periodStart: '2026-10-12',
-          periodEnd: '2026-10-18',
-          status: 'finalizing',
-          snapshotJson: '{}',
-        },
-      ],
-    })
+    const db = seed({ statements: [{ ...finalizing, status: 'draft' }] })
     await startTimer(db)
+    await commitNow(db, [update('statements', 'st1', { status: 'finalizing' })])
     later(60)
     expect((await stopTimer(db)).body.error?.code).toBe('LOCKED')
     expect(rows.transactions(db)[0]?.status).toBe('running')
+  })
+
+  it('checks for finalizing statements after its guards are staged', async () => {
+    const db = seed({ statements: [{ ...finalizing, status: 'draft' }] })
+    await startTimer(db)
+    later(60)
+    const stage = db.createOperations.bind(db)
+    vi.spyOn(db, 'createOperations').mockImplementationOnce(async (params) => {
+      await commitNow(db, [update('statements', 'st1', { status: 'finalizing' })])
+      return stage(params)
+    })
+    expect((await stopTimer(db)).body.error?.code).toBe('LOCKED')
+    expect(rows.shares(db)).toEqual([])
   })
 
   it('refuses a stop that lost to a void, and posts nothing', async () => {
@@ -355,6 +401,21 @@ describe('POST /timer/stop', () => {
 })
 
 describe('two starts at once', () => {
+  it('in two groups: the one that lost the commit runs again and gets CONFLICT', async () => {
+    const db = seed(secondJob)
+    const commit = db.updateTransaction.bind(db)
+    vi.spyOn(db, 'updateTransaction').mockImplementationOnce(async (params) => {
+      if (params.commit) await startTimer(db, start({ id: 'tm2', groupId: 'job2' }))
+      return commit(params)
+    })
+    const response = await startTimer(db)
+    expect(response.body.error).toMatchObject({
+      code: 'CONFLICT',
+      details: { transactionId: 'tm2' },
+    })
+    expect(rows.transactions(db).map((row) => row.$id)).toEqual(['tm2'])
+  })
+
   it('a start that finds the other committed before its check gets CONFLICT', async () => {
     const db = seed()
     const stage = db.createOperations.bind(db)

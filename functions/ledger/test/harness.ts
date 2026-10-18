@@ -62,6 +62,17 @@ export const GROUPS = [
     }),
     archivedAt: null,
   },
+  {
+    $id: 'sam-own',
+    type: 'personal',
+    name: 'Personal',
+    ownerPersonId: 'sam',
+    currency: 'AUD',
+    timezone: 'Australia/Sydney',
+    region: 'AU-NSW',
+    settingsJson: JSON.stringify({ type: 'personal' }),
+    archivedAt: null,
+  },
 ]
 
 export const MEMBERS = [
@@ -73,12 +84,13 @@ export const MEMBERS = [
   member('m-lee', 'house', 'lee', 'viewer', 'left'),
   member('m-sam', 'job', 'sam', 'admin'),
   member('m-acme', 'job', 'acme', 'member', 'placeholder'),
+  member('m-sam-own', 'sam-own', 'sam', 'admin'),
 ]
 
 /**
- * Two groups: a house (`house`) with Alice (admin), Bob (member), Cara (viewer) and Pat
- * (placeholder), and an employer group (`job`) where Sam works for Acme. Dan has an account
- * but is in neither.
+ * Three groups: a house (`house`) with Alice (admin), Bob (member), Cara (viewer) and Pat
+ * (placeholder), an employer group (`job`) where Sam works for Acme, and Sam's personal group
+ * (`sam-own`). Dan has an account but is in none.
  */
 export function seed(extra: Record<string, Record<string, unknown>[]> = {}): FakeDb {
   return new FakeDb({

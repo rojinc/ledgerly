@@ -1,5 +1,5 @@
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { startTimerBodySchema, type TransactionInput } from '@ledgerly/core/schemas/ledger'
 import type { Db } from '@ledgerly/server/appwrite/client'
@@ -8,6 +8,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { Query } from 'node-appwrite'
 import { OCCURRENCE_ID } from './transactions-create'
 import {
@@ -16,10 +17,12 @@ import {
   guardGroupAndMembers,
   invalid,
   ledgerRoute,
+  listAll,
   loadLedger,
   parseBody,
   plan,
   readView,
+  requireNotFinalizing,
   storedInputSchema,
   teamRead,
   transactionColumns,
@@ -76,10 +79,21 @@ export const startTimer = route('POST', '/timer/start', ({ userId, body, db }) =
 
     const ledger = await loadLedger(db, membership)
     const planned = plan(input, 'running', ledger)
+    const personal = await findPersonalGroup(db, person)
     await withTransaction(db, async (tx) => {
-      // The guard writes the person's member row, so of two starts at once in this group one
-      // commit fails and its rerun finds the other's timer here (ledger.md#concurrency).
       await guardGroupAndMembers(tx, db, group, ledger, planned.people)
+      // Every start by this person, in any group, also writes their personal group's row. So of
+      // two starts at once one commit fails, and its rerun finds the other's timer below
+      // (ledger.md#concurrency).
+      if (personal) {
+        await tx.write({
+          action: 'update',
+          tableId: TABLES.groups,
+          rowId: personal.$id,
+          data: { rev: randomId() },
+        })
+      }
+      await requireNotFinalizing(db, group.$id, [input.date])
       const running = await findRunning(db, person)
       if (running) {
         throw new AppError('CONFLICT', 'A timer is already running.', {
@@ -120,12 +134,37 @@ export const startTimer = route('POST', '/timer/start', ({ userId, body, db }) =
   }),
 )
 
-/** The person's running timer in any group: they work one shift at a time. */
+/**
+ * The person's running timer in any group that isn't archived: they work one shift at a time. A
+ * timer left running in an archived group can't be stopped any more, so it doesn't count. Uses
+ * `idx_status_date`: few rows are ever running.
+ */
 async function findRunning(db: Db, personId: string): Promise<Transactions | undefined> {
-  const { rows } = await db.listRows<Transactions>({
+  const running = await listAll<Transactions>(db, TABLES.transactions, [
+    Query.equal('status', 'running'),
+    Query.equal('createdBy', personId),
+  ])
+  for (const row of running) {
+    const group = await db.getRow<Groups>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.groups,
+      rowId: row.groupId,
+    })
+    if (!group.archivedAt) return row
+  }
+  return undefined
+}
+
+/** The person's personal group (`idx_owner_type`), which bootstrap makes for everyone who logs in. */
+async function findPersonalGroup(db: Db, personId: string): Promise<Groups | undefined> {
+  const { rows } = await db.listRows<Groups>({
     databaseId: DATABASE_ID,
-    tableId: TABLES.transactions,
-    queries: [Query.equal('status', 'running'), Query.equal('createdBy', personId), Query.limit(1)],
+    tableId: TABLES.groups,
+    queries: [
+      Query.equal('ownerPersonId', personId),
+      Query.equal('type', 'personal'),
+      Query.limit(1),
+    ],
     total: false,
   })
   return rows[0]

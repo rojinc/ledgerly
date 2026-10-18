@@ -136,11 +136,11 @@ Changes to occurrences themselves (edit, void, post) go through the `ledger` fun
 
 ## Timer shifts
 
-- `ledger POST /timer/start` creates a `shift` with status `running`, `startedAt = now`, `date = localToday`, the local start time as `startTime`, 0 minutes, and the body's rate, else the group's default rate. The description defaults to "Shift". It has no shares until it stops ([I-6](ledger.md#invariants)).
+- `ledger POST /timer/start` creates a `shift` with status `running`, `startedAt = now`, `date = localToday`, the local start time as `startTime`, 0 minutes, and the body's rate, else the group's default rate. The description defaults to "Shift". It has no shares until it stops ([I-6](ledger.md#invariants)). Like other ledger writes, it's `LOCKED` while a statement covering today is finalizing.
 - `ledger POST /timer/stop` sets the end time (`endTime`), works out minutes (the whole minutes since `startedAt`, minus break minutes) and posts. The shift keeps the date it started on, even past midnight.
   - A break longer than the time the timer ran is `VALIDATION_FAILED`.
   - So are more than 1440 paid minutes. A timer left running that long is voided and added by hand.
 - Only one running timer per person, across all their groups. Starting another returns `CONFLICT` with the running one's ID in `details.transactionId`.
-  - The start guards the person's member row ([concurrency](ledger.md#concurrency)), so of two starts at once in one group, only one succeeds.
-  - Two starts at the same moment in two different groups aren't guarded.
+  - Every start writes a fresh `rev` to the group row and to the person's personal group row ([concurrency](ledger.md#concurrency)). So of two starts at once, in one group or in two, only one succeeds.
+  - A timer left running in an archived group doesn't count, because it can no longer be stopped or voided.
 - A retried start with the same `id` returns the timer. A retried stop with the same break returns the posted shift.
