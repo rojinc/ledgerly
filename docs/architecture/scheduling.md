@@ -144,6 +144,13 @@ Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a 
 
 The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
 
+For each profile, in this order:
+1. **Build the summary.** It covers the groups the person joined and can still open: an `active` member row, or a `left` one while they're still in the group's team (moved out, not left on their own), archived groups included ([D-016](decisions.md), [permissions](permissions.md#function-side-checks)). Their shares in those groups up to the period's end are read once (`idx_person_date`). `buildPersonalReport` turns the ones in the period into spending by category and income, one section per currency. Each group's balance is the sum of `givenCents − receivedCents` up to the period's end; groups at 0 are left out. A failure here leaves `nextSummaryAt` as it is, so the next run tries again.
+2. **Move `nextSummaryAt` forward**, guarded: the new time is staged, then the stored row is checked for the same `nextSummaryAt`, frequency and timezone. A profile edited or moved on by another run meanwhile gets nothing from this run.
+3. **Send**, with Resend's idempotency key `summary-<userId>-<periodEnd>`. A failed send is counted and not tried again, because delivery is at most once.
+
+The email links to `<APP_URL>/`, and to `<APP_URL>/profile`, where summaries can be turned off. The run's result counts summaries `sent`, `skipped` (nothing to send) and `failed`.
+
 ### Step 6: nightly check
 
 Runs last, in what's left of the run's budget. It takes groups where `nextCheckAt` is empty or `<= now` (`idx_nextCheckAt`), in pages of 100 by `$id` as step 1 does, until the budget is used. Archived groups are checked too. A group whose team is gone (a [purge](identity-and-invites.md#deleting-an-account-m4) in progress) is skipped. A check reads, apart from the two repairs below and its `nextCheckAt`: it never writes shares, transactions or members, and it doesn't finish merges (a lead decision for v1: only `/claim` carries a merge on).

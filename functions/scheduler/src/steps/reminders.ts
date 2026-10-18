@@ -12,7 +12,7 @@ import {
 } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
 import { pages } from '../pages'
-import type { Services } from '../services'
+import { appBase, type Services } from '../services'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
 
@@ -113,12 +113,8 @@ function isAwake(group: Groups, now: Date): boolean {
   return now.toISOString() >= localTimeToUtc(today(group, now), FIRST_HOUR, group.timezone)
 }
 
-// Checked before any row, so a missing APP_URL fails the run instead of every row.
 function linkTo(appUrl: string): (row: Transactions) => string {
-  if (!/^https?:\/\//.test(appUrl)) {
-    throw new Error('APP_URL is not set. Add it as an Appwrite project variable.')
-  }
-  const base = appUrl.replace(/\/+$/, '')
+  const base = appBase(appUrl)
   return (row) => `${base}/groups/${row.groupId}/transactions/${row.$id}`
 }
 

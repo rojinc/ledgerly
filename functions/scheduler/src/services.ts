@@ -30,6 +30,17 @@ export type Services = {
   outOfTime: () => boolean
 }
 
+/**
+ * The web app's address for links, without a trailing slash. Steps check it before any row,
+ * so a missing APP_URL fails the run instead of every row.
+ */
+export function appBase(appUrl: string): string {
+  if (!/^https?:\/\//.test(appUrl)) {
+    throw new Error('APP_URL is not set. Add it as an Appwrite project variable.')
+  }
+  return appUrl.replace(/\/+$/, '')
+}
+
 /** The real services for one request, with the per-execution API key. */
 export function servicesFromRequest(ctx: Pick<RouteContext, 'db' | 'headers'>): Services {
   const stopAt = performance.now() + RUN_BUDGET_MS

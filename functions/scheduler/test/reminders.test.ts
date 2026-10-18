@@ -155,6 +155,7 @@ describe('POST / (cron run)', () => {
         expanded: { schedules: 0, created: 0, failed: 0 },
         posted: { posted: 0, skipped: 0, failed: 0 },
         reminders: { sent: 1, skipped: 0, failed: 0 },
+        summaries: { sent: 0, skipped: 0, failed: 0 },
       },
     })
     expect(logs.join('\n')).not.toContain('sam@example.com')
