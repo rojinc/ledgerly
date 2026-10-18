@@ -19,20 +19,28 @@ type Transaction = Models.Transaction & { staged: Array<Operation & { seen: numb
 // Appwrite's default page size when a query has no limit.
 const DEFAULT_LIMIT = 25
 
-// The unique indexes of every table in appwrite/tables.json, as lists of columns.
-const UNIQUE_INDEXES = new Map(
+// The columns, required columns and unique indexes of every table in appwrite/tables.json.
+const TABLE_SCHEMAS = new Map(
   schema.map((table) => [
     table.$id,
-    table.indexes.filter((index) => index.type === 'unique').map((index) => index.columns),
+    {
+      columns: new Set(table.columns.map((column) => column.key)),
+      required: table.columns.filter((column) => column.required).map((column) => column.key),
+      unique: table.indexes
+        .filter((index) => index.type === 'unique')
+        .map((index) => index.columns),
+    },
   ]),
 )
+const SYSTEM_COLUMNS = new Set(['$id', '$createdAt', '$updatedAt', '$sequence'])
 
 /**
- * In-memory TablesDB for tests, with the tables and unique indexes of appwrite/tables.json.
- * Reads take the same `Query` strings as Appwrite, and see a transaction's staged writes when
- * given its `transactionId`. Transactions apply all or nothing on commit, and fail with 409
- * when a staged row changed after it was staged, as on Appwrite. Not modelled: column names,
- * types and required columns, and permissions. Seed rows may set `$createdAt`.
+ * In-memory TablesDB for tests, with the tables, columns and unique indexes of
+ * appwrite/tables.json. Reads take the same `Query` strings as Appwrite, and see a
+ * transaction's staged writes when given its `transactionId`. Written rows must use known
+ * columns and fill the required ones. Transactions apply all or nothing on commit, and fail
+ * with 409 when a staged row changed after it was staged, as on Appwrite. Not modelled:
+ * column types and sizes, and permissions. Seed rows are not checked and may set `$createdAt`.
  */
 export class FakeDb implements Db {
   private tables: Tables = new Map()
@@ -90,9 +98,11 @@ export class FakeDb implements Db {
           break
         case 'orderAsc':
         case 'orderDesc':
+          checkQueryColumn(params.tableId, attribute)
           orders.push({ attribute, direction: method === 'orderAsc' ? 1 : -1 })
           break
         default:
+          checkQueryColumn(params.tableId, attribute)
           rows = rows.filter((row) => matches(row[attribute], method, values))
       }
     }
@@ -226,38 +236,57 @@ function withStaged(tables: Tables, staged: Operation[], nextSequence: () => num
 }
 
 function apply(tables: Tables, operation: Operation, nextSequence: () => number): void {
-  const table = rowsOf(tables, operation.tableId)
-  const existing = table.get(operation.rowId)
+  const { tableId, rowId } = operation
+  const table = rowsOf(tables, tableId)
+  const existing = table.get(rowId)
   const data = (operation.data ?? {}) as Record<string, unknown>
   switch (operation.action) {
     case 'create':
-      if (existing) throw alreadyExists(`Row with the requested ID ${operation.rowId}`)
-      insert(tables, operation.tableId, { ...data, $id: operation.rowId }, nextSequence())
+      if (existing) throw alreadyExists(`Row with the requested ID ${rowId}`)
+      checkData(tableId, data, true)
+      insert(tables, tableId, { ...data, $id: rowId }, nextSequence())
       return
     case 'upsert':
       // Appwrite replaces the whole row: columns missing from `data` are not kept.
+      checkData(tableId, data, true)
       if (!existing) {
-        insert(tables, operation.tableId, { ...data, $id: operation.rowId }, nextSequence())
+        insert(tables, tableId, { ...data, $id: rowId }, nextSequence())
         return
       }
-      table.set(operation.rowId, {
+      table.set(rowId, {
         ...systemFields(existing),
         ...structuredClone(data),
         $updatedAt: new Date().toISOString(),
       })
       return
     case 'update':
-      if (!existing) throw rowNotFound(operation.tableId, operation.rowId)
-      table.set(operation.rowId, {
+      if (!existing) throw rowNotFound(tableId, rowId)
+      checkData(tableId, data, false)
+      table.set(rowId, {
         ...existing,
         ...structuredClone(data),
         $updatedAt: new Date().toISOString(),
       })
       return
     case 'delete':
-      if (!existing) throw rowNotFound(operation.tableId, operation.rowId)
-      table.delete(operation.rowId)
+      if (!existing) throw rowNotFound(tableId, rowId)
+      table.delete(rowId)
       return
+  }
+}
+
+// Appwrite refuses data with an unknown column or a required column that is missing (for a
+// whole row) or null.
+function checkData(tableId: string, data: Record<string, unknown>, wholeRow: boolean): void {
+  const { columns, required } = tableSchema(tableId)
+  const unknown = Object.keys(data).find((key) => !key.startsWith('$') && !columns.has(key))
+  const missing = required.find((column) => (wholeRow || column in data) && data[column] == null)
+  if (unknown || missing) {
+    throw new AppwriteException(
+      `Invalid row structure in ${tableId}: ${unknown ? `unknown column ${unknown}` : `missing required column ${missing}`}`,
+      400,
+      'document_invalid_structure',
+    )
   }
 }
 
@@ -285,7 +314,7 @@ function systemFields(row: Row): Row {
 
 // Like MariaDB, a unique index ignores rows where any of its columns is null.
 function checkUnique(tables: Tables, tableId: string): void {
-  for (const columns of UNIQUE_INDEXES.get(tableId) ?? []) {
+  for (const columns of tableSchema(tableId).unique) {
     const seen = new Set<string>()
     for (const row of rowsOf(tables, tableId).values()) {
       const values = columns.map((column) => row[column])
@@ -346,8 +375,22 @@ function checkDatabase(databaseId: string): void {
 }
 
 function checkTable(tableId: string): void {
-  if (!UNIQUE_INDEXES.has(tableId)) {
-    throw new AppwriteException(`Table ${tableId} not found`, 404, 'table_not_found')
+  tableSchema(tableId)
+}
+
+function tableSchema(tableId: string) {
+  const table = TABLE_SCHEMAS.get(tableId)
+  if (!table) throw new AppwriteException(`Table ${tableId} not found`, 404, 'table_not_found')
+  return table
+}
+
+function checkQueryColumn(tableId: string, column: string): void {
+  if (!SYSTEM_COLUMNS.has(column) && !tableSchema(tableId).columns.has(column)) {
+    throw new AppwriteException(
+      `Column ${column} not found in ${tableId}`,
+      400,
+      'general_query_invalid',
+    )
   }
 }
 

@@ -18,6 +18,21 @@ function seeded() {
 }
 
 const team = ['read("team:g1")']
+const AT = '2026-10-18T00:00:00.000Z'
+
+function activity(extra = {}) {
+  return { groupId: 'g1', action: 'test', summary: 'Test', at: AT, ...extra }
+}
+
+// Staging that takes a few milliseconds, as over the network, so a missing await shows.
+function slowStaging(db: FakeDb): FakeDb {
+  const stage = db.createOperations.bind(db)
+  vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    return stage(params)
+  })
+  return db
+}
 
 describe('withTransaction', () => {
   it('stages each write call in one request as it happens, then commits them together', async () => {
@@ -31,9 +46,9 @@ describe('withTransaction', () => {
       expect(createOperations).toHaveBeenCalledTimes(1)
       await tx.write({
         action: 'create',
-        tableId: 'transactions',
-        rowId: 't2',
-        data: { totalCents: 150 },
+        tableId: 'activity',
+        rowId: 'a1',
+        data: activity(),
         permissions: team,
       })
       return 'done'
@@ -54,16 +69,73 @@ describe('withTransaction', () => {
         {
           action: 'create',
           databaseId: 'main',
-          tableId: 'transactions',
-          rowId: 't2',
-          data: { totalCents: 150, $permissions: team },
+          tableId: 'activity',
+          rowId: 'a1',
+          data: { ...activity(), $permissions: team },
         },
       ],
     ])
     expect(db.rows('shares').map((row) => [row.$id, row.givenCents])).toEqual([['s1', 150]])
-    expect(db.rows('transactions')).toContainEqual(
-      expect.objectContaining({ $id: 't2', totalCents: 150, $permissions: team }),
-    )
+    expect(db.rows('activity')).toEqual([
+      expect.objectContaining({ $id: 'a1', summary: 'Test', $permissions: team }),
+    ])
+  })
+
+  it('waits for a staging the route forgot to await before it commits', async () => {
+    const db = slowStaging(seeded())
+    await withTransaction(db, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't1',
+        data: { description: 'Rent (Oct)' },
+      })
+      // No await: the commit must still include this delete.
+      void tx.write({ action: 'delete', tableId: 'shares', rowId: 's2' })
+    })
+    expect(db.rows('transactions')[0]).toMatchObject({ description: 'Rent (Oct)' })
+    expect(db.rows('shares').map((row) => row.$id)).toEqual(['s1'])
+  })
+
+  it('rolls back and throws when a staging fails, even one the route did not await', async () => {
+    const db = slowStaging(seeded())
+    const updateTransaction = vi.spyOn(db, 'updateTransaction')
+    await expect(
+      withTransaction(db, async (tx) => {
+        await tx.write({
+          action: 'update',
+          tableId: 'shares',
+          rowId: 's1',
+          data: { givenCents: 1 },
+        })
+        void tx.write({
+          action: 'update',
+          tableId: 'shares',
+          rowId: 's2',
+          data: { $createdAt: AT },
+        })
+      }),
+    ).rejects.toThrow('Row data may not set $createdAt')
+    expect(updateTransaction).toHaveBeenCalledTimes(1)
+    expect(updateTransaction).toHaveBeenCalledWith({ transactionId: 'tx1', rollback: true })
+    expect(db.rows('shares')[0]).toMatchObject({ givenCents: 100 })
+  })
+
+  it('rolls back, not commits, when the route catches a failed staging', async () => {
+    const db = seeded()
+    const createOperations = vi.spyOn(db, 'createOperations')
+    createOperations.mockRejectedValueOnce(new Error('network'))
+    const updateTransaction = vi.spyOn(db, 'updateTransaction')
+    await expect(
+      withTransaction(db, async (tx) => {
+        await tx
+          .write({ action: 'delete', tableId: 'shares', rowId: 's1' })
+          .catch(() => 'ignored on purpose')
+      }),
+    ).rejects.toThrow('network')
+    expect(updateTransaction).toHaveBeenCalledWith({ transactionId: 'tx1', rollback: true })
+    expect(updateTransaction).not.toHaveBeenCalledWith(expect.objectContaining({ commit: true }))
+    expect(db.rows('shares')).toHaveLength(2)
   })
 
   it('fails with 409 when a staged row changes before the commit, and applies nothing', async () => {
@@ -269,6 +341,6 @@ function creates(count: number): Write[] {
     action: 'create' as const,
     tableId: 'activity' as const,
     rowId: `a${index}`,
-    data: { action: 'test' },
+    data: activity(),
   }))
 }

@@ -1,3 +1,4 @@
+import { idSchema } from '@ledgerly/core/schemas/common'
 import type { ErrorCode } from '@ledgerly/core/schemas/envelope'
 import { AppwriteException } from 'node-appwrite'
 import { type Db, dbFromRequest } from '../appwrite/client'
@@ -51,7 +52,8 @@ export function route<P extends string>(
 /**
  * The entry point of every function (functions-api.md#function-code-layout). Routes by method
  * and path, parses the JSON body, reads the caller, wraps the result in the response envelope
- * and logs one line per request: `{ fn, route, status, ms, code? }`, with no personal data.
+ * and logs one line per request: `{ fn, route, status, ms, code?, cause? }`, with no personal
+ * data.
  */
 export function createHandler(
   routes: readonly Route[],
@@ -111,10 +113,6 @@ export function createHandler(
   }
 }
 
-// A param must look like an Appwrite ID. It is never URL-decoded: `%2E%2E` would become `..`,
-// and the SDK would send `rows/..` to another endpoint with the server key.
-const ID_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/
-
 // When several routes match, the one with the most literal segments wins, so a route like
 // `POST /statements/reissue` beats `POST /statements/:id`.
 function findRoute(
@@ -136,7 +134,9 @@ function findRoute(
         literals += 1
         return segment === part
       }
-      if (!ID_SEGMENT.test(part)) return false
+      // A param must be an Appwrite ID, and is never URL-decoded: `%2E%2E` would become `..`,
+      // and the SDK would send `rows/..` to another endpoint with the server key.
+      if (!idSchema.safeParse(part).success) return false
       params[segment.slice(1)] = part
       return true
     })

@@ -20,7 +20,9 @@ export type Tx = {
   id: string
   /**
    * Stages the writes now, in one request. If any of these rows changes outside the
-   * transaction after this, the commit fails with 409. Always await it.
+   * transaction after this, the commit fails with 409. Await it before reading those rows.
+   * `withTransaction` also waits for every staging before it commits, and if one failed it
+   * rolls back and throws that error, even if the route caught it.
    */
   write(...writes: Write[]): Promise<void>
 }
@@ -37,24 +39,41 @@ export type Tx = {
  */
 export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): Promise<T> {
   const { $id: transactionId } = await db.createTransaction()
+  let requested = 0
   let staged = 0
+  // Every staging call, settled, so nothing commits while one is still in flight, even one
+  // the route forgot to await. Each resolves to its error, or undefined.
+  const stagings: Array<Promise<{ error: unknown } | undefined>> = []
+  const stage = async (writes: Write[]) => {
+    requested += writes.length
+    if (requested > MAX_OPS_PER_DB_TRANSACTION) {
+      throw new Error(
+        `A transaction holds at most ${MAX_OPS_PER_DB_TRANSACTION} writes, got ${requested}`,
+      )
+    }
+    await db.createOperations({ transactionId, operations: writes.map(toOperation) })
+    staged += writes.length
+  }
   const tx: Tx = {
     id: transactionId,
-    async write(...writes) {
-      if (staged + writes.length > MAX_OPS_PER_DB_TRANSACTION) {
-        throw new Error(
-          `A transaction holds at most ${MAX_OPS_PER_DB_TRANSACTION} writes, got ${staged + writes.length}`,
-        )
-      }
-      const operations = writes.map(toOperation)
-      staged += writes.length
-      await db.createOperations({ transactionId, operations })
+    write(...writes) {
+      const staging = stage(writes)
+      stagings.push(
+        staging.then(
+          () => undefined,
+          (error: unknown) => ({ error }),
+        ),
+      )
+      return staging
     },
   }
   let result: T
   try {
     result = await work(tx)
+    const failed = (await Promise.all(stagings)).find((outcome) => outcome !== undefined)
+    if (failed) throw failed.error
   } catch (error) {
+    await Promise.all(stagings)
     await rollback(db, transactionId)
     throw error
   }

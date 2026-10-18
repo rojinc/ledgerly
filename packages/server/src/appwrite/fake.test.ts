@@ -121,15 +121,43 @@ describe('FakeDb reads', () => {
   })
 })
 
+const AT = '2026-10-18T00:00:00.000Z'
+
+// Whole rows with every required column, for staged creates and upserts.
+const rowsFor = {
+  activity: (extra = {}) => ({ groupId: 'g1', action: 'test', summary: 'Test', at: AT, ...extra }),
+  member: (groupId: string, personId: string, extra = {}) => ({
+    groupId,
+    personId,
+    displayName: 'Sam',
+    role: 'member',
+    status: 'active',
+    joinedOn: '2026-10-01',
+    ...extra,
+  }),
+  share: (extra = {}) => ({
+    transactionId: 't1',
+    personId: 'p1',
+    givenCents: 0,
+    receivedCents: 0,
+    groupId: 'g1',
+    date: '2026-10-18',
+    kind: 'expense',
+    ...extra,
+  }),
+}
+
+function op(action: string, tableId: string, rowId: string, data?: object) {
+  return { action, databaseId: 'main', tableId, rowId, ...(data && { data }) }
+}
+
 describe('FakeDb transactions', () => {
   it('reports the staged operation count and status', async () => {
     const db = new FakeDb()
     const { $id } = await db.createTransaction()
     const staged = await db.createOperations({
       transactionId: $id,
-      operations: [
-        { action: 'create', databaseId: 'main', tableId: 'activity', rowId: 'a1', data: {} },
-      ],
+      operations: [op('create', 'activity', 'a1', rowsFor.activity())],
     })
     expect(staged).toMatchObject({ $id, status: 'pending', operations: 1 })
     expect(staged).not.toHaveProperty('staged')
@@ -143,9 +171,7 @@ describe('FakeDb transactions', () => {
     const { $id } = await db.createTransaction()
     await db.createOperations({
       transactionId: $id,
-      operations: [
-        { action: 'create', databaseId: 'main', tableId: 'activity', rowId: 'a1', data: {} },
-      ],
+      operations: [op('create', 'activity', 'a1', rowsFor.activity())],
     })
     await db.updateTransaction({ transactionId: $id, rollback: true })
     expect(db.rows('activity')).toEqual([])
@@ -158,139 +184,102 @@ describe('FakeDb transactions', () => {
   })
 
   it('replays operations in order, so a row can be deleted and created again', async () => {
-    const db = new FakeDb({ shares: [{ $id: 't1_p1', givenCents: 100 }] })
-    const { $id } = await db.createTransaction()
-    await db.createOperations({
-      transactionId: $id,
-      operations: [
-        { action: 'delete', databaseId: 'main', tableId: 'shares', rowId: 't1_p1' },
-        {
-          action: 'create',
-          databaseId: 'main',
-          tableId: 'shares',
-          rowId: 't1_p1',
-          data: { givenCents: 90 },
-        },
-      ],
-    })
-    await db.updateTransaction({ transactionId: $id, commit: true })
+    const db = new FakeDb({ shares: [{ $id: 't1_p1', ...rowsFor.share({ givenCents: 100 }) }] })
+    await commit(db, [
+      op('delete', 'shares', 't1_p1'),
+      op('create', 'shares', 't1_p1', rowsFor.share({ givenCents: 90 })),
+    ])
     expect(db.rows('shares')).toEqual([expect.objectContaining({ $id: 't1_p1', givenCents: 90 })])
   })
 
   it('fails the whole commit when one operation fails', async () => {
     const db = new FakeDb({ activity: [{ $id: 'a1' }] })
-    const { $id } = await db.createTransaction()
-    await db.createOperations({
-      transactionId: $id,
-      operations: [
-        { action: 'create', databaseId: 'main', tableId: 'activity', rowId: 'a2', data: {} },
-        { action: 'update', databaseId: 'main', tableId: 'activity', rowId: 'missing', data: {} },
-      ],
-    })
-    await expect(db.updateTransaction({ transactionId: $id, commit: true })).rejects.toMatchObject({
-      code: 404,
-      type: 'row_not_found',
-    })
+    await expect(
+      commit(db, [
+        op('create', 'activity', 'a2', rowsFor.activity()),
+        op('update', 'activity', 'missing', { summary: 'x' }),
+      ]),
+    ).rejects.toMatchObject({ code: 404, type: 'row_not_found' })
     expect(db.rows('activity').map((row) => row.$id)).toEqual(['a1'])
   })
 
-  it('upserts, sets permissions from $permissions and refuses unknown operations', async () => {
-    const db = new FakeDb({ members: [{ $id: 'm1', role: 'member' }] })
-    const { $id } = await db.createTransaction()
-    await db.createOperations({
-      transactionId: $id,
-      operations: [
-        {
-          action: 'upsert',
-          databaseId: 'main',
-          tableId: 'members',
-          rowId: 'm1',
-          data: { role: 'admin', $permissions: ['read("team:g1")'] },
-        },
-        {
-          action: 'upsert',
-          databaseId: 'main',
-          tableId: 'members',
-          rowId: 'm2',
-          data: { role: 'viewer' },
-        },
-      ],
-    })
-    await db.updateTransaction({ transactionId: $id, commit: true })
+  it('sets permissions from $permissions and refuses unknown operations', async () => {
+    const db = new FakeDb({ members: [{ $id: 'm1', ...rowsFor.member('g1', 'p1') }] })
+    await commit(db, [
+      op('upsert', 'members', 'm1', {
+        ...rowsFor.member('g1', 'p1', { role: 'admin' }),
+        $permissions: ['read("team:g1")'],
+      }),
+      op('upsert', 'members', 'm2', rowsFor.member('g1', 'p2', { role: 'viewer' })),
+    ])
     expect(
       db.rows('members').map(({ $id: id, role, $permissions }) => [id, role, $permissions]),
     ).toEqual([
       ['m1', 'admin', ['read("team:g1")']],
       ['m2', 'viewer', []],
     ])
-    const second = await db.createTransaction()
+    const { $id } = await db.createTransaction()
     await expect(
-      db.createOperations({
-        transactionId: second.$id,
-        operations: [{ action: 'increment', databaseId: 'main', tableId: 'members', rowId: 'm1' }],
-      }),
+      db.createOperations({ transactionId: $id, operations: [op('increment', 'members', 'm1')] }),
     ).rejects.toThrow('does not support the "increment" operation')
   })
 
   it('replaces the whole row on upsert, keeping only system fields, like Appwrite', async () => {
     const db = new FakeDb({
       members: [
-        { $id: 'm1', role: 'member', leftOn: '2026-10-01', $createdAt: '2026-01-01T00:00:00.000Z' },
+        {
+          $id: 'm1',
+          ...rowsFor.member('g1', 'p1', { leftOn: '2026-10-05' }),
+          $createdAt: '2026-01-01T00:00:00.000Z',
+        },
       ],
     })
-    await commit(db, [
-      {
-        action: 'upsert',
-        databaseId: 'main',
-        tableId: 'members',
-        rowId: 'm1',
-        data: { role: 'admin' },
-      },
-    ])
+    await commit(db, [op('upsert', 'members', 'm1', rowsFor.member('g1', 'p1', { role: 'admin' }))])
     const [row] = db.rows('members')
     expect(row).toMatchObject({ role: 'admin', $createdAt: '2026-01-01T00:00:00.000Z' })
     expect(row).not.toHaveProperty('leftOn')
   })
 
-  it('keeps permissions on an update that does not set them', async () => {
+  it('refuses a create or upsert without every required column, like Appwrite', async () => {
+    const db = new FakeDb({ members: [{ $id: 'm1', ...rowsFor.member('g1', 'p1') }] })
+    for (const partial of [
+      op('upsert', 'members', 'm1', { role: 'admin' }),
+      op('create', 'members', 'm2', { groupId: 'g1', personId: 'p2' }),
+      op('create', 'members', 'm3', rowsFor.member('g1', 'p3', { displayName: null })),
+    ]) {
+      await expect(commit(db, [partial])).rejects.toMatchObject({
+        code: 400,
+        type: 'document_invalid_structure',
+      })
+    }
+    expect(db.rows('members')).toEqual([expect.objectContaining({ $id: 'm1', role: 'member' })])
+  })
+
+  it('checks only the columns an update sets: none unknown, none required set to null', async () => {
     const db = new FakeDb({
       members: [{ $id: 'm1', role: 'member', $permissions: ['read("team:g1")'] }],
     })
-    await commit(db, [
-      {
-        action: 'update',
-        databaseId: 'main',
-        tableId: 'members',
-        rowId: 'm1',
-        data: { role: 'admin' },
-      },
-    ])
+    await commit(db, [op('update', 'members', 'm1', { role: 'admin' })])
     expect(db.rows('members')[0]).toMatchObject({
       role: 'admin',
       $permissions: ['read("team:g1")'],
     })
+    for (const data of [{ rol: 'viewer' }, { role: null }]) {
+      await expect(commit(db, [op('update', 'members', 'm1', data)])).rejects.toMatchObject({
+        code: 400,
+        type: 'document_invalid_structure',
+      })
+    }
   })
 
   it('shows staged writes to reads that pass the transactionId, and only to them', async () => {
-    const db = new FakeDb({ members: [{ $id: 'm1', groupId: 'g1', role: 'member' }] })
+    const db = new FakeDb({ members: [{ $id: 'm1', ...rowsFor.member('g1', 'p1') }] })
     const { $id } = await db.createTransaction()
     await db.createOperations({
       transactionId: $id,
       operations: [
-        {
-          action: 'update',
-          databaseId: 'main',
-          tableId: 'members',
-          rowId: 'm1',
-          data: { role: 'admin' },
-        },
-        {
-          action: 'create',
-          databaseId: 'main',
-          tableId: 'members',
-          rowId: 'm2',
-          data: { groupId: 'g1' },
-        },
+        op('update', 'members', 'm1', { role: 'admin' }),
+        op('create', 'members', 'm2', rowsFor.member('g1', 'p2')),
       ],
     })
     const inside = { databaseId: 'main', tableId: 'members', transactionId: $id }
@@ -298,9 +287,8 @@ describe('FakeDb transactions', () => {
       groupId: 'g1',
       role: 'admin',
     })
-    expect((await db.listRows({ ...inside, queries: [Query.equal('groupId', 'g1')] })).total).toBe(
-      2,
-    )
+    const listed = await db.listRows({ ...inside, queries: [Query.equal('groupId', 'g1')] })
+    expect(listed.total).toBe(2)
     expect(await db.getRow({ databaseId: 'main', tableId: 'members', rowId: 'm1' })).toMatchObject({
       role: 'member',
     })
@@ -311,47 +299,46 @@ describe('FakeDb transactions', () => {
 
   it('enforces the unique indexes from appwrite/tables.json, ignoring nulls', async () => {
     const db = new FakeDb({
-      members: [{ $id: 'm1', groupId: 'g1', personId: 'p1' }],
-      identities: [{ $id: 'i1', key: null }],
+      members: [{ $id: 'm1', ...rowsFor.member('g1', 'p1') }],
+      // Seed rows aren't checked, so two null keys can sit side by side, as in MariaDB.
+      identities: [
+        { $id: 'i1', key: null },
+        { $id: 'i2', key: null },
+      ],
     })
     await expect(
-      commit(db, [
-        {
-          action: 'create',
-          databaseId: 'main',
-          tableId: 'members',
-          rowId: 'm2',
-          data: { groupId: 'g1', personId: 'p1' },
-        },
-      ]),
+      commit(db, [op('create', 'members', 'm2', rowsFor.member('g1', 'p1'))]),
     ).rejects.toMatchObject({ code: 409, type: 'row_already_exists' })
     await commit(db, [
-      {
-        action: 'create',
-        databaseId: 'main',
-        tableId: 'members',
-        rowId: 'm3',
-        data: { groupId: 'g2', personId: 'p1' },
-      },
-      {
-        action: 'create',
-        databaseId: 'main',
-        tableId: 'identities',
-        rowId: 'i2',
-        data: { key: null },
-      },
+      op('create', 'members', 'm3', rowsFor.member('g2', 'p1')),
+      op('create', 'identities', 'i3', {
+        key: 'email:sam@example.com',
+        type: 'email',
+        personId: 'p1',
+      }),
     ])
     expect(db.rows('members')).toHaveLength(2)
-    expect(db.rows('identities')).toHaveLength(2)
+    expect(db.rows('identities')).toHaveLength(3)
   })
 
-  it('refuses tables that are not in appwrite/tables.json', async () => {
+  it('refuses tables and query columns that are not in appwrite/tables.json', async () => {
     const db = new FakeDb()
     await expect(db.listRows({ databaseId: 'main', tableId: 'member' })).rejects.toMatchObject({
       code: 404,
       type: 'table_not_found',
     })
     expect(() => new FakeDb({ member: [{ $id: 'm1' }] })).toThrow('Table member not found')
+    for (const query of [Query.equal('groupID', 'g1'), Query.orderAsc('joined')]) {
+      await expect(
+        db.listRows({ databaseId: 'main', tableId: 'members', queries: [query] }),
+      ).rejects.toMatchObject({ code: 400, type: 'general_query_invalid' })
+    }
+    const bySystemColumn = await db.listRows({
+      databaseId: 'main',
+      tableId: 'members',
+      queries: [Query.orderDesc('$createdAt'), Query.equal('$id', 'm1')],
+    })
+    expect(bySystemColumn.total).toBe(0)
   })
 })
 
