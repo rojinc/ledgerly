@@ -61,6 +61,7 @@ Use the words from the [glossary](../product/glossary.md), in code and in UI tex
 - Declare routes with `route(method, '/path/:id', handler)`: `ctx.params` is typed from the path.
 - Handlers are thin: validate → authorize → call core → write → respond. Business rules live in `packages/core`.
 - Log one structured line per request: `{ fn, route, status, ms, code?, cause? }`, where `cause` is the name (never the message) of the error behind a 5xx. `createHandler` does this. No personal data ([security](../architecture/security-and-privacy.md)).
+- Send email only with `sendEmail()` (`packages/server/src/email/`), with the subject and body from a template there. It logs nothing. Its `EmailError` carries only a `type` and an HTTP `status`, which are safe to log. Never log an address, subject or body. Where a send may run again after a crash, like finalize step 8, pass an `idempotencyKey` such as `finalize/<statementId>`, so Resend delivers it once (keys last 24 hours).
 
 ## React
 
