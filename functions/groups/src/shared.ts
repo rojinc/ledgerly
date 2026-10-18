@@ -1,7 +1,7 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
 import { closeAtFor, localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Shares } from '@ledgerly/core/generated/rows'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
@@ -79,11 +79,6 @@ export async function findFirst<R extends Models.Row>(
     total: false,
   })
   return rows[0]
-}
-
-/** The user's own person (`persons.userId`), or undefined before bootstrap made one. */
-export function findPersonOfUser(db: Db, userId: string): Promise<Persons | undefined> {
-  return findFirst<Persons>(db, TABLES.persons, [Query.equal('userId', userId)])
 }
 
 /** The group's member row with this ID, or NOT_FOUND (also for a member of another group). */
@@ -215,9 +210,9 @@ export async function joinedAdmins(db: Db, groupId: string): Promise<Members[]> 
 /**
  * For a change that takes away a joined admin (leaving, demoting, moving out, removing): keeps
  * another one. Call it inside the transaction, after staging the change itself. It stages a
- * no-op on one other joined admin, then checks that row is still a joined admin, so a
- * concurrent change to it fails this commit (stage, then check: conventions.md). With no other
- * joined admin, VALIDATION_FAILED with `message`.
+ * no-op on one other joined admin (its personId, which never changes), then checks that row is
+ * still a joined admin, so a concurrent change to it fails this commit (stage, then check:
+ * conventions.md). With no other joined admin, VALIDATION_FAILED with `message`.
  */
 export async function keepAnotherAdmin(
   db: Db,
@@ -232,7 +227,7 @@ export async function keepAnotherAdmin(
     action: 'update',
     tableId: TABLES.members,
     rowId: other.$id,
-    data: { role: 'admin' },
+    data: { personId: other.personId },
   })
   const current = await getRowOrNull<Members>(db, TABLES.members, other.$id)
   if (current?.groupId !== groupId || current.role !== 'admin' || current.status !== 'active') {

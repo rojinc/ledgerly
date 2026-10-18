@@ -70,9 +70,13 @@ describe('PATCH /groups/{id}', () => {
     const settings = { ...EMPLOYER_SETTINGS, recipients: ['pay@example.com'] }
     const updated = await ok(services, 'PATCH', '/groups/g1', { settings })
     expect(updated).toMatchObject({ settingsJson: JSON.stringify(settings) })
-    const changes = JSON.parse(String(services.db.rows('activity')[0]?.changesJson))
-    expect(changes).toEqual({ before: { settings: EMPLOYER_SETTINGS }, after: { settings } })
-    // No email in the summary.
+    // No email in the activity row: the recipients are only counted.
+    const changesJson = String(services.db.rows('activity')[0]?.changesJson)
+    expect(changesJson).not.toMatch(/@/)
+    expect(JSON.parse(changesJson)).toEqual({
+      before: { settings: { ...EMPLOYER_SETTINGS, recipients: 0 } },
+      after: { settings: { ...EMPLOYER_SETTINGS, recipients: 1 } },
+    })
     expect(services.db.rows('activity')[0]?.summary).not.toMatch(/@/)
   })
 
@@ -86,6 +90,17 @@ describe('PATCH /groups/{id}', () => {
     expect(weekly).toMatchObject({ nextCloseAt: '2026-11-08T19:00:00.000Z' })
     const perth = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Perth' })
     expect(perth).toMatchObject({ nextCloseAt: '2026-11-08T22:00:00.000Z' })
+    const none = await ok(services, 'PATCH', '/groups/g1', { statementCycle: 'none' })
+    expect(none).toMatchObject({ nextCloseAt: null })
+  })
+
+  it('keeps a nextCloseAt that is already due, for the statements cron', async () => {
+    // 1 November 06:00 in Sydney has passed, but the cron hasn't drafted October yet.
+    const due = '2026-10-31T19:00:00.000Z'
+    const services = setUp('employer', { nextCloseAt: due })
+    services.now = new Date('2026-11-01T01:00:00.000Z')
+    const perth = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Perth' })
+    expect(perth).toMatchObject({ timezone: 'Australia/Perth', nextCloseAt: due })
     const none = await ok(services, 'PATCH', '/groups/g1', { statementCycle: 'none' })
     expect(none).toMatchObject({ nextCloseAt: null })
   })
@@ -193,6 +208,18 @@ describe('PATCH /groups/{id}', () => {
       status: 401,
       code: 'UNAUTHENTICATED',
     })
+  })
+
+  it('answers CONFLICT when the group changed after the first read', async () => {
+    const services = setUp('house', { $updatedAt: '2026-10-01T00:00:00.000Z' })
+    beforeStaging(services.db, 1, () => updateRow(services.db, 'groups', 'g1', { name: 'Other' }))
+    expect(await failure(services, 'PATCH', '/groups/g1', { name: 'Home' })).toMatchObject({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('groups')[0]?.name).toBe('Other')
+    expect(services.db.rows('activity')).toEqual([])
   })
 
   it('answers CONFLICT when the group changes at the same time', async () => {

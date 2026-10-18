@@ -359,6 +359,17 @@ describe('POST /groups', () => {
     expect(services.db.rows('groups')).toEqual([])
   })
 
+  it('tries leaving the team a second time when the first try fails', async () => {
+    const services = setUp()
+    vi.spyOn(services.db, 'createOperations').mockRejectedValueOnce(new Error('Appwrite is down'))
+    vi.spyOn(services.teams, 'deleteMembership').mockRejectedValueOnce(new Error('Teams is down'))
+    expect(await failure(services, 'POST', '/groups', HOUSE)).toMatchObject({
+      status: 500,
+      code: 'INTERNAL',
+    })
+    expect(teamUsers(services)).toEqual([])
+  })
+
   it.each([
     ['an unknown region', { ...HOUSE, region: 'AU-NWS' }],
     ['a missing counterpart', { id: 'g1', type: 'pair', name: 'Us' }],

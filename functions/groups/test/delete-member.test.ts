@@ -70,14 +70,42 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     ])
   })
 
-  it("doesn't call Teams for a placeholder without an account", async () => {
-    const services = house()
+  it('never calls Teams for a placeholder, with or without an account', async () => {
+    const services = house({ members: [member('m4', 'g1', 'p9', 'member', 'placeholder')] })
     const list = vi.spyOn(services.teams, 'listMemberships')
+    const add = vi.spyOn(services.teams, 'createMembership')
     const drop = vi.spyOn(services.teams, 'deleteMembership')
     await remove(services, 'm3')
+    await remove(services, 'm4')
     expect(memberIds(services)).toEqual(['m1', 'm2', 'm9'])
     expect(list).not.toHaveBeenCalled()
+    expect(add).not.toHaveBeenCalled()
     expect(drop).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['employer', 'Employer and pair groups always keep both members. Archive the group instead.'],
+    ['pair', 'Employer and pair groups always keep both members. Archive the group instead.'],
+    ['personal', 'A personal group always keeps its only member.'],
+  ])('refuses in %s groups', async (type, message) => {
+    const services = fakes(
+      {
+        groups: [group('g1', type)],
+        persons: [person(1), person(2)],
+        members: [
+          member('m1', 'g1', 'p1', 'admin', 'active'),
+          member('m2', 'g1', 'p2', 'member', 'active'),
+        ],
+      },
+      { g1: ['u1', 'u2'] },
+    )
+    expect(await removeFails(services, 'm2')).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message,
+    })
+    expect(memberIds(services)).toEqual(['m1', 'm2'])
+    expect(teamUsers(services)).toEqual(['u1', 'u2'])
   })
 
   it('refuses someone with shares in the group, and leaves the team alone', async () => {
@@ -116,6 +144,7 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
       message: "Members with transactions can't be removed. Set leftOn instead.",
     })
     expect(memberIds(services)).toContain('m2')
+    expect(teamUsers(services)).toEqual(['u1', 'u2'])
     expect(services.db.rows('activity')).toEqual([])
   })
 
@@ -132,6 +161,18 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     expect(memberIds(services)).toContain('m3')
   })
 
+  it('takes a placeholder who joined meanwhile out of the team on the retry', async () => {
+    const services = house({ members: [member('m4', 'g1', 'p9', 'member', 'placeholder')] })
+    beforeStaging(services.db, 1, async () => {
+      await updateRow(services.db, 'members', 'm4', { status: 'active' })
+      await services.teams.createMembership({ teamId: 'g1', userId: 'u9', roles: [] })
+    })
+    expect(await removeFails(services, 'm4')).toMatchObject({ code: 'CONFLICT' })
+    expect(teamUsers(services)).toEqual(['u1', 'u2', 'u9'])
+    expect(await remove(services, 'm4')).toEqual({})
+    expect(teamUsers(services)).toEqual(['u1', 'u2'])
+  })
+
   it('answers CONFLICT when the other admin is demoted at the same time', async () => {
     const services = house()
     await updateRow(services.db, 'members', 'm2', { role: 'admin' })
@@ -141,6 +182,19 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
       message: TRY_AGAIN,
     })
     expect(memberIds(services)).toContain('m2')
+    expect(teamUsers(services)).toEqual(['u1', 'u2'])
+  })
+
+  it('guards the other admin with a write that changes nothing on it', async () => {
+    const services = house()
+    await updateRow(services.db, 'members', 'm2', { role: 'admin' })
+    const stage = vi.spyOn(services.db, 'createOperations')
+    expect(await remove(services, 'm2')).toEqual({})
+    const operations = stage.mock.calls.flatMap(([params]) => params.operations ?? [])
+    expect(operations).toContainEqual(
+      expect.objectContaining({ action: 'update', rowId: 'm1', data: { personId: 'p1' } }),
+    )
+    expect(services.db.rows('members')[0]).toMatchObject({ $id: 'm1', role: 'admin' })
   })
 
   it('refuses anyone but an admin', async () => {
@@ -165,12 +219,13 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
 
   it('answers CONFLICT when the row changes at the same time', async () => {
     const services = house()
-    beforeCommit(services.db, () => updateRow(services.db, 'members', 'm3', { role: 'viewer' }))
-    expect(await removeFails(services, 'm3')).toEqual({
+    beforeCommit(services.db, () => updateRow(services.db, 'members', 'm2', { role: 'viewer' }))
+    expect(await removeFails(services, 'm2')).toEqual({
       status: 409,
       code: 'CONFLICT',
       message: TRY_AGAIN,
     })
-    expect(memberIds(services)).toContain('m3')
+    expect(memberIds(services)).toContain('m2')
+    expect(teamUsers(services)).toEqual(['u1', 'u2'])
   })
 })

@@ -12,10 +12,12 @@ import {
   checkRegion,
   conflictAsTryAgain,
   findFirst,
+  getRowOrNull,
   invalid,
   nextCloseAtFor,
   parseBody,
   teamRead,
+  tryAgain,
 } from '../shared'
 
 /** `groups PATCH /groups/{id}` (admin): changes only the fields given, and returns the group. */
@@ -42,8 +44,9 @@ export async function updateGroup(
     }
   }
   if (settings && JSON.stringify(settings) !== group.settingsJson) {
-    before.settings = storedSettings
-    after.settings = settings
+    // The activity row keeps no email addresses (security-and-privacy.md), only how many.
+    before.settings = withoutAddresses(storedSettings)
+    after.settings = withoutAddresses(settings)
   }
   if (Object.keys(after).length === 0) return group
 
@@ -60,9 +63,15 @@ export async function updateGroup(
     delete data.settings
     data.settingsJson = JSON.stringify(settings)
   }
-  // data-model.md#groups: a new cycle, anchor or time zone moves the next statement.
+  // data-model.md#groups: a new cycle, anchor or time zone moves the next statement. One that
+  // is already due stays, so the statements cron still drafts the period that just ended and
+  // then moves it on; without a cycle there is none.
   if ('statementCycle' in after || 'cycleAnchor' in after || 'timezone' in after) {
-    data.nextCloseAt = nextCloseAtFor(cycle, anchor, columns.timezone ?? group.timezone, now)
+    const stored = group.nextCloseAt
+    const due = cycle !== 'none' && stored !== null && stored <= now.toISOString()
+    data.nextCloseAt = due
+      ? stored
+      : nextCloseAtFor(cycle, anchor, columns.timezone ?? group.timezone, now)
   }
   const changed = Object.keys(after)
   await conflictAsTryAgain(() =>
@@ -74,8 +83,11 @@ export async function updateGroup(
         data,
         permissions: teamRead(groupId),
       })
-      // Stage, then check (conventions.md): a first transaction committed before the group
-      // row was staged is seen here, and the refusal rolls the change back.
+      // Stage, then check (conventions.md): a change to the group since requireMember read it
+      // would make `before` and nextCloseAt stale, and a first transaction committed before the
+      // group row was staged is seen here. Either refusal rolls the change back.
+      const current = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+      if (current?.$updatedAt !== group.$updatedAt) throw tryAgain()
       if ('currency' in after) {
         const first = await findFirst(db, TABLES.transactions, [Query.equal('groupId', groupId)])
         if (first) throw invalid("The currency can't change after the group's first transaction.")
@@ -97,4 +109,11 @@ export async function updateGroup(
 
 function storedAnchor(group: Groups): LocalDate | null {
   return group.cycleAnchor === null ? null : parseLocalDate(group.cycleAnchor)
+}
+
+/** Employer settings with `recipients` as a count, for the activity row. */
+function withoutAddresses(settings: GroupSettings): object {
+  return 'recipients' in settings
+    ? { ...settings, recipients: settings.recipients.length }
+    : settings
 }

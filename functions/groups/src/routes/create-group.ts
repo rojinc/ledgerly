@@ -231,12 +231,14 @@ function holdsOnly(memberships: Array<{ userId: string }>, userId: string): bool
   })
 }
 
-/** Takes the caller back out of the team, best effort: the caller's error matters more. */
+/** Takes the caller back out of the team, best effort, trying twice: their error matters more. */
 async function leaveTeam(teams: TeamsApi, teamId: string, userId: string): Promise<void> {
-  try {
-    await removeFromTeam(teams, teamId, userId)
-  } catch {
-    // Nothing more to do here; the team grants nothing without the group row.
+  for (let tries = 0; tries < 2; tries += 1) {
+    try {
+      return await removeFromTeam(teams, teamId, userId)
+    } catch {
+      // Try once more, then give up: the team grants nothing without the group row.
+    }
   }
 }
 

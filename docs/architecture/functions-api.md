@@ -154,7 +154,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 | `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares. Also removes any team membership. |
 | `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin |
 
-`counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
+`counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. Removing one with `DELETE /groups/{id}/members/{memberId}` also returns `VALIDATION_FAILED`; archive the group instead. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
 When `POST /groups` leaves them out, `currency`, `timezone` and `region` come from the creator's profile, and `settings` takes its defaults ([data model](data-model.md#groups)). In a house, a member who isn't an admin can add people only with the default role.
 
