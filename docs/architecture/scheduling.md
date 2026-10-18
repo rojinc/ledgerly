@@ -90,11 +90,19 @@ Query with `idx_status_date` for dates from 7 days ago up to the UTC date plus o
 | Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost`, `remindedAt` empty | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
-Set `remindedAt` in the same write that queues the email, so each reminder goes out once. The shift query uses the same 7-day floor as step 2.
+Set `remindedAt` in the same write that queues the email, so each reminder goes out once. The shift query uses the same 7-day floor as step 2. Reminders go out only once it is 07:00 or later in the group's timezone, so nobody gets one in the middle of the night; a later run picks up the rest. Archived groups get none.
 
 ### Step 4: summary emails
 
-Profiles where `nextSummaryAt <= now`: send the summary for the period that just ended ([ledger reports](ledger.md#reports)), then move `nextSummaryAt` forward by the user's frequency at 07:00 in their timezone.
+Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a summary goes out at most once), then send the summary for the period that just ended ([ledger reports](ledger.md#reports)). All times are 07:00 in the profile's timezone:
+
+| Frequency | Sent | Covers |
+| --- | --- | --- |
+| `weekly` | every Monday | the previous Monday to Sunday |
+| `fortnightly` | every second Monday, counting from the first Monday after the setting changed | the 14 days before |
+| `monthly` | the 1st of each month | the previous calendar month |
+
+`none` clears `nextSummaryAt`. Changing the frequency (`PATCH /profile`) sets `nextSummaryAt` to the next send time by the same rule. Core's `nextSummaryAt()` and `summaryPeriod()` implement the table, so both places agree. The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
 
 ## Schedule routes
 

@@ -123,6 +123,8 @@ What every write does, in **one TablesDB transaction**:
 
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
+A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
+
 ## groups
 
 | Route | Body | Returns | Who |
@@ -134,8 +136,14 @@ What every write does, in **one TablesDB transaction**:
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn? }` | `member` | admin |
 | `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares. Also removes any team membership. |
 | `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin |
+| `GET /groups/pending` | none | `{ groups: { id, type, name }[] }` | the user: groups where their person is a `placeholder` member |
+| `POST /groups/{id}/join` | none | `{ group, member }` | the user, if their person is a `placeholder` member of the group |
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
+
+Archiving is permanent in v1; there is no unarchive route. A `personal` group can't be archived (`VALIDATION_FAILED`).
+
+`/groups/pending` and `/join` are how someone who already had an account when they were added joins ([Joining a group](identity-and-invites.md#joining-a-group)). They don't use `requireMember()`, because the caller isn't a joined member yet. `/join` sets the member `active` and adds the caller to the group's team; without a `placeholder` member row for the caller's person it returns `NOT_A_MEMBER`, and for an archived group `ARCHIVED`. Archived groups aren't listed as pending.
 
 ## identity
 
