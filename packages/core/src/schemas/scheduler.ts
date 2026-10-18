@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { compareDates, isLocalDate, parseLocalDate } from '../dates/local-date'
+import { compareDates, isLocalDate, type LocalDate, parseLocalDate } from '../dates/local-date'
 import { checkDateOrder, descriptionSchema, idSchema, localDateSchema } from './common'
 import { checkKindRules, transactionTemplateSchema } from './ledger'
 
@@ -28,12 +28,10 @@ function weekdays(value: string): boolean {
   return days.every((day) => WEEKDAYS.has(day)) && new Set(days).size === days.length
 }
 
-/** A date `YYYYMMDD` on a real calendar day. */
-function untilDate(value: string): boolean {
-  return (
-    /^\d{8}$/.test(value) &&
-    isLocalDate(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6)}`)
-  )
+/** The date of an `UNTIL` value `YYYYMMDD`, if it is a real calendar day. */
+function untilDate(value: string): LocalDate | undefined {
+  const date = `${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6)}`
+  return /^\d{8}$/.test(value) && isLocalDate(date) ? date : undefined
 }
 
 // RFC 5545 §3.3.10 parts, limited to the values the UI uses. FREQ is checked against
@@ -44,7 +42,7 @@ const RRULE_PARTS = new Map<string, (value: string) => boolean>([
   ['INTERVAL', (value) => /^[1-4]$/.test(value)], // up to every fourth week
   ['BYMONTHDAY', (value) => /^(-1|[1-9]|1\d|2[0-8])$/.test(value)], // every month has it
   ['COUNT', (value) => /^[1-9]\d{0,2}$/.test(value) && Number(value) <= 500],
-  ['UNTIL', untilDate],
+  ['UNTIL', (value) => untilDate(value) !== undefined],
 ])
 
 // scheduling.md#rules-the-ui-builds: the only rules accepted. Others can take seconds
@@ -60,7 +58,8 @@ function rruleIssue(rule: string): string | undefined {
     const [, key = '', value] = /^([A-Z]+)=([^=]+)$/.exec(part) ?? []
     if (value === undefined) return 'Expected KEY=VALUE parts separated by semicolons'
     const isValid = RRULE_PARTS.get(key)
-    if (!isValid) return `${key} is not supported`
+    // Never echo the caller's text back in the message.
+    if (!isValid) return 'Unsupported rule part'
     if (parts.has(key)) return `${key} appears more than once`
     if (!isValid(value)) return `${key} has an invalid value`
     parts.set(key, value)
@@ -105,6 +104,11 @@ type ScheduleFields = z.output<z.ZodObject<typeof scheduleFields>>
 function checkSchedule(schedule: ScheduleFields, ctx: z.RefinementCtx): void {
   checkKindRules(schedule.kind, schedule.template, ctx, ['template'])
   checkDateOrder(schedule.startsOn, schedule.endsOn, 'endsOn', ctx)
+  const untilPart = schedule.rrule.split(';').find((part) => part.startsWith('UNTIL='))
+  const until = untilDate(untilPart?.slice('UNTIL='.length) ?? '')
+  if (until !== undefined && compareDates(until, schedule.startsOn) < 0) {
+    ctx.addIssue({ code: 'custom', message: 'UNTIL must not be before startsOn', path: ['rrule'] })
+  }
 }
 
 /** `POST /schedules`, and `PATCH /schedules/{id}` with the same `id`. */

@@ -108,7 +108,10 @@ describe('createGroupBodySchema', () => {
       'counterpart',
     ])
     expect(() => createGroupBodySchema.parse({ ...employer, counterpart: undefined })).toThrow(
-      'Required for a employer group',
+      'Required for an employer group',
+    )
+    expect(() => createGroupBodySchema.parse({ ...pair, counterpart: undefined })).toThrow(
+      'Required for a pair group',
     )
     expect(() => createGroupBodySchema.parse({ ...house, counterpart: pair.counterpart })).toThrow(
       'Only employer and pair groups have a counterpart',
