@@ -39,7 +39,8 @@ Skip a date when:
 
 - Use `date-holidays`: region `AU-NSW` becomes `new Holidays('AU', 'NSW')`.
 - Count only holidays of type `public`. Ignore `bank`, `school`, `observance` and so on.
-- Check with the local date at noon, to avoid edge cases around midnight.
+- Compare local dates: core's `publicHolidayChecker(region)` matches the `YYYY-MM-DD` part of each holiday's local date string, so no timezone or midnight edge case is involved.
+- An unknown region (a country or state the library doesn't have) throws, rather than silently skipping nothing. The `groups` function checks a region with it before saving.
 - Users can still add a shift on a holiday by hand, or skip any other day with `exdates`.
 
 ## Idempotency
