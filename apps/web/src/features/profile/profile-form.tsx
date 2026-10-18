@@ -63,7 +63,8 @@ export function ProfileForm({ profile, displayName, onSave }: Props) {
       onSubmit={form.handleSubmit(async (body) => {
         try {
           await onSave(body)
-          form.reset(form.getValues())
+          // Show what was stored (trimmed, upper-cased), not what was typed.
+          form.reset(body as ProfileValues)
         } catch (error) {
           form.setError('root', { message: (error as Error).message })
         }

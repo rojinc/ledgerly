@@ -50,8 +50,7 @@ function parseBusiness(json: string | null): BusinessDetails {
   }
 }
 
-function toValues(profile: Profiles): BusinessValues {
-  const saved = parseBusiness(profile.businessJson)
+function toValues(saved: BusinessDetails, invoicePrefix: string): BusinessValues {
   const business = Object.fromEntries(TEXT_KEYS.map((key) => [key, saved[key] ?? '']))
   return {
     business: {
@@ -62,7 +61,7 @@ function toValues(profile: Profiles): BusinessValues {
         accountNumber: saved.bank?.accountNumber ?? '',
       },
     },
-    invoicePrefix: profile.invoicePrefix,
+    invoicePrefix,
   }
 }
 
@@ -74,7 +73,7 @@ type Props = {
 export function BusinessForm({ profile, onSave }: Props) {
   const form = useForm<BusinessValues, unknown, UpdateProfileBody>({
     resolver: schemaResolver(updateProfileBodySchema, toBusinessBody),
-    defaultValues: toValues(profile),
+    defaultValues: toValues(parseBusiness(profile.businessJson), profile.invoicePrefix),
   })
   const { errors, isDirty, isSubmitting, isSubmitSuccessful } = form.formState
   const business = errors.business
@@ -85,7 +84,8 @@ export function BusinessForm({ profile, onSave }: Props) {
       onSubmit={form.handleSubmit(async (body) => {
         try {
           await onSave(body)
-          form.reset(form.getValues())
+          // Show what was stored (digits only, trimmed), not what was typed.
+          form.reset(toValues(body.business ?? {}, body.invoicePrefix ?? ''))
         } catch (error) {
           form.setError('root', { message: (error as Error).message })
         }

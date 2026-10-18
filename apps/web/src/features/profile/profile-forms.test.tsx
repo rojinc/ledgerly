@@ -42,6 +42,11 @@ describe('ProfileForm', () => {
       summaryFrequency: 'fortnightly',
     })
     expect(await screen.findByText('Saved.')).toBeTruthy()
+    // The fields now show what was stored.
+    expect((screen.getByLabelText('Public holiday region') as HTMLInputElement).value).toBe(
+      'AU-VIC',
+    )
+    expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('Sam Q. Lee')
   })
 
   it('shows inline errors from the shared schema and sends nothing', async () => {
@@ -107,6 +112,10 @@ describe('BusinessForm', () => {
       },
       invoicePrefix: 'SL-',
     })
+    await waitFor(() =>
+      expect((screen.getByLabelText('ABN') as HTMLInputElement).value).toBe('51824753556'),
+    )
+    expect((screen.getByLabelText('BSB') as HTMLInputElement).value).toBe('062000')
   })
 
   it('starts from the saved details, and clearing a field removes it', async () => {
