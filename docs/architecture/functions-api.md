@@ -183,7 +183,7 @@ Details: [People, identity and invites](identity-and-invites.md).
 
 ## scheduler
 
-Cron: `5 * * * *`, sent as `POST /` with the `schedule` trigger (any other caller gets `FORBIDDEN`). HTTP routes:
+Cron: `5 * * * *`, sent as `POST /` with the `schedule` trigger. A person calling `POST /` gets `FORBIDDEN`, and a call without a JWT `UNAUTHENTICATED`. HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |

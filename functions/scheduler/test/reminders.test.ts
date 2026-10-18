@@ -1,8 +1,10 @@
 import type { Transactions } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
+import { createHandler } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
+import { schedulerRoutes } from '../src/main'
 import type { RunResult } from '../src/routes/run'
 import {
   APP_URL,
@@ -75,6 +77,7 @@ function seeded(
       groups: [
         group('acme', 'pSam'),
         group('utc', 'pSam', { name: 'Night shift', timezone: 'UTC' }),
+        group('la', 'pSam', { name: 'Studio', timezone: 'America/Los_Angeles', region: 'US-CA' }),
         group('old', 'pSam', { archivedAt: '2026-10-01T00:00:00Z' }),
       ],
       members: [
@@ -82,6 +85,7 @@ function seeded(
         member('acme', 'pAlex', { role: 'member' }),
         member('acme', 'pKim', { role: 'member', status: 'placeholder' }),
         member('utc', 'pSam'),
+        member('la', 'pSam'),
         member('old', 'pSam'),
       ],
       schedules: [schedule('manual', false), schedule('auto', true)],
@@ -116,6 +120,29 @@ describe('POST / (cron run)', () => {
       code: 'FORBIDDEN',
     })
     expect(services.sendEmail).not.toHaveBeenCalled()
+  })
+
+  it('refuses before it needs the execution’s API key', async () => {
+    const handler = createHandler(
+      schedulerRoutes(() => {
+        throw new Error('The x-appwrite-key header is missing')
+      }),
+      () => fakes().db,
+      async (jwt) => jwt.slice('jwt-'.length),
+    )
+    let status: number | undefined
+    await handler({
+      req: {
+        method: 'POST',
+        path: '/',
+        headers: { 'x-appwrite-user-jwt': 'jwt-u1' },
+        bodyText: '',
+      },
+      res: { json: (_body, code) => (status = code) },
+      log: () => {},
+      error: () => {},
+    })
+    expect(status).toBe(403)
   })
 
   it('logs counts only', async () => {
@@ -184,6 +211,17 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 'utc')).toBeNull()
   })
 
+  it('uses the local date in a group behind UTC too', async () => {
+    // 13:00 on Sunday 18 October in Los Angeles.
+    const services = seeded([
+      transaction('saturday', { groupId: 'la', date: '2026-10-17' }),
+      transaction('sunday', { groupId: 'la', date: '2026-10-18' }),
+    ])
+    expect((await runCron(services)).reminders.sent).toBe(1)
+    expect(remindedAt(services, 'saturday')).toBe(NOW.toISOString())
+    expect(remindedAt(services, 'sunday')).toBeNull()
+  })
+
   it('looks back 7 days before the UTC date, no further', async () => {
     const services = seeded([
       transaction('week', { date: '2026-10-11' }),
@@ -206,6 +244,13 @@ describe('step 3: shift to confirm', () => {
     const services = seeded([transaction('t1', { groupId: 'old' })])
     expect((await runCron(services)).reminders.sent).toBe(0)
     expect(remindedAt(services, 't1')).toBeNull()
+  })
+
+  it('looks each recipient up once per run', async () => {
+    const services = seeded([transaction('t1'), transaction('t2', { date: '2026-10-17' })])
+    const get = vi.spyOn(services.users, 'get')
+    expect((await runCron(services)).reminders.sent).toBe(2)
+    expect(get).toHaveBeenCalledTimes(1)
   })
 
   it('marks it reminded without sending when the owner has no verified email', async () => {
@@ -367,16 +412,11 @@ describe('step 3: batches', () => {
     expect((await runCron(services)).reminders.sent).toBe(205)
   })
 
-  it('starts no new page once the time budget is used up', async () => {
+  it('stops, even within a page, once the time budget is used up', async () => {
     const services = seeded(shifts(150))
-    let pages = 0
-    const list = services.db.listRows.bind(services.db)
-    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
-      if (params.tableId === 'transactions') pages += 1
-      return list(params)
-    })
-    services.outOfTime = () => pages >= 1
-    expect((await runCron(services)).reminders.sent).toBe(100)
+    services.outOfTime = () => services.sendEmail.mock.calls.length >= 30
+    expect((await runCron(services)).reminders.sent).toBe(30)
+    expect(remindedAt(services, 't030')).toBeNull()
   })
 
   it('moves past rows it can’t send yet instead of reading them again', async () => {

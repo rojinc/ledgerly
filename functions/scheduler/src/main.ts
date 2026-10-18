@@ -17,7 +17,7 @@ export function schedulerRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'scheduler', version }), { public: true }),
-    route('POST', '/', async (ctx) => run(services(ctx), ctx.scheduled)),
+    route('POST', '/', async (ctx) => run(ctx.scheduled, () => services(ctx))),
     route('POST', '/schedules/preview', async (ctx) =>
       previewSchedule(services(ctx), ctx.userId, ctx.body),
     ),

@@ -133,6 +133,22 @@ describe('POST /schedules/preview', () => {
     expect(skipped.filter(({ reason }) => reason === 'holiday').length).toBeGreaterThan(0)
   })
 
+  it('finds a date 31 days on, the longest gap a rule can have', async () => {
+    // From the day after 28 February, the last day of the month is 31 days later.
+    const { dates } = await preview({
+      ...thursdays,
+      rrule: 'FREQ=MONTHLY;BYMONTHDAY=-1',
+      startsOn: '2027-03-01',
+      count: 1,
+    })
+    expect(dates).toEqual(['2027-03-31'])
+  })
+
+  it('stops at the last date there is', async () => {
+    const { dates } = await preview({ ...thursdays, startsOn: '9999-12-01' })
+    expect(dates).toEqual(['9999-12-02', '9999-12-09', '9999-12-16', '9999-12-23', '9999-12-30'])
+  })
+
   it('lets any member preview, viewers included', async () => {
     expect((await preview({ ...thursdays, count: 1 }, 'u2')).dates).toEqual(['2026-10-22'])
   })

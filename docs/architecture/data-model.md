@@ -158,7 +158,7 @@ Permissions: `read("team:<groupId>")`.
 | `statementId` | varchar(36)? | Set when a final statement locks it |
 | `receiptFileIds` | varchar(36)[]? | Files in the `receipts` bucket |
 | `startedAt` | datetime? | Timer shifts |
-| `remindedAt` | datetime? | Last reminder sent (bill due, long-running timer) |
+| `remindedAt` | datetime? | When the last reminder (bill due, shift to confirm, long-running timer) was sent, or found nobody to send to |
 | `voidReason` | varchar(200)? | |
 | `createdBy` | varchar(36) | personId. Schedule occurrences use the schedule's `createdBy`. |
 | `updatedBy` | varchar(36) | personId |

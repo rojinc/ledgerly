@@ -62,7 +62,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger; that route refuses anything else (`FORBIDDEN`) and returns only counts. The steps run in order. Each processes items in batches of 100, and a run starts no new batch 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
+The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order. Each processes items in batches of 100, and a run starts no new batch 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -100,7 +100,7 @@ Query with `idx_status_date` (autopay bills: `idx_status_dueOn`) for dates from 
 | Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost`, `remindedAt` empty | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
-Each reminder goes out once: it is sent with Resend's idempotency key `reminder-<transactionId>`, then `remindedAt` is set. If the run stops in between, the next run sends it again with the same key, and Resend doesn't deliver it twice within 24 hours. A failed send leaves `remindedAt` empty, so the next run tries again.
+Each reminder goes out once: it is sent with Resend's idempotency key `reminder-<transactionId>`, then `remindedAt` is set. If the run stops in between, the next run sends it again with the same key, and Resend doesn't deliver it twice within 24 hours. A failed send leaves `remindedAt` empty, so the next run tries again. Bill reminders add `dueOn` to the key: a new due date clears `remindedAt` and needs its own reminder.
 
 - **Who gets it:** only a joined member with an account and a verified email (`users.get`, so the function has the `users.read` scope). With nobody to send to, `remindedAt` is still set, so the row isn't read every hour.
 - **Shift to confirm:** also for a `scheduled` shift that has no schedule, since nothing will post it. The shift's date must be before today in the group's timezone. The query uses the same 7-day floor as step 2.

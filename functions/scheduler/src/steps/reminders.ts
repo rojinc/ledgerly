@@ -42,12 +42,18 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
     db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId }),
   )
   const schedules = memo((rowId) => getOrUndefined<Schedules>(db, TABLES.schedules, rowId))
+  // `<groupId>/<personId>`: Appwrite IDs have no slash.
+  const recipients = memo((key) => {
+    const [groupId, personId] = key.split('/') as [string, string]
+    return verifiedEmail(services, groupId, personId)
+  })
   const utcToday = localToday('UTC', now)
 
-  // idx_status_date. Some timezones are a day ahead of UTC.
+  // idx_status_date. A shift must be before the group's local today, which is at most a day
+  // after the UTC date, so later dates are never reminded yet.
   const shifts = pages<Transactions>(services, [
     Query.equal('status', 'scheduled'),
-    Query.between('date', addDays(utcToday, -FLOOR_DAYS), addDays(utcToday, 1)),
+    Query.between('date', addDays(utcToday, -FLOOR_DAYS), utcToday),
     Query.equal('kind', 'shift'),
     Query.isNull('remindedAt'),
   ])
@@ -64,7 +70,8 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       date: shift.date as LocalDate,
       url: link(services, shift),
     })
-    await remind(services, shift, group, group.ownerPersonId, content, counts)
+    const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
+    await remind(services, shift, to, content, counts)
   }
 
   // idx_status_date, on its status alone: there are few running timers.
@@ -82,7 +89,13 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       timeZone: group.timezone,
       url: link(services, timer),
     })
-    await remind(services, timer, group, timer.createdBy, content, counts)
+    await remind(
+      services,
+      timer,
+      await recipients(`${group.$id}/${timer.createdBy}`),
+      content,
+      counts,
+    )
   }
   return counts
 }
@@ -107,12 +120,10 @@ function link({ appUrl }: Services, row: Transactions): string {
 async function remind(
   services: Services,
   row: Transactions,
-  group: Groups,
-  personId: string,
+  to: string | undefined,
   content: EmailContent,
   counts: ReminderCounts,
 ): Promise<void> {
-  const to = await verifiedEmail(services, group, personId)
   if (to) {
     try {
       // Resend sends one email per key within 24 hours, so if setting remindedAt below
@@ -135,13 +146,14 @@ async function remind(
 // placeholders get no reminders).
 async function verifiedEmail(
   { db, users }: Services,
-  group: Groups,
+  groupId: string,
   personId: string,
 ): Promise<string | undefined> {
+  // uniq_group_person
   const { rows } = await db.listRows<Members>({
     databaseId: DATABASE_ID,
     tableId: TABLES.members,
-    queries: [Query.equal('groupId', group.$id), Query.equal('personId', personId), Query.limit(1)],
+    queries: [Query.equal('groupId', groupId), Query.equal('personId', personId), Query.limit(1)],
     total: false,
   })
   if (!rows[0] || rows[0].status === 'placeholder') return undefined
@@ -177,8 +189,8 @@ async function markReminded(db: Db, rowId: string, now: Date): Promise<void> {
 
 /**
  * Every matching transaction, a page of PAGE at a time, until the run's time budget is used
- * up. Pages follow `$id`, not a cursor row: a row this step has just updated may no longer
- * match, and a cursor has to.
+ * up. Pages follow `$id` rather than a cursor row (scaling.md): the rows this step goes
+ * through can be deleted meanwhile, and a deleted cursor row fails the query.
  */
 async function* pages<R extends Transactions>(
   { db, outOfTime }: Services,
@@ -197,7 +209,11 @@ async function* pages<R extends Transactions>(
       ],
       total: false,
     })
-    yield* rows
+    for (const row of rows) {
+      // One row can take several requests, the email among them.
+      if (outOfTime()) return
+      yield row
+    }
     if (rows.length < PAGE) return
     after = rows[rows.length - 1]?.$id
   }

@@ -9,7 +9,7 @@ The aim: nothing we build now needs a rewrite at 100,000 users, and we don't bui
 | Operations per TablesDB transaction | Free 100 · Pro 1,000 · Scale 2,500 | At most 30 items and 15 people per transaction, so one write uses fewer than 100 operations. Bulk jobs (locking, merges) work in batches of 90. |
 | Synchronous execution timeout | 30 seconds, hard | User-facing routes target under 2 s. Long work (finalize) runs async and is resumable. |
 | Cron timing | UTC clock | Jobs run hourly and work out each group's local date themselves. |
-| Pagination | Offset paging slows down on large tables | Always use cursor pagination (`Query.cursorAfter`), page size 100. |
+| Pagination | Offset paging slows down on large tables | Always use cursor pagination (`Query.cursorAfter`), page size 100. A job that goes through rows which may be deleted meanwhile pages by `$id` instead (`Query.greaterThan('$id', last)` with `Query.orderAsc('$id')`), because a deleted cursor row fails the query. |
 
 Production runs on the **Pro** plan. Development may use Free, which is why we keep under the Free limits.
 
