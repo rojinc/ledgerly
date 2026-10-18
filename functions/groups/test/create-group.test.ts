@@ -141,6 +141,10 @@ describe('POST /groups', () => {
       }),
     ])
     expect(teams.members('g1')?.map((membership) => membership.userId)).toEqual(['u1'])
+    expect(db.rows('activity').map((row) => [row.action, row.summary])).toEqual([
+      ['group.created', 'Person 1 created Acme work'],
+      ['member.added', 'Boss was added'],
+    ])
   })
 
   it('creates a pair group with the counterpart as an admin placeholder', async () => {

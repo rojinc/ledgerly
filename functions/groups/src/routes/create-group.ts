@@ -132,6 +132,18 @@ export async function createGroup(
           now,
         ),
       )
+      if (input.counterpart && input.type !== 'house') {
+        // identity-and-invites.md#adding-someone-to-a-group, step 5: the counterpart is added too.
+        writes.push(
+          activityWrite(
+            input.id,
+            creator.$id,
+            'member.added',
+            `${input.counterpart.displayName} was added`,
+            now,
+          ),
+        )
+      }
       await tx.write(...writes)
     }),
   )
