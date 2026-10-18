@@ -1,13 +1,21 @@
-import { MAX_AMOUNT_CENTS } from '../constants/limits'
+import { assertAmountCents } from './amount'
+
+// "Cents" means the currency's smallest unit (glossary.md): 2 decimals for
+// AUD, 0 for JPY, 3 for KWD. Intl knows each currency's decimals.
+function currencyFormat(currency: string, locale?: string) {
+  const format = new Intl.NumberFormat(locale, { style: 'currency', currency })
+  // Always set for style 'currency'.
+  const digits = format.resolvedOptions().maximumFractionDigits as number
+  return { format, digits }
+}
 
 /**
  * Formats cents for display, e.g. `formatMoney(1234, 'AUD', 'en-AU')` → `$12.34`.
  * The amount goes to Intl as an exact decimal string, never a float.
  */
 export function formatMoney(cents: number, currency: string, locale?: string): string {
-  const format = new Intl.NumberFormat(locale, { style: 'currency', currency })
-  // Always set for style 'currency' (2 for AUD, 0 for JPY).
-  const digits = format.resolvedOptions().maximumFractionDigits as number
+  assertAmountCents(cents)
+  const { format, digits } = currencyFormat(currency, locale)
   const sign = cents < 0 ? '-' : ''
   const units = String(Math.abs(cents)).padStart(digits + 1, '0')
   const whole = units.slice(0, units.length - digits)
@@ -15,17 +23,23 @@ export function formatMoney(cents: number, currency: string, locale?: string): s
   return format.format(`${sign}${whole}${fraction}` as Intl.StringNumericLiteral)
 }
 
-const MONEY_TEXT = /^(-?)(\d+)(?:\.(\d{1,2}))?$/
+const MONEY_TEXT = /^(-?)(\d+)(?:\.(\d+))?$/
 
 /**
- * Parses a typed amount into cents: `'12.34'` → `1234`, `'-5'` → `-500`.
- * Throws on anything else, including more than 2 decimals and thousands separators.
+ * Parses a typed amount into cents of `currency`: `parseMoney('12.34', 'AUD')` → `1234`,
+ * `parseMoney('1234', 'JPY')` → `1234`. Throws on anything else, including more
+ * decimals than the currency has and thousands separators. The message never
+ * repeats the input, so it is safe to log.
  */
-export function parseMoney(text: string): number {
+export function parseMoney(text: string, currency: string): number {
+  const { digits } = currencyFormat(currency)
   const match = MONEY_TEXT.exec(text.trim())
-  if (!match) throw new RangeError(`Not an amount of money: "${text}"`)
-  const [, sign, whole, fraction = ''] = match
-  const cents = Number(whole) * 100 + Number(fraction.padEnd(2, '0'))
-  if (cents > MAX_AMOUNT_CENTS) throw new RangeError(`Amount is over the limit: "${text}"`)
+  const [, sign, whole, fraction = ''] = match ?? []
+  if (!match || fraction.length > digits) {
+    throw new RangeError(`Not an amount of ${currency} (up to ${digits} decimals)`)
+  }
+  // Exact while the result is within MAX_AMOUNT_CENTS; anything bigger throws below.
+  const cents = Number(whole) * 10 ** digits + Number(fraction.padEnd(digits, '0'))
+  assertAmountCents(cents)
   return sign === '-' ? 0 - cents : cents
 }

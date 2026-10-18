@@ -1,4 +1,5 @@
-import { MAX_AMOUNT_CENTS, MAX_WEIGHT } from '../constants/limits'
+import { MAX_WEIGHT } from '../constants/limits'
+import { assertAmountCents } from './amount'
 
 /**
  * Splits `totalCents` by `weights` so the parts always add up to exactly the
@@ -9,9 +10,7 @@ import { MAX_AMOUNT_CENTS, MAX_WEIGHT } from '../constants/limits'
  * 3. negative totals are split as positive, then flipped.
  */
 export function allocate(totalCents: number, weights: readonly number[]): number[] {
-  if (!Number.isInteger(totalCents) || Math.abs(totalCents) > MAX_AMOUNT_CENTS) {
-    throw new RangeError(`totalCents must be an integer of at most ${MAX_AMOUNT_CENTS} in size`)
-  }
+  assertAmountCents(totalCents)
   for (const weight of weights) {
     if (!Number.isInteger(weight) || weight < 0 || weight > MAX_WEIGHT) {
       throw new RangeError(`weights must be integers from 0 to ${MAX_WEIGHT}`)
@@ -20,7 +19,8 @@ export function allocate(totalCents: number, weights: readonly number[]): number
   const sum = weights.reduce((a, b) => a + b, 0)
   if (sum <= 0) throw new RangeError('weights must add up to more than 0')
 
-  // BigInt keeps the division and the remainders exact for any input.
+  // The limits already keep total × weight exact as a number; BigInt makes that
+  // obvious here and keeps the remainder comparison exact without relying on it.
   const total = BigInt(Math.abs(totalCents))
   const divisor = BigInt(sum)
   const products = weights.map((weight) => total * BigInt(weight))

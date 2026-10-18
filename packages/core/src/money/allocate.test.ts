@@ -65,10 +65,15 @@ describe('allocate', () => {
 
   it('always sums to the total and never differs by 1 cent or more from the exact share', () => {
     const random = seededRandom(20261018)
-    for (let run = 0; run < 2000; run++) {
-      const total = Math.floor(random() * 2_000_000) - 1_000_000
-      const count = 1 + Math.floor(random() * 15)
-      const weights = Array.from({ length: count }, () => 1 + Math.floor(random() * 100))
+    const int = (max: number) => Math.floor(random() * (max + 1))
+    for (let run = 0; run < 5000; run++) {
+      // Mix everyday amounts with amounts near the limits, and allow zero weights.
+      const big = run % 2 === 0
+      const size = big ? int(MAX_AMOUNT_CENTS) : int(2_000_000)
+      const total = random() < 0.5 ? 0 - size : size
+      const count = 1 + int(14)
+      const weights = Array.from({ length: count }, () => (big ? int(MAX_WEIGHT) : int(100)))
+      if (!weights.some((weight) => weight > 0)) weights[0] = 1
       const parts = allocate(total, weights)
       expect(parts.reduce((a, b) => a + b, 0)).toBe(total)
       const sum = weights.reduce((a, b) => a + b, 0)
