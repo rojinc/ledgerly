@@ -234,4 +234,4 @@ functions/<name>/
   test/<route>.test.ts
 ```
 
-`createHandler` (in `packages/server`) does the routing by method and path, reads the caller, turns `AppError` into the envelope above and logs one structured line per request (no personal data).
+`createHandler` (in `packages/server`) does the routing by method and path, verifies the caller's JWT ([permissions step 1](permissions.md#function-side-checks)), turns `AppError` into the envelope above and logs one structured line per request (no personal data).
