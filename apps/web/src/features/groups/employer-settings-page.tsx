@@ -1,12 +1,13 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema, type UpdateGroupBody } from '@ledgerly/core/schemas/groups'
 import { useQueryClient } from '@tanstack/react-query'
-import type { ReactNode } from 'react'
+import { type ReactNode, useRef } from 'react'
 import { useParams } from 'react-router'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { ARCHIVED_NOTICE, ArchiveGroup, writeErrorMessage } from './archive-group'
 import { EmployerForm, type EmployerValues, toEmployerValues } from './employer-form'
 import { useGroup, useMyMember } from './use-groups'
 
@@ -46,6 +47,7 @@ export function EmployerSettingsPage() {
   const group = useGroup(groupId)
   const member = useMyMember(groupId, personId)
   const queryClient = useQueryClient()
+  const heading = useRef<HTMLHeadingElement>(null)
 
   async function save(body: UpdateGroupBody): Promise<EmployerValues> {
     const result = await callFunction<Groups>('groups', 'PATCH', `/groups/${groupId}`, body)
@@ -55,7 +57,7 @@ export function EmployerSettingsPage() {
         await queryClient.invalidateQueries({ queryKey: queryKeys.group(groupId) })
         await queryClient.invalidateQueries({ queryKey: queryKeys.myMember(groupId, personId) })
       }
-      throw new Error(result.error.message)
+      throw new Error(writeErrorMessage(result.error))
     }
     queryClient.setQueryData(queryKeys.group(groupId), result.data)
     await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
@@ -75,7 +77,7 @@ export function EmployerSettingsPage() {
   } else if (group.data.type !== 'employer') {
     content = <Message>Only employer groups have settings here.</Message>
   } else if (group.data.archivedAt) {
-    content = <Message>This group is archived.</Message>
+    content = <Message>{ARCHIVED_NOTICE}</Message>
   } else if (!values) {
     content = (
       <Message alert>
@@ -94,13 +96,16 @@ export function EmployerSettingsPage() {
           readOnly={!isAdmin}
           onSave={save}
         />
+        {isAdmin && <ArchiveGroup group={group.data} onArchived={() => heading.current?.focus()} />}
       </>
     )
   }
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold">{group.data?.name ?? 'Employer settings'}</h1>
+      <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+        {group.data?.name ?? 'Employer settings'}
+      </h1>
       {content}
     </div>
   )
