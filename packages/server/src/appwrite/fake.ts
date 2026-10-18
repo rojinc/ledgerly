@@ -153,7 +153,8 @@ export class FakeDb implements Db {
       checkDatabase(operation.databaseId)
       checkTable(operation.tableId)
       const seen = this.version(operation.tableId, operation.rowId)
-      transaction.staged.push({ ...structuredClone(operation), seen })
+      // Through JSON, as the SDK sends it, so `undefined` keys are dropped.
+      transaction.staged.push({ ...(JSON.parse(JSON.stringify(operation)) as Operation), seen })
     }
     transaction.operations = transaction.staged.length
     return publicTransaction(transaction)

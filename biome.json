@@ -15,7 +15,11 @@
   },
   "linter": {
     "rules": {
-      "preset": "recommended"
+      "preset": "recommended",
+      "nursery": {
+        "noFloatingPromises": "error",
+        "noMisusedPromises": "error"
+      }
     }
   },
   "javascript": {
@@ -46,6 +50,17 @@
                 ]
               }
             }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["**", "!functions/**", "!packages/server/**"],
+      "linter": {
+        "rules": {
+          "nursery": {
+            "noFloatingPromises": "off",
+            "noMisusedPromises": "off"
           }
         }
       }

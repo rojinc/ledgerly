@@ -19,10 +19,12 @@ export type Tx = {
   /** Pass as `transactionId` to reads to see this transaction's staged writes merged in. */
   id: string
   /**
-   * Stages the writes now, in one request. If any of these rows changes outside the
-   * transaction after this, the commit fails with 409. Await it before reading those rows.
-   * `withTransaction` also waits for every staging before it commits, and if one failed it
-   * rolls back and throws that error, even if the route caught it.
+   * Stages the writes in one request, after every earlier `write` call has staged, so writes
+   * apply in call order. If any of these rows changes outside the transaction after this, the
+   * commit fails with 409. Always await it (Biome's `noFloatingPromises` checks). As a safety
+   * net, `withTransaction` waits for every staging before it commits, and if one failed it
+   * rolls back and throws that error, even if the route caught it. Once `work` has resolved,
+   * `write` stages nothing and throws.
    */
   write(...writes: Write[]): Promise<void>
 }
@@ -41,9 +43,15 @@ export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): 
   const { $id: transactionId } = await db.createTransaction()
   let requested = 0
   let staged = 0
-  // Every staging call, settled, so nothing commits while one is still in flight, even one
-  // the route forgot to await. Each resolves to its error, or undefined.
-  const stagings: Array<Promise<{ error: unknown } | undefined>> = []
+  // Each staging starts once the one before has settled, so two writes to the same row apply
+  // in call order even without await. `stagings` is the last of them, settled, so awaiting it
+  // waits for them all; `failed` keeps the first error.
+  let stagings: Promise<void> = Promise.resolve()
+  let failed: { error: unknown } | undefined
+  // Set once `work` has settled. A write after that stages nothing and throws, and one that
+  // comes before the commit is sent (a floating promise in the route) rolls everything back.
+  let ended = false
+  let late: Error | undefined
   const stage = async (writes: Write[]) => {
     requested += writes.length
     if (requested > MAX_OPS_PER_DB_TRANSACTION) {
@@ -57,12 +65,24 @@ export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): 
   const tx: Tx = {
     id: transactionId,
     write(...writes) {
-      const staging = stage(writes)
-      stagings.push(
-        staging.then(
-          () => undefined,
-          (error: unknown) => ({ error }),
-        ),
+      if (ended) {
+        late ??= new Error('tx.write was called after the transaction ended; await every write')
+        const refused = Promise.reject(late)
+        // Handled here as well, so a write nobody awaits doesn't crash the process with an
+        // unhandled rejection. A caller that awaits it still gets the error.
+        refused.catch(() => {})
+        return refused
+      }
+      // After a failed staging the transaction will roll back, so send nothing more.
+      const staging = stagings.then(() => {
+        if (failed) throw failed.error
+        return stage(writes)
+      })
+      stagings = staging.then(
+        () => undefined,
+        (error: unknown) => {
+          failed ??= { error }
+        },
       )
       return staging
     },
@@ -70,10 +90,13 @@ export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): 
   let result: T
   try {
     result = await work(tx)
-    const failed = (await Promise.all(stagings)).find((outcome) => outcome !== undefined)
+    ended = true
+    await stagings
     if (failed) throw failed.error
+    if (late) throw late
   } catch (error) {
-    await Promise.all(stagings)
+    ended = true
+    await stagings
     await rollback(db, transactionId)
     throw error
   }
