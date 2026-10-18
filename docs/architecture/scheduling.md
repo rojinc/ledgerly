@@ -66,7 +66,7 @@ The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs *
 
 ### Step 1: expand due schedules
 
-Query `schedules` where `nextRunAt <= now`, ordered by `nextRunAt`. Skip (and clear `nextRunAt` for) schedules in archived groups. For each:
+Query `schedules` where `nextRunAt <= now` (`idx_nextRunAt`, in pages by `$id`). Skip (and clear `nextRunAt` for) schedules in archived groups. For each:
 
 ```
 today       = localToday(group.timezone, now)
@@ -78,10 +78,15 @@ for date in expandSchedule(schedule, from, to, holidays(group.region)):
         status = 'scheduled' (shift, expense, income) or 'due' (bill, with dueOn = date)
         scheduleId, date, createdBy = schedule.createdBy; ignore 409
 generatedThrough = to
-nextRunAt = next local 00:05 in group.timezone (as UTC), or empty if endsOn < today
+nextRunAt = next local 00:05 in group.timezone (as UTC), or empty once everything up to endsOn exists
 ```
 
-Occurrences are written in batches of at most 90 operations per database transaction (a daily rule with a 120-day horizon is 120 rows). Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
+Occurrences are written in batches of at most 90 operations per database transaction (a daily rule with a 120-day horizon is 120 rows), with each occurrence's items. An occurrence whose row already exists, voided or edited, is left as it is. Each batch is guarded ([ledger.md#concurrency](ledger.md#concurrency)):
+- it stages its progress (`generatedThrough`, and `nextRunAt` in the last batch) on the schedule row;
+- it checks the stored schedule is the one it read;
+- it guards the group row and the member row of everyone the template names.
+
+An edit, another run or a member removed meanwhile makes it run again with things as they are now. A schedule that still can't be expanded (a template a member change made invalid, say) keeps its `nextRunAt`, is counted as failed in the run's result, and is tried again next run. Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
 
 ### Step 2: auto-post
 
@@ -131,13 +136,15 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 
 | Route | What it does |
 | --- | --- |
-| `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once |
-| `PATCH /schedules/{id}` | Update. Delete future occurrences that are still `scheduled`/`due` and not `overridden` (date ≥ local today), reset `generatedThrough` to yesterday, expand again |
-| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it |
-| `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end |
+| `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. The template is checked against the ledger rules with a trial occurrence on `startsOn`, and the schedule's creator pays when it names no payers. A retry with the same content finishes the expansion; the same `id` with other content is `CONFLICT` |
+| `PATCH /schedules/{id}` | Update. Delete future occurrences that are still `scheduled`/`due` and not `overridden` (date ≥ local today), reset `generatedThrough` to yesterday, expand again. The group and kind can't change (`VALIDATION_FAILED`) |
+| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it. It never checks the template, so a schedule can always be ended; a later `endsOn` than before carries on at the next run |
+| `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included, with their items |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
 
 Changes to occurrences themselves (edit, void, post) go through the `ledger` function. Editing an occurrence sets `overridden = true`.
+
+Creating or editing a schedule guards the group row and the member row of everyone its template names, like a ledger write ([ledger.md#concurrency](ledger.md#concurrency)). A template can't commit just after a member's removal was checked, and a removal can't commit just after the template. Deleting occurrences stages the deletes, then checks the stored rows: one edited, posted or voided meanwhile is kept. Schedule templates can't have receipts yet, like `POST /transactions`.
 
 ## Timer shifts
 
