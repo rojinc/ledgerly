@@ -1,11 +1,15 @@
-import type { Db } from '@ledgerly/server/appwrite/client'
+import { clientFromRequest, type Db } from '@ledgerly/server/appwrite/client'
+import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { type Email, sendEmail } from '@ledgerly/server/email/send-email'
 import type { RouteContext } from '@ledgerly/server/http/create-handler'
+import { Teams } from 'node-appwrite'
 import { type Files, filesFromRequest } from './files'
 
 /** What the routes work with, so tests can pass FakeDb, fake files and email, and a fixed clock. */
 export type Services = {
   db: Db
+  /** For requireMember: whether a `left` member is still in the group's team (#117). */
+  teams: Pick<TeamsApi, 'listMemberships'>
   files: Files
   sendEmail: (email: Email) => Promise<unknown>
   now: Date
@@ -17,6 +21,11 @@ export type Services = {
 export function servicesFromRequest(ctx: Pick<RouteContext, 'db' | 'headers'>): Services {
   return {
     db: ctx.db,
+    // Built only when asked: only a `left` member needs it.
+    teams: {
+      listMemberships: (params) =>
+        new Teams(clientFromRequest(ctx.headers)).listMemberships(params),
+    },
     files: filesFromRequest(ctx.headers),
     sendEmail,
     now: new Date(),

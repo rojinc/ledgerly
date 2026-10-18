@@ -2,6 +2,7 @@ import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  afterLatestFinalRead,
   beforeStaging,
   failure,
   fakes,
@@ -238,7 +239,59 @@ describe('finalizing after a void', () => {
   })
 })
 
+describe('a void still unlocking', () => {
+  it('leaves a transaction alone that another statement locked meanwhile', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s0', '2026-09-10', 60, { statementId: 'st-sep' }), {
+        statements: [
+          statement('st-sep', {
+            periodStart: '2026-09-01',
+            periodEnd: '2026-09-30',
+            status: 'final',
+          }),
+          statement('st-oct'),
+        ],
+      }),
+      groups: [job({}, { nextCloseAt: NOVEMBER_CLOSE })],
+    })
+    // The void's stagings: 1 void, 2 its first unlock batch. Just before 2, October's finalize
+    // (which finished this void's unlock itself) has locked s0.
+    beforeStaging(services.db, [op('transactions', 's0', { statementId: 'st-oct' })], 2)
+    const voided = await ok<Statements>(services, 'POST', '/statements/st-sep/void', {
+      reason: 'Wrong rate',
+    })
+    expect(voided.status).toBe('void')
+    expect(locks(services)).toEqual({ s0: 'st-oct' })
+  })
+})
+
 describe('void and finalize at the same moment', () => {
+  it('refuses when a later statement turns final between its reads', async () => {
+    // October's last finalize step commits just after the void reads the latest final one.
+    const services = fakes({
+      ...rowsOf(
+        shift('s0', '2026-09-10', 60, { statementId: 'st-sep' }),
+        shift('s1', '2026-10-02', 240, { statementId: 'st-oct' }),
+        {
+          statements: [
+            statement('st-sep', {
+              periodStart: '2026-09-01',
+              periodEnd: '2026-09-30',
+              status: 'final',
+            }),
+            statement('st-oct', { status: 'finalizing', number: 11 }),
+          ],
+        },
+      ),
+      groups: [job({}, { nextCloseAt: NOVEMBER_CLOSE })],
+    })
+    afterLatestFinalRead(services.db, [op('statements', 'st-oct', { status: 'final' })])
+    const response = await failure(services, 'POST', '/statements/st-sep/void', { reason: 'x' })
+    expect(response.code).toBe('CONFLICT')
+    expect(stored(services, 'st-sep').status).toBe('final')
+    expect(locks(services)).toEqual({ s0: 'st-sep', s1: 'st-oct' })
+  })
+
   const threeMonths = () =>
     fakes(
       rowsOf(shift('s0', '2026-09-10', 60), shift('s1', '2026-10-02', 240), {

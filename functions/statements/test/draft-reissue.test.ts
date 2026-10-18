@@ -2,6 +2,7 @@ import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  afterLatestFinalRead,
   beforeStaging,
   failure,
   fakes,
@@ -311,6 +312,29 @@ describe('reissue guards', () => {
     expect((await failure(services, 'POST', '/statements/reissue', september)).code).toBe(
       'CONFLICT',
     )
+    expect(services.db.rows('statements')).toHaveLength(2)
+  })
+
+  it('refuses when the finalizing statement turns final between its reads', async () => {
+    // September is final and October is finalizing. Its last step commits just after the
+    // reissue of 1–20 October reads the latest final statement.
+    const services = fakes({
+      ...octoberDrafted,
+      statements: [
+        statement('st-sep', {
+          ...september,
+          status: 'final',
+          snapshotJson: snapshotClosing({ start: '2026-09-01', end: '2026-09-30' }, {}),
+        }),
+        statement('st-oct', { status: 'finalizing', number: 10 }),
+      ],
+    })
+    afterLatestFinalRead(services.db, [op('statements', 'st-oct', { status: 'final' })])
+    const response = await failure(services, 'POST', '/statements/reissue', {
+      ...october,
+      periodEnd: '2026-10-20',
+    })
+    expect(response.code).toBe('CONFLICT')
     expect(services.db.rows('statements')).toHaveLength(2)
   })
 

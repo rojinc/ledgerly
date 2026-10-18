@@ -28,12 +28,12 @@ import { computeSnapshot, statementTypeOf } from '../snapshot'
  * still unfinished returns it, so a retry makes no second draft.
  */
 export async function reissueStatement(
-  { db, now }: Services,
+  { db, teams, now }: Services,
   userId: string,
   body: unknown,
 ): Promise<Statements> {
   const { groupId, periodStart, periodEnd } = parseBody(reissueStatementBodySchema, body)
-  const { person, group } = await requireMember(db, userId, groupId, { roles: ['admin'] })
+  const { person, group } = await requireMember(db, teams, userId, groupId, { roles: ['admin'] })
   if (statementTypeOf(group) === 'divide') throw invalid('House divides are not available yet.')
   const existing = await unfinishedFor(db, groupId, periodStart, periodEnd)
   if (existing) return existing
@@ -92,15 +92,17 @@ export async function reissueStatement(
  * statement (statements.md#4-void). Reads the stored rows, after the group row is staged.
  */
 async function requireFinalizable(db: Db, groupId: string, periodEnd: string): Promise<void> {
+  // The finalizing one's partial locks would break this draft's check, and this draft, being
+  // earlier, would stop that one from finishing. Read before the latest final: finalize's last
+  // step doesn't write the group row, so a statement turning final between the two reads is
+  // seen by one of them.
+  if (await isFinalizing(db, groupId)) {
+    throw new AppError('CONFLICT', 'A statement of this group is being finalized. Try again soon.')
+  }
   // Its opening would come from before that statement, and its check would count its locks.
   const latest = await latestFinal(db, groupId)
   if (latest && latest.periodEnd >= periodEnd) {
     throw invalid('This period is already final. Void the latest statement first to redo it.')
-  }
-  // The finalizing one's partial locks would break this draft's check, and this draft, being
-  // earlier, would stop that one from finishing.
-  if (await isFinalizing(db, groupId)) {
-    throw new AppError('CONFLICT', 'A statement of this group is being finalized. Try again soon.')
   }
   // The opening of a draft skips a final statement that ends on the same day, but its check
   // counts that statement's locks.

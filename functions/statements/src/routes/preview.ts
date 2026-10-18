@@ -12,12 +12,12 @@ import { computeSnapshot } from '../snapshot'
  * `periodEnd` (default: today in the group's time zone) would have now. Nothing is saved.
  */
 export async function previewStatement(
-  { db, now }: Services,
+  { db, teams, now }: Services,
   userId: string,
   body: unknown,
 ): Promise<{ snapshot: StatementSnapshot }> {
   const { groupId, periodEnd } = parseBody(previewStatementBodySchema, body)
-  const { group } = await requireMember(db, userId, groupId, { allowArchived: true })
+  const { group } = await requireMember(db, teams, userId, groupId, { allowArchived: true })
   const end = periodEnd ?? localToday(group.timezone, now)
   const { snapshot } = await computeSnapshot(db, group, periodEndingOn(group, end), now)
   return { snapshot }

@@ -37,6 +37,26 @@ const october = () =>
     { statements: [statement('st1')] },
   )
 
+// September's final invoice says Acme owes $50.00, but no locked share backs that up, so
+// finalizing October's s1 fails its check.
+const failingCheck = () =>
+  fakes(
+    rowsOf(shift('s1', '2026-10-02', 240), {
+      statements: [
+        statement('st-sep', {
+          periodStart: '2026-09-01',
+          periodEnd: '2026-09-30',
+          status: 'final',
+          snapshotJson: snapshotClosing(
+            { start: '2026-09-01', end: '2026-09-30' },
+            { acme: -5000, sam: 5000 },
+          ),
+        }),
+        statement('st1'),
+      ],
+    }),
+  )
+
 const finalize = (services: Services, send = false, id = 'st1', user = 'u-sam') =>
   ok<Statements>(services, 'POST', `/statements/${id}/finalize`, { send }, user)
 
@@ -321,29 +341,34 @@ describe('two finalize runs of one statement at once', () => {
   })
 
   it('leaves the locks alone when its check fails after the other run stored the issue date', async () => {
-    // As in "unlocks everything and goes back to draft", the check fails. But the other run
-    // passed its check and stored issuedOn just before this one goes back to draft.
-    const services = fakes(
-      rowsOf(shift('s1', '2026-10-02', 240), {
-        statements: [
-          statement('st-sep', {
-            periodStart: '2026-09-01',
-            periodEnd: '2026-09-30',
-            status: 'final',
-            snapshotJson: snapshotClosing(
-              { start: '2026-09-01', end: '2026-09-30' },
-              { acme: -5000, sam: 5000 },
-            ),
-          }),
-          statement('st1'),
-        ],
-      }),
-    )
+    // The check fails, but the other run passed its check and stored issuedOn just before this
+    // one goes back to draft.
+    const services = failingCheck()
     // This run's stagings: 1 finalizing, 2 the number, 3 the lock batch, 4 back to draft.
     beforeStaging(services.db, [op('statements', 'st1', { issuedOn: '2026-11-02' })], 4)
     const response = await failure(services, 'POST', '/statements/st1/finalize', { send: false })
     expect(response.code).toBe('CONFLICT')
     expect(stored(services)).toMatchObject({ status: 'finalizing', issuedOn: '2026-11-02' })
+    expect(locks(services)).toEqual({ s1: 'st1' })
+  })
+
+  it('stops unlocking when another run starts finalizing the statement again', async () => {
+    // This run went back to draft. Before its locks come off, a new run starts finalizing (its
+    // step 1 writes the statement and the group row), and goes on to use those locks.
+    const services = failingCheck()
+    // This run's stagings: 1 finalizing, 2 the number, 3 the lock batch, 4 back to draft, 5 the
+    // first unlock batch.
+    beforeStaging(
+      services.db,
+      [
+        op('statements', 'st1', { status: 'finalizing' }),
+        op('groups', 'job', { rev: 'other-run' }),
+      ],
+      5,
+    )
+    const response = await failure(services, 'POST', '/statements/st1/finalize', { send: false })
+    expect(response.code).toBe('CONFLICT')
+    expect(stored(services)).toMatchObject({ status: 'finalizing' })
     expect(locks(services)).toEqual({ s1: 'st1' })
   })
 })

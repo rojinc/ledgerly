@@ -84,7 +84,8 @@ async function draftFor(
       const current = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
       if (current?.nextCloseAt !== group.nextCloseAt) throw new AlreadyDrafted()
       // A statement made before reissue had its guards can already cover this period: a draft
-      // on top of it could never be finalized. Only nextCloseAt moves on.
+      // on top of it could never be finalized. Only nextCloseAt moves on, and the period's
+      // transactions land on the next statement. Data made since can't get here.
       reached = await reachesEnd(db, group.$id, period.end)
       if (reached) return
       await tx.write(

@@ -1,4 +1,5 @@
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
+import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import type { Email } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
@@ -137,6 +138,8 @@ export function fakes(extra: Record<string, Row[]> = {}): Fakes {
   })
   return {
     db,
+    // Read when asked, so members a test adds or changes count.
+    teams: { listMemberships: (params) => teamsOf(db).listMemberships(params) },
     files: new FakeFiles(),
     sendEmail: async (email) => {
       sent.push(email)
@@ -146,6 +149,25 @@ export function fakes(extra: Record<string, Row[]> = {}): Fakes {
     appUrl: 'https://app.example.com',
     sent,
   }
+}
+
+const quitters = new WeakMap<FakeDb, Set<string>>()
+
+/** `userId` left a group on their own: their row stays `left`, but they're out of its team. */
+export function leftOnTheirOwn(services: Fakes, userId: string): void {
+  quitters.set(services.db, new Set([...(quitters.get(services.db) ?? []), userId]))
+}
+
+// Team ID = group ID: every joined member's user, including people who moved out.
+function teamsOf(db: FakeDb): FakeTeams {
+  const users = new Map(db.rows('persons').map((row) => [row.$id, row.userId as string | null]))
+  const teams: Record<string, string[]> = {}
+  for (const row of db.rows('members')) {
+    const userId = users.get(row.personId as string)
+    if (!userId || row.status === 'placeholder' || quitters.get(db)?.has(userId)) continue
+    teams[row.groupId as string] = [...(teams[row.groupId as string] ?? []), userId]
+  }
+  return new FakeTeams(teams)
 }
 
 const transaction = (
@@ -352,6 +374,28 @@ export async function commitNow(db: FakeDb, operations: object[]) {
   const { $id } = await db.createTransaction()
   await db.createOperations({ transactionId: $id, operations })
   await db.updateTransaction({ transactionId: $id, commit: true })
+}
+
+/**
+ * Commits `operations` just after the request first reads the group's latest final statement
+ * (`latestFinal`, not the snapshot's previous final, which reads before a period end).
+ */
+export function afterLatestFinalRead(db: FakeDb, operations: object[]) {
+  const list = db.listRows.bind(db)
+  let done = false
+  return vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
+    const result = await list(params)
+    const queries = params.queries ?? []
+    const latestFinal =
+      params.tableId === 'statements' &&
+      queries.some((query) => query.includes('"values":["final"]')) &&
+      !queries.some((query) => query.includes('"lessThan"'))
+    if (latestFinal && !done) {
+      done = true
+      await commitNow(db, operations)
+    }
+    return result
+  })
 }
 
 /**

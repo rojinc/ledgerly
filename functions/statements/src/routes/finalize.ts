@@ -25,6 +25,7 @@ import {
   getStatement,
   groupGuard,
   invalid,
+  isAppwriteError,
   listAll,
   parseBody,
   snapshotOf,
@@ -48,9 +49,15 @@ export async function finalizeRoute(
 ): Promise<Statements> {
   const { send } = parseBody(finalizeStatementBodySchema, body)
   const statement = await getStatement(services.db, statementId)
-  const { person, group } = await requireMember(services.db, userId, statement.groupId, {
-    roles: ['admin'],
-  })
+  const { person, group } = await requireMember(
+    services.db,
+    services.teams,
+    userId,
+    statement.groupId,
+    {
+      roles: ['admin'],
+    },
+  )
   return finalizeStatement(services, group, statement, person.$id, send)
 }
 
@@ -190,8 +197,7 @@ async function lockAndIssue(
     // Back to draft only if no other run of this finalize got past its check meanwhile: it
     // would have stored issuedOn, and its locks must stay. That's checked before anything is
     // unlocked, and a draft's leftover locks are this statement's again on its next finalize.
-    await updateStatement(db, statement, { status: 'draft', issuedOn: null })
-    await unlock(db, statement.$id)
+    await unlock(db, await updateStatement(db, statement, { status: 'draft', issuedOn: null }))
     // IDs and problem names only (security-and-privacy.md).
     console.error(`statements: statement ${statement.$id} failed its check: ${problems.join(', ')}`)
     throw new AppError(
@@ -230,23 +236,67 @@ async function finishVoids(db: Db, groupId: string): Promise<void> {
     Query.equal('groupId', groupId),
     Query.equal('status', 'void'),
   ])
-  for (const row of voids) await unlock(db, row.$id)
+  for (const row of voids) await unlock(db, row)
 }
 
-/** Takes this statement's locks off again (a failed check, or a void). */
-export async function unlock(db: Db, statementId: string): Promise<void> {
-  const locked = await listAll<Transactions>(db, TABLES.transactions, [
-    Query.equal('statementId', statementId),
-  ])
-  await writeInBatches(
-    db,
-    locked.map((row) => ({
-      action: 'update',
+// One guard write to the group row, and the rest of a database transaction's 90 writes.
+const UNLOCK_BATCH = 89
+// Batches in a row that found their rows locked again meanwhile, before giving up.
+const UNLOCK_MISSES = 3
+
+/** A row in the batch is no longer locked to the statement: read the batch again. */
+class Relocked extends Error {}
+
+/**
+ * Takes the statement's locks off (a failed check, or a void), a batch per database
+ * transaction, from the `idx_statementId` rows still locked to it. Each batch stages its writes
+ * and a guard write to the group row, then checks the stored rows: the statement still has the
+ * status and issue date the caller left it with (a run that starts finalizing it again writes
+ * the group row too), and each row is still locked to it. So a lock written by anyone else is
+ * never taken off (I-7); a batch that finds one is read again without it.
+ */
+export async function unlock(db: Db, statement: Statements): Promise<void> {
+  for (let misses = 0; ; ) {
+    const { rows } = await db.listRows<Transactions>({
+      databaseId: DATABASE_ID,
       tableId: TABLES.transactions,
-      rowId: row.$id,
-      data: { statementId: null },
-    })),
-  )
+      queries: [Query.equal('statementId', statement.$id), Query.limit(UNLOCK_BATCH)],
+      total: false,
+    })
+    if (rows.length === 0) return
+    const ids = rows.map((row) => row.$id)
+    try {
+      await withTransaction(db, async (tx) => {
+        await tx.write(
+          groupGuard({ $id: statement.groupId }),
+          ...ids.map((rowId) => ({
+            action: 'update' as const,
+            tableId: TABLES.transactions,
+            rowId,
+            data: { statementId: null },
+          })),
+        )
+        const stored = await getRowOrNull<Statements>(db, TABLES.statements, statement.$id)
+        if (stored?.status !== statement.status || stored.issuedOn !== statement.issuedOn) {
+          throw tryAgain()
+        }
+        const { rows: now } = await db.listRows<Transactions>({
+          databaseId: DATABASE_ID,
+          tableId: TABLES.transactions,
+          queries: [Query.equal('$id', ids), Query.limit(ids.length)],
+          total: false,
+        })
+        if (now.length !== ids.length || now.some((row) => row.statementId !== statement.$id)) {
+          throw new Relocked()
+        }
+      })
+      misses = 0
+    } catch (error) {
+      // Relocked before the batch staged, or after (the commit's 409): read the batch again.
+      if (!(error instanceof Relocked || isAppwriteError(error, 409))) throw error
+      if (++misses === UNLOCK_MISSES) throw tryAgain()
+    }
+  }
 }
 
 /** Step 7: the PDF, uploaded with the statement's ID as its file ID, readable by the team. */

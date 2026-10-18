@@ -14,12 +14,12 @@ const DRAFTS_ONLY = 'Only a draft statement can be refreshed.'
  * snapshot from the transactions as they are now (statements.md#1-draft).
  */
 export async function refreshStatement(
-  { db, now }: Services,
+  { db, teams, now }: Services,
   userId: string,
   statementId: string,
 ): Promise<Statements> {
   const statement = await getStatement(db, statementId)
-  const { group } = await requireMember(db, userId, statement.groupId)
+  const { group } = await requireMember(db, teams, userId, statement.groupId)
   if (statement.status !== 'draft') throw invalid(DRAFTS_ONLY)
   const period = {
     start: statement.periodStart as LocalDate,

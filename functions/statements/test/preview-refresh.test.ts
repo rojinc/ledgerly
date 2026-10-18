@@ -3,9 +3,11 @@ import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { describe, expect, it, vi } from 'vitest'
 import {
   BUSINESS,
+  commitNow,
   failure,
   fakes,
   job,
+  leftOnTheirOwn,
   member,
   ok,
   payment,
@@ -130,6 +132,45 @@ describe('POST /statements/preview', () => {
   it('refuses a body that fails the schema', async () => {
     const response = await failure(fakes(), 'POST', '/statements/preview', { groupId: 'job', x: 1 })
     expect(response.code).toBe('VALIDATION_FAILED')
+  })
+})
+
+describe('a member who left', () => {
+  // Dan joined Acme's group as a viewer, then left: still in its team after moving out (the
+  // row is the same), out of it after leaving on their own (permissions.md#members).
+  async function withDanLeft() {
+    const services = fakes(
+      rowsOf(shift('s1', '2026-10-02', 60), { statements: [statement('st1')] }),
+    )
+    const { $id: _, ...row } = member('m-dan', 'job', 'dan', 'viewer', 'left')
+    await commitNow(services.db, [
+      { action: 'create', databaseId: 'main', tableId: 'members', rowId: 'm-dan', data: row },
+    ])
+    return services
+  }
+  const preview = { groupId: 'job', periodEnd: '2026-10-31' }
+
+  it('can still preview after moving out', async () => {
+    const services = await withDanLeft()
+    const { snapshot } = await ok<Preview>(
+      services,
+      'POST',
+      '/statements/preview',
+      preview,
+      'u-dan',
+    )
+    expect(snapshot.lines.map((line) => line.transactionId)).toEqual(['s1'])
+  })
+
+  it('gets NOT_A_MEMBER on preview and refresh after leaving on their own', async () => {
+    const services = await withDanLeft()
+    leftOnTheirOwn(services, 'u-dan')
+    expect((await failure(services, 'POST', '/statements/preview', preview, 'u-dan')).code).toBe(
+      'NOT_A_MEMBER',
+    )
+    expect(
+      (await failure(services, 'POST', '/statements/st1/refresh', undefined, 'u-dan')).code,
+    ).toBe('NOT_A_MEMBER')
   })
 })
 

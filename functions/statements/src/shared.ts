@@ -205,7 +205,7 @@ export async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
  * A guard write to the group row: a fresh `rev`, so it is a real change that fails, or is
  * failed by, any other write to the group at the same moment (ledger.md#concurrency).
  */
-export function groupGuard(group: Groups): Write {
+export function groupGuard(group: Pick<Groups, '$id'>): Write {
   return { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { rev: randomId() } }
 }
 

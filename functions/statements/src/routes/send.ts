@@ -21,9 +21,15 @@ export async function sendRoute(
   statementId: string,
 ): Promise<{ sentAt: string }> {
   const statement = await getStatement(services.db, statementId)
-  const { person, group } = await requireMember(services.db, userId, statement.groupId, {
-    roles: ['admin'],
-  })
+  const { person, group } = await requireMember(
+    services.db,
+    services.teams,
+    userId,
+    statement.groupId,
+    {
+      roles: ['admin'],
+    },
+  )
   if (statement.status !== 'final') throw invalid('Only a final statement can be sent.')
   if (statement.type !== 'invoice') throw invalid('House divides are not available yet.')
   const sent = await conflictAsTryAgain(() => sendInvoice(services, group, statement, person.$id))
