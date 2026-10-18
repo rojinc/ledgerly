@@ -7,6 +7,7 @@ import { VerifyEmailPage } from './features/auth/verify-email-page'
 import { CalendarPage } from './features/calendar/calendar-page'
 import { groupRoutes } from './features/groups/routes'
 import { ProfilePage } from './features/profile/profile-page'
+import { transactionRoutes } from './features/transactions/routes'
 import { HomePage } from './home-page'
 
 export const routes: RouteObject[] = [
@@ -29,6 +30,7 @@ export const routes: RouteObject[] = [
           { path: 'profile', element: <ProfilePage /> },
           groupRoutes,
           { path: 'calendar', element: <CalendarPage /> },
+          transactionRoutes,
         ],
       },
     ],

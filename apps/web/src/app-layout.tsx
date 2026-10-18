@@ -10,6 +10,7 @@ import { Button } from './ui/button'
 const NAV = [
   { to: '/', label: 'Home' },
   { to: '/calendar', label: 'Calendar' },
+  { to: '/transactions', label: 'History' },
   { to: '/groups', label: 'Groups' },
   { to: '/profile', label: 'Profile' },
 ]
