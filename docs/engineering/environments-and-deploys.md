@@ -25,7 +25,7 @@ appwrite/buckets.json
 appwrite/functions.json     runtime, entrypoint (dist/main.js), schedule, execute, timeout
 ```
 
-The two config files share the resource files (the CLI's `includes` field), so dev and prod can't drift. Check the exact `includes` syntax against the Appwrite CLI docs in the M0 task.
+The two config files share the resource files through the CLI's `includes` field, so dev and prod can't drift. `appwrite push` rewrites these files with its own formatting; never commit that rewrite, because Biome would fail on it.
 
 ## CI/CD (GitHub Actions)
 

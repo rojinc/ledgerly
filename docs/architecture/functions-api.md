@@ -93,10 +93,10 @@ type TransactionInput = {
 
 type ItemInput = { name: string; quantity?: number; amountCents: number; category?: Category; split: SplitSpec }
 
-type TransactionView = { transaction: TransactionRow; shares: ShareRow[]; items: ItemRow[] }
+type TransactionView = { transaction: Transactions; shares: Shares[]; items: Items[] }
 ```
 
-`TransactionRow`, `ShareRow` and the other `*Row` types are generated from the schema with `appwrite types` ([data model](data-model.md)).
+Row types (`Transactions`, `Shares`, `Items` and one per table) are generated from the schema with `npm run appwrite:types` into `@ledgerly/core/generated/rows` ([data model](data-model.md)). Never edit them by hand.
 
 ---
 

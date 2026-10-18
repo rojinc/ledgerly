@@ -17,6 +17,8 @@ Every table, column and index. **This page is the contract.** The Appwrite schem
 
 Notation: `enum(a, b)` means a `string` column with enum format. `?` means optional (nullable). `[]` means an array column.
 
+A column with a default is created with `required: false` in `appwrite/`, because Appwrite can't combine `required` with a default. Appwrite writes the default when no value is given, so these columns are never empty, and the generated row types show them as non-null.
+
 ## Tables at a glance
 
 ```
@@ -132,7 +134,7 @@ type GroupSettings =
 | `displayName` | varchar(100) | What this group calls the person |
 | `role` | enum(admin, member, viewer) | Authority inside the group ([permissions](permissions.md)) |
 | `status` | enum(placeholder, active, left) | `placeholder`: hasn't joined this group, with or without an account. `active`: joined. `left`: joined, then moved out. A member who moves out before joining stays `placeholder` ([D-016](decisions.md)). Written only by the `groups` and `identity` functions. |
-| `joinedOn` | varchar(10) | Local date, default the day they were added |
+| `joinedOn` | varchar(10) | Local date. The `groups` function sets it to the day they were added unless the caller gives one (not a database default). |
 | `leftOn` | varchar(10)? | Local date |
 
 Indexes: `uniq_group_person (groupId, personId)` **unique**, `idx_person_status (personId, status)`, `idx_groupId (groupId)`.
@@ -216,7 +218,7 @@ Permissions: `read("team:<groupId>")` (the function sets the group's team when i
 | `groupId` | varchar(36) | |
 | `kind` | enum(shift, bill, expense, income) | |
 | `description` | varchar(200) | |
-| `templateJson` | text | A `TransactionInput` without `id` and `date` |
+| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule) |
 | `rrule` | varchar(255) | RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=TH` |
 | `startsOn` | varchar(10) | First possible occurrence (local date) |
 | `endsOn` | varchar(10)? | Last possible occurrence. Empty = until stopped. |
