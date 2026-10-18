@@ -13,7 +13,7 @@
     "timeout": 15,
     "enabled": true,
     "logging": true,
-    "scopes": ["rows.read", "rows.write", "files.read", "files.write"]
+    "scopes": ["rows.read", "rows.write", "files.read", "files.write", "teams.read"]
   },
   {
     "$id": "groups",

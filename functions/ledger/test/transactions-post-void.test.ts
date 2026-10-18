@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { amounts, call, expense, MEMBERS, member, NOW, rows, seed } from './harness'
+import { amounts, call, expense, leftOnTheirOwn, MEMBERS, member, NOW, rows, seed } from './harness'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -212,6 +212,22 @@ describe('POST /transactions/{id}/post', () => {
     const posted = await call(db, 'POST', '/transactions/b1/post', {}, user)
     const voided = await call(db, 'POST', '/transactions/b1/void', { reason: 'Wrong' }, user)
     expect([posted.body.error?.code, voided.body.error?.code]).toEqual([code, code])
+    expect(rows.transactions(db)[0]?.status).toBe('due')
+  })
+})
+
+describe('someone who left on their own (#117)', () => {
+  it('is not a member for edit, post and void, where someone who moved out is a viewer', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', dueBill)
+    const codes = async () => [
+      (await call(db, 'PATCH', '/transactions/b1', dueBill, 'u-lee')).body.error?.code,
+      (await call(db, 'POST', '/transactions/b1/post', {}, 'u-lee')).body.error?.code,
+      (await call(db, 'POST', '/transactions/b1/void', { reason: 'x' }, 'u-lee')).body.error?.code,
+    ]
+    expect(await codes()).toEqual(['FORBIDDEN', 'FORBIDDEN', 'FORBIDDEN'])
+    leftOnTheirOwn(db, 'u-lee')
+    expect(await codes()).toEqual(['NOT_A_MEMBER', 'NOT_A_MEMBER', 'NOT_A_MEMBER'])
     expect(rows.transactions(db)[0]?.status).toBe('due')
   })
 })

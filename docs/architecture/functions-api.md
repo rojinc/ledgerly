@@ -32,7 +32,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | --- | --- | --- |
 | `UNAUTHENTICATED` | 401 | No signed-in user |
 | `VALIDATION_FAILED` | 400 | Payload failed the zod schema or a ledger rule. `details` holds the issues. |
-| `NOT_A_MEMBER` | 403 | Caller has no member row in the group, or hasn't joined it (`placeholder`) |
+| `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
 | `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
@@ -156,7 +156,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 | `POST /groups/{id}/members` | `{ displayName, email?, phone?, role?, joinedOn? }` | `member` | admin (house: member too) |
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn? }` | `member` | admin |
 | `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares and aren't named in an unposted transaction or a schedule template (`VALIDATION_FAILED`). Also removes any team membership. |
-| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin |
+| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin. Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. Removing one with `DELETE /groups/{id}/members/{memberId}` also returns `VALIDATION_FAILED`; archive the group instead. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
