@@ -6,6 +6,7 @@ import { Query } from 'appwrite'
 import { callFunction, type Method } from '../../lib/api'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
+import { writeErrorMessage } from '../groups/archive-group'
 import type { EmployerPeople } from './presets'
 
 // Appwrite's limit for one page.
@@ -25,22 +26,10 @@ export const transactionKeys = {
   history: (groupId: string, filters: HistoryFilters) => ['history', groupId, filters] as const,
 }
 
-/** Shown on an archived group's pages (#37). */
-export const ARCHIVED_NOTICE = 'This group is archived. You can see its history but not change it.'
-
-/**
- * Calls the ledger function; a refusal throws its message, which is already plain, except
- * `ARCHIVED` from an old tab, which says what happened (#37).
- */
+/** Calls the ledger function; a refusal throws its message in plain words (#37). */
 export async function ledger<T>(method: Method, path: string, body?: unknown): Promise<T> {
   const result = await callFunction<T>('ledger', method, path, body)
-  if (!result.ok) {
-    throw new Error(
-      result.error.code === 'ARCHIVED'
-        ? 'This group has been archived, so it can’t be changed any more. Reload the page to see it as it is now.'
-        : result.error.message,
-    )
-  }
+  if (!result.ok) throw new Error(writeErrorMessage(result.error))
   return result.data
 }
 

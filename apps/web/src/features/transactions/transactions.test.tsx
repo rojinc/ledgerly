@@ -15,7 +15,11 @@ vi.mock('../../lib/appwrite', () => ({
 }))
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
-vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'pw' } }) }))
+// The viewer's person: the worker by default; tests switch to the employer, or to not loaded.
+let mockPersonId = 'pw'
+vi.mock('../auth/use-bootstrap', () => ({
+  useBootstrap: () => ({ data: mockPersonId ? { personId: mockPersonId } : undefined }),
+}))
 vi.mock('../groups/use-groups', () => ({
   useGroups: vi.fn(),
   useGroup: vi.fn(),
@@ -68,7 +72,13 @@ function mockGroups(group: Groups, role: Members['role'] = 'admin', net = 0) {
   vi.mocked(useGroup).mockReturnValue({ data: group, isError: false } as never)
   vi.mocked(useMyMember).mockReturnValue({ data: { role }, isError: false } as never)
   vi.mocked(useBalances).mockReturnValue({
-    data: { people: [{ personId: 'pw', netCents: net }], transfers: [] },
+    data: {
+      people: [
+        { personId: 'pw', netCents: net },
+        { personId: 'pe', netCents: -net },
+      ],
+      transfers: [],
+    },
     isError: false,
   } as never)
 }
@@ -106,6 +116,7 @@ function ok(data: unknown): Result<unknown> {
 }
 
 beforeEach(() => {
+  mockPersonId = 'pw'
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(NOW)
 })
@@ -174,7 +185,7 @@ describe('NewTransactionPage', () => {
     fireEvent.change(await screen.findByLabelText('Amount (AUD)'), { target: { value: '4.005' } })
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Supplies' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
-    expect(await screen.findByText('Enter an amount like 40.00')).toBeTruthy()
+    expect(await screen.findByText('Enter an amount like 40 or 40.50')).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '0' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect(await screen.findByText('Enter an amount above 0')).toBeTruthy()
@@ -236,6 +247,33 @@ describe('HistoryPage', () => {
     mockRows()
     renderAt('/transactions?groupId=g1')
     expect(await screen.findByText(text)).toBeTruthy()
+  })
+
+  it('words it from the employer’s side when the employer views it', async () => {
+    mockPersonId = 'pe'
+    mockGroups(acme, 'viewer', 71500)
+    mockRows()
+    renderAt('/transactions?groupId=g1')
+    expect(await screen.findByText(/^You owe Sam .*715\.00$/)).toBeTruthy()
+  })
+
+  it('says nothing about the balance until it knows whose side to word it from', async () => {
+    mockPersonId = ''
+    mockGroups(acme, 'admin', 71500)
+    mockRows()
+    renderAt('/transactions?groupId=g1')
+    expect(await screen.findByText('Loading…')).toBeTruthy()
+    expect(screen.queryByText('All square')).toBeNull()
+  })
+
+  it('ignores an unknown kind or category in a hand-edited link', async () => {
+    mockGroups(acme)
+    mockRows()
+    renderAt('/transactions?groupId=g1&kind=foo&category=bar')
+    await screen.findByRole('region', { name: 'Transactions' })
+    const queries = listCalls().find((params) => params.tableId === 'transactions')?.queries ?? []
+    expect(queries.some((q) => q.includes('"kind"') || q.includes('"category"'))).toBe(false)
+    expect((screen.getByLabelText('Kind') as HTMLSelectElement).value).toBe('')
   })
 
   it('lists the history newest first, links each row, and pages with a cursor', async () => {
@@ -314,7 +352,7 @@ describe('HistoryPage', () => {
     ).toBeTruthy()
     expect(screen.queryByRole('link', { name: 'Add expense or payment' })).toBeNull()
     // Its balance and history still show.
-    expect(screen.getByText('All square')).toBeTruthy()
+    expect(await screen.findByText('All square')).toBeTruthy()
   })
 })
 
@@ -348,6 +386,37 @@ describe('TransactionPage', () => {
     )
     expect(await screen.findByText('Void. Reason: Twice')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Void' })).toBeNull()
+  })
+
+  it('offers Void to a member on a row they added, and refreshes balances, history and calendar', async () => {
+    mockGroups(acme, 'member')
+    mockRows([], shares)
+    getRow.mockResolvedValue(row('t1') as never)
+    call.mockResolvedValue(ok({ transaction: row('t1', { status: 'void' }), shares: [] }))
+    const { queryClient } = renderAt('/transactions/t1')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.change(await screen.findByLabelText('Reason for voiding'), {
+      target: { value: 'Twice' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Void' }))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['balances', 'g1'] }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['history', 'g1'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] })
+  })
+
+  it('says “received” for the person a payment went to', async () => {
+    mockGroups(acme)
+    mockRows(
+      [],
+      [
+        { $id: 's1', personId: 'pe', givenCents: 50000, receivedCents: 0 },
+        { $id: 's2', personId: 'pw', givenCents: 0, receivedCents: 50000 },
+      ],
+    )
+    getRow.mockResolvedValue(row('t1', { kind: 'payment', totalCents: 50000 }) as never)
+    renderAt('/transactions/t1')
+    expect(await screen.findByText(/^Sam: received .*500\.00$/)).toBeTruthy()
+    expect(screen.getByText(/^Acme: paid .*500\.00$/)).toBeTruthy()
   })
 
   it('puts the row back, with the error and the reason, when voiding fails', async () => {

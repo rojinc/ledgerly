@@ -40,7 +40,7 @@ function entryResolver(
     const total = toBody(values).totalCents
     if (values.amount.trim() === '') add('amount', 'Required')
     else if (get(found, 'totalCents') || Number.isNaN(total)) {
-      add('amount', 'Enter an amount like 40.00')
+      add('amount', 'Enter an amount like 40 or 40.50')
     } else if (typeof total === 'number' && total <= 0) add('amount', 'Enter an amount above 0')
     for (const [path, field] of Object.entries(ERROR_FIELD)) {
       const message = get(found, path)?.message as string | undefined
@@ -72,7 +72,8 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 /** `/transactions/new?groupId=`: an employer expense preset or a payment received (#31). */
 export function NewTransactionPage() {
   const userId = useCurrentUser().data?.$id ?? ''
-  const personId = useBootstrap(userId).data?.personId ?? ''
+  const bootstrap = useBootstrap(userId)
+  const personId = bootstrap.data?.personId ?? ''
   const groups = useGroups()
   const [params] = useSearchParams()
   const group = groups.data?.find((g) => g.$id === params.get('groupId') && g.type === 'employer')
@@ -82,7 +83,7 @@ export function NewTransactionPage() {
   let content: ReactNode
   if (!groups.data || (group && (member.data === undefined || !members.data))) {
     content =
-      (groups.isError && !groups.data) || member.isError || members.isError ? (
+      (groups.isError && !groups.data) || member.isError || members.isError || bootstrap.isError ? (
         <Message alert>We couldn’t load this group. Reload the page to try again.</Message>
       ) : (
         <Message>Loading…</Message>

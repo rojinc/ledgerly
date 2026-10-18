@@ -7,15 +7,10 @@ import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { KIND_LABEL, STATUS_LABEL } from './history-page'
-import {
-  ARCHIVED_NOTICE,
-  useMembers,
-  useShares,
-  useTransaction,
-  useVoidTransaction,
-} from './use-transactions'
+import { useMembers, useShares, useTransaction, useVoidTransaction } from './use-transactions'
 
 function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
   return (
@@ -58,7 +53,8 @@ export function TransactionPage() {
 
 function Details({ row }: { row: Transactions }) {
   const userId = useCurrentUser().data?.$id ?? ''
-  const personId = useBootstrap(userId).data?.personId ?? ''
+  const bootstrap = useBootstrap(userId)
+  const personId = bootstrap.data?.personId ?? ''
   const group = useGroup(row.groupId)
   const member = useMyMember(row.groupId, personId)
   const members = useMembers(row.groupId)
@@ -69,7 +65,7 @@ function Details({ row }: { row: Transactions }) {
   const [reason, setReason] = useState('')
 
   if (!group.data || member.data === undefined) {
-    return (group.isError && !group.data) || member.isError ? (
+    return (group.isError && !group.data) || member.isError || bootstrap.isError ? (
       <Message alert>We couldn’t load this transaction. Reload the page to try again.</Message>
     ) : (
       <Message>Loading…</Message>
@@ -135,7 +131,7 @@ function Details({ row }: { row: Transactions }) {
                   share.givenCents !== 0 &&
                     `paid ${formatMoney(share.givenCents, group.data.currency)}`,
                   share.receivedCents !== 0 &&
-                    `for them ${formatMoney(share.receivedCents, group.data.currency)}`,
+                    `${row.kind === 'payment' ? 'received' : 'for them'} ${formatMoney(share.receivedCents, group.data.currency)}`,
                 ]
                   .filter(Boolean)
                   .join(', ')}

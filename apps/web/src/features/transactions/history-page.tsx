@@ -1,4 +1,4 @@
-import { CATEGORIES, type Category } from '@ledgerly/core/constants/categories'
+import { CATEGORIES } from '@ledgerly/core/constants/categories'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import type { ReactNode } from 'react'
@@ -7,8 +7,9 @@ import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useBalances, useGroups, useMyMember } from '../groups/use-groups'
-import { ARCHIVED_NOTICE, type HistoryFilters, useHistory, useMembers } from './use-transactions'
+import { type HistoryFilters, useHistory, useMembers } from './use-transactions'
 
 export const KIND_LABEL: Record<Transactions['kind'], string> = {
   expense: 'Expense',
@@ -53,9 +54,12 @@ export function HistoryPage() {
   const group = employers?.find((g) => g.$id === params.get('groupId')) ?? employers?.[0]
 
   // The filters live in the URL, so a refresh or a shared link keeps them.
+  // A hand-edited link with an unknown kind or category is ignored, not sent to Appwrite.
+  const kind = EMPLOYER_KINDS.find((k) => k === params.get('kind'))
+  const category = CATEGORIES.find((c) => c === params.get('category'))
   const filters: HistoryFilters = {
-    ...(params.get('kind') ? { kind: params.get('kind') as Transactions['kind'] } : {}),
-    ...(params.get('category') ? { category: params.get('category') as Category } : {}),
+    ...(kind ? { kind } : {}),
+    ...(category ? { category } : {}),
     ...(params.get('from') ? { from: params.get('from') as string } : {}),
     ...(params.get('to') ? { to: params.get('to') as string } : {}),
   }
@@ -162,17 +166,19 @@ export function HistoryPage() {
 /** The balance, from the viewer's side, and the add link for those who can write. */
 function GroupSummary({ group }: { group: Groups }) {
   const userId = useCurrentUser().data?.$id ?? ''
-  const personId = useBootstrap(userId).data?.personId ?? ''
+  const bootstrap = useBootstrap(userId)
+  const personId = bootstrap.data?.personId ?? ''
   const member = useMyMember(group.$id, personId)
   const members = useMembers(group.$id)
   const balances = useBalances(group.$id)
-  const other = members.data?.find((m) => m.personId !== personId)?.displayName ?? 'They'
+  const other = members.data?.find((m) => m.personId !== personId)?.displayName
   // permissions.md: admins and members add; a viewer (an employer who joined) only reads.
   const canAdd =
     !group.archivedAt && (member.data?.role === 'admin' || member.data?.role === 'member')
 
   let balance: ReactNode
-  if (balances.data) {
+  // Only once it's known whose side to word it from, and who the other person is.
+  if (balances.data && personId !== '' && other !== undefined) {
     const net = balances.data.people.find((p) => p.personId === personId)?.netCents ?? 0
     const amount = formatMoney(Math.abs(net), group.currency)
     balance =
@@ -182,7 +188,10 @@ function GroupSummary({ group }: { group: Groups }) {
           ? `You owe ${other} ${amount}`
           : 'All square'
   } else {
-    balance = balances.isError ? 'Balance not available right now.' : 'Loading…'
+    balance =
+      balances.isError || bootstrap.isError || members.isError
+        ? 'Balance not available right now.'
+        : 'Loading…'
   }
   return (
     <section aria-labelledby="balance-heading" className="flex flex-col gap-3">
