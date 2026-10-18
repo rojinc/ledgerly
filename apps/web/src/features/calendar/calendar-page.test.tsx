@@ -5,17 +5,17 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { tablesDB } from '../../lib/appwrite'
 import { useGroups } from '../groups/use-groups'
-import { CalendarPage, groupColour } from './calendar-page'
+import { useProfile } from '../profile/use-profile'
+import { CalendarPage, groupColours } from './calendar-page'
 
 vi.mock('../../lib/appwrite', () => ({ DATABASE_ID: 'main', tablesDB: { listRows: vi.fn() } }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
-vi.mock('../profile/use-profile', () => ({
-  useProfile: () => ({ data: { timezone: 'Australia/Sydney' } }),
-}))
+vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn() }))
 vi.mock('../groups/use-groups', () => ({ useGroups: vi.fn() }))
 
 const listRows = vi.mocked(tablesDB.listRows)
 const groupsHook = vi.mocked(useGroups)
+const profileHook = vi.mocked(useProfile)
 
 const GROUPS = [
   { $id: 'g1', name: 'Acme Cafe', currency: 'AUD' },
@@ -89,6 +89,10 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(new Date('2026-10-17T20:00:00.000Z'))
   groupsHook.mockReturnValue({ data: GROUPS, isError: false } as ReturnType<typeof useGroups>)
+  profileHook.mockReturnValue({
+    data: { timezone: 'Australia/Sydney' },
+    isError: false,
+  } as ReturnType<typeof useProfile>)
   listRows.mockResolvedValue({ total: ITEMS.length, rows: ITEMS } as never)
 })
 
@@ -202,8 +206,47 @@ describe('CalendarPage', () => {
     expect(await screen.findByText('Morning shift')).toBeTruthy()
   })
 
-  it('gives each group the same colour every time', () => {
-    expect(groupColour('g1')).toBe(groupColour('g1'))
-    expect(groupColour('g1')).toMatch(/^#[0-9a-f]{6}$/)
+  it("uses the browser's time zone when the profile can't be read, instead of loading forever", async () => {
+    profileHook.mockReturnValue({ data: undefined, isError: true } as ReturnType<typeof useProfile>)
+    renderAt('/calendar')
+    expect(await screen.findByText('Morning shift')).toBeTruthy()
+    expect(screen.getByRole('heading', { name: /October 2026/ })).toBeTruthy()
+  })
+
+  it('gives every group its own colour, by its place in the list', () => {
+    const groups = Array.from({ length: 8 }, (_, index) => ({ $id: `g${index}` })) as Groups[]
+    const colours = groupColours(groups)
+    expect(new Set(colours.values()).size).toBe(8)
+    expect(groupColours(groups).get('g3')).toBe(colours.get('g3'))
+  })
+
+  it('draws the two groups in different colours, in the legend and on the chips', async () => {
+    renderAt('/calendar?month=2026-10')
+    const thursday = within(
+      await screen.findByRole('button', { name: /(October 8|8 October), 3 items/ }),
+    )
+    const shift = thursday.getByText('Shift').style.borderColor
+    const rent = thursday.getByText('Rent').style.borderColor
+    expect(shift).not.toBe('')
+    expect(shift).not.toBe(rent)
+  })
+
+  it('draws a running shift dashed', async () => {
+    listRows.mockResolvedValue({
+      total: 1,
+      rows: [{ ...ITEMS[0], $id: 't9', status: 'running', description: 'Timer' }],
+    } as never)
+    renderAt('/calendar?month=2026-10')
+    expect((await screen.findByText('Timer')).className).toContain('border-dashed')
+  })
+
+  it("opens a day's month when only the day is given, and ignores a day the grid doesn't show", async () => {
+    renderAt('/calendar?day=2026-12-25')
+    expect(await screen.findByRole('heading', { name: /December 2026/ })).toBeTruthy()
+    expect(await screen.findByRole('region', { name: /December.*2026/ })).toBeTruthy()
+    cleanup()
+    renderAt('/calendar?month=2026-10&day=2026-12-25')
+    await screen.findByText('Morning shift')
+    expect(screen.queryByRole('region')).toBeNull()
   })
 })

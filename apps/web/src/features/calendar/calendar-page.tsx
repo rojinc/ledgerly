@@ -23,19 +23,22 @@ const COLOURS = [
   '#65a30d',
 ]
 
-/** The same colour for a group every time, from its ID. */
-export function groupColour(groupId: string): string {
-  let hash = 0
-  for (const char of groupId) hash = (hash * 31 + char.charCodeAt(0)) >>> 0
-  return COLOURS[hash % COLOURS.length] as string
+/**
+ * A colour per group, by its place in the name-sorted list, so up to 8 groups never share one.
+ * Groups not in the list (none, normally) get the muted border.
+ */
+export function groupColours(groups: Groups[]): Map<string, string> {
+  return new Map(
+    groups.map((group, index) => [group.$id, COLOURS[index % COLOURS.length] as string]),
+  )
 }
 
 // ledger.md#statuses: dashed until real, solid when posted, struck through when void.
-const STATUS_LABEL: Record<CalendarItem['status'], string | null> = {
+const STATUS_LABEL: Record<CalendarItem['status'], string> = {
   scheduled: 'Scheduled',
   due: 'Due',
   running: 'Running',
-  posted: null,
+  posted: 'Posted',
   void: 'Void',
 }
 
@@ -58,12 +61,20 @@ const VISIBLE_PER_DAY = 3
 
 export function CalendarPage() {
   const userId = useCurrentUser().data?.$id ?? ''
-  const timeZone = useProfile(userId).data?.timezone
+  const profile = useProfile(userId)
+  // The profile's zone; the browser's if the profile can't be read, rather than loading forever.
+  const timeZone =
+    profile.data?.timezone ??
+    (profile.isError ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined)
   const [params, setParams] = useSearchParams()
   const today = timeZone ? localToday(timeZone, new Date()) : undefined
-  const month = parseMonth(params.get('month')) ?? (today ? monthOf(today) : undefined)
   const day = params.get('day')
-  const selected = day && isLocalDate(day) ? day : undefined
+  const chosen = day && isLocalDate(day) ? day : undefined
+  const month =
+    parseMonth(params.get('month')) ?? (chosen ? monthOf(chosen) : today && monthOf(today))
+  // A day the grid doesn't show isn't selected: its list would wrongly say it's empty.
+  const grid = month ? monthGrid(month) : undefined
+  const selected = chosen && grid && chosen >= grid.start && chosen <= grid.end ? chosen : undefined
 
   if (!month) {
     return (
@@ -119,7 +130,9 @@ function MonthView({
   const grid = monthGrid(month)
   const items = useMonthTransactions(groups.data, grid.start, grid.end)
 
-  if (groups.isError || items.isError) {
+  const groupsFailed = groups.isError && !groups.data
+  // Errors only when there's nothing to show: a failed background refetch keeps the month.
+  if (groupsFailed || (items.isError && !items.data)) {
     return (
       <div className="flex flex-col items-start gap-3">
         <p role="alert" className="text-destructive">
@@ -127,7 +140,7 @@ function MonthView({
         </p>
         <Button
           variant="outline"
-          onClick={() => (groups.isError ? groups.refetch() : items.refetch())}
+          onClick={() => (groupsFailed ? groups.refetch() : items.refetch())}
         >
           Try again
         </Button>
@@ -143,6 +156,7 @@ function MonthView({
   }
 
   const byId = new Map(groups.data.map((group) => [group.$id, group]))
+  const colours = groupColours(groups.data)
   const byDay = new Map<string, CalendarItem[]>()
   for (const item of items.data) byDay.set(item.date, [...(byDay.get(item.date) ?? []), item])
 
@@ -154,7 +168,7 @@ function MonthView({
             <span
               aria-hidden="true"
               className="size-3 rounded-sm"
-              style={{ backgroundColor: groupColour(group.$id) }}
+              style={{ backgroundColor: colours.get(group.$id) }}
             />
             {group.name}
           </li>
@@ -202,7 +216,7 @@ function MonthView({
                     'truncate rounded-sm border-2 px-0.5 text-[0.65rem] leading-tight',
                     chipStyle(item.status),
                   )}
-                  style={{ borderColor: groupColour(item.groupId) }}
+                  style={{ borderColor: colours.get(item.groupId) }}
                 >
                   {item.description}
                 </span>
@@ -216,7 +230,14 @@ function MonthView({
           )
         })}
       </div>
-      {selected && <DayList date={selected} items={byDay.get(selected) ?? []} groups={byId} />}
+      {selected && (
+        <DayList
+          date={selected}
+          items={byDay.get(selected) ?? []}
+          groups={byId}
+          colours={colours}
+        />
+      )}
     </>
   )
 }
@@ -225,10 +246,12 @@ function DayList({
   date,
   items,
   groups,
+  colours,
 }: {
   date: LocalDate
   items: CalendarItem[]
   groups: Map<string, Groups>
+  colours: Map<string, string>
 }) {
   return (
     <section aria-labelledby="day-heading" className="flex flex-col gap-2">
@@ -255,7 +278,7 @@ function DayList({
                         'h-5 w-1.5 shrink-0 rounded-sm border-2',
                         chipStyle(item.status),
                       )}
-                      style={{ borderColor: groupColour(item.groupId) }}
+                      style={{ borderColor: colours.get(item.groupId) }}
                     />
                     <span className="min-w-0">
                       <span
@@ -268,7 +291,7 @@ function DayList({
                       </span>
                       <span className="block truncate text-sm text-muted-foreground">
                         {group?.name ?? 'Group'}
-                        {status && ` · ${status}`}
+                        {` · ${status}`}
                       </span>
                     </span>
                   </span>
