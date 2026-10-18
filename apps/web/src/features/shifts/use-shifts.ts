@@ -77,6 +77,8 @@ export function useToday(groups: Groups[] | undefined, personId: string) {
     enabled: groups !== undefined && personId !== '',
     queryFn: async (): Promise<Today> => {
       const today = new Map((groups ?? []).map((group) => [group.$id, todayIn(group)]))
+      // A timer left running in an archived group doesn't count (scheduling.md#timer-shifts).
+      const open = new Set((groups ?? []).filter((group) => !group.archivedAt).map((g) => g.$id))
       const dates = [...today.values()].sort()
       const shifts: Transactions[] = []
       let running: Transactions | undefined
@@ -94,9 +96,12 @@ export function useToday(groups: Groups[] | undefined, personId: string) {
           ).filter((row) => row.date === today.get(row.groupId)),
         )
         // idx_group_status_date: running timers, which may have started on an earlier day.
-        running ??= (
-          await listAll([Query.equal('groupId', chunk), Query.equal('status', 'running')])
-        ).find((row) => row.createdBy === personId)
+        const openChunk = chunk.filter((id) => open.has(id))
+        if (openChunk.length > 0) {
+          running ??= (
+            await listAll([Query.equal('groupId', openChunk), Query.equal('status', 'running')])
+          ).find((row) => row.createdBy === personId)
+        }
       }
       return {
         shifts: shifts.sort((a, b) => a.date.localeCompare(b.date) || a.$id.localeCompare(b.$id)),
@@ -194,7 +199,9 @@ export function useStartTimer(todayKey: readonly unknown[]) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (body: StartTimerBody) => ledger<TransactionView>('POST', '/timer/start', body),
-    onMutate: (body) => {
+    onMutate: async (body) => {
+      // A refetch already on its way would land on top of this and show the old state.
+      await queryClient.cancelQueries({ queryKey: ['today'] })
       const before = queryClient.getQueryData<Today>(todayKey)
       if (before) {
         const pending = {
@@ -224,7 +231,8 @@ export function useStopTimer(todayKey: readonly unknown[]) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (body: StopTimerBody) => ledger<TransactionView>('POST', '/timer/stop', body),
-    onMutate: () => {
+    onMutate: async () => {
+      await queryClient.cancelQueries({ queryKey: ['today'] })
       const before = queryClient.getQueryData<Today>(todayKey)
       if (before) queryClient.setQueryData<Today>(todayKey, { ...before, running: undefined })
       return () => queryClient.setQueryData(todayKey, before)

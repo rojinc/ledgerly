@@ -284,6 +284,71 @@ describe('TodayPage', () => {
     expect(second).not.toBe(first)
   })
 
+  it('uses a new id once the server has a timer with it, even if the start answer was lost', async () => {
+    mockGroups([acme])
+    mockRows([])
+    // The server commits the timer, but the answer never arrives.
+    call.mockImplementationOnce(async (...args: unknown[]) => {
+      const { id } = args[3] as { id: string }
+      mockRows([], [shift(id, { status: 'running', startedAt: '2026-10-18T21:58:55.000Z' })])
+      throw new Error('Network lost')
+    })
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    // The refetch after the error shows the server's timer; stopping it posts it.
+    expect(await screen.findByRole('button', { name: 'Stop' })).toBeTruthy()
+    call.mockImplementationOnce(async () => {
+      mockRows([])
+      return ok(shift('posted', {}))
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    call.mockReturnValueOnce(new Promise(() => {}))
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(3))
+    const [first, , third] = call.mock.calls.map((args) => (args[3] as { id: string }).id)
+    expect(third).not.toBe(first)
+  })
+
+  it('ignores a timer left running in an archived group, and offers Start in the open one', async () => {
+    mockGroups([employer('g1', 'Old Cafe', { archivedAt: '2026-10-01T00:00:00.000Z' }), bistro])
+    roles = { g1: 'admin', g2: 'admin' }
+    const stuck = shift('old', { status: 'running', startedAt: '2026-09-30T21:00:00.000Z' })
+    listRows.mockImplementation((async ({
+      tableId,
+      queries,
+    }: {
+      tableId: string
+      queries: string[]
+    }) => {
+      if (tableId === 'members') {
+        const rows = Object.entries(roles).map(([groupId, role]) => ({
+          groupId,
+          personId: 'p1',
+          role,
+          status: 'active',
+        }))
+        return { total: rows.length, rows }
+      }
+      // Answers the running-timer query only for the archived group's ID.
+      const rows = isRunningQuery(queries) && queries.some((q) => q.includes('"g1"')) ? [stuck] : []
+      return { total: rows.length, rows }
+    }) as never)
+    renderPage()
+    expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+  })
+
+  it("can't stop a timer before the server has it", async () => {
+    mockGroups([acme])
+    mockRows([])
+    call.mockReturnValueOnce(new Promise(() => {}))
+    renderPage()
+    fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
+    const stop = (await screen.findByRole('button', { name: 'Stop' })) as HTMLButtonElement
+    expect(stop.disabled).toBe(true)
+    expect(screen.queryByRole('link', { name: /Open the shift/ })).toBeNull()
+  })
+
   it('shows the running time from startedAt, ticking each second', async () => {
     vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
     vi.setSystemTime(NOW)

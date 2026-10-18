@@ -49,6 +49,13 @@ export function TodayPage() {
   const [startId, setStartId] = useState(() => ID.unique())
   const [startGroupId, setStartGroupId] = useState('')
   const [breakMinutes, setBreakMinutes] = useState('')
+  // Once the server has a timer with this ID (say the start's answer was lost, and the refetch
+  // shows it), the next Start needs a new one: the server would take the same ID as a retry.
+  // While the start is pending, the timer shown is the optimistic one, not the server's.
+  const runningId = start.isPending ? undefined : today.data?.running?.$id
+  useEffect(() => {
+    if (runningId === startId) setStartId(ID.unique())
+  }, [runningId, startId])
 
   if (!employers || !today.data || !roles.data) {
     const failed =
@@ -118,6 +125,8 @@ export function TodayPage() {
           shift={today.data.running}
           group={byId.get(today.data.running.groupId)}
           stop={stop}
+          // Not stoppable until the server has the timer.
+          starting={start.isPending}
           // Stopped: an earlier start error no longer applies.
           onStopped={() => start.reset()}
           breakMinutes={breakMinutes}
@@ -251,6 +260,7 @@ function RunningTimer({
   shift,
   group,
   stop,
+  starting,
   onStopped,
   breakMinutes,
   onBreak,
@@ -258,6 +268,7 @@ function RunningTimer({
   shift: Transactions
   group: Groups | undefined
   stop: ReturnType<typeof useStopTimer>
+  starting: boolean
   onStopped: () => void
   breakMinutes: string
   onBreak: (text: string) => void
@@ -311,15 +322,17 @@ function RunningTimer({
             {stop.error.message}
           </p>
         )}
-        <Button type="submit" className="self-start" disabled={stop.isPending}>
+        <Button type="submit" className="self-start" disabled={stop.isPending || starting}>
           Stop
         </Button>
-        <Link
-          to={`/shifts/${shift.$id}`}
-          className="self-start text-sm underline underline-offset-4"
-        >
-          Can’t stop it? Open the shift to void it
-        </Link>
+        {!starting && (
+          <Link
+            to={`/shifts/${shift.$id}`}
+            className="self-start text-sm underline underline-offset-4"
+          >
+            Can’t stop it? Open the shift to void it
+          </Link>
+        )}
       </form>
     </section>
   )
