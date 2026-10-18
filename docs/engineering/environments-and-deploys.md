@@ -50,7 +50,9 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 | `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*` |
 | `statements` | HTTP + cron `15 * * * *` | `users` | 300 s | `rows.*`, `files.*` (PDFs) |
 
-Every function runs on `node-22`, the newest Node LTS runtime that Appwrite Cloud offers (Cloud has `node-22` and `node-25`, and Node 25 no longer gets security fixes). Move to a newer runtime only when it is an LTS release that Cloud offers. Each runs from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, and the deployment uploads only `dist/` and `package.json` (`ignore: ["*", "!dist/", "!package.json"]`; the CLI doesn't read `.gitignore`).
+Every function runs on `node-22`. On 2026-10-18 the [runtimes page](https://appwrite.io/docs/products/functions/runtimes) listed `node-16.0`, `node-18.0`, `node-22` and `node-25` as available on Cloud, and of those only Node 22 still gets security fixes, [until 2027-04-30](https://github.com/nodejs/Release). Before then, move to the newest LTS runtime Cloud offers. The CLI refuses to change a deployed function's runtime, so that means deleting and recreating each function. CI and local builds run Node 24 (`.nvmrc`), so function code uses only APIs Node 22 has.
+
+Each function runs from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, and the deployment uploads only `dist/` and `package.json` (`ignore: ["*", "!dist/", "!dist/**", "!package.json"]`, which also holds under strict `.gitignore` rules). Never add a `.gitignore` inside `functions/<name>/`: the CLI applies it on top of `ignore`, so one that lists `dist/` would leave the bundle out.
 
 - **`commands` stays empty.** The uploaded `package.json` names `@ledgerly/*` packages, which aren't on public npm, so an `npm install` could pull a stranger's package of the same name. The bundle already holds every dependency.
 - **Key scopes** are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`). Give a function only the scopes a documented route needs; a change to them gets the `security` label.

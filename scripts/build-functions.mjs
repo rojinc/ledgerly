@@ -44,7 +44,12 @@ for (const name of functions) {
 // working tree had uncommitted changes.
 function gitVersion() {
   try {
-    return execFileSync('git', ['describe', '--always', '--dirty'], { cwd: root }).toString().trim()
+    return execFileSync('git', ['describe', '--always', '--dirty'], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
+      .toString()
+      .trim()
   } catch {
     return 'local'
   }
