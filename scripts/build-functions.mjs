@@ -28,7 +28,12 @@ for (const name of functions) {
     banner: {
       js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
     },
-    define: { 'process.env.LEDGERLY_VERSION': JSON.stringify(version) },
+    define: {
+      'process.env.LEDGERLY_VERSION': JSON.stringify(version),
+      // ...and read __dirname, which ES modules don't have (pdfmake's in-memory file system).
+      __dirname: 'import.meta.dirname',
+      __filename: 'import.meta.filename',
+    },
     logLevel: 'warning',
   })
   await checkHealth(name, outfile)
