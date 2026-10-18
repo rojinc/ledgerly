@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  elapsedText,
   hoursText,
   minutesBetween,
   paidMinutes,
@@ -8,7 +9,6 @@ import {
   toShiftBody,
   toShiftValues,
 } from './shift-values'
-import { elapsedText } from './today-page'
 
 const BASE: ShiftValues = {
   groupId: 'g1',

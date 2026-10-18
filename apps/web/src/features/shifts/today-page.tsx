@@ -9,16 +9,8 @@ import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroups } from '../groups/use-groups'
+import { elapsedText } from './shift-values'
 import { useStartTimer, useStopTimer, useToday } from './use-shifts'
-
-/** Seconds as `1:05:09`. */
-export function elapsedText(seconds: number): string {
-  const whole = Math.max(0, Math.floor(seconds))
-  const hours = Math.floor(whole / 3600)
-  const minutes = Math.floor((whole % 3600) / 60)
-  const rest = whole % 60
-  return `${hours}:${String(minutes).padStart(2, '0')}:${String(rest).padStart(2, '0')}`
-}
 
 /** The time now, once a second, for the running duration. */
 function useNow(): number {
