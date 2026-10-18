@@ -14,7 +14,7 @@ Adding anything not on this page needs a line in the PR explaining why. See [Cod
 | Server state | **TanStack Query** | Caching, retries and optimistic updates. Realtime events invalidate queries. |
 | UI kit | **Tailwind CSS + shadcn/ui** | Components are copied into the repo and built on accessible Radix primitives. |
 | Forms | react-hook-form + **zod** | The same zod schemas validate in the browser and in functions. |
-| Dates | Helpers in `packages/core` on top of `date-fns` + `@date-fns/tz` | Dates are `YYYY-MM-DD` strings; timezone maths in one place. |
+| Dates | Helpers in `packages/core/src/dates`, with `@date-fns/tz` for time zones | Dates are `YYYY-MM-DD` strings; calendar maths is plain UTC day counting, so only time-zone conversion needs a library. |
 | Money | Integer cents + `Intl.NumberFormat` | No money library needed. |
 | Phone numbers | `libphonenumber-js` | Puts every number in E.164 form so one number never becomes two people. |
 | Calendar | Own CSS-grid month view | About 50 lines. Add FullCalendar only if week view or drag-and-drop is needed. |

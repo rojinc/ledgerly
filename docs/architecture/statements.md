@@ -25,6 +25,8 @@ A **statement** summarises a group for a period and then locks that period. The 
 | `fortnightly` | 14 days, starting on `cycleAnchor` |
 | `monthly` | Calendar month (the anchor is ignored) |
 
+Dates before the anchor fall into earlier periods of the same length, counted backwards. When a group sets a future anchor, the `groups` function takes its first `nextCloseAt` from the period that contains the anchor, not today's, so nothing closes before the first real period.
+
 `groups.nextCloseAt` = 06:00 local time on the day after the current period ends, converted to UTC. The six-hour grace lets late entries from the last day make it in.
 
 ## Lifecycle

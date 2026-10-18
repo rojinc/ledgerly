@@ -59,7 +59,7 @@ The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs *
 Query `schedules` where `nextRunAt <= now`, ordered by `nextRunAt`. Skip (and clear `nextRunAt` for) schedules in archived groups. For each:
 
 ```
-today       = localToday(group.timezone)
+today       = localToday(group.timezone, now)
 from        = max(startsOn, generatedThrough + 1 day)
 to          = min(endsOn ?? ∞, today + horizonDays)
 for date in expandSchedule(schedule, from, to, holidays(group.region)):

@@ -42,7 +42,7 @@ Use the words from the [glossary](../product/glossary.md), in code and in UI tex
 ## Dates and time
 
 - A calendar date is a `LocalDate` string. **Never** `new Date('2026-10-29')`: it parses as UTC midnight and shifts the day in Australia.
-- Use the core helpers: `localToday(tz)`, `addDays(date, n)`, `compareDates(a, b)`, `daysBetween(a, b)`, `periodFor(...)`.
+- Use the core helpers in `packages/core/src/dates`: `localToday(timeZone, now)`, `addDays(date, n)`, `compareDates(a, b)`, `daysBetween(a, b)`, `overlapDays(a, b)`, `periodFor(...)`, `closeAtFor(...)`.
 - Pure functions take `now` as a parameter. Only entry points (handlers, React components) read the clock.
 
 ## Validation and errors
