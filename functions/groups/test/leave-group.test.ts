@@ -146,8 +146,9 @@ describe('POST /groups/{id}/leave', () => {
     expect(teamUsers(services, 'g1')).toEqual(['u1'])
     expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', leftOn: '2026-10-10' })
     expect(services.db.rows('activity')).toEqual([])
-    // And again, with nothing left to do.
-    expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+    // Once out of the team they're no longer a member (#117), so a later call can't read the
+    // group: the app treats this answer to a leave as done.
+    expect(await leave(services, 'u2')).toMatchObject({ status: 403, code: 'NOT_A_MEMBER' })
   })
 
   it('still needs a balance of 0 to finish an interrupted leave', async () => {

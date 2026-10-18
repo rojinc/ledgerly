@@ -3,6 +3,7 @@ import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
+import { teamsFor } from '../teams'
 import {
   activityWrite,
   getTransaction,
@@ -29,11 +30,11 @@ export { voidTransactionBodySchema }
 export const voidTransaction = route(
   'POST',
   '/transactions/:id/void',
-  ({ userId, params, body, db }) =>
+  ({ userId, params, body, db, headers }) =>
     ledgerRoute(async () => {
       const { reason } = parseBody(voidTransactionBodySchema, body)
       const found = await getTransaction(db, params.id)
-      const membership = await requireMember(db, userId, found.groupId, {
+      const membership = await requireMember(db, teamsFor(headers), userId, found.groupId, {
         roles: ['admin', 'member'],
       })
       requireCreatorOrAdmin(membership, found)

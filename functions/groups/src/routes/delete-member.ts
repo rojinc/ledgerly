@@ -46,7 +46,9 @@ export async function deleteMember(
   body: unknown,
 ): Promise<Record<string, never>> {
   parseBody(emptyBodySchema, body ?? {})
-  const { person: caller, group } = await requireMember(db, userId, groupId, { roles: ['admin'] })
+  const { person: caller, group } = await requireMember(db, teams, userId, groupId, {
+    roles: ['admin'],
+  })
   if (group.type === 'employer' || group.type === 'pair') throw invalid(TWO_MEMBERS)
   if (group.type === 'personal') throw invalid('A personal group always keeps its only member.')
   const member = await getMemberOf(db, groupId, memberId)

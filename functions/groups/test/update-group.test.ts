@@ -184,6 +184,24 @@ describe('PATCH /groups/{id}', () => {
     expect(updated).toMatchObject({ nextCloseAt: '2026-11-01T19:00:00.000Z' })
   })
 
+  it('refuses someone who left on their own as not a member, not as a viewer (#117)', async () => {
+    // Left voluntarily: a `left` viewer row, and out of the team (no team seeded).
+    const services = setUp(
+      'house',
+      {},
+      {
+        members: [
+          member('m1', 'g1', 'p1', 'admin', 'active'),
+          member('m4', 'g1', 'p4', 'viewer', 'left'),
+        ],
+      },
+    )
+    expect(await failure(services, 'PATCH', '/groups/g1', { name: 'X' }, 'u4')).toMatchObject({
+      status: 403,
+      code: 'NOT_A_MEMBER',
+    })
+  })
+
   it('is for admins only', async () => {
     const services = setUp()
     expect(await failure(services, 'PATCH', '/groups/g1', { name: 'X' }, 'u2')).toMatchObject({

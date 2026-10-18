@@ -3,6 +3,7 @@ import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
+import { teamsFor } from '../teams'
 import {
   activityWrite,
   changedColumns,
@@ -40,12 +41,12 @@ export const updateTransactionSchema = transactionInputSchema
 export const updateTransaction = route(
   'PATCH',
   '/transactions/:id',
-  ({ userId, params, body, db }) =>
+  ({ userId, params, body, db, headers }) =>
     ledgerRoute(async () => {
       const input = parseBody(updateTransactionSchema, body)
       if (input.id !== params.id) invalid('The body’s id must match the transaction.')
       const found = await getTransaction(db, params.id)
-      const membership = await requireMember(db, userId, found.groupId, {
+      const membership = await requireMember(db, teamsFor(headers), userId, found.groupId, {
         roles: ['admin', 'member'],
       })
       requireCreatorOrAdmin(membership, found)

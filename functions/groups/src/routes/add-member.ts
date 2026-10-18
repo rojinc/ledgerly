@@ -24,13 +24,13 @@ import {
  * looks the same whether or not the person has an account.
  */
 export async function addMember(
-  { db, now }: Services,
+  { db, teams, now }: Services,
   userId: string,
   groupId: string,
   body: unknown,
 ): Promise<Members> {
   const { role, joinedOn, ...input } = parseBody(addMemberBodySchema, body)
-  const membership = await requireMember(db, userId, groupId, { roles: ['admin', 'member'] })
+  const membership = await requireMember(db, teams, userId, groupId, { roles: ['admin', 'member'] })
   const { person: caller, group } = membership
   // permissions.md: a member may add people only to a house, and only as a member.
   if (

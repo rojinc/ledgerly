@@ -32,7 +32,7 @@ export async function leaveGroup(
   body: unknown,
 ): Promise<Record<string, never>> {
   parseBody(emptyBodySchema, body ?? {})
-  const { person, member, group } = await requireMember(db, userId, groupId, {
+  const { person, member, group } = await requireMember(db, teams, userId, groupId, {
     allowArchived: true,
   })
   if (group.archivedAt && member.status !== 'left') {
