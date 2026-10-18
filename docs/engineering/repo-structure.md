@@ -53,6 +53,7 @@ ledgerly/
 │           ├── auth/          requireMember, roles
 │           ├── identity/      resolvePerson, claim, merge
 │           ├── email/         Resend wrapper + templates
+│           ├── ledger/        transaction plan, guards and row helpers (ledger, scheduler)
 │           └── pdf/           pdfmake documents
 │
 ├── functions/                 one folder per Appwrite Function

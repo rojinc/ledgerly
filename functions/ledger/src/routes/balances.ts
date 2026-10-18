@@ -6,9 +6,9 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
+import { listAll } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 import type { ServicesFor } from '../services'
-import { listAll } from './transactions-shared'
 
 export type Balances = { people: Net[]; transfers: Transfer[] }
 

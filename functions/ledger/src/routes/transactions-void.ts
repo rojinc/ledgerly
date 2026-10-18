@@ -2,7 +2,6 @@ import { voidTransactionBodySchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { route } from '@ledgerly/server/http/create-handler'
-import type { ServicesFor } from '../services'
 import {
   activityWrite,
   getTransaction,
@@ -18,7 +17,8 @@ import {
   requireNotFinalizing,
   requireUnlocked,
   Unchanged,
-} from './transactions-shared'
+} from '@ledgerly/server/ledger/transactions'
+import type { ServicesFor } from '../services'
 
 export { voidTransactionBodySchema }
 
