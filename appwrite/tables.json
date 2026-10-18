@@ -314,6 +314,12 @@
         "type": "key",
         "columns": ["nextCloseAt"],
         "orders": ["ASC"]
+      },
+      {
+        "key": "idx_owner_type",
+        "type": "key",
+        "columns": ["ownerPersonId", "type"],
+        "orders": ["ASC", "ASC"]
       }
     ]
   },
