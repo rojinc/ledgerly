@@ -184,6 +184,51 @@ describe('NewSchedulePage', () => {
     expect(callsTo('/schedules')).toHaveLength(0)
   })
 
+  it('asks once the form settles, not on every keystroke', async () => {
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    fireEvent.click(screen.getByLabelText('Thursday'))
+    // Typed 100 ms apart: well inside the 400 ms the preview waits for.
+    for (const hours of ['5', '6', '5.5']) {
+      fireEvent.change(screen.getByLabelText('Paid hours per shift'), { target: { value: hours } })
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+    await waitFor(() => expect(callsTo('/schedules/preview')).toHaveLength(1))
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    expect(callsTo('/schedules/preview')).toHaveLength(1)
+    expect(callsTo('/schedules/preview')[0]?.[3]).toMatchObject({
+      template: { shift: { minutes: 330 } },
+    })
+  })
+
+  it('drops the old dates once the form stops making sense', async () => {
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    fireEvent.click(screen.getByLabelText('Thursday'))
+    fireEvent.change(screen.getByLabelText('Paid hours per shift'), { target: { value: '5' } })
+    const preview = screen.getByRole('region', { name: 'Next shifts' })
+    expect(await within(preview).findByText(/(22 Oct|Oct 22),? 2026/)).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Thursday'))
+    expect(await within(preview).findByText('Fill in the form to see the dates.')).toBeTruthy()
+    expect(within(preview).queryByText(/(22 Oct|Oct 22),? 2026/)).toBeNull()
+    expect(within(preview).queryByText('Skipped')).toBeNull()
+  })
+
+  it('refuses a count over 500 on the count field, before sending', async () => {
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    fireEvent.click(screen.getByLabelText('Thursday'))
+    fireEvent.change(screen.getByLabelText('Paid hours per shift'), { target: { value: '5' } })
+    fireEvent.click(screen.getByLabelText('After a number of shifts'))
+    fireEvent.change(screen.getByLabelText('Number of shifts'), { target: { value: '600' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    expect(await screen.findByText('Enter a number from 1 to 500')).toBeTruthy()
+    expect(callsTo('/schedules')).toHaveLength(0)
+  })
+
   it('shows a refusal from the scheduler in the form', async () => {
     mockGroup(acme)
     mockScheduler({ ok: false, error: { code: 'FORBIDDEN', message: 'Only an admin can.' } })
@@ -227,6 +272,46 @@ describe('EditSchedulePage', () => {
       template: { shift: { minutes: 360, rateCents: 2500 } },
       exdates: ['2026-11-05'],
     })
+  })
+
+  it('keeps the end date and horizon it doesn’t show, and lets a creator who isn’t an admin save', async () => {
+    mockGroup(acme, 'member')
+    mockSchedules([{ ...thursdays, endsOn: '2026-12-31', horizonDays: 120 }])
+    mockScheduler()
+    renderAt(`/schedules/${thursdays.$id}`)
+    fireEvent.click(await screen.findByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(1))
+    expect(callsTo(`/schedules/${thursdays.$id}`)[0]?.[3]).toMatchObject({
+      endsOn: '2026-12-31',
+      exdates: ['2026-11-05'],
+      horizonDays: 120,
+    })
+  })
+
+  it('says why when a new start is after the kept end date', async () => {
+    mockGroup(acme)
+    mockSchedules([{ ...thursdays, endsOn: '2026-12-31' }])
+    mockScheduler()
+    renderAt(`/schedules/${thursdays.$id}`)
+    fireEvent.change(await screen.findByLabelText('Starts on'), { target: { value: '2027-01-07' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Must be on or before the schedule’s end date')).toBeTruthy()
+    expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(0)
+  })
+
+  it('won’t edit a shift template with more than hours and rate, so a save can’t drop it', async () => {
+    mockGroup(acme)
+    mockSchedules([
+      {
+        ...thursdays,
+        templateJson: JSON.stringify({
+          shift: { minutes: 300, rateCents: 2500, breakMinutes: 30 },
+        }),
+      },
+    ])
+    renderAt(`/schedules/${thursdays.$id}`)
+    expect(await screen.findByText(/set up in a way this page can’t show/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
   })
 
   it('won’t edit a rule this page can’t show', async () => {

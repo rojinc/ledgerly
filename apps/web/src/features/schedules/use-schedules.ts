@@ -88,7 +88,8 @@ export function usePreview(body: PreviewInput | undefined) {
   return useQuery({
     queryKey: scheduleKeys.preview(settled),
     enabled: valid,
-    placeholderData: keepPreviousData,
+    // The last answer stays while the next loads, but never for an input that's no longer valid.
+    placeholderData: valid ? keepPreviousData : undefined,
     retry: false,
     queryFn: () => scheduler<Preview>('POST', '/schedules/preview', settled),
   })

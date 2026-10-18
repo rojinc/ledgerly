@@ -52,11 +52,24 @@ function scheduleResolver(
     else if (get(found, 'template.shift.rateCents')) add('rate', 'Enter an amount like 25.50')
     if (values.pattern === 'weekly' && values.days.length === 0)
       add('days', 'Pick at least one day')
-    if (values.end === 'count' && !/^[1-9]\d{0,2}$/.test(values.count.trim())) {
+    const count = values.count.trim()
+    if (
+      values.end === 'count' &&
+      !(/^\d{1,3}$/.test(count) && Number(count) >= 1 && Number(count) <= 500)
+    ) {
       add('count', 'Enter a number from 1 to 500')
     }
     if (values.end === 'until' && values.until === '') add('until', 'Required')
-    else if (get(found, 'rrule')) add('until', get(found, 'rrule').message as string)
+    // Any other rule error goes on the part of the form that's showing.
+    const ruleError = get(found, 'rrule')?.message as string | undefined
+    if (ruleError) {
+      add(
+        values.end === 'until' ? 'until' : values.end === 'count' ? 'count' : 'startsOn',
+        ruleError,
+      )
+    }
+    // A kept end date (this form doesn't show it) before a new start.
+    if (get(found, 'endsOn')) add('startsOn', 'Must be on or before the schedule’s end date')
     for (const [path, field] of Object.entries(ERROR_FIELD)) {
       const message = get(found, path)?.message as string | undefined
       if (message) add(field, message)
@@ -238,6 +251,7 @@ function ScheduleForm({
     ? {
         ...(schedule.endsOn ? { endsOn: schedule.endsOn } : {}),
         ...(schedule.exdates?.length ? { exdates: schedule.exdates } : {}),
+        horizonDays: schedule.horizonDays,
       }
     : {}
   const toInput = (values: ScheduleValues) =>
@@ -428,12 +442,17 @@ function PreviewPanel({
   return (
     <section
       aria-labelledby="preview-heading"
-      aria-live="polite"
       className="flex flex-col gap-2 rounded-md border border-border p-4 lg:w-72"
     >
       <h2 id="preview-heading" className="font-medium">
         Next shifts
       </h2>
+      {/* Read out briefly on each change, not the whole list again. */}
+      <p className="sr-only" aria-live="polite">
+        {preview.data
+          ? `${preview.data.dates.length} dates, ${preview.data.skipped.length} skipped`
+          : ''}
+      </p>
       {!preview.data ? (
         <p className="text-sm text-muted-foreground">
           {preview.isError

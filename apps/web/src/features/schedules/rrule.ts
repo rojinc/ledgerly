@@ -66,9 +66,18 @@ export function fromRrule(rule: string): Repeat | undefined {
     if (!days.every((day) => (WEEKDAYS as readonly string[]).includes(day))) return undefined
     repeat.days = days as Weekday[]
     repeat.interval = Number(parts.get('INTERVAL') ?? '1')
+    if (![1, 2, 3, 4].includes(repeat.interval)) return undefined
   } else if (freq === 'MONTHLY') {
     repeat.pattern = 'monthly'
     repeat.monthDay = Number(parts.get('BYMONTHDAY'))
+    if (
+      !(
+        repeat.monthDay === -1 ||
+        (Number.isInteger(repeat.monthDay) && repeat.monthDay >= 1 && repeat.monthDay <= 28)
+      )
+    ) {
+      return undefined
+    }
   } else {
     return undefined
   }

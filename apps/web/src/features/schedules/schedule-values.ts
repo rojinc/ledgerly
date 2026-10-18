@@ -61,7 +61,7 @@ export function toScheduleInput(
   ids: { id: string; groupId: string },
   currency: string,
   /** What the stored schedule has that this form doesn't show, kept as it was. */
-  kept: { endsOn?: string; exdates?: string[] } = {},
+  kept: { endsOn?: string; exdates?: string[]; horizonDays?: number } = {},
 ): z.input<typeof scheduleInputSchema> {
   return {
     ...ids,
@@ -87,7 +87,15 @@ export function fromSchedule(schedule: Schedules, currency: string): ScheduleVal
   let shift: { minutes: number; rateCents: number } | undefined
   try {
     const template = transactionTemplateSchema.safeParse(JSON.parse(schedule.templateJson))
-    shift = template.success ? template.data.shift : undefined
+    // Only a plain shift, minutes and rate: a save would drop anything else (a break, times,
+    // a note), so a template with more isn't editable here.
+    const plain =
+      template.success &&
+      Object.keys(template.data).join() === 'shift' &&
+      Object.keys(template.data.shift ?? {})
+        .sort()
+        .join() === 'minutes,rateCents'
+    shift = plain ? template.data.shift : undefined
   } catch {
     shift = undefined
   }

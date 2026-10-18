@@ -67,6 +67,8 @@ describe('fromRrule', () => {
     })
     expect(fromRrule('FREQ=DAILY')).toBeUndefined()
     expect(fromRrule('FREQ=WEEKLY;BYDAY=-1FR')).toBeUndefined()
+    expect(fromRrule('FREQ=WEEKLY;BYDAY=TH;INTERVAL=9')).toBeUndefined()
+    expect(fromRrule('FREQ=MONTHLY;BYMONTHDAY=31')).toBeUndefined()
   })
 })
 
