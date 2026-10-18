@@ -50,7 +50,7 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 | `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*` |
 | `statements` | HTTP + cron `15 * * * *` | `users` | 300 s | `rows.*`, `files.*` (PDFs) |
 
-Every function runs on the newest Node runtime on Appwrite Cloud, from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, so a deployment runs no install step. The key scopes are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`); give a function a new scope only when a route needs it. `GET /health` on every function returns `{ fn, version }`, where `version` is the commit the bundle was built from.
+Every function runs on the newest Node runtime on Appwrite Cloud, from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, so a deployment runs no install step. The key scopes are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`); give a function a new scope only when a route needs it. `GET /health`, the only route that runs without a signed-in caller, returns `{ fn, version }` on every function, where `version` is the commit the bundle was built from.
 
 Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, later `SMS_*` and `SENTRY_DSN`.
 
