@@ -92,6 +92,18 @@ describe('requireMember', () => {
     )
   })
 
+  it('refuses someone who left on their own even where an archived group is readable (#121)', async () => {
+    const quit = new FakeDb({
+      persons: [{ $id: 'p', userId: 'u' }],
+      members: [{ $id: 'm', groupId: 'gA', personId: 'p', role: 'viewer', status: 'left' }],
+      groups: [{ $id: 'gA', archivedAt: '2026-10-01T00:00:00.000Z' }],
+    })
+    const others = new FakeTeams({ gA: ['uOther'] })
+    expect(await codeOf(requireMember(quit, others, 'u', 'gA', { allowArchived: true }))).toBe(
+      'NOT_A_MEMBER',
+    )
+  })
+
   it('lets a moved-out member read an archived group', async () => {
     const read = await requireMember(db(), teams(), 'uLeft', 'gArchived', { allowArchived: true })
     expect(read.member.status).toBe('left')

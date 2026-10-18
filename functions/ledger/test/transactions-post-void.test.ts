@@ -204,7 +204,8 @@ describe('POST /transactions/{id}/post', () => {
     expect(response.body.error?.code).toBe('FORBIDDEN')
   })
   it.each([
-    ['someone outside the group', 'u-dan', 'NOT_A_MEMBER'],
+    // NOT_FOUND, as for a missing ID, so outsiders can't probe IDs (#121).
+    ['someone outside the group', 'u-dan', 'NOT_FOUND'],
     ['a viewer', 'u-cara', 'FORBIDDEN'],
   ])('refuses %s posting or voiding', async (_case, user, code) => {
     const db = seed()
@@ -217,7 +218,7 @@ describe('POST /transactions/{id}/post', () => {
 })
 
 describe('someone who left on their own (#117)', () => {
-  it('is not a member for edit, post and void, where someone who moved out is a viewer', async () => {
+  it('gets NOT_FOUND on edit, post and void, where someone who moved out is a viewer', async () => {
     const db = seed()
     await call(db, 'POST', '/transactions', dueBill)
     const codes = async () => [
@@ -227,7 +228,8 @@ describe('someone who left on their own (#117)', () => {
     ]
     expect(await codes()).toEqual(['FORBIDDEN', 'FORBIDDEN', 'FORBIDDEN'])
     leftOnTheirOwn(db, 'u-lee')
-    expect(await codes()).toEqual(['NOT_A_MEMBER', 'NOT_A_MEMBER', 'NOT_A_MEMBER'])
+    // Not a member, so the transaction looks missing (#121).
+    expect(await codes()).toEqual(['NOT_FOUND', 'NOT_FOUND', 'NOT_FOUND'])
     expect(rows.transactions(db)[0]?.status).toBe('due')
   })
 })

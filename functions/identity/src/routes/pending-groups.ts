@@ -2,12 +2,12 @@ import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
+import { isInTeam } from '@ledgerly/server/appwrite/teams'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
 import { parseBody } from '../parse-body'
-import { findPersonOfUser, getRowOrNull, isAppwriteError, SET_UP_FIRST } from '../rows'
+import { findPersonOfUser, getRowOrNull, SET_UP_FIRST } from '../rows'
 import type { Services } from '../services'
 
 const PAGE_SIZE = 100
@@ -78,19 +78,6 @@ export async function joinPendingGroup(
     if (!member || member.status === 'placeholder') throw notAMember()
   }
   return { group, member }
-}
-
-async function isInTeam(teams: TeamsApi, teamId: string, userId: string): Promise<boolean> {
-  try {
-    const { memberships } = await teams.listMemberships({
-      teamId,
-      queries: [Query.equal('userId', userId), Query.limit(1)],
-    })
-    return memberships.length > 0
-  } catch (error) {
-    if (isAppwriteError(error, 404)) return false
-    throw error
-  }
 }
 
 function notAMember(): AppError {

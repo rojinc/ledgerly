@@ -47,6 +47,27 @@ export async function removeFromTeam(
   }
 }
 
+/**
+ * Whether the user is in the team (team ID = group ID, D-004). A team that's gone has no one.
+ * Matches the user ID itself too, not only through the query filter.
+ */
+export async function isInTeam(
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  teamId: string,
+  userId: string,
+): Promise<boolean> {
+  try {
+    const { memberships } = await teams.listMemberships({
+      teamId,
+      queries: [Query.equal('userId', userId), Query.limit(1)],
+    })
+    return memberships.some((membership) => membership.userId === userId)
+  } catch (error) {
+    if (error instanceof AppwriteException && error.code === 404) return false
+    throw error
+  }
+}
+
 async function doneIfExists(request: Promise<unknown>): Promise<void> {
   try {
     await request

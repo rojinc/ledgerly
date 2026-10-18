@@ -1,4 +1,4 @@
-import type { TransactionKind, TransactionStatus } from '@ledgerly/core/constants/domain'
+import type { Role, TransactionKind, TransactionStatus } from '@ledgerly/core/constants/domain'
 import { daysBetween, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type {
@@ -24,8 +24,9 @@ import {
 } from '@ledgerly/core/schemas/ledger'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
+import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
-import type { Membership } from '@ledgerly/server/auth/require-member'
+import { type Membership, requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, ID, type Models, Query } from 'node-appwrite'
@@ -109,10 +110,33 @@ export function requireCreatorOrAdmin(membership: Membership, row: Transactions)
 }
 
 /** The transaction, or NOT_FOUND. */
+const NO_SUCH_TRANSACTION = 'This transaction does not exist.'
+
 export async function getTransaction(db: Db, id: string): Promise<Transactions> {
   const row = await findTransaction(db, id)
-  if (!row) throw new AppError('NOT_FOUND', 'This transaction does not exist.')
+  if (!row) throw new AppError('NOT_FOUND', NO_SUCH_TRANSACTION)
   return row
+}
+
+/**
+ * requireMember for the group of a transaction that was looked up by ID. Someone who isn't a
+ * member gets NOT_FOUND, the same as for an ID that doesn't exist, so IDs can't be probed (#121).
+ */
+export async function requireMemberOf(
+  db: Db,
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  userId: string | null,
+  transaction: Transactions,
+  options: { roles?: readonly Role[] },
+): Promise<Membership> {
+  try {
+    return await requireMember(db, teams, userId, transaction.groupId, options)
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'NOT_A_MEMBER') {
+      throw new AppError('NOT_FOUND', NO_SUCH_TRANSACTION)
+    }
+    throw error
+  }
 }
 
 export async function findTransaction(db: Db, id: string): Promise<Transactions | undefined> {

@@ -1,9 +1,8 @@
 import { voidTransactionBodySchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { requireMember } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
-import { teamsFor } from '../teams'
+import type { ServicesFor } from '../services'
 import {
   activityWrite,
   getTransaction,
@@ -15,6 +14,7 @@ import {
   parseBody,
   readView,
   requireCreatorOrAdmin,
+  requireMemberOf,
   requireNotFinalizing,
   requireUnlocked,
   Unchanged,
@@ -27,14 +27,12 @@ export { voidTransactionBodySchema }
  * `void` with the reason and deletes the shares. The row, its items and its input stay, and a
  * voided schedule occurrence keeps blocking its re-creation (scheduling.md).
  */
-export const voidTransaction = route(
-  'POST',
-  '/transactions/:id/void',
-  ({ userId, params, body, db, headers }) =>
+export const voidTransaction = (services: ServicesFor) =>
+  route('POST', '/transactions/:id/void', ({ userId, params, body, db, headers }) =>
     ledgerRoute(async () => {
       const { reason } = parseBody(voidTransactionBodySchema, body)
       const found = await getTransaction(db, params.id)
-      const membership = await requireMember(db, teamsFor(headers), userId, found.groupId, {
+      const membership = await requireMemberOf(db, services({ headers }).teams, userId, found, {
         roles: ['admin', 'member'],
       })
       requireCreatorOrAdmin(membership, found)
@@ -90,4 +88,4 @@ export const voidTransaction = route(
       }
       return readView(db, found.$id)
     }),
-)
+  )

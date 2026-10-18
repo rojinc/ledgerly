@@ -202,6 +202,24 @@ describe('PATCH /groups/{id}', () => {
     })
   })
 
+  it('refuses someone who left on their own while the team still exists with others (#121)', async () => {
+    const services = fakes(
+      {
+        persons: [person(1), person(4)],
+        groups: [group('g1', 'house')],
+        members: [
+          member('m1', 'g1', 'p1', 'admin', 'active'),
+          member('m4', 'g1', 'p4', 'viewer', 'left'),
+        ],
+      },
+      { g1: ['u1'] },
+    )
+    expect(await failure(services, 'PATCH', '/groups/g1', { name: 'X' }, 'u4')).toMatchObject({
+      status: 403,
+      code: 'NOT_A_MEMBER',
+    })
+  })
+
   it('is for admins only', async () => {
     const services = setUp()
     expect(await failure(services, 'PATCH', '/groups/g1', { name: 'X' }, 'u2')).toMatchObject({

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { AppwriteException } from 'node-appwrite'
+import { describe, expect, it, vi } from 'vitest'
 import {
   beforeCommit,
   beforeStaging,
@@ -151,7 +152,22 @@ describe('POST /groups/{id}/leave', () => {
     expect(await leave(services, 'u2')).toMatchObject({ status: 403, code: 'NOT_A_MEMBER' })
   })
 
-  it('still needs a balance of 0 to finish an interrupted leave', async () => {
+  it('finishes its own interrupted leave even if a share landed after it committed (#121)', async () => {
+    const services = houseFixture()
+    // The leave commits, then removing the team membership fails.
+    vi.spyOn(services.teams, 'deleteMembership').mockRejectedValueOnce(
+      new AppwriteException('Connection lost', 503),
+    )
+    expect((await leave(services, 'u2')).status).toBe(500)
+    expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', role: 'viewer' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+    // A share lands on them before the retry.
+    await createRow(services.db, 'shares', share('s1', 'g1', 'p2', 0, 200))
+    expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+    expect(teamUsers(services, 'g1')).toEqual(['u1'])
+  })
+
+  it('still needs a balance of 0 from someone who moved out', async () => {
     const services = houseFixture({
       m2: { status: 'left', role: 'viewer', leftOn: '2026-10-10' },
       shares: [share('s1', 'g1', 'p2', 0, 200)],

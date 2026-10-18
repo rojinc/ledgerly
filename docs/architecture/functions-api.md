@@ -138,6 +138,8 @@ What every write does, in **one TablesDB transaction**:
 3. Write the transaction row, replace its items and shares, and append an `activity` row.
 4. Commit. On conflict, retry once from step 1.
 
+On `PATCH`, `/post` and `/void`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use.
+
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
 - `people` has one entry per person with shares in the group, sorted by `personId`. Anyone else is at 0.
