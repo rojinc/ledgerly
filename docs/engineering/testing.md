@@ -56,5 +56,6 @@ A plain loop is enough; we don't need a property-testing library.
 ```bash
 npm test                                  # everything
 npm test -w @ledgerly/core                # one workspace
+npm run coverage -w @ledgerly/core        # core with the 100% coverage gate (CI runs it with TZ=Australia/Sydney)
 npx vitest run packages/core/src/money    # one folder
 ```

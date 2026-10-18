@@ -5,9 +5,10 @@ on:
   push:
     branches: [main]
 
-# A new push to a branch cancels its older runs.
+# A new push to a PR cancels that PR's older runs. Each push to main gets its own
+# group, so no run on main is ever cancelled, even while it waits in the queue.
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: true
 
 permissions:
@@ -20,6 +21,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       - uses: actions/setup-node@v6
         with:
