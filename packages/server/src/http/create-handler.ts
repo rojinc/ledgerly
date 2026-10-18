@@ -1,7 +1,7 @@
 import { idSchema } from '@ledgerly/core/schemas/common'
 import type { ErrorCode } from '@ledgerly/core/schemas/envelope'
 import { AppwriteException } from 'node-appwrite'
-import { type Db, dbFromRequest } from '../appwrite/client'
+import { callerFromJwt, type Db, dbFromRequest } from '../appwrite/client'
 import { AppError } from './app-error'
 
 /** The parts of the context Appwrite's Node runtime passes to a function that we use. */
@@ -15,7 +15,10 @@ export type AppwriteContext = {
 export type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 
 export type RouteContext<Params = Record<string, string>> = {
-  /** From `x-appwrite-user-id`; null when nobody is signed in (and for cron runs). */
+  /**
+   * From the JWT in `x-appwrite-user-jwt`, verified with Appwrite; null without one (cron
+   * runs). Never `x-appwrite-user-id`, which a client can forge (permissions.md).
+   */
   userId: string | null
   params: Params
   /** The parsed JSON body, or undefined when there is none. Validate it with the route's schema. */
@@ -58,6 +61,7 @@ export function route<P extends string>(
 export function createHandler(
   routes: readonly Route[],
   makeDb: (headers: Record<string, string>) => Db = dbFromRequest,
+  verifyCaller: (jwt: string) => Promise<string> = callerFromJwt,
 ) {
   return async ({ req, res, log, error }: AppwriteContext): Promise<unknown> => {
     const started = performance.now()
@@ -74,9 +78,11 @@ export function createHandler(
       const match = findRoute(routes, method, req.path)
       if (!match) throw new AppError('NOT_FOUND', `There is no ${method} ${req.path} route.`)
       routeName = `${method} ${match.route.path}`
+      const jwt = headers['x-appwrite-user-jwt']
+      const userId = jwt ? await callerOrUnauthenticated(verifyCaller, jwt) : null
       let db: Db | undefined
       const data = await match.route.handler({
-        userId: headers['x-appwrite-user-id'] || null,
+        userId,
         params: match.params,
         body: parseBody(req.bodyText),
         headers,
@@ -143,6 +149,21 @@ function findRoute(
     if (matched && (!best || literals > best.literals)) best = { route, params, literals }
   }
   return best
+}
+
+async function callerOrUnauthenticated(
+  verifyCaller: (jwt: string) => Promise<string>,
+  jwt: string,
+): Promise<string> {
+  try {
+    return await verifyCaller(jwt)
+  } catch (thrown) {
+    // A forged, merged or expired JWT; anything else (Appwrite unreachable) stays a 500.
+    if (thrown instanceof AppwriteException && thrown.code === 401) {
+      throw new AppError('UNAUTHENTICATED', 'Your session has ended. Log in again.')
+    }
+    throw thrown
+  }
 }
 
 function trimSlashes(path: string): string {

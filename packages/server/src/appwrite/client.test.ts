@@ -1,6 +1,6 @@
-import { TablesDB } from 'node-appwrite'
+import { Account, type Models, TablesDB } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { clientFromRequest, dbFromRequest } from './client'
+import { callerFromJwt, clientFromRequest, dbFromRequest } from './client'
 
 describe('clientFromRequest', () => {
   afterEach(() => vi.unstubAllEnvs())
@@ -32,5 +32,29 @@ describe('clientFromRequest', () => {
   it('gives TablesDB to dbFromRequest', () => {
     stubFunctionEnv()
     expect(dbFromRequest({ 'x-appwrite-key': 'k' })).toBeInstanceOf(TablesDB)
+  })
+})
+
+describe('callerFromJwt', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    vi.restoreAllMocks()
+  })
+
+  it('asks Appwrite who the JWT belongs to, with the function endpoint and project', async () => {
+    vi.stubEnv('APPWRITE_FUNCTION_API_ENDPOINT', 'https://syd.cloud.appwrite.io/v1')
+    vi.stubEnv('APPWRITE_FUNCTION_PROJECT_ID', 'ledgerly-dev')
+    let config: Record<string, unknown> = {}
+    vi.spyOn(Account.prototype, 'get').mockImplementation(function (this: Account) {
+      config = this.client.config
+      return Promise.resolve({ $id: 'u1' } as Models.User<Models.Preferences>)
+    })
+    await expect(callerFromJwt('the-jwt')).resolves.toBe('u1')
+    expect(config).toMatchObject({
+      endpoint: 'https://syd.cloud.appwrite.io/v1',
+      project: 'ledgerly-dev',
+      jwt: 'the-jwt',
+    })
+    expect(config.key).toBeFalsy()
   })
 })
