@@ -27,11 +27,17 @@ export function GroupsPage() {
         </Link>
       </div>
       {groups.data ? (
-        <ul className="divide-y divide-border rounded-md border border-border">
-          {groups.data.map((group) => (
-            <GroupRow key={group.$id} group={group} />
-          ))}
-        </ul>
+        <>
+          <GroupList groups={groups.data.filter((group) => !group.archivedAt)} />
+          {groups.data.some((group) => group.archivedAt) && (
+            <section aria-labelledby="archived-groups" className="flex flex-col gap-2">
+              <h2 id="archived-groups" className="font-medium">
+                Archived
+              </h2>
+              <GroupList groups={groups.data.filter((group) => group.archivedAt)} />
+            </section>
+          )}
+        </>
       ) : groups.isError ? (
         <div className="flex flex-col items-start gap-3">
           <p role="alert" className="text-destructive">
@@ -47,6 +53,17 @@ export function GroupsPage() {
         </p>
       )}
     </div>
+  )
+}
+
+function GroupList({ groups }: { groups: Groups[] }) {
+  if (groups.length === 0) return null
+  return (
+    <ul className="divide-y divide-border rounded-md border border-border">
+      {groups.map((group) => (
+        <GroupRow key={group.$id} group={group} />
+      ))}
+    </ul>
   )
 }
 

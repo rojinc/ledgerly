@@ -1,10 +1,11 @@
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
 import { useProfile } from '../profile/use-profile'
+import { ArchiveGroup } from './archive-group'
 import { centsToText, toEmployerValues } from './employer-form'
 import { EmployerSettingsPage } from './employer-settings-page'
 import { NewEmployerPage } from './new-employer-page'
@@ -346,7 +347,10 @@ describe('EmployerSettingsPage', () => {
   it('has no settings form for an archived group', () => {
     mockGroup({ ...employer, archivedAt: '2026-10-01T00:00:00.000Z' })
     renderAt('/groups/g1/settings')
-    expect(screen.getByText('This group is archived.')).toBeTruthy()
+    expect(
+      screen.getByText('This group is archived. You can see its history but not change it.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Archive group' })).toBeNull()
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 
@@ -378,7 +382,10 @@ describe('EmployerSettingsPage', () => {
     const { queryClient } = renderAt('/groups/g1/settings')
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect((await screen.findByRole('alert')).textContent).toBe('Archived.')
+    // In plain words, not the raw error (#37).
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'This group has been archived, so it can’t be changed any more. Reload the page to see it as it is now.',
+    )
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g1'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member', 'g1', 'p1'] })
   })
@@ -419,5 +426,99 @@ describe('toEmployerValues', () => {
       paymentTermsDays: '14',
       autoFinalize: false,
     })
+  })
+})
+
+describe('archiving a group (#37)', () => {
+  it('is offered to admins only', () => {
+    mockGroup(employer, 'member')
+    renderAt('/groups/g1/settings')
+    expect(screen.queryByRole('button', { name: 'Archive group' })).toBeNull()
+    cleanup()
+    mockGroup(employer, 'admin')
+    renderAt('/groups/g1/settings')
+    expect(screen.getByRole('button', { name: 'Archive group' })).toBeTruthy()
+  })
+
+  it('never offers a personal group', () => {
+    const queryClient = new QueryClient()
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ArchiveGroup group={{ ...employer, type: 'personal' } as Groups} onArchived={() => {}} />
+      </QueryClientProvider>,
+    )
+    expect(screen.queryByRole('button', { name: 'Archive group' })).toBeNull()
+  })
+
+  it('explains what archiving does, keeps focus inside, and gives it back on Esc', () => {
+    mockGroup(employer)
+    renderAt('/groups/g1/settings')
+    const trigger = screen.getByRole('button', { name: 'Archive group' })
+    fireEvent.click(trigger)
+    const dialog = screen.getByRole('alertdialog', { name: 'Archive Acme Cafe?' })
+    expect(dialog.textContent).toContain('read-only')
+    expect(dialog.textContent).toContain('schedules, reminders and statements stop')
+    expect(dialog.textContent).toContain('history stays')
+    expect(dialog.textContent).toContain('can’t be undone')
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    const confirm = within(dialog).getByRole('button', { name: 'Archive group' })
+    expect(document.activeElement).toBe(cancel)
+    // Tab wraps around inside the dialog.
+    confirm.focus()
+    fireEvent.keyDown(dialog, { key: 'Tab' })
+    expect(document.activeElement).toBe(cancel)
+    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
+    expect(document.activeElement).toBe(confirm)
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(document.activeElement).toBe(trigger)
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('archives on confirm, refreshes the groups and moves focus to the page', async () => {
+    mockGroup(employer)
+    call.mockResolvedValue({ ok: true, data: { ...employer, archivedAt: '2026-10-19T00:00:00Z' } })
+    const { queryClient } = renderAt('/groups/g1/settings')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
+    fireEvent.click(
+      within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Archive group' }),
+    )
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+    expect(call).toHaveBeenCalledWith('groups', 'POST', '/groups/g1/archive')
+    expect(queryClient.getQueryData(['group', 'g1'])).toMatchObject({
+      archivedAt: expect.any(String),
+    })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['groups', 'u1'] })
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+  })
+
+  it('shows why when the server refuses, such as a timer still running (#120)', async () => {
+    mockGroup(employer)
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'Stop the timer first.' },
+    })
+    renderAt('/groups/g1/settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
+    const dialog = screen.getByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Archive group' }))
+    expect((await within(dialog).findByRole('alert')).textContent).toBe('Stop the timer first.')
+    // Still open, so the user can cancel or try again once the timer is stopped.
+    expect(within(dialog).getByRole('button', { name: 'Archive group' })).toBeTruthy()
+  })
+
+  it('says it plainly, and reloads the group, when it was archived meanwhile', async () => {
+    mockGroup(employer)
+    call.mockResolvedValue({ ok: false, error: { code: 'ARCHIVED', message: 'Group is archived' } })
+    const { queryClient } = renderAt('/groups/g1/settings')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
+    const dialog = screen.getByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Archive group' }))
+    expect((await within(dialog).findByRole('alert')).textContent).toMatch(
+      /^This group has been archived, so it can’t be changed any more/,
+    )
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g1'] })
   })
 })

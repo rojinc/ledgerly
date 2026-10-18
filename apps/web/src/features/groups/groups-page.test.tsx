@@ -66,16 +66,20 @@ describe('GroupsPage', () => {
     })
     renderPage()
     const items = await screen.findAllByRole('listitem')
+    // Archived groups come last, in their own section (#37).
     expect(items.map((item) => within(item).getAllByText(/./)[0]?.textContent)).toEqual([
       'Acme',
-      'Flat',
       'Personal',
+      'Flat',
     ])
     expect(await within(items[0] as HTMLElement).findByText(/^Owed .*715\.00$/)).toBeTruthy()
     expect(within(items[0] as HTMLElement).getByText('Employer')).toBeTruthy()
-    expect(await within(items[1] as HTMLElement).findByText(/^You owe .*20\.50$/)).toBeTruthy()
-    expect(within(items[1] as HTMLElement).getByText('House · Archived')).toBeTruthy()
-    expect(await within(items[2] as HTMLElement).findByText('Settled')).toBeTruthy()
+    expect(await within(items[1] as HTMLElement).findByText('Settled')).toBeTruthy()
+    const archived = screen.getByRole('region', { name: 'Archived' })
+    expect(within(archived).getByText('Flat')).toBeTruthy()
+    // Marked in text, not only by colour, and its balance still shows.
+    expect(within(archived).getByText('House · Archived')).toBeTruthy()
+    expect(await within(archived).findByText(/^You owe .*20\.50$/)).toBeTruthy()
     // Only employer groups link to their settings.
     expect(screen.getByRole('link', { name: 'Acme' }).getAttribute('href')).toBe(
       '/groups/g2/settings',
