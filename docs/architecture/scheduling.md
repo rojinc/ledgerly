@@ -21,7 +21,13 @@ A row in `schedules` ([data model](data-model.md#schedules)) with:
 | On the 1st of every month | `FREQ=MONTHLY;BYMONTHDAY=1` |
 | On the last day of every month | `FREQ=MONTHLY;BYMONTHDAY=-1` |
 
-The UI only offers these. The API accepts any `RRULE` with `FREQ` = `DAILY`, `WEEKLY`, `MONTHLY` or `YEARLY` and no `BYHOUR`, `BYMINUTE` or `BYSECOND`. Finer rules only repeat the same date (one occurrence per date) and can be very slow to expand, so they return `VALIDATION_FAILED`.
+The UI only offers these, and the API accepts only these shapes, with the parts in any order:
+
+- `FREQ=WEEKLY;BYDAY=<days>`, where `<days>` is one or more of `MO`–`SU` (no ordinals such as `-1FR`), with an optional `INTERVAL` of 1–4.
+- `FREQ=MONTHLY;BYMONTHDAY=<n>`, where `n` is 1–28 or `-1` (the last day), so every month has it.
+- Either shape may add `COUNT` (1–500) or `UNTIL=<YYYYMMDD>` on a real calendar day, but not both.
+
+`startsOn`, `endsOn` and every `exdate` must be on or after 2000-01-01. Anything else returns `VALIDATION_FAILED`: other rules (`DAILY`, `YEARLY`, `BYSETPOS`, `BYWEEKNO`, `BYMONTH`, impossible days) and very early start dates can take seconds to expand, and `POST /schedules` and `/schedules/preview` expand while the caller waits.
 
 ## Expanding occurrences
 

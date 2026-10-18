@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { isLocalDate } from '../dates/local-date'
+import { compareDates, isLocalDate, parseLocalDate } from '../dates/local-date'
 import { checkDateOrder, descriptionSchema, idSchema, localDateSchema } from './common'
 import { checkKindRules, transactionTemplateSchema } from './ledger'
 
@@ -10,50 +10,48 @@ const scheduleIdSchema = idSchema.length(20)
 // A year of skipped days.
 const MAX_EXDATES = 366
 
+// Expanding from far in the past is slow, and no schedule needs to start that early.
+const EARLIEST_DATE = parseLocalDate('2000-01-01')
+const scheduleDateSchema = localDateSchema.refine(
+  (date) => compareDates(date, EARLIEST_DATE) >= 0,
+  {
+    message: `Must be on or after ${EARLIEST_DATE}`,
+    when: (payload) => payload.issues.length === 0,
+  },
+)
+
 const WEEKDAYS = new Set(['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'])
-const FREQUENCIES = new Set(['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'])
 
-/** A list of whole numbers from 1 to `max`, or down from -1 when `signed` (counted from the end). */
-function numbers(max: number, signed = true) {
-  const pattern = signed ? /^[+-]?\d{1,3}$/ : /^\d{1,3}$/
-  return (value: string) =>
-    value.split(',').every((item) => {
-      const size = Math.abs(Number(item))
-      return pattern.test(item) && size >= 1 && size <= max
-    })
-}
-
-/** Weekdays, each with an optional ordinal: `MO,WE`, `-1FR` (the last Friday). */
+/** One or more plain weekday codes, each once: `TH`, `MO,WE,FR`. */
 function weekdays(value: string): boolean {
-  return value.split(',').every((item) => {
-    const [, ordinal, day = ''] = /^([+-]?\d{1,2})?([A-Z]{2})$/.exec(item) ?? []
-    return WEEKDAYS.has(day) && (ordinal === undefined || numbers(53)(ordinal))
-  })
+  const days = value.split(',')
+  return days.every((day) => WEEKDAYS.has(day)) && new Set(days).size === days.length
 }
 
-const positive = (value: string) => /^[1-9]\d{0,3}$/.test(value)
-
-/** A date `20301231`, or a date and time `20301231T000000Z`, on a real calendar day. */
+/** A date `YYYYMMDD` on a real calendar day. */
 function untilDate(value: string): boolean {
-  const [, year, month, day] = /^(\d{4})(\d{2})(\d{2})(T\d{6}Z?)?$/.exec(value) ?? []
-  return isLocalDate(`${year}-${month}-${day}`)
+  return (
+    /^\d{8}$/.test(value) &&
+    isLocalDate(`${value.slice(0, 4)}-${value.slice(4, 6)}-${value.slice(6)}`)
+  )
 }
 
-// RFC 5545 §3.3.10 rule parts and their values, minus BYHOUR, BYMINUTE and BYSECOND:
-// rules finer than a day only repeat the same date and can be very slow to expand
-// (scheduling.md). FREQ is checked after the loop.
+// RFC 5545 §3.3.10 parts, limited to the values the UI uses. FREQ is checked against
+// the shapes below.
 const RRULE_PARTS = new Map<string, (value: string) => boolean>([
   ['FREQ', () => true],
-  ['UNTIL', untilDate],
-  ['COUNT', positive],
-  ['INTERVAL', positive],
   ['BYDAY', weekdays],
-  ['BYMONTHDAY', numbers(31)],
-  ['BYYEARDAY', numbers(366)],
-  ['BYWEEKNO', numbers(53)],
-  ['BYMONTH', numbers(12, false)],
-  ['BYSETPOS', numbers(366)],
-  ['WKST', (value) => WEEKDAYS.has(value)],
+  ['INTERVAL', (value) => /^[1-4]$/.test(value)], // up to every fourth week
+  ['BYMONTHDAY', (value) => /^(-1|[1-9]|1\d|2[0-8])$/.test(value)], // every month has it
+  ['COUNT', (value) => /^[1-9]\d{0,2}$/.test(value) && Number(value) <= 500],
+  ['UNTIL', untilDate],
+])
+
+// scheduling.md#rules-the-ui-builds: the only rules accepted. Others can take seconds
+// to expand, and POST /schedules and /schedules/preview expand while the caller waits.
+const SHAPES = new Map([
+  ['WEEKLY', { needs: 'BYDAY', allows: new Set(['FREQ', 'BYDAY', 'INTERVAL', 'COUNT', 'UNTIL']) }],
+  ['MONTHLY', { needs: 'BYMONTHDAY', allows: new Set(['FREQ', 'BYMONTHDAY', 'COUNT', 'UNTIL']) }],
 ])
 
 function rruleIssue(rule: string): string | undefined {
@@ -67,14 +65,17 @@ function rruleIssue(rule: string): string | undefined {
     if (!isValid(value)) return `${key} has an invalid value`
     parts.set(key, value)
   }
-  if (!FREQUENCIES.has(parts.get('FREQ') ?? '')) {
-    return 'FREQ must be DAILY, WEEKLY, MONTHLY or YEARLY'
-  }
+  const freq = parts.get('FREQ') ?? ''
+  const shape = SHAPES.get(freq)
+  if (!shape) return 'FREQ must be WEEKLY or MONTHLY'
+  if (!parts.has(shape.needs)) return `FREQ=${freq} needs ${shape.needs}`
+  const extra = [...parts.keys()].find((key) => !shape.allows.has(key))
+  if (extra) return `${extra} can't be used with FREQ=${freq}`
   if (parts.has('COUNT') && parts.has('UNTIL')) return 'Use COUNT or UNTIL, not both'
   return undefined
 }
 
-/** An RFC 5545 RRULE without the `RRULE:` prefix, e.g. `FREQ=WEEKLY;BYDAY=TH`. */
+/** An RRULE the UI builds, without the `RRULE:` prefix, e.g. `FREQ=WEEKLY;BYDAY=TH`. */
 export const rruleSchema = z
   .string()
   .max(255)
@@ -89,9 +90,9 @@ const scheduleFields = {
   description: descriptionSchema,
   template: transactionTemplateSchema,
   rrule: rruleSchema,
-  startsOn: localDateSchema,
-  endsOn: localDateSchema.optional(),
-  exdates: z.array(localDateSchema).max(MAX_EXDATES).optional(),
+  startsOn: scheduleDateSchema,
+  endsOn: scheduleDateSchema.optional(),
+  exdates: z.array(scheduleDateSchema).max(MAX_EXDATES).optional(),
   skipPublicHolidays: z.boolean(),
   autoPost: z.boolean(),
   horizonDays: z.int().min(7).max(120).optional(), // the table's default is 56
@@ -114,7 +115,7 @@ export const scheduleInputSchema = z
 export type ScheduleInput = z.infer<typeof scheduleInputSchema>
 
 /** `POST /schedules/{id}/end` */
-export const endScheduleBodySchema = z.strictObject({ endsOn: localDateSchema })
+export const endScheduleBodySchema = z.strictObject({ endsOn: scheduleDateSchema })
 
 export type EndScheduleBody = z.infer<typeof endScheduleBodySchema>
 

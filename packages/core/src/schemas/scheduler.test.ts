@@ -104,6 +104,23 @@ describe('scheduleInputSchema', () => {
     ])
   })
 
+  it('starts, ends and skips no earlier than 2000-01-01', () => {
+    const early = '1999-12-31'
+    expect(paths(scheduleInputSchema, { ...shiftSchedule, startsOn: '2000-01-01' })).toEqual([])
+    expect(paths(scheduleInputSchema, { ...shiftSchedule, startsOn: '0001-01-01' })).toEqual([
+      'startsOn',
+    ])
+    expect(
+      paths(scheduleInputSchema, { ...shiftSchedule, startsOn: early, endsOn: early }),
+    ).toEqual(['startsOn', 'endsOn'])
+    expect(paths(scheduleInputSchema, { ...shiftSchedule, exdates: [early] })).toEqual([
+      'exdates.0',
+    ])
+    expect(() => scheduleInputSchema.parse({ ...shiftSchedule, startsOn: early })).toThrow(
+      'Must be on or after 2000-01-01',
+    )
+  })
+
   it('checks dates, exdates and the horizon', () => {
     expect(paths(scheduleInputSchema, { ...shiftSchedule, startsOn: '2026-02-30' })).toEqual([
       'startsOn',
@@ -137,61 +154,76 @@ describe('scheduleInputSchema', () => {
 })
 
 describe('rruleSchema', () => {
+  // scheduling.md#rules-the-ui-builds, plus the optional parts the API allows.
   it.each([
     'FREQ=WEEKLY;BYDAY=TH',
     'FREQ=WEEKLY;INTERVAL=2;BYDAY=TU',
     'FREQ=WEEKLY;BYDAY=MO,WE,FR',
     'FREQ=MONTHLY;BYMONTHDAY=1',
     'FREQ=MONTHLY;BYMONTHDAY=-1',
-    'FREQ=DAILY;COUNT=10',
-    'FREQ=YEARLY;BYMONTH=7;BYMONTHDAY=1;UNTIL=20301231',
-    'FREQ=MONTHLY;BYDAY=-1FR',
-    'FREQ=MONTHLY;BYDAY=+2MO,TU;BYSETPOS=1;WKST=MO',
-    'FREQ=YEARLY;BYYEARDAY=-366;BYWEEKNO=53;UNTIL=20301231T000000Z',
-    'FREQ=YEARLY;BYMONTH=2;UNTIL=20280229',
+    'FREQ=MONTHLY;BYMONTHDAY=28',
     'BYDAY=TH;FREQ=WEEKLY',
+    'FREQ=WEEKLY;BYDAY=SU;INTERVAL=4;COUNT=500',
+    'FREQ=WEEKLY;BYDAY=SA,SU;INTERVAL=1;UNTIL=20280229',
+    'FREQ=MONTHLY;BYMONTHDAY=15;COUNT=1',
+    'UNTIL=20301231;BYMONTHDAY=-1;FREQ=MONTHLY',
   ])('accepts %s', (rule) => {
     expect(rruleSchema.parse(rule)).toBe(rule)
   })
 
+  // The #85 review: each of these passed before and took 1–19 s to expand.
   it.each([
-    ['FREQ=HOURLY', 'FREQ must be DAILY, WEEKLY, MONTHLY or YEARLY'],
-    ['FREQ=MINUTELY;INTERVAL=5', 'FREQ must be DAILY, WEEKLY, MONTHLY or YEARLY'],
-    ['BYDAY=TH', 'FREQ must be DAILY, WEEKLY, MONTHLY or YEARLY'],
+    ['FREQ=DAILY;BYWEEKNO=1;BYMONTH=6', 'BYWEEKNO is not supported'],
+    ['FREQ=DAILY;BYSETPOS=2', 'BYSETPOS is not supported'],
+    ['FREQ=DAILY;BYMONTH=4;BYMONTHDAY=31', 'BYMONTH is not supported'],
+    ['FREQ=DAILY', 'FREQ must be WEEKLY or MONTHLY'],
+  ])('rejects the slow rule %s', (rule, message) => {
+    expect(() => rruleSchema.parse(rule)).toThrow(message)
+  })
+
+  it.each([
+    ['FREQ=YEARLY;BYMONTHDAY=1', 'FREQ must be WEEKLY or MONTHLY'],
+    ['FREQ=HOURLY;BYDAY=MO', 'FREQ must be WEEKLY or MONTHLY'],
+    ['BYDAY=TH', 'FREQ must be WEEKLY or MONTHLY'],
+    ['FREQ=WEEKLY', 'FREQ=WEEKLY needs BYDAY'],
+    ['FREQ=MONTHLY;COUNT=3', 'FREQ=MONTHLY needs BYMONTHDAY'],
+    ['FREQ=WEEKLY;BYDAY=TH;BYMONTHDAY=1', "BYMONTHDAY can't be used with FREQ=WEEKLY"],
+    ['FREQ=MONTHLY;BYMONTHDAY=1;BYDAY=MO', "BYDAY can't be used with FREQ=MONTHLY"],
+    ['FREQ=MONTHLY;BYMONTHDAY=1;INTERVAL=2', "INTERVAL can't be used with FREQ=MONTHLY"],
+    ['FREQ=WEEKLY;BYDAY=TH;WKST=MO', 'WKST is not supported'],
     ['FREQ=DAILY;BYHOUR=9', 'BYHOUR is not supported'],
-    ['FREQ=DAILY;BYMINUTE=0', 'BYMINUTE is not supported'],
-    ['FREQ=DAILY;BYSECOND=0', 'BYSECOND is not supported'],
-    ['FREQ=WEEKLY;FREQ=DAILY', 'FREQ appears more than once'],
-    ['RRULE:FREQ=WEEKLY', 'Expected KEY=VALUE parts separated by semicolons'],
-    ['FREQ=WEEKLY;', 'Expected KEY=VALUE parts separated by semicolons'],
-    ['freq=weekly', 'Expected KEY=VALUE parts separated by semicolons'],
-    ['FREQ=WEEKLY;BYDAY=', 'Expected KEY=VALUE parts separated by semicolons'],
+    ['FREQ=WEEKLY;BYDAY=TH;FREQ=WEEKLY', 'FREQ appears more than once'],
+    ['FREQ=WEEKLY;BYDAY=-1FR', 'BYDAY has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=2MO', 'BYDAY has an invalid value'],
     ['FREQ=WEEKLY;BYDAY=XX', 'BYDAY has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=MO,MO', 'BYDAY has an invalid value'],
     ['FREQ=WEEKLY;BYDAY=TH,', 'BYDAY has an invalid value'],
-    ['FREQ=MONTHLY;BYDAY=54MO', 'BYDAY has an invalid value'],
-    ['FREQ=MONTHLY;BYDAY=0MO', 'BYDAY has an invalid value'],
-    ['FREQ=WEEKLY;INTERVAL=0', 'INTERVAL has an invalid value'],
-    ['FREQ=WEEKLY;INTERVAL=-1', 'INTERVAL has an invalid value'],
-    ['FREQ=DAILY;COUNT=ten', 'COUNT has an invalid value'],
-    ['FREQ=MONTHLY;BYMONTHDAY=32', 'BYMONTHDAY has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;INTERVAL=0', 'INTERVAL has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;INTERVAL=5', 'INTERVAL has an invalid value'],
+    ['FREQ=MONTHLY;BYMONTHDAY=29', 'BYMONTHDAY has an invalid value'],
+    ['FREQ=MONTHLY;BYMONTHDAY=31', 'BYMONTHDAY has an invalid value'],
     ['FREQ=MONTHLY;BYMONTHDAY=0', 'BYMONTHDAY has an invalid value'],
-    ['FREQ=YEARLY;BYMONTH=-1', 'BYMONTH has an invalid value'],
-    ['FREQ=YEARLY;BYMONTH=13', 'BYMONTH has an invalid value'],
-    ['FREQ=YEARLY;BYYEARDAY=367', 'BYYEARDAY has an invalid value'],
-    ['FREQ=YEARLY;BYWEEKNO=54', 'BYWEEKNO has an invalid value'],
-    ['FREQ=YEARLY;BYSETPOS=1000', 'BYSETPOS has an invalid value'],
-    ['FREQ=WEEKLY;WKST=XX', 'WKST has an invalid value'],
-    ['FREQ=DAILY;UNTIL=2030-12-31', 'UNTIL has an invalid value'],
-    ['FREQ=DAILY;UNTIL=20261340', 'UNTIL has an invalid value'],
-    ['FREQ=DAILY;UNTIL=20270229T000000Z', 'UNTIL has an invalid value'],
-    ['FREQ=DAILY;COUNT=5;UNTIL=20301231', 'Use COUNT or UNTIL, not both'],
+    ['FREQ=MONTHLY;BYMONTHDAY=-2', 'BYMONTHDAY has an invalid value'],
+    ['FREQ=MONTHLY;BYMONTHDAY=1,15', 'BYMONTHDAY has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;COUNT=0', 'COUNT has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;COUNT=501', 'COUNT has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;COUNT=ten', 'COUNT has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;UNTIL=20261340', 'UNTIL has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;UNTIL=20270229', 'UNTIL has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;UNTIL=2030-12-31', 'UNTIL has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;UNTIL=20301231T000000Z', 'UNTIL has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH;COUNT=5;UNTIL=20301231', 'Use COUNT or UNTIL, not both'],
+    ['RRULE:FREQ=WEEKLY;BYDAY=TH', 'Expected KEY=VALUE parts separated by semicolons'],
+    ['FREQ=WEEKLY;BYDAY=TH;', 'Expected KEY=VALUE parts separated by semicolons'],
+    ['freq=weekly;byday=th', 'Expected KEY=VALUE parts separated by semicolons'],
+    ['FREQ=WEEKLY;BYDAY=', 'Expected KEY=VALUE parts separated by semicolons'],
     ['', 'Expected KEY=VALUE parts separated by semicolons'],
   ])('rejects %j', (rule, message) => {
     expect(() => rruleSchema.parse(rule)).toThrow(message)
   })
 
   it('fits the 255-character column', () => {
-    const long = `FREQ=WEEKLY;BYDAY=${'MO,'.repeat(80)}MO`
+    const long = `FREQ=WEEKLY;BYDAY=MO;${'X'.repeat(250)}`
     expect(rruleSchema.safeParse(long).success).toBe(false)
   })
 })
@@ -200,6 +232,7 @@ describe('endScheduleBodySchema', () => {
   it('needs an end date', () => {
     expect(paths(endScheduleBodySchema, { endsOn: '2026-12-31' })).toEqual([])
     expect(paths(endScheduleBodySchema, {})).toEqual(['endsOn'])
+    expect(paths(endScheduleBodySchema, { endsOn: '1999-12-31' })).toEqual(['endsOn'])
   })
 })
 
