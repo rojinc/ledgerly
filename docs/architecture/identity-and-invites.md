@@ -12,12 +12,12 @@ A person's contact details live only in `identities`. Group-specific names live 
 
 ## Normalising identities
 
-Every email or phone number goes through `normalizeIdentity()` in `packages/core` before any lookup:
+Every email or phone number goes through `normalizeEmail()` or `normalizePhone()` (`packages/core/src/identity/normalize.ts`) before any lookup, and `identityKey()` builds the key from the result. Invalid input throws a `RangeError` whose message never repeats the input, and the calling route turns it into `VALIDATION_FAILED`:
 
 | Type | Rule | Example |
 | --- | --- | --- |
 | email | Trim and lowercase. Dots and `+tags` are kept. | ` Sam@Example.com ` → `email:sam@example.com` |
-| phone | Parse with `libphonenumber-js`, using the country from the caller's profile `region` as the default (`AU-NSW` → `AU`); reject invalid numbers; format as E.164 | `0412 345 678` (AU) → `phone:+61412345678` |
+| phone | Parse with `libphonenumber-js`, using the country from the caller's profile `region` as the default (`AU-NSW` → `AU`); reject numbers that `libphonenumber-js` (min metadata) calls invalid, in national or E.164 form, and numbers with an extension; format as E.164 | `0412 345 678` (AU) → `phone:+61412345678` |
 
 ## First login (bootstrap)
 
