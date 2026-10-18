@@ -10,6 +10,8 @@
 - Create both projects in the **same Appwrite Cloud region**, as close to users as possible (Sydney for Australia, if offered on the plan).
 - Prod runs on the **Pro** plan (higher limits, backups). Dev can run on Free.
 - Each project needs a web platform for its app domain (and `localhost` in dev), Resend as custom SMTP, and email verification turned on.
+- Auth methods: only email + password and email OTP (phone from M3). Team invites, magic URL and anonymous are off, because clients never manage team memberships.
+- Membership privacy: team members see only each other's user ID, not email, phone, name, MFA or last access.
 
 ## Resources as code
 
@@ -23,7 +25,7 @@ appwrite/buckets.json
 appwrite/functions.json     runtime, entrypoint (dist/main.js), schedule, execute, timeout
 ```
 
-The two config files share the resource files (the CLI's `includes` field), so dev and prod can't drift. Check the exact `includes` syntax against the Appwrite CLI docs in the M0 task.
+The two config files share the resource files through the CLI's `includes` field, so dev and prod can't drift. `appwrite push` rewrites these files with its own formatting; never commit that rewrite, because Biome would fail on it.
 
 ## CI/CD (GitHub Actions)
 

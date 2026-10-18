@@ -63,6 +63,7 @@ Step-by-step journeys through the product. Each step names the function route it
 1. **New → Lend/Borrow**, enter "Sam" and Sam's mobile number → `groups POST /groups` with `type: pair` and a counterpart.
 2. Record "Lent $50" → `ledger POST /transactions` with `kind: loan`.
 3. Months later Sam signs up with that number and verifies it. `identity POST /claim` links Sam's account to the placeholder. Sam sees the pair group and the $50.
+4. If Sam already had an account when added, the pair group shows in Sam's app as pending, and Sam joins it there. Until Sam joins, the lender can't tell which case it is.
 
 ## 10. Personal rent with a reminder
 

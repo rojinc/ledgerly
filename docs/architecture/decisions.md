@@ -110,3 +110,11 @@ Format: ID, date, status (`accepted`, `superseded by D-xxx`), decision, why, tra
 **Decision:** The owner handed day-to-day decisions to the lead agent: priorities, task specs, contract approvals, design decisions, reviews and merging every PR. The owner keeps accounts, billing, secrets, console access and approval of production releases. The lead is the Claude Code session that started the work in October 2026; if it ends, a new lead takes over by adding a decision that supersedes this one.
 **Why:** The owner asked to step back, and work shouldn't stall waiting for a person.
 **Trade-off:** No human looks at a PR before it merges. To make up for it, every PR is reviewed by a different agent, CI must be green, `security` PRs get a security pass, and design decisions are written down here so the owner can check them at any time.
+
+### D-016: Being added to a group doesn't make you a member; you join
+*2026-10-18 · accepted*
+
+**Decision:** A member added by someone else always starts as `placeholder`, even when the person already has an account. They join (become `active` and enter the group's team) only by their own action: claim through a verified identity, accepting an invite, or joining from the app. Claim joins the groups they were added to before they had an account (`persons.claimedAt`). Person IDs are random, with no timestamp. When an email and a phone point at different persons, the email decides.
+**Why:** Making registered people `active` at once showed the adder whether an email or phone has an account, and put people into groups of strangers without asking.
+This refines [D-004](#d-004-one-appwrite-team-per-group-authority-lives-in-members): `placeholder` members now include registered people who haven't joined.
+**Trade-off:** A registered person added to a group doesn't see it until they join. The list-and-join routes are needed by M2 pair groups (#34), so they ship there. In M1 this rarely matters, because employers are usually placeholders.

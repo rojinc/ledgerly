@@ -32,7 +32,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | --- | --- | --- |
 | `UNAUTHENTICATED` | 401 | No signed-in user |
 | `VALIDATION_FAILED` | 400 | Payload failed the zod schema or a ledger rule. `details` holds the issues. |
-| `NOT_A_MEMBER` | 403 | Caller isn't an active member of the group |
+| `NOT_A_MEMBER` | 403 | Caller has no member row in the group, or hasn't joined it (`placeholder`) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
 | `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, finalizing a draft that isn't the oldest |
@@ -93,10 +93,10 @@ type TransactionInput = {
 
 type ItemInput = { name: string; quantity?: number; amountCents: number; category?: Category; split: SplitSpec }
 
-type TransactionView = { transaction: TransactionRow; shares: ShareRow[]; items: ItemRow[] }
+type TransactionView = { transaction: Transactions; shares: Shares[]; items: Items[] }
 ```
 
-`TransactionRow`, `ShareRow` and the other `*Row` types are generated from the schema with `appwrite types` ([data model](data-model.md)).
+Row types (`Transactions`, `Shares`, `Items` and one per table) are generated from the schema with `npm run appwrite:types` into `@ledgerly/core/generated/rows` ([data model](data-model.md)). Never edit them by hand.
 
 ---
 
@@ -130,12 +130,12 @@ What every write does, in **one TablesDB transaction**:
 | `POST /groups` | `{ id, type, name, currency?, timezone?, region?, statementCycle?, cycleAnchor?, settings?, counterpart?: { displayName, email?, phone? } }` | `{ group, members }` | any user (not `personal`; bootstrap makes that) |
 | `PATCH /groups/{id}` | `{ name?, currency?, timezone?, region?, statementCycle?, cycleAnchor?, settings? }` | `group` | admin |
 | `POST /groups/{id}/archive` | none | `group` | admin |
-| `POST /groups/{id}/members` | `{ displayName, email?, phone?, userId?, role?, joinedOn? }` | `member` | admin (house: member too) |
+| `POST /groups/{id}/members` | `{ displayName, email?, phone?, role?, joinedOn? }` | `member` | admin (house: member too) |
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn? }` | `member` | admin |
-| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares |
-| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last admin |
+| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares. Also removes any team membership. |
+| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin |
 
-`counterpart` is required for `employer` and `pair` groups. It creates the second member (a placeholder unless their identity already has an account). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
+`counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
 ## identity
 
@@ -144,7 +144,7 @@ What every write does, in **one TablesDB transaction**:
 | `POST /bootstrap` | `{ timezone }` | `{ profile, personId, personalGroupId, linkedGroupIds }` | the user; idempotent |
 | `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency? }` | `profile` | the user |
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
-| `POST /invites` | `{ groupId, memberId, channel: 'email' \| 'sms' }` | `{ sentAt, expiresAt }` | see [permissions](permissions.md) |
+| `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | see [permissions](permissions.md) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 
 Details: [People, identity and invites](identity-and-invites.md).

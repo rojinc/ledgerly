@@ -9,7 +9,8 @@ We store people's money records, contact details and bank details. Treat every c
 | A user reads another group's data | Row permissions are `read("team:<groupId>")` only; table-level permissions are empty; teams are managed only by functions. |
 | A user writes data they shouldn't | Clients have no write permission anywhere. Functions check `members` role and status on every write. |
 | Someone claims another person's history | Claims need an identity **verified** by Appwrite Auth. Unverified data never merges persons. |
-| Finding out who is a user (enumeration) | Adding a member never reveals whether the email or phone has an account. |
+| Finding out who is a user by adding them to a group (enumeration) | Members added by someone else always start as placeholders, only the person can join, and person IDs carry no timestamp, so adding someone never reveals whether the email or phone has an account ([D-016](decisions.md)). Accepted: Appwrite's own sign-up says when an email is already registered. |
+| Teammates seeing each other's account emails | Appwrite's membership privacy setting hides account email, phone, name, MFA status and last access from team members; only the user ID is shown. Project settings aren't pushed by deploys: the lead set it on `ledgerly-dev` through the Appwrite MCP, and it must be set on prod when prod is created. |
 | Invite spam or SMS cost abuse | Rate limits: 20 invites per inviter per day, 3 per identity per week. Tokens are hashed, single-use and expire in 14 days. |
 | Edited history | Final statements lock transactions; activity is append-only and written only by functions. |
 | Leaked secrets | No secrets in git. Function secrets are Appwrite project variables. CI secrets are GitHub Actions secrets. `.env*` files are git-ignored except `.env.example`. |
@@ -21,7 +22,7 @@ We store people's money records, contact details and bank details. Treat every c
 | Data | Where | Who can see it |
 | --- | --- | --- |
 | Emails, phone numbers | `identities` | Server only. The owner sees their own in Appwrite Auth. |
-| Names | `persons.displayName`, `members.displayName` | Members of the shared group |
+| Names | `members.displayName` (what the group calls them) | Members of the shared group. `persons.displayName` is readable only by that user, so a registered person's own name never shows before they join. |
 | Bank details, ABN, address | `profiles.businessJson` | The owner; printed on invoices they send |
 | Receipts | `receipts` bucket | Members of the group |
 | Money records | ledger tables | Members of the group |

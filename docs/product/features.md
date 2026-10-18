@@ -19,7 +19,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | --- | --- | --- |
 | F-10 | Create a group of a type (`personal`, `house`, `employer`, `pair`) with name, currency and timezone. Defaults come from the profile. | M1 |
 | F-11 | Members: add by email, phone or existing account. Each group keeps its own display name for a person. Roles: admin, member, viewer. | M1 |
-| F-12 | People who aren't registered (placeholders) can be members and show as "not joined". | M1 |
+| F-12 | People who haven't joined, registered or not, can be members and show as "not joined". Both cases look the same. | M1 |
 | F-13 | Join and leave dates for members (moving in and out). | M3 |
 | F-14 | Activity feed: who added, changed or voided what, and when. | M3 |
 | F-15 | Archive a group, which makes it read-only. | M2 |
@@ -71,7 +71,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-60 | A pair group with one other person, registered or added by email or phone. | M2 |
 | F-61 | Lend, borrow and repay, including partial repayments. | M2 |
 | F-62 | Balance with that person. | M2 |
-| F-63 | "Send a reminder" email or SMS. | M4 |
+| F-63 | "Send a reminder" email or SMS, to an address the sender types for that person, sent the same way whether or not they have an account. | M4 |
 
 ## Calendar, history and export (every module)
 
@@ -86,7 +86,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | ID | Feature | Milestone |
 | --- | --- | --- |
 | F-80 | Summary email every week, fortnight or month (user setting). | M2 |
-| F-81 | Notifications: statement ready, bill due, shift to confirm, added to a group, someone changed a transaction you're in. | M2–M3 |
+| F-81 | Notifications for joined members: statement ready, bill due, shift to confirm, someone changed a transaction you're in. Being added to a group shows only in the app's pending list, never by email, so nobody can tell from it who has an account. | M2–M3 |
 | F-82 | Work-hours cap alert. The user enters their own limit per week or fortnight; no visa or award rules are built in. | M4 |
 
 ## Later (not v1)

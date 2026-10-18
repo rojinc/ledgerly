@@ -10,9 +10,9 @@ Keeping authority in one place (`members.role`) means there is one source of tru
 ## Teams
 
 - Team ID = group row ID. Created by the `groups` function with the server API key when the group is created.
-- A person is a team member only if they have a user account (`persons.userId`). Placeholders are in `members` but not in the team.
+- A person is a team member only if they have a user account (`persons.userId`) **and** have joined the group. Placeholders, including registered people who haven't joined yet, are in `members` but not in the team ([D-016](decisions.md)).
 - Team memberships are created, changed and deleted **only by functions**, with the server key. Clients never call the Teams API to change membership.
-- When a placeholder is claimed, the `identity` function adds the new user to the team of every group they are a member of.
+- After a group is created, only the `identity` function adds people to its team: when a claim links a placeholder to a new account, or when a registered person joins a group they were added to ([identity](identity-and-invites.md#joining-a-group)).
 
 ## Row permissions by table
 
@@ -41,6 +41,8 @@ Table-level permissions: **none** on every table. Row security is on everywhere.
 
 Nobody can edit or void a **locked** transaction, admins included ([I-7](ledger.md#invariants)).
 
+Members who haven't joined (`placeholder`) keep their role but have no access, and get no notifications or reminders until they join.
+
 ### Default roles by group type
 
 | Group type | Creator | Others |
@@ -52,9 +54,9 @@ Nobody can edit or void a **locked** transaction, admins included ([I-7](ledger.
 
 ### Leaving a group
 
-- **Moving out (house):** set `leftOn` and status `left`, and change the role to `viewer`. They keep read access so they can see and settle what they owe.
+- **Moving out (house):** set `leftOn` and change the role to `viewer`. A joined member's status becomes `left`; they keep read access so they can see and settle what they owe. Someone who never joined stays `placeholder`. Clearing `leftOn` turns `left` back into `active` only while the person is still in the team.
 - **Removing completely:** only allowed when the person has no shares in the group. Otherwise use `left`.
-- **Leaving voluntarily:** a member may leave once their balance is 0. Their team membership is removed; their history stays.
+- **Leaving voluntarily:** a member may leave once their balance is 0. In one database transaction their status becomes `left`, their role `viewer` and `leftOn` today if empty; then their team membership is removed. Their history stays. Coming back after leaving voluntarily isn't supported in v1.
 
 ## Function-side checks
 
