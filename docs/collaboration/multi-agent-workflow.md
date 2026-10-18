@@ -6,7 +6,7 @@ Several AI agents (Claude Code, Codex, others) and people work on this repo **at
 
 | Role | Who | Does |
 | --- | --- | --- |
-| **Owner** | Rojin (human) | Sets priorities, approves task specs and contract changes, holds secrets and console access, does the approving review and **merges every PR** |
+| **Owner** | Rojin (human) | Sets priorities, approves task specs and contract changes, holds secrets and console access, does the final review and **merges every PR** |
 | **Lead agent** (optional) | one agent session at a time | Turns roadmap items into task issues, checks scope overlaps, reviews PRs. Never merges. |
 | **Implementing agent** | Claude Code, Codex, … | Picks one ready task, implements it on its own branch and worktree, opens a PR, responds to review |
 | **Reviewing agent** | a *different* agent from the author | Reviews a PR against its issue and these docs, and comments |
@@ -88,7 +88,7 @@ A reviewing agent checks, and comments with findings:
 - Are the docs updated?
 - Is it as simple as it could be? Look for code to delete.
 
-The reviewer **comments only**. The owner approves and merges.
+The reviewer **comments only**. The owner does the final review and merges.
 
 ### 6. Blocked or handing off
 
