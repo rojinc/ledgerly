@@ -33,12 +33,13 @@ persons ──┬── identities                       (server only)
 
 ## persons
 
-One row per real person or business we track, registered or not.
+One row per real person or business we track, registered or not. Row IDs are 20 random characters from `a-z0-9`, made by a secure random generator, not `ID.unique()`: its hex timestamp would show group members when a person was first seen ([D-016](decisions.md)).
 
 | Column | Type | Notes |
 | --- | --- | --- |
 | `userId` | varchar(36)? | Appwrite user ID. Empty = placeholder. |
 | `displayName` | varchar(100) | Their own name if registered; otherwise the name used by whoever first added them. |
+| `claimedAt` | datetime? | When the person first got a user account (bootstrap or adopt). Claim joins member rows whose `$createdAt` is strictly before it ([identity](identity-and-invites.md#claim-linking-records-to-a-new-account)). |
 | `mergedInto` | varchar(36)? | Set while this person is being merged into another ([identity](identity-and-invites.md#merging-two-persons)). |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history. |
 
@@ -130,7 +131,7 @@ type GroupSettings =
 | `personId` | varchar(36) | |
 | `displayName` | varchar(100) | What this group calls the person |
 | `role` | enum(admin, member, viewer) | Authority inside the group ([permissions](permissions.md)) |
-| `status` | enum(placeholder, active, left) | `placeholder` until the person has an account; `left` after moving out. Written only by the `groups` and `identity` functions. |
+| `status` | enum(placeholder, active, left) | `placeholder`: hasn't joined this group, with or without an account. `active`: joined. `left`: joined, then moved out. A member who moves out before joining stays `placeholder` ([D-016](decisions.md)). Written only by the `groups` and `identity` functions. |
 | `joinedOn` | varchar(10) | Local date, default the day they were added |
 | `leftOn` | varchar(10)? | Local date |
 
@@ -302,7 +303,6 @@ Each item below has exactly one writer and can be rebuilt from its source. Nothi
 | --- | --- | --- |
 | `shares` rows | `transactions.inputJson` + `items` + members | `ledger` (and `scheduler` when it auto-posts, through the same core function) |
 | `shares.groupId/date/kind/category` | the transaction | rebuilt with the shares |
-| `members.status` | `persons.userId` and `leftOn` | `groups`, `identity` |
 | `statements.snapshotJson`, PDFs | transactions and shares at finalize time | `statements` (an intentional historical snapshot) |
 | `balances` table (M4) | shares | `ledger`, inside the same transaction |
 

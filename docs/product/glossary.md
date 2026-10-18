@@ -6,9 +6,10 @@ Use these words exactly as defined here, in code, the UI and docs. If you need a
 | --- | --- |
 | **User** | An Appwrite Auth account. Someone who signed up. |
 | **Person** | Anyone who can owe or be owed money. A person may or may not have a user account. One row in `persons`. |
-| **Placeholder** | A person with no user account yet, such as an employer, a landlord's agent or a friend who hasn't joined. |
+| **Placeholder** | A person with no user account yet, such as an employer, a landlord's agent or a friend who hasn't joined. As a member status, `placeholder` means the person hasn't joined that group yet, with or without an account; the UI shows both as "not joined". |
 | **Identity** | An email address or phone number that belongs to a person. Stored in `identities`. *Verified* means the user proved they own it. |
 | **Claim** | Linking a placeholder to a user after the user verifies a matching identity. |
+| **Join** | A person entering a group by their own action (claim, accepting an invite, or joining from the app). Their status becomes `active`, or `left` if they had already moved out. |
 | **Merge** | Combining two persons that turn out to be the same human. |
 | **Profile** | A user's settings and business details. One per user. |
 | **Group** | A container of people and transactions. Types: `personal`, `house`, `employer`, `pair`. Each group is one Appwrite Team. |

@@ -162,7 +162,7 @@ This gives at most n − 1 transfers. It works **within one group only**. We nev
 
 ## Reports
 
-All reports are sums over the user's shares. Nothing is copied into the personal group.
+All reports are sums over the user's shares in groups they have joined ([D-016](decisions.md)). Nothing is copied into the personal group.
 
 | Report | Formula (for person P, date range R) |
 | --- | --- |

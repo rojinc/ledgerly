@@ -10,6 +10,8 @@
 - Create both projects in the **same Appwrite Cloud region**, as close to users as possible (Sydney for Australia, if offered on the plan).
 - Prod runs on the **Pro** plan (higher limits, backups). Dev can run on Free.
 - Each project needs a web platform for its app domain (and `localhost` in dev), Resend as custom SMTP, and email verification turned on.
+- Auth methods: only email + password and email OTP (phone from M3). Team invites, magic URL and anonymous are off, because clients never manage team memberships.
+- Membership privacy: team members see only each other's user ID, not email, phone, name, MFA or last access.
 
 ## Resources as code
 
