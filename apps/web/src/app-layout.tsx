@@ -34,7 +34,8 @@ export function AppLayout() {
                 end={item.to === '/'}
                 className={({ isActive }) =>
                   cn(
-                    'shrink-0 rounded-md px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    // Inset: the nav scrolls on a phone, which clips a ring drawn outside the tab.
+                    'shrink-0 rounded-md px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset',
                     isActive ? 'bg-muted font-medium' : 'text-muted-foreground hover:bg-muted',
                   )
                 }

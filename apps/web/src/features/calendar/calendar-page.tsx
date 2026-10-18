@@ -25,7 +25,7 @@ const COLOURS = [
 
 /**
  * A colour per group, by its place in the name-sorted list, so up to 8 groups never share one.
- * Groups not in the list (none, normally) get the muted border.
+ * A group not in the list (none, normally) keeps the chips' `border-border` colour.
  */
 export function groupColours(groups: Groups[]): Map<string, string> {
   return new Map(
@@ -213,7 +213,7 @@ function MonthView({
                   key={item.$id}
                   aria-hidden="true"
                   className={cn(
-                    'truncate rounded-sm border-2 px-0.5 text-[0.65rem] leading-tight',
+                    'truncate rounded-sm border-2 border-border px-0.5 text-[0.65rem] leading-tight',
                     chipStyle(item.status),
                   )}
                   style={{ borderColor: colours.get(item.groupId) }}
@@ -275,7 +275,7 @@ function DayList({
                     <span
                       aria-hidden="true"
                       className={cn(
-                        'h-5 w-1.5 shrink-0 rounded-sm border-2',
+                        'h-5 w-1.5 shrink-0 rounded-sm border-2 border-border',
                         chipStyle(item.status),
                       )}
                       style={{ borderColor: colours.get(item.groupId) }}
