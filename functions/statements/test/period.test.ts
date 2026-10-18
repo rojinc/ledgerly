@@ -49,7 +49,7 @@ describe('closingPeriod', () => {
   ])('%s', (_case, timezone, extra, start, end) => {
     const group = groupIn(timezone, extra)
     const nextCloseAt = closeAtFor(end as LocalDate, timezone)
-    expect(closingPeriod({ ...group, nextCloseAt })).toEqual({ start, end })
+    expect(closingPeriod({ ...group, nextCloseAt }, null)).toEqual({ start, end })
   })
 
   it.each([
@@ -57,7 +57,35 @@ describe('closingPeriod', () => {
     ['west, Sydney to Perth', 'Australia/Sydney', 'Australia/Perth'],
   ])('keeps the period after a time zone change %s', (_case, before, after) => {
     const nextCloseAt = closeAtFor('2026-10-31' as LocalDate, before)
-    expect(closingPeriod({ ...groupIn(after), nextCloseAt })).toEqual({
+    expect(closingPeriod({ ...groupIn(after), nextCloseAt }, null)).toEqual({
+      start: '2026-10-01',
+      end: '2026-10-31',
+    })
+  })
+})
+
+describe('closingPeriod after an earlier statement', () => {
+  const sydney = groupIn('Australia/Sydney')
+  const nextCloseAt = closeAtFor('2026-10-31' as LocalDate, 'Australia/Sydney')
+
+  it('starts the day after the earlier statement ends', () => {
+    expect(closingPeriod({ ...sydney, nextCloseAt }, '2026-09-30' as LocalDate)).toEqual({
+      start: '2026-10-01',
+      end: '2026-10-31',
+    })
+    // A weekly cycle now, but the last statement ended on 30 September.
+    const weekly = groupIn('Australia/Sydney', {
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-10-05',
+    })
+    expect(closingPeriod({ ...weekly, nextCloseAt }, '2026-09-30' as LocalDate)).toEqual({
+      start: '2026-10-01',
+      end: '2026-10-31',
+    })
+  })
+
+  it('starts where its cycle period does when the earlier statement isn’t earlier', () => {
+    expect(closingPeriod({ ...sydney, nextCloseAt }, '2026-10-31' as LocalDate)).toEqual({
       start: '2026-10-01',
       end: '2026-10-31',
     })

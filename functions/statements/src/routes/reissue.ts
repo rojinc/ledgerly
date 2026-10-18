@@ -6,7 +6,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { ID, Query } from 'node-appwrite'
-import { closingPeriod } from '../period'
+import { closingPeriodOf } from '../period'
 import type { Services } from '../services'
 import {
   activityWrite,
@@ -112,7 +112,7 @@ async function requireFinalizable(db: Db, groupId: string, periodEnd: string): P
   // The job would draft that period again when it ends, on top of this one.
   const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
   if (group?.nextCloseAt) {
-    const next = closingPeriod({ ...group, nextCloseAt: group.nextCloseAt })
+    const next = await closingPeriodOf(db, { ...group, nextCloseAt: group.nextCloseAt })
     if (periodEnd >= next.start) {
       throw invalid('This period hasn’t been drafted yet. It is drafted once it ends.')
     }

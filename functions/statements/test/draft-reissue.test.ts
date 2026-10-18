@@ -1,3 +1,5 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
+import { closeAtFor } from '@ledgerly/core/dates/time-zone'
 import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,6 +11,7 @@ import {
   job,
   member,
   NOVEMBER_CLOSE,
+  OCTOBER_CLOSE,
   ok,
   op,
   rowsOf,
@@ -190,6 +193,78 @@ describe('the statements job (POST /, cron)', () => {
     ])
   })
 
+  describe('after a time zone or cycle change while due (#123)', () => {
+    const septemberFinal = statement('st-sep', {
+      periodStart: '2026-09-01',
+      periodEnd: '2026-09-30',
+      status: 'final',
+      snapshotJson: snapshotClosing({ start: '2026-09-01', end: '2026-09-30' }, {}),
+    })
+    const periods = (services: ReturnType<typeof fakes>) =>
+      services.db
+        .rows('statements')
+        .filter((row) => row.$id !== 'st-sep')
+        .map((row) => `${row.periodStart}..${row.periodEnd}`)
+        .sort()
+
+    it('starts the day after the last statement when the group moved from New York to Sydney', async () => {
+      // October was due at 06:00 on 1 November in New York; Sydney is 15 hours ahead.
+      const nextCloseAt = closeAtFor('2026-10-31' as LocalDate, 'America/New_York')
+      const services = fakes({
+        groups: [job({}, { timezone: 'Australia/Sydney', nextCloseAt })],
+        statements: [septemberFinal],
+      })
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      // It reaches 1 November, the day the time stored in nextCloseAt falls on in Sydney.
+      expect(periods(services)).toEqual(['2026-10-01..2026-11-01'])
+    })
+
+    it('leaves no gap or overlap when the cycle went from monthly to weekly', async () => {
+      const weekly = { statementCycle: 'weekly', cycleAnchor: '2026-10-05' }
+      const services = fakes({
+        groups: [job({}, { ...weekly, nextCloseAt: OCTOBER_CLOSE })],
+        statements: [septemberFinal],
+      })
+      // October, then the week ending Sunday 1 November, due at 06:00 on 2 November.
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      expect(periods(services)).toEqual(['2026-10-01..2026-10-31', '2026-11-01..2026-11-01'])
+    })
+
+    it('takes the latest statement of this group, not a void one ending on the period end', async () => {
+      // October's first half is final and its second half void; another group's statement
+      // ends on 20 October.
+      const services = fakes({
+        statements: [
+          statement('st-a', {
+            periodEnd: '2026-10-14',
+            status: 'final',
+            snapshotJson: snapshotClosing({ start: '2026-10-01', end: '2026-10-14' }, {}),
+          }),
+          statement('st-b', { periodStart: '2026-10-15', status: 'void' }),
+          statement('st-other', { groupId: 'job2', periodEnd: '2026-10-20' }),
+        ],
+      })
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      expect(
+        services.db
+          .rows('statements')
+          .filter((row) => row.status === 'draft' && row.groupId === 'job')
+          .map((row) => `${row.periodStart}..${row.periodEnd}`),
+      ).toEqual(['2026-10-15..2026-10-31'])
+    })
+
+    it('starts after a void statement, which a reissue redoes on its own', async () => {
+      const services = fakes({
+        groups: [job({}, { nextCloseAt: NOVEMBER_CLOSE })],
+        statements: [septemberFinal, statement('st-oct', { status: 'void' })],
+      })
+      services.now = new Date('2026-12-01T20:00:00.000Z')
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      expect(periods(services)).toEqual(['2026-10-01..2026-10-31', '2026-11-01..2026-11-30'])
+    })
+  })
+
   it('refuses a person, even an admin', async () => {
     const response = await failure(fakes(), 'POST', '/', undefined, 'u-sam')
     expect(response).toMatchObject({ status: 403, code: 'FORBIDDEN' })
@@ -336,6 +411,46 @@ describe('reissue guards', () => {
     })
     expect(response.code).toBe('CONFLICT')
     expect(services.db.rows('statements')).toHaveLength(2)
+  })
+
+  it('refuses October before the job drafts it, after a move from New York to Sydney (#123)', async () => {
+    // The job would draft 1 October to 1 November on top of it.
+    const nextCloseAt = closeAtFor('2026-10-31' as LocalDate, 'America/New_York')
+    const services = fakes({
+      groups: [job({}, { timezone: 'Australia/Sydney', nextCloseAt })],
+      statements: [
+        statement('st-sep', {
+          ...september,
+          status: 'final',
+          snapshotJson: snapshotClosing({ start: '2026-09-01', end: '2026-09-30' }, {}),
+        }),
+      ],
+    })
+    expect((await failure(services, 'POST', '/statements/reissue', october)).code).toBe(
+      'VALIDATION_FAILED',
+    )
+    expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it('redoes a void week after the cycle went from weekly to monthly (#123)', async () => {
+    // The job's next period starts after the void week, so redoing that week is allowed.
+    const week = { periodStart: '2026-10-12', periodEnd: '2026-10-18' }
+    const services = fakes({
+      statements: [
+        statement('st-wk1', {
+          periodStart: '2026-10-05',
+          periodEnd: '2026-10-11',
+          status: 'final',
+          snapshotJson: snapshotClosing({ start: '2026-10-05', end: '2026-10-11' }, {}),
+        }),
+        statement('st-wk2', { ...week, status: 'void' }),
+      ],
+    })
+    const draft = await ok<Statements>(services, 'POST', '/statements/reissue', {
+      groupId: 'job',
+      ...week,
+    })
+    expect(draft).toMatchObject({ ...week, status: 'draft' })
   })
 
   it('makes one draft when two requests reissue the same range at once', async () => {

@@ -7,7 +7,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { statementReadyEmail } from '@ledgerly/server/email/templates'
 import { ID, Query } from 'node-appwrite'
 import { joinedAdmins, verifiedEmails } from '../people'
-import { closeAfter, closingPeriod } from '../period'
+import { closeAfter, closingPeriodOf } from '../period'
 import type { Services } from '../services'
 import {
   activityWrite,
@@ -67,7 +67,7 @@ async function draftFor(
   group: Groups & { nextCloseAt: string },
 ): Promise<boolean> {
   const { db, now } = services
-  const period = closingPeriod(group)
+  const period = await closingPeriodOf(db, group)
   const { snapshot } = await computeSnapshot(db, group, period, now)
   const statementId = ID.unique()
   let reached = false
