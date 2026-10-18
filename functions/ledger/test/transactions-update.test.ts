@@ -106,6 +106,42 @@ describe('PATCH /transactions/{id}', () => {
     expect(rows.items(db).map((item) => item.name)).toEqual(items('New').map((item) => item.name))
   })
 
+  it('keeps who paid when an admin edits without payers', async () => {
+    const db = await withExpense('u-bob')
+    const response = await call(db, 'PATCH', '/transactions/t1', expense({ totalCents: 8000 }))
+    expect(response.status).toBe(200)
+    expect(amounts(rows.shares(db))).toEqual([
+      { personId: 'alice', givenCents: 0, receivedCents: 4000 },
+      { personId: 'bob', givenCents: 8000, receivedCents: 4000 },
+    ])
+  })
+
+  it('records changed items in the activity row', async () => {
+    const items = (name: string) => [
+      { name, amountCents: 9000, split: { mode: 'equal', personIds: ['alice', 'bob'] } },
+    ]
+    const db = seed()
+    await call(
+      db,
+      'POST',
+      '/transactions',
+      expense({ totalCents: undefined, split: undefined, items: items('Milk') }),
+    )
+    await call(
+      db,
+      'PATCH',
+      '/transactions/t1',
+      expense({ totalCents: undefined, split: undefined, items: items('Oat milk') }),
+    )
+    const updated = rows.activity(db).find((row) => row.action === 'transaction.updated')
+    expect(JSON.parse(updated?.changesJson ?? '')).toEqual({
+      items: {
+        before: [{ name: 'Milk', amountCents: 9000 }],
+        after: [{ name: 'Oat milk', amountCents: 9000 }],
+      },
+    })
+  })
+
   it('writes nothing when nothing changed', async () => {
     const db = await withExpense()
     const response = await call(db, 'PATCH', '/transactions/t1', {

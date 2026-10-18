@@ -25,6 +25,7 @@ import {
   shareColumns,
   storedInput,
   teamRead,
+  Unchanged,
 } from './transactions-shared'
 
 export { postTransactionBodySchema }
@@ -40,64 +41,78 @@ export const postTransaction = route(
   ({ userId, params, body, db }) =>
     ledgerRoute(async () => {
       const changes = parseBody(postTransactionBodySchema, body)
-      const existing = await getTransaction(db, params.id)
-      const membership = await requireMember(db, userId, existing.groupId, {
+      const found = await getTransaction(db, params.id)
+      const membership = await requireMember(db, userId, found.groupId, {
         roles: ['admin', 'member'],
       })
-      requireCreatorOrAdmin(membership, existing)
-      requireUnlocked(existing)
-      if (existing.status !== 'scheduled' && existing.status !== 'due') {
+      requireCreatorOrAdmin(membership, found)
+      requireUnlocked(found)
+      if (!['scheduled', 'due', 'posted'].includes(found.status)) {
         invalid('Only a scheduled or due transaction can be posted.')
       }
-      if (changes.shift && existing.kind !== 'shift')
-        invalid('Only a shift has minutes and a rate.')
+      if (changes.shift && found.kind !== 'shift') invalid('Only a shift has minutes and a rate.')
       const now = new Date()
-      const date = (changes.date ?? existing.date) as LocalDate
-      requireNotTooFarAhead(date, membership.group, now)
+      const ledger = await loadLedger(db, membership)
 
-      const stored = await storedInput(db, existing)
-      const input = {
-        ...stored,
-        date,
-        ...(changes.payers ? { payers: changes.payers } : {}),
-        ...(stored.shift ? { shift: { ...stored.shift, ...changes.shift } } : {}),
-        ...(stored.bill ? { bill: { ...stored.bill, status: 'paid' as const } } : {}),
-      }
-      // The shift's minutes × rate can only be checked against its stored values here, so
-      // buildShares turns one past the maximum into VALIDATION_FAILED.
-      const planned = plan(input, 'posted', await loadLedger(db, membership))
-      const oldShares = await listShares(db, existing.$id)
-      await requireNotFinalizing(db, existing.groupId, [existing.date, date])
-
-      const columns = {
-        status: 'posted' as const,
-        date,
-        totalCents: planned.totalCents,
-        inputJson: planned.inputJson,
-      }
-      const row = { ...existing, date }
       const person = membership.person.$id
-      await withTransaction(db, async (tx) => {
-        await guardTransaction(tx, db, existing.$id, person, ['scheduled', 'due'])
-        await tx.write(
-          { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
-          // A transaction that isn't posted has no shares (I-6), so this replaces none.
-          ...replaceRows(
-            TABLES.shares,
-            oldShares,
-            planned.shares.map((share) => shareColumns(row, share)),
-            teamRead(existing.groupId),
-          ),
-          activityWrite(
-            row,
-            person,
-            'transaction.posted',
-            `Posted “${existing.description}” (${money(planned.totalCents, membership.group)})`,
-            changedColumns(existing as unknown as Record<string, unknown>, columns),
-            now,
-          ),
-        )
-      })
-      return readView(db, existing.$id)
+      try {
+        await withTransaction(db, async (tx) => {
+          // Everything below reads the row, its items and stored input as they are now.
+          const existing = await guardTransaction(tx, db, found.$id, person, [
+            'scheduled',
+            'due',
+            'posted',
+          ])
+          const date = (changes.date ?? existing.date) as LocalDate
+          requireNotTooFarAhead(date, membership.group, now)
+          const stored = await storedInput(db, existing)
+          const input = {
+            ...stored,
+            date,
+            ...(changes.payers ? { payers: changes.payers } : {}),
+            ...(stored.shift ? { shift: { ...stored.shift, ...changes.shift } } : {}),
+            ...(stored.bill ? { bill: { ...stored.bill, status: 'paid' as const } } : {}),
+          }
+          // The shift's minutes × rate can only be checked against its stored values here, so
+          // buildShares turns one past the maximum into VALIDATION_FAILED.
+          const planned = plan(input, 'posted', ledger)
+          const columns = {
+            status: 'posted' as const,
+            date,
+            totalCents: planned.totalCents,
+            inputJson: planned.inputJson,
+          }
+          const changed = changedColumns(existing as unknown as Record<string, unknown>, columns)
+          if (existing.status === 'posted') {
+            // A retry of a post that went through gets the posted transaction back.
+            if (Object.keys(changed).length === 0) throw new Unchanged()
+            invalid('Only a scheduled or due transaction can be posted.')
+          }
+          await requireNotFinalizing(db, existing.groupId, [existing.date, date])
+          const oldShares = await listShares(db, existing.$id)
+          const row = { ...existing, date }
+          await tx.write(
+            { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
+            // A transaction that isn't posted has no shares (I-6), so this replaces none.
+            ...replaceRows(
+              TABLES.shares,
+              oldShares,
+              planned.shares.map((share) => shareColumns(row, share)),
+              teamRead(existing.groupId),
+            ),
+            activityWrite(
+              row,
+              person,
+              'transaction.posted',
+              `Posted “${existing.description}” (${money(planned.totalCents, membership.group)})`,
+              changed,
+              now,
+            ),
+          )
+        })
+      } catch (error) {
+        if (!(error instanceof Unchanged)) throw error
+      }
+      return readView(db, found.$id)
     }),
 )

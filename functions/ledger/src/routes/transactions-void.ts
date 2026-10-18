@@ -15,6 +15,7 @@ import {
   requireCreatorOrAdmin,
   requireNotFinalizing,
   requireUnlocked,
+  Unchanged,
 } from './transactions-shared'
 
 export { voidTransactionBodySchema }
@@ -30,45 +31,60 @@ export const voidTransaction = route(
   ({ userId, params, body, db }) =>
     ledgerRoute(async () => {
       const { reason } = parseBody(voidTransactionBodySchema, body)
-      const existing = await getTransaction(db, params.id)
-      const membership = await requireMember(db, userId, existing.groupId, {
+      const found = await getTransaction(db, params.id)
+      const membership = await requireMember(db, userId, found.groupId, {
         roles: ['admin', 'member'],
       })
-      requireCreatorOrAdmin(membership, existing)
-      requireUnlocked(existing)
-      if (existing.status === 'void') invalid('This transaction is already voided.')
-      const shares = await listShares(db, existing.$id)
-      await requireNotFinalizing(db, existing.groupId, [existing.date])
+      requireCreatorOrAdmin(membership, found)
+      requireUnlocked(found)
 
       const person = membership.person.$id
-      const before = existing.status
-      await withTransaction(db, async (tx) => {
-        await guardTransaction(tx, db, existing.$id, person, [before])
-        await tx.write(
-          {
-            action: 'update',
-            tableId: TABLES.transactions,
-            rowId: existing.$id,
-            data: { status: 'void', voidReason: reason },
-          },
-          ...shares.map((share) => ({
-            action: 'delete' as const,
-            tableId: TABLES.shares,
-            rowId: share.$id,
-          })),
-          activityWrite(
-            existing,
-            person,
-            'transaction.voided',
-            `Voided “${existing.description}”`,
+      try {
+        await withTransaction(db, async (tx) => {
+          // Everything below reads the row and its shares as they are now, so a share that an
+          // edit added meanwhile is deleted too.
+          const existing = await guardTransaction(tx, db, found.$id, person, [
+            'scheduled',
+            'running',
+            'due',
+            'posted',
+            'void',
+          ])
+          if (existing.status === 'void') {
+            // A retry of the same void gets the voided transaction back.
+            if (existing.voidReason === reason) throw new Unchanged()
+            invalid('This transaction is already voided.')
+          }
+          await requireNotFinalizing(db, existing.groupId, [existing.date])
+          const shares = await listShares(db, existing.$id)
+          await tx.write(
             {
-              status: { before, after: 'void' },
-              voidReason: { before: null, after: reason },
+              action: 'update',
+              tableId: TABLES.transactions,
+              rowId: existing.$id,
+              data: { status: 'void', voidReason: reason },
             },
-            new Date(),
-          ),
-        )
-      })
-      return readView(db, existing.$id)
+            ...shares.map((share) => ({
+              action: 'delete' as const,
+              tableId: TABLES.shares,
+              rowId: share.$id,
+            })),
+            activityWrite(
+              existing,
+              person,
+              'transaction.voided',
+              `Voided “${existing.description}”`,
+              {
+                status: { before: existing.status, after: 'void' },
+                voidReason: { before: null, after: reason },
+              },
+              new Date(),
+            ),
+          )
+        })
+      } catch (error) {
+        if (!(error instanceof Unchanged)) throw error
+      }
+      return readView(db, found.$id)
     }),
 )

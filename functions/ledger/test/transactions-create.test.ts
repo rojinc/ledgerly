@@ -170,6 +170,8 @@ describe('POST /transactions', () => {
     ['someone who is not in the group', expense({ split: { mode: 'equal', personIds: ['dan'] } })],
     ['a receipt, until receipts are checked', expense({ receiptFileIds: ['f1'] })],
     ['a kind the group does not have', expense({ kind: 'income', split: undefined })],
+    // Would stop the scheduler creating that occurrence (scheduling.md).
+    ['the id of a schedule occurrence', expense({ id: 'sch1_20261101' })],
   ])('refuses %s with VALIDATION_FAILED and writes nothing', async (_case, body) => {
     const db = seed()
     const response = await call(db, 'POST', '/transactions', body)
@@ -186,6 +188,7 @@ describe('POST /transactions', () => {
 
   it.each([
     ['a viewer', 'u-cara', 403, 'FORBIDDEN'],
+    ['someone who moved out', 'u-lee', 403, 'FORBIDDEN'],
     ['someone outside the group', 'u-dan', 403, 'NOT_A_MEMBER'],
     ['nobody signed in', null, 401, 'UNAUTHENTICATED'],
   ])('refuses %s', async (_case, user, status, code) => {

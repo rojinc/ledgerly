@@ -55,9 +55,20 @@ export const storedInputSchema = transactionTemplateSchema
 
 export type StoredInput = z.infer<typeof storedInputSchema>
 
+/** The row changed under the route after it read it; running the route again sorts it out. */
+export class Raced extends Error {
+  override name = 'Raced'
+}
+
+/** Thrown inside a transaction to roll it back when the write would change nothing. */
+export class Unchanged extends Error {
+  override name = 'Unchanged'
+}
+
 /**
  * Runs a ledger route: a broken ledger rule becomes its error code, and a commit that lost a
- * race (409) runs the whole route once more (functions-api.md#ledger, step 4).
+ * race (409), or a guard that found the row changed, runs the whole route once more
+ * (functions-api.md#ledger, step 4).
  */
 export async function ledgerRoute<T>(run: () => Promise<T>): Promise<T> {
   for (let attempt = 1; ; attempt++) {
@@ -65,7 +76,9 @@ export async function ledgerRoute<T>(run: () => Promise<T>): Promise<T> {
       return await run()
     } catch (error) {
       if (error instanceof LedgerError) throw new AppError(error.code, error.message)
-      if (!(error instanceof AppwriteException && error.code === 409)) throw error
+      const raced =
+        error instanceof Raced || (error instanceof AppwriteException && error.code === 409)
+      if (!raced) throw error
       if (attempt === 2) {
         throw new AppError('CONFLICT', 'Someone changed this at the same time. Try again.')
       }
@@ -201,10 +214,12 @@ export function plan(
   input: TransactionTemplate & { kind: TransactionKind; date: LocalDate },
   status: TransactionStatus,
   ledger: Ledger,
+  // Who pays when the input names no payers: the caller, unless the route says otherwise.
+  payer = ledger.ctx.callerPersonId,
 ): Plan {
-  const built = buildShares(input, ledger.ctx)
+  const built = buildShares(input, { ...ledger.ctx, callerPersonId: payer })
   const shares = status === 'posted' ? built.shares : []
-  if (shares.length > 0) {
+  if (status === 'posted') {
     assertShareInvariants(
       { kind: input.kind, totalCents: built.totalCents },
       shares,
@@ -214,7 +229,7 @@ export function plan(
   const payers =
     input.payers ??
     (PAYER_KINDS.includes(input.kind) && status === 'posted'
-      ? [{ personId: ledger.ctx.callerPersonId, cents: built.totalCents }]
+      ? [{ personId: payer, cents: built.totalCents }]
       : undefined)
   const { periodStart, periodEnd } = input.bill ?? {}
   const stored: StoredInput = {
@@ -431,8 +446,10 @@ export function changedColumns(
 /**
  * Guards the transaction row (conventions.md#functions): stages a write that only sets
  * `updatedBy`, then reads the row in the transaction and checks that it is unlocked and still
- * in one of `statuses`. Anyone who changes the row after this makes the commit fail with 409,
- * so the route's own write can't undo a lock, a post or a void it never saw.
+ * in one of `statuses`. Every writer of a transaction's shares and items also writes its row,
+ * so anyone who changes either after this makes the commit fail with 409. Routes therefore
+ * read the row, its shares, items and stored input only after this, and base their writes on
+ * what they read then.
  */
 export async function guardTransaction(
   tx: Tx,
@@ -449,9 +466,7 @@ export async function guardTransaction(
     transactionId: tx.id,
   })
   requireUnlocked(staged)
-  if (!statuses.includes(staged.status)) {
-    throw new AppError('CONFLICT', 'Someone changed this at the same time. Try again.')
-  }
+  if (!statuses.includes(staged.status)) throw new Raced()
   return staged
 }
 

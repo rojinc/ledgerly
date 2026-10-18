@@ -27,16 +27,26 @@ describe('ledger invariants', () => {
         { personId: 'alice', givenCents: 9000, receivedCents: 4500 },
         { personId: 'bob', givenCents: 0, receivedCents: 4500 },
       ],
-      ['alice', 'bob', 'cara', 'pat'],
+      ['alice', 'bob', 'cara', 'pat', 'lee'],
     )
   })
 
   it.each([
     ['POST', '/transactions', () => expense({ id: 't2' })],
     ['PATCH', '/transactions/t1', () => expense({ totalCents: 9100 })],
+    ['POST', '/transactions/b1/post', () => ({})],
   ])('stop %s %s with INVARIANT_VIOLATION, writing nothing', async (method, path, body) => {
     const db = seed()
     await call(db, 'POST', '/transactions', expense())
+    await call(db, 'POST', '/transactions', {
+      id: 'b1',
+      groupId: 'house',
+      kind: 'bill',
+      date: '2026-10-20',
+      description: 'Electricity',
+      totalCents: 12000,
+      bill: { status: 'due', dueOn: '2026-10-25' },
+    })
     const before = JSON.stringify([rows.transactions(db), rows.shares(db), rows.activity(db)])
     assertShareInvariants.mockImplementationOnce(() => {
       throw new LedgerError('INVARIANT_VIOLATION', 'Ledger invariant I-1 (balanced) would break')

@@ -8,6 +8,7 @@ import { route } from '@ledgerly/server/http/create-handler'
 import {
   activityWrite,
   findTransaction,
+  invalid,
   ledgerRoute,
   listItems,
   loadLedger,
@@ -26,6 +27,8 @@ import {
 
 export const createTransactionSchema = transactionInputSchema
 
+const OCCURRENCE_ID = /_\d{8}$/
+
 /**
  * `POST /transactions` (functions-api.md#ledger): writes the transaction, its shares, items
  * and an activity row in one TablesDB transaction. A retry with the same `id` and content
@@ -34,6 +37,9 @@ export const createTransactionSchema = transactionInputSchema
 export const createTransaction = route('POST', '/transactions', ({ userId, body, db }) =>
   ledgerRoute(async () => {
     const input = parseBody(createTransactionSchema, body)
+    // scheduling.md: `<scheduleId>_<YYYYMMDD>` belongs to a schedule occurrence. A client
+    // taking one would stop the scheduler creating it.
+    if (OCCURRENCE_ID.test(input.id)) invalid('This id is kept for schedule occurrences.')
     const membership = await requireMember(db, userId, input.groupId, {
       roles: ['admin', 'member'],
     })

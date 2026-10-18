@@ -17,7 +17,7 @@ const member = (
   groupId: string,
   personId: string,
   role: 'admin' | 'member' | 'viewer',
-  status: 'joined' | 'placeholder' = 'joined',
+  status: 'active' | 'placeholder' | 'left' = 'active',
 ) => ({ $id, groupId, personId, displayName: personId, role, status, joinedOn: '2026-01-01' })
 
 export const GROUPS = [
@@ -56,6 +56,8 @@ export const MEMBERS = [
   member('m-bob', 'house', 'bob', 'member'),
   member('m-cara', 'house', 'cara', 'viewer'),
   member('m-pat', 'house', 'pat', 'member', 'placeholder'),
+  // Moved out: leaving makes a member a viewer (functions-api.md#groups).
+  member('m-lee', 'house', 'lee', 'viewer', 'left'),
   member('m-sam', 'job', 'sam', 'admin'),
   member('m-acme', 'job', 'acme', 'member', 'placeholder'),
 ]
@@ -72,6 +74,7 @@ export function seed(extra: Record<string, Record<string, unknown>[]> = {}): Fak
       { $id: 'bob', userId: 'u-bob', displayName: 'Bob' },
       { $id: 'cara', userId: 'u-cara', displayName: 'Cara' },
       { $id: 'pat', userId: null, displayName: 'Pat' },
+      { $id: 'lee', userId: 'u-lee', displayName: 'Lee' },
       { $id: 'sam', userId: 'u-sam', displayName: 'Sam' },
       { $id: 'acme', userId: null, displayName: 'Acme' },
       { $id: 'dan', userId: 'u-dan', displayName: 'Dan' },

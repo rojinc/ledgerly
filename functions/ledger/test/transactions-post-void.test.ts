@@ -128,10 +128,10 @@ describe('POST /transactions/{id}/post', () => {
 
   it.each([
     [
-      'a posted transaction',
+      'a posted transaction on another day',
       async (db: ReturnType<typeof seed>) => {
         await call(db, 'POST', '/transactions', expense())
-        return call(db, 'POST', '/transactions/t1/post', {})
+        return call(db, 'POST', '/transactions/t1/post', { date: '2026-10-11' })
       },
     ],
     [
@@ -144,6 +144,19 @@ describe('POST /transactions/{id}/post', () => {
   ])('refuses to post %s', async (_case, run) => {
     const response = await run(seed())
     expect(response.body.error?.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('gives a retried post the posted transaction back, writing nothing', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', dueBill, 'u-bob')
+    const first = await call(db, 'POST', '/transactions/b1/post', { date: '2026-10-22' }, 'u-bob')
+    const again = await call(db, 'POST', '/transactions/b1/post', { date: '2026-10-22' }, 'u-bob')
+    expect(again.status).toBe(200)
+    expect(again.body.data).toEqual(first.body.data)
+    expect(rows.activity(db).map((row) => row.action)).toEqual([
+      'transaction.created',
+      'transaction.posted',
+    ])
   })
 
   it('refuses a viewer', async () => {
@@ -180,6 +193,16 @@ describe('POST /transactions/{id}/void', () => {
     })
   })
 
+  it('gives a retried void the voided transaction back, writing nothing', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', expense())
+    const first = await call(db, 'POST', '/transactions/t1/void', { reason: 'Duplicate' })
+    const again = await call(db, 'POST', '/transactions/t1/void', { reason: 'Duplicate' })
+    expect(again.status).toBe(200)
+    expect(again.body.data).toEqual(first.body.data)
+    expect(rows.activity(db)).toHaveLength(2)
+  })
+
   it('voids a schedule occurrence, which then keeps blocking its re-creation', async () => {
     const db = seed({ transactions: [scheduledShift] })
     const response = await call(
@@ -202,7 +225,7 @@ describe('POST /transactions/{id}/void', () => {
     expect((await call(db, 'POST', '/transactions/t1/void', body)).body.error?.code).toBe(code)
   })
 
-  it('refuses a second void, a member who did not add it, and a locked transaction', async () => {
+  it('refuses a void with another reason, a member who did not add it, and a lock', async () => {
     const db = seed()
     await call(db, 'POST', '/transactions', expense())
     expect(
@@ -210,7 +233,7 @@ describe('POST /transactions/{id}/void', () => {
     ).toBe('FORBIDDEN')
     await call(db, 'POST', '/transactions/t1/void', { reason: 'x' })
     expect(
-      (await call(db, 'POST', '/transactions/t1/void', { reason: 'x' })).body.error?.code,
+      (await call(db, 'POST', '/transactions/t1/void', { reason: 'y' })).body.error?.code,
     ).toBe('VALIDATION_FAILED')
     const locked = seed({
       transactions: [{ ...scheduledShift, status: 'posted', statementId: 'st1' }],
