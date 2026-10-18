@@ -42,13 +42,21 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 
 ## Function settings
 
-| Function | Trigger | Execute | Timeout |
-| --- | --- | --- | --- |
-| `ledger` | HTTP | `users` | 15 s |
-| `groups` | HTTP | `users` | 15 s |
-| `identity` | HTTP | `users` | 15 s |
-| `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s |
-| `statements` | HTTP + cron `15 * * * *` | `users` | 300 s |
+| Function | Trigger | Execute | Timeout | Key scopes |
+| --- | --- | --- | --- | --- |
+| `ledger` | HTTP | `users` | 15 s | `rows.*`, `files.*` (receipt permissions) |
+| `groups` | HTTP | `users` | 15 s | `rows.*`, `teams.*` |
+| `identity` | HTTP | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
+| `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*` |
+| `statements` | HTTP + cron `15 * * * *` | `users` | 300 s | `rows.*`, `files.*` (PDFs) |
+
+Every function runs on `node-24`, the same Node as `.nvmrc`, CI and the build's `/health` check. Node 24 gets security fixes [until 2028-04-30](https://github.com/nodejs/Release); before then, move to the next LTS runtime. Check what Cloud offers with `functions.listRuntimes` on the project (on 2026-10-18 `ledgerly-dev` listed `node-22`, `node-24`, `node-25` and `node-26`), not the runtimes page, which lags. The CLI refuses to change a deployed function's runtime, so a move means deleting and recreating each function.
+
+Each function runs from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, and the deployment uploads only `dist/` and `package.json` (`ignore: ["*", "!dist/", "!dist/**", "!package.json"]`, which also holds under strict `.gitignore` rules). Never add a `.gitignore` inside `functions/<name>/`: the CLI applies it on top of `ignore`, so one that lists `dist/` would leave the bundle out.
+
+- **`commands` stays empty.** The uploaded `package.json` names `@ledgerly/*` packages, which aren't on public npm, so an `npm install` could pull a stranger's package of the same name. The bundle already holds every dependency.
+- **Key scopes** are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`). Give a function only the scopes a documented route needs; a change to them gets the `security` label.
+- `GET /health`, the only route that runs without a signed-in caller, returns `{ fn, version }` on every function, where `version` is the commit the bundle was built from (`-dirty` when built with uncommitted changes).
 
 Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, later `SMS_*` and `SENTRY_DSN`.
 

@@ -1,0 +1,12 @@
+{
+  "name": "@ledgerly/fn-groups",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../../scripts/build-functions.mjs groups",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@ledgerly/server": "*"
+  }
+}

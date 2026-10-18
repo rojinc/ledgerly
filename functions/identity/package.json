@@ -1,0 +1,12 @@
+{
+  "name": "@ledgerly/fn-identity",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../../scripts/build-functions.mjs identity",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@ledgerly/server": "*"
+  }
+}
