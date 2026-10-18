@@ -90,6 +90,7 @@ export function buildStatementSnapshot(input: SnapshotInput): StatementSnapshot 
     const terms = input.paymentTermsDays ?? bug('An invoice needs payment terms')
     // A wrong issuer ID would otherwise make a silent $0 invoice.
     if (!names.has(issuer.personId)) bug('The issuer must be a member')
+    if (snapshot.recipient.personId === issuer.personId) bug('The issuer can’t bill themselves')
     snapshot.issuer = issuer
     const worker = people.find((person) => person.personId === issuer.personId)
     snapshot.invoice = { balanceDueCents: worker?.closingCents ?? 0, paymentTermsDays: terms }

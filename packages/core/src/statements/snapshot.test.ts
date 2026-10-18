@@ -221,6 +221,10 @@ describe('buildStatementSnapshot', () => {
     expect(caught).toBeInstanceOf(LedgerError)
     expect((caught as LedgerError).code).toBe('INVARIANT_VIOLATION')
     expect((caught as LedgerError).message).toMatch('issuer must be a member')
+    const toSelf = { personId: 'worker', name: 'Sam', emails: ['sam@example.com'] }
+    expect(() =>
+      buildStatementSnapshot({ ...employerInput(shift, []), recipient: toSelf }),
+    ).toThrow('bill themselves')
   })
 
   it('suggests no transfers for a divide whose closings don’t add up, so the check catches it', () => {
