@@ -1,0 +1,278 @@
+import type { Members } from '@ledgerly/core/generated/rows'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { describe, expect, it } from 'vitest'
+import {
+  beforeCommit,
+  type Fakes,
+  failure,
+  fakes,
+  group,
+  member,
+  NOW,
+  ok,
+  person,
+  placeholder,
+  TODAY,
+  TRY_AGAIN,
+} from './harness'
+
+// A registered person (user u9) who is in no group yet, known by email and phone.
+const REGISTERED_EMAIL = {
+  $id: 'iEmail9',
+  key: 'email:reg@example.com',
+  type: 'email',
+  personId: 'p9',
+  verified: true,
+  verifiedAt: NOW.toISOString(),
+}
+
+/** House g1: u1 admin, u2 member, u3 viewer (all joined), u4 added but not joined. */
+function house(extra: object = {}) {
+  return fakes(
+    {
+      groups: [group('g1', 'house', extra)],
+      persons: [person(1), person(2), person(3), person(4), person(9)],
+      identities: [REGISTERED_EMAIL],
+      members: [
+        member('m1', 'g1', 'p1', 'admin', 'active'),
+        member('m2', 'g1', 'p2', 'member', 'active'),
+        member('m3', 'g1', 'p3', 'viewer', 'active'),
+        member('m4', 'g1', 'p4', 'member', 'placeholder'),
+      ],
+    },
+    { g1: ['u1', 'u2', 'u3'] },
+  )
+}
+
+function add(services: Fakes, body: object, userId = 'u1') {
+  return ok<Members>(services, 'POST', '/groups/g1/members', body, userId)
+}
+
+function addFails(services: Fakes, body: object, userId: string | null = 'u1') {
+  return failure(services, 'POST', '/groups/g1/members', body, userId)
+}
+
+// What a caller sees of a new row, apart from the IDs and timestamps every row has.
+function visible(row: Members) {
+  const { $id, personId, $createdAt, $updatedAt, $sequence, ...rest } = row
+  return { keys: Object.keys(row).sort(), rest }
+}
+
+describe('POST /groups/{id}/members', () => {
+  it('adds someone unknown as a placeholder, with a new person and unverified identities', async () => {
+    const services = house()
+    const row = await add(services, {
+      displayName: ' Sam ',
+      email: 'Sam@Example.com',
+      phone: '0412 345 678',
+    })
+    expect(row).toMatchObject({
+      groupId: 'g1',
+      displayName: 'Sam',
+      role: 'member',
+      status: 'placeholder',
+      joinedOn: TODAY,
+      leftOn: null,
+      $permissions: ['read("team:g1")'],
+    })
+    expect(services.db.rows('persons').at(-1)).toMatchObject({
+      $id: row.personId,
+      displayName: 'Sam',
+      $permissions: [],
+    })
+    expect(services.db.rows('identities').slice(1)).toEqual([
+      expect.objectContaining({ key: 'email:sam@example.com', personId: row.personId }),
+      expect.objectContaining({ key: 'phone:+61412345678', personId: row.personId }),
+    ])
+    expect(services.db.rows('identities').slice(1)).toEqual([
+      expect.objectContaining({ verified: false, $permissions: [] }),
+      expect.objectContaining({ verified: false, $permissions: [] }),
+    ])
+    expect(services.teams.members('g1')?.map((m) => m.userId)).toEqual(['u1', 'u2', 'u3'])
+  })
+
+  it('writes member.added, naming the person but never their email or phone', async () => {
+    const services = house()
+    await add(services, { displayName: 'Sam', email: 'sam@example.com', phone: '0412345678' })
+    const [activity] = services.db.rows('activity')
+    expect(activity).toMatchObject({
+      groupId: 'g1',
+      actorPersonId: 'p1',
+      action: 'member.added',
+      summary: 'Sam was added',
+      at: NOW.toISOString(),
+      $permissions: ['read("team:g1")'],
+    })
+    // Only the text fields can carry them; $id and $createdAt are random, so leave them out.
+    const text = `${activity?.summary} ${activity?.changesJson ?? ''}`
+    expect(text).not.toMatch(/example\.com|412\s?345\s?678/)
+  })
+
+  it('adds a registered person as a placeholder, outside the team, looking like anyone else', async () => {
+    const services = house()
+    const registered = await add(services, { displayName: 'Robin', email: 'reg@example.com' })
+    expect(registered).toMatchObject({ personId: 'p9', status: 'placeholder' })
+    expect(services.teams.members('g1')?.map((m) => m.userId)).not.toContain('u9')
+
+    const unknown = await add(services, { displayName: 'Robin', email: 'new@example.com' })
+    expect(unknown.personId).not.toBe('p9')
+    expect(visible(registered)).toEqual(visible(unknown))
+  })
+
+  it('uses the found person and never attaches the other, unverified key to them', async () => {
+    const services = house()
+    const row = await add(services, {
+      displayName: 'Robin',
+      email: 'reg@example.com',
+      phone: '0412345678',
+    })
+    expect(row.personId).toBe('p9')
+    expect(services.db.rows('identities')).toHaveLength(1)
+    expect(services.db.rows('persons')).toHaveLength(5)
+  })
+
+  it('takes the role and joinedOn given', async () => {
+    const services = house()
+    const row = await add(services, { displayName: 'Sam', role: 'viewer', joinedOn: '2026-08-01' })
+    expect(row).toMatchObject({ role: 'viewer', joinedOn: '2026-08-01' })
+  })
+
+  it('joinedOn defaults to today in the group time zone', async () => {
+    const services = house({ timezone: 'UTC' })
+    const row = await add(services, { displayName: 'Sam' })
+    expect(row.joinedOn).toBe('2026-10-18')
+  })
+
+  it('refuses someone already in the group, joined or not', async () => {
+    const services = house()
+    await add(services, { displayName: 'Robin', email: 'reg@example.com' })
+    expect(await addFails(services, { displayName: 'Robin', email: 'REG@example.com' })).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: 'This person is already in the group.',
+    })
+    expect(services.db.rows('members')).toHaveLength(5)
+    expect(services.db.rows('activity')).toHaveLength(1)
+  })
+
+  it('answers CONFLICT when another request adds the same person first', async () => {
+    const services = house()
+    beforeCommit(services.db, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'create',
+          tableId: 'members',
+          rowId: 'mRace',
+          data: {
+            groupId: 'g1',
+            personId: 'p9',
+            displayName: 'R',
+            role: 'member',
+            status: 'placeholder',
+            joinedOn: TODAY,
+          },
+        }),
+      ),
+    )
+    expect(await addFails(services, { displayName: 'Robin', email: 'reg@example.com' })).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('activity')).toHaveLength(0)
+  })
+
+  it('lets a house member add a member, but not choose another role', async () => {
+    const services = house()
+    expect(await add(services, { displayName: 'Sam' }, 'u2')).toMatchObject({ role: 'member' })
+    expect(await add(services, { displayName: 'Alex', role: 'member' }, 'u2')).toMatchObject({
+      role: 'member',
+    })
+    for (const role of ['admin', 'viewer']) {
+      expect(await addFails(services, { displayName: 'Kim', role }, 'u2')).toMatchObject({
+        status: 403,
+        code: 'FORBIDDEN',
+      })
+    }
+  })
+
+  it('refuses a viewer', async () => {
+    expect(await addFails(house(), { displayName: 'Sam' }, 'u3')).toMatchObject({
+      status: 403,
+      code: 'FORBIDDEN',
+    })
+  })
+
+  it('refuses a third member in employer and pair groups, and anyone in a personal group', async () => {
+    for (const type of ['employer', 'pair', 'personal']) {
+      const services = fakes({
+        groups: [group('g1', type)],
+        persons: [person(1), person(2)],
+        members: [
+          member('m1', 'g1', 'p1', 'admin', 'active'),
+          member('m2', 'g1', 'p2', 'member', 'active'),
+        ],
+      })
+      expect(await addFails(services, { displayName: 'Sam' })).toMatchObject({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+      })
+      // A member there isn't allowed to add anyone at all.
+      expect(await addFails(services, { displayName: 'Sam' }, 'u2')).toMatchObject({
+        code: 'FORBIDDEN',
+      })
+      expect(services.db.rows('members')).toHaveLength(2)
+    }
+  })
+
+  it('refuses someone who is not a member, or has not joined', async () => {
+    const services = house()
+    for (const userId of ['u9', 'u4', 'uNobody']) {
+      expect(await addFails(services, { displayName: 'Sam' }, userId)).toMatchObject({
+        status: 403,
+        code: 'NOT_A_MEMBER',
+      })
+    }
+  })
+
+  it('refuses a request without a login', async () => {
+    expect(await addFails(house(), { displayName: 'Sam' }, null)).toMatchObject({
+      status: 401,
+      code: 'UNAUTHENTICATED',
+    })
+  })
+
+  it('refuses an archived group', async () => {
+    const services = house({ archivedAt: NOW.toISOString() })
+    expect(await addFails(services, { displayName: 'Sam' })).toMatchObject({
+      status: 409,
+      code: 'ARCHIVED',
+    })
+  })
+
+  it('refuses an invalid email or phone, and a userId in the body, writing nothing', async () => {
+    const services = fakes({
+      groups: [group('g1', 'house')],
+      persons: [person(1), placeholder('pX')],
+      members: [member('m1', 'g1', 'p1', 'admin', 'active')],
+    })
+    const bodies = [
+      { displayName: 'Sam', email: 'not-an-email' },
+      { displayName: 'Sam', phone: '123' },
+      { displayName: 'Sam', userId: 'u9' },
+      { displayName: '' },
+    ]
+    for (const body of bodies) {
+      expect(await addFails(services, body)).toMatchObject({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+      })
+    }
+    expect(await addFails(services, { displayName: 'Sam', phone: '123' })).toMatchObject({
+      message: 'Not a valid phone number',
+    })
+    expect(services.db.rows('members')).toHaveLength(1)
+    expect(services.db.rows('persons')).toHaveLength(2)
+    expect(services.db.rows('identities')).toHaveLength(0)
+  })
+})

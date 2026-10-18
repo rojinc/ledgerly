@@ -125,6 +125,8 @@ type GroupSettings =
   | { type: 'pair' }
 ```
 
+Defaults when `POST /groups` gives no `settings`: employer `{ defaultRateCents: 0, paymentTermsDays: 14, autoFinalize: false, recipients: [] }`, house `{ autoFinalize: false, defaultBillSplit: 'days' }`.
+
 ## members
 
 | Column | Type | Notes |
