@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { AppwriteException } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -134,11 +134,11 @@ describe('route guards', () => {
     // As after verifying an email, which re-runs bootstrap.
     call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Boom' } })
     await queryClient.invalidateQueries({ queryKey: ['bootstrap', 'u1'] })
-    await waitFor(() => {
-      expect(queryClient.getQueryState(['bootstrap', 'u1'])?.status).toBe('error')
-      expect(screen.getByText('Secret page')).toBeTruthy()
-      expect(screen.queryByText(/couldn’t set up your account/)).toBeNull()
-    })
+    expect(queryClient.getQueryState(['bootstrap', 'u1'])?.status).toBe('error')
+    // Let React render the failed refetch before looking.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    expect(screen.getByText('Secret page')).toBeTruthy()
+    expect(screen.queryByText(/couldn’t set up your account/)).toBeNull()
   })
 
   it('shows the error, not the login form, when the user refetch after signing in fails', async () => {

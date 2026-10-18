@@ -52,7 +52,8 @@ export function useBootstrap(userId: string) {
       queryClient.setQueryData(queryKeys.profile(userId), result.data.profile)
       return result.data
     },
-    // CONFLICT and network errors may pass next time; the others never will.
+    // Only UNAUTHENTICATED and VALIDATION_FAILED are final; anything else, including INTERNAL
+    // for a lost connection, may pass next time.
     retry: (failures, error) =>
       !(error instanceof SessionEnded || error instanceof Rejected) && failures < 3,
     staleTime: Number.POSITIVE_INFINITY,
