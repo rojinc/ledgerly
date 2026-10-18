@@ -128,7 +128,7 @@ Each reminder goes out once. In one database transaction, `remindedAt` is staged
 
 ### Step 4: summary emails
 
-Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a summary goes out at most once), then send the summary for the period that just ended ([ledger reports](ledger.md#reports)). Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local:
+Profiles where `nextSummaryAt <= now` get the summary of the period that just ended ([ledger reports](ledger.md#reports)). `nextSummaryAt` moves forward before the email is sent, so a summary goes out at most once. Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local:
 
 | Frequency | Sent | Covers |
 | --- | --- | --- |
@@ -145,7 +145,7 @@ Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a 
 The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
 
 For each profile, in this order:
-1. **Build the summary.** It covers the groups the person joined and can still open: an `active` member row, or a `left` one while they're still in the group's team (moved out, not left on their own), archived groups included ([D-016](decisions.md), [permissions](permissions.md#function-side-checks)). Their shares in those groups up to the period's end are read once (`idx_person_date`). `buildPersonalReport` turns the ones in the period into spending by category and income, one section per currency. Each group's balance is the sum of `givenCents − receivedCents` up to the period's end; groups at 0 are left out. A failure here leaves `nextSummaryAt` as it is, so the next run tries again.
+1. **Build the summary.** It covers the groups the person joined: an `active` or `left` member row, archived groups included ([D-016](decisions.md)). Their shares in those groups up to the period's end are read once (`idx_person_date`). `buildPersonalReport` turns the ones in the period into spending by category and income, one section per currency. Each group's balance is the person's net from `netsFromShares` up to the period's end; groups at 0 are left out. A failed read leaves `nextSummaryAt` as it is, so the next run tries again. A summary that can't be shown (an amount too big to format) moves on and counts as failed, because it would fail on every run.
 2. **Move `nextSummaryAt` forward**, guarded: the new time is staged, then the stored row is checked for the same `nextSummaryAt`, frequency and timezone. A profile edited or moved on by another run meanwhile gets nothing from this run.
 3. **Send**, with Resend's idempotency key `summary-<userId>-<periodEnd>`. A failed send is counted and not tried again, because delivery is at most once.
 

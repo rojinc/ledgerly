@@ -376,6 +376,33 @@ describe('summaryEmail', () => {
     expect(text.match(/Your income was/g)).toHaveLength(1)
   })
 
+  it('orders currencies, and categories and groups of the same size by name', () => {
+    const content = summary({
+      reports: [
+        report('USD', { spendingCents: 200, spendingByCategory: { food: 100, bills: 100 } }),
+        report('AUD'),
+      ],
+      balances: [
+        { groupName: 'Pine Rd', currency: 'AUD', cents: 500 },
+        { groupName: 'Elm St', currency: 'AUD', cents: 500 },
+      ],
+    })
+    const text = content.text
+    expect(text.indexOf('In AUD:')).toBeLessThan(text.indexOf('In USD:'))
+    expect(text).toMatch(/- Bills: USD\s1\.00\n- Food: USD\s1\.00/)
+    expect(text).toContain('- Elm St: $5.00\n- Pine Rd: $5.00')
+  })
+
+  it('leaves out categories and balances at 0, and empty lists', () => {
+    const content = summary({
+      reports: [report('AUD', { incomeCents: 100, spendingByCategory: { groceries: 0 } })],
+      balances: [{ groupName: 'Elm St', currency: 'AUD', cents: 0 }],
+    })
+    expect(content.text).toContain('You spent $0.00.\n\nYour income was $1.00.')
+    expect(content.text).not.toMatch(/Groceries|Elm St|Owed to you|You owe/)
+    expect(content.html).not.toContain('<ul>')
+  })
+
   it('escapes group names in the HTML', () => {
     const content = summary({
       balances: [{ groupName: '<b>Tom & Jo</b>', currency: 'AUD', cents: 100 }],

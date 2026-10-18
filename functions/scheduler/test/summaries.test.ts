@@ -1,3 +1,4 @@
+import { MAX_AMOUNT_CENTS } from '@ledgerly/core/constants/limits'
 import type { Profiles } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import type { Email } from '@ledgerly/server/email/send-email'
@@ -68,8 +69,8 @@ const house = (name: string, extra = {}) => ({
   ...extra,
 })
 
-// Sam's groups: joined (Acme, Elm St, Bob in USD, an archived one, one moved out of), left on
-// their own (Oak Ave), and added to but never joined (Ash St).
+// Sam's groups: joined (Acme, Elm St, Bob in USD, an archived one, one moved out of, one left on
+// their own), and one added to but never joined (Ash St).
 function seeded(
   options: {
     profiles?: ReturnType<typeof profile>[]
@@ -107,8 +108,6 @@ function seeded(
       shares: options.shares ?? weekOfShares(),
     },
     {
-      // Sam is still in Pine Rd's team (moved out), not in Oak Ave's (left on their own).
-      teams: { pine: ['u1'] },
       ...(options.accounts ? { accounts: options.accounts } : {}),
       ...(options.now ? { now: options.now } : {}),
     },
@@ -129,7 +128,8 @@ function weekOfShares() {
     share('birch', '2026-09-01', 'expense', 'household', 0, 1_500),
     // After it: in neither.
     share('elm', '2026-10-19', 'expense', 'groceries', 0, 100_000),
-    // Groups Sam can't open, and someone else's share.
+    // A group Sam left on their own still counts; one they never joined doesn't, and nor does
+    // someone else's share.
     share('oak', '2026-10-14', 'expense', 'food', 0, 9_900),
     share('ash', '2026-10-14', 'expense', 'food', 0, 7_700),
     share('elm', '2026-10-14', 'expense', 'groceries', 0, 5_000, 'pAlex'),
@@ -162,24 +162,37 @@ describe('step 4: summary emails', () => {
       idempotencyKey: 'summary-u1-2026-10-18',
     })
     const text = email?.text ?? ''
-    expect(text).toContain('In AUD:\n\nYou spent $80.00.')
-    expect(text).toContain('- Groceries: $50.00\n- Electricity: $30.00')
+    expect(text).toContain('In AUD:\n\nYou spent $179.00.')
+    expect(text).toContain('- Food: $99.00\n- Groceries: $50.00\n- Electricity: $30.00')
     // Acme's payment plus personal income.
     expect(text).toContain('Your income was $400.00.')
     expect(text).toContain('Owed to you:\n\n- Elm St: $40.00\n- Acme: $25.00')
-    // Moved out of Pine Rd; Birch Ln is archived.
-    expect(text).toContain('You owe:\n\n- Pine Rd: $30.00\n- Birch Ln: $15.00')
+    // Left Oak Ave, moved out of Pine Rd; Birch Ln is archived.
+    expect(text).toContain('You owe:\n\n- Oak Ave: $99.00\n- Pine Rd: $30.00\n- Birch Ln: $15.00')
     expect(text).toMatch(/In USD:\n\nYou spent USD\s20\.00\.\n\n- Food: USD\s20\.00/)
     expect(text).toMatch(/Owed to you:\n\n- Bob: USD\s20\.00/)
     expect(text).toContain('Open Ledgerly: https://app.example.com/')
     expect(text).toContain('Change your summary emails: https://app.example.com/profile')
   })
 
-  it('leaves out groups Sam left on their own or never joined', async () => {
+  it('leaves out a group Sam never joined, and shares after the week', async () => {
     const services = seeded()
     await runCron(services)
     const text = sent(services)[0]?.text ?? ''
-    expect(text).not.toMatch(/Oak Ave|Ash St|\$99\.00|\$77\.00|\$1,000\.00/)
+    expect(text).not.toMatch(/Ash St|\$77\.00|\$1,000\.00/)
+  })
+
+  it('moves on from a summary that can’t be shown, and counts it as failed', async () => {
+    // A balance too big for formatMoney would fail on every run.
+    const services = seeded({
+      shares: [
+        share('elm', '2026-10-14', 'expense', null, MAX_AMOUNT_CENTS, 0),
+        share('elm', '2026-10-15', 'expense', null, MAX_AMOUNT_CENTS, 0),
+      ],
+    })
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(storedProfile(services).nextSummaryAt).toBe(NEXT_WEEK)
+    expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
   it('clears nextSummaryAt for a profile that turned summaries off, and sends nothing', async () => {
@@ -208,6 +221,12 @@ describe('step 4: summary emails', () => {
         share('elm', '2026-10-14', 'expense', 'groceries', 0, 5_000, 'pAlex'),
       ],
     })
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 1, failed: 0 })
+    expect(storedProfile(services).nextSummaryAt).toBe(NEXT_WEEK)
+  })
+
+  it('skips a person in no groups', async () => {
+    const services = seeded({ profiles: [profile({ personId: 'pNobody' })] })
     expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 1, failed: 0 })
     expect(storedProfile(services).nextSummaryAt).toBe(NEXT_WEEK)
   })
@@ -273,6 +292,20 @@ describe('step 4: summary emails', () => {
     expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 0 })
     expect(services.sendEmail).not.toHaveBeenCalled()
     expect(storedProfile(services)).toMatchObject({ nextSummaryAt: DUE, ...edit })
+  })
+
+  it('sends nothing to a profile deleted after the page was read', async () => {
+    const services = seeded()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"profiles"'),
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'profiles', rowId: 'u1' }),
+        ),
+    )
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
   it('sends nothing when the profile changes after the move is staged', async () => {

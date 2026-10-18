@@ -223,9 +223,9 @@ function summaryBlocks(
   const money = (cents: number) => formatMoney(cents, currency, LOCALE)
   const report = reports.find((entry) => entry.currency === currency)
   // Biggest first, then by name.
-  const categories = Object.entries(report?.spendingByCategory ?? {}).sort(
-    ([a, x], [b, y]) => y - x || (a < b ? -1 : 1),
-  )
+  const categories = Object.entries(report?.spendingByCategory ?? {})
+    .filter(([, cents]) => cents !== 0)
+    .sort(([a, x], [b, y]) => y - x || (a < b ? -1 : 1))
   // Biggest first, as for categories.
   const sorted = balances
     .filter((entry) => entry.currency === currency)

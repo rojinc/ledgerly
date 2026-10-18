@@ -3,11 +3,10 @@ import { nextSummaryAt, summaryPeriod } from '@ledgerly/core/dates/summary-perio
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Members, Profiles, Shares } from '@ledgerly/core/generated/rows'
 import { buildPersonalReport } from '@ledgerly/core/reports/personal-report'
+import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { requireMember } from '@ledgerly/server/auth/require-member'
 import { type EmailContent, summaryEmail } from '@ledgerly/server/email/templates'
-import { AppError } from '@ledgerly/server/http/app-error'
 import { AppwriteException, type Models, Query } from 'node-appwrite'
 import { pages } from '../pages'
 import { appBase, type Services } from '../services'
@@ -51,8 +50,16 @@ async function summarise(
   seen: Profiles,
   links: Links,
 ): Promise<keyof SummaryCounts | undefined> {
-  const email =
-    seen.summaryFrequency === 'none' ? undefined : await summaryOf(services, seen, links)
+  let email: Awaited<ReturnType<typeof summaryOf>>
+  try {
+    email = seen.summaryFrequency === 'none' ? undefined : await summaryOf(services, seen, links)
+  } catch (error) {
+    // A summary that can't be shown (an amount too big to format, say) would fail on every
+    // run, so it moves on and counts as failed. Anything else, a failed read among them, leaves
+    // it for the next run.
+    if (!(error instanceof RangeError)) throw error
+    return (await moveOn(services, seen)) ? 'failed' : undefined
+  }
   if (!(await moveOn(services, seen))) return undefined
   if (!email) return 'skipped'
   try {
@@ -120,23 +127,26 @@ async function summaryOf(
   if (!to) return undefined
   const sendDate = localToday(profile.timezone, new Date(profile.nextSummaryAt as string))
   const period = summaryPeriod(profile.summaryFrequency as PeriodCycle, sendDate)
-  const groups = await joinedGroups(services, profile)
-  const joined = new Set(groups.map((group) => group.$id))
+  const groups = await joinedGroups(services, profile.personId)
+  // Nothing to say, and Appwrite refuses an `equal` with no values.
+  if (groups.length === 0) return undefined
   // idx_person_date
-  const shares = (
-    await everyRow<Shares>(services, TABLES.shares, [
-      Query.equal('personId', profile.personId),
-      Query.lessThanEqual('date', period.end),
-    ])
-  ).filter((share) => joined.has(share.groupId))
+  const shares = await everyRow<Shares>(services, TABLES.shares, [
+    Query.equal('personId', profile.personId),
+    Query.lessThanEqual('date', period.end),
+    Query.equal(
+      'groupId',
+      groups.map((group) => group.$id),
+    ),
+  ])
   const inPeriod = shares.filter((share) => share.date >= period.start)
   const balances = groups
     .map((group) => ({
       groupName: group.name,
       currency: group.currency,
-      cents: shares
-        .filter((share) => share.groupId === group.$id)
-        .reduce((sum, share) => sum + share.givenCents - share.receivedCents, 0),
+      // Only this person's shares, so one net.
+      cents:
+        netsFromShares(shares.filter((share) => share.groupId === group.$id))[0]?.netCents ?? 0,
     }))
     .filter((balance) => balance.cents !== 0)
   if (inPeriod.length === 0 && balances.length === 0) return undefined
@@ -160,28 +170,20 @@ async function summaryOf(
 }
 
 /**
- * The groups whose money the summary covers: the ones the person joined (D-016) and can still
- * open. That's an active member row, or a `left` one while still in the team (moved out, not
- * left on their own), which `requireMember` tells apart as for every route. Archived groups too.
+ * The groups whose money the summary covers: the ones the person joined, so an `active` or
+ * `left` member row, archived groups included (ledger.md#reports, D-016).
  */
-async function joinedGroups({ db, teams }: Services, profile: Profiles): Promise<Groups[]> {
+async function joinedGroups({ db }: Services, personId: string): Promise<Groups[]> {
   // idx_person_status
   const members = await everyRow<Members>({ db }, TABLES.members, [
-    Query.equal('personId', profile.personId),
+    Query.equal('personId', personId),
     Query.equal('status', ['active', 'left']),
   ])
-  const groups: Groups[] = []
-  for (const { groupId } of members) {
-    try {
-      const membership = await requireMember(db, teams, profile.$id, groupId, {
-        allowArchived: true,
-      })
-      groups.push(membership.group)
-    } catch (error) {
-      if (!(error instanceof AppError && error.code === 'NOT_A_MEMBER')) throw error
-    }
-  }
-  return groups
+  return Promise.all(
+    members.map(({ groupId }) =>
+      db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId }),
+    ),
+  )
 }
 
 // Only to the account's own email, and only once it's verified (scheduling.md, step 4).
