@@ -231,6 +231,29 @@ describe('the statements job (POST /, cron)', () => {
       expect(periods(services)).toEqual(['2026-10-01..2026-10-31', '2026-11-01..2026-11-01'])
     })
 
+    it('takes the latest statement of this group, not a void one ending on the period end', async () => {
+      // October's first half is final and its second half void; another group's statement
+      // ends on 20 October.
+      const services = fakes({
+        statements: [
+          statement('st-a', {
+            periodEnd: '2026-10-14',
+            status: 'final',
+            snapshotJson: snapshotClosing({ start: '2026-10-01', end: '2026-10-14' }, {}),
+          }),
+          statement('st-b', { periodStart: '2026-10-15', status: 'void' }),
+          statement('st-other', { groupId: 'job2', periodEnd: '2026-10-20' }),
+        ],
+      })
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      expect(
+        services.db
+          .rows('statements')
+          .filter((row) => row.status === 'draft' && row.groupId === 'job')
+          .map((row) => `${row.periodStart}..${row.periodEnd}`),
+      ).toEqual(['2026-10-15..2026-10-31'])
+    })
+
     it('starts after a void statement, which a reissue redoes on its own', async () => {
       const services = fakes({
         groups: [job({}, { nextCloseAt: NOVEMBER_CLOSE })],
@@ -388,6 +411,46 @@ describe('reissue guards', () => {
     })
     expect(response.code).toBe('CONFLICT')
     expect(services.db.rows('statements')).toHaveLength(2)
+  })
+
+  it('refuses October before the job drafts it, after a move from New York to Sydney (#123)', async () => {
+    // The job would draft 1 October to 1 November on top of it.
+    const nextCloseAt = closeAtFor('2026-10-31' as LocalDate, 'America/New_York')
+    const services = fakes({
+      groups: [job({}, { timezone: 'Australia/Sydney', nextCloseAt })],
+      statements: [
+        statement('st-sep', {
+          ...september,
+          status: 'final',
+          snapshotJson: snapshotClosing({ start: '2026-09-01', end: '2026-09-30' }, {}),
+        }),
+      ],
+    })
+    expect((await failure(services, 'POST', '/statements/reissue', october)).code).toBe(
+      'VALIDATION_FAILED',
+    )
+    expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it('redoes a void week after the cycle went from weekly to monthly (#123)', async () => {
+    // The job's next period starts after the void week, so redoing that week is allowed.
+    const week = { periodStart: '2026-10-12', periodEnd: '2026-10-18' }
+    const services = fakes({
+      statements: [
+        statement('st-wk1', {
+          periodStart: '2026-10-05',
+          periodEnd: '2026-10-11',
+          status: 'final',
+          snapshotJson: snapshotClosing({ start: '2026-10-05', end: '2026-10-11' }, {}),
+        }),
+        statement('st-wk2', { ...week, status: 'void' }),
+      ],
+    })
+    const draft = await ok<Statements>(services, 'POST', '/statements/reissue', {
+      groupId: 'job',
+      ...week,
+    })
+    expect(draft).toMatchObject({ ...week, status: 'draft' })
   })
 
   it('makes one draft when two requests reissue the same range at once', async () => {

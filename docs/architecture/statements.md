@@ -29,7 +29,7 @@ Dates before the anchor fall into earlier periods of the same length, counted ba
 
 `groups.nextCloseAt` = 06:00 local time on the day after the current period ends, converted to UTC. The six-hour grace lets late entries from the last day make it in.
 
-The job's period ends the day before the stored `nextCloseAt`, in the group's time zone. It starts the day after the group's latest statement before it ended, void ones included (a void period is redone by a reissue of its own range). A group's first statement starts where its cycle period does. So a cycle or time zone change made while a period is due leaves no gap or overlap between periods, though that one period can be longer or shorter than the cycle.
+The job's period ends on the group's local date 12 hours before the stored `nextCloseAt` (normally the day before it). It starts the day after the end of the group's latest statement that ends before it does, void ones included (a void period is redone by a reissue of its own range). A group's first statement starts where its cycle period does. So a cycle or time zone change leaves no gap or overlap between periods, though the period after it can be longer or shorter than the cycle. One case is left: a move west of more than 18 hours while a period is due can split that period in two (Sydney to Honolulu gives `10-01..10-30`, then `10-31..10-31`).
 
 ## Lifecycle
 
