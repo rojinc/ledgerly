@@ -17,24 +17,23 @@ export function LoginPage() {
   const [mode, setMode] = useState<Mode>('password')
   return (
     <AuthCard title="Log in">
-      <div role="radiogroup" aria-label="How to log in" className="grid grid-cols-2 gap-2">
+      <fieldset className="grid grid-cols-2 gap-2">
+        <legend className="sr-only">How to log in</legend>
         <Button
-          role="radio"
-          aria-checked={mode === 'password'}
+          aria-pressed={mode === 'password'}
           variant={mode === 'password' ? 'default' : 'outline'}
           onClick={() => setMode('password')}
         >
           Password
         </Button>
         <Button
-          role="radio"
-          aria-checked={mode === 'code'}
+          aria-pressed={mode === 'code'}
           variant={mode === 'code' ? 'default' : 'outline'}
           onClick={() => setMode('code')}
         >
           Email code
         </Button>
-      </div>
+      </fieldset>
       {mode === 'password' ? <PasswordForm /> : <EmailCodeForm />}
       <p className="text-center text-sm text-muted-foreground">
         New here?{' '}

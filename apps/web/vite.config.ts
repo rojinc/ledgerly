@@ -4,6 +4,8 @@ import { defineConfig } from 'vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
 export default defineConfig({
+  // .env.local lives at the repo root (docs/engineering/local-setup.md).
+  envDir: '../..',
   plugins: [
     react(),
     tailwindcss(),

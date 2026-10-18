@@ -1,7 +1,9 @@
 import { NavLink, Outlet } from 'react-router'
+import { authErrorMessage } from './features/auth/auth-error'
 import { useLogOut } from './features/auth/use-log-out'
 import { VerifyEmailBanner } from './features/auth/verify-email-banner'
 import { cn } from './lib/utils'
+import { Alert } from './ui/alert'
 import { Button } from './ui/button'
 
 // Only screens that exist. Each feature adds its own entry when it lands.
@@ -41,6 +43,11 @@ export function AppLayout() {
           </Button>
         </div>
       </header>
+      {logOut.isError && (
+        <Alert variant="destructive" className="mx-auto mt-3 w-[calc(100%-2rem)] max-w-3xl">
+          {authErrorMessage(logOut.error)}
+        </Alert>
+      )}
       <VerifyEmailBanner />
       <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-6">
         <Outlet />

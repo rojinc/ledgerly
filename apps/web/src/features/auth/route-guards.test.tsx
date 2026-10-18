@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { AppwriteException } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -39,9 +39,17 @@ describe('route guards', () => {
 
   it('sends a signed-out user to /login and remembers where they were going', async () => {
     getUser.mockRejectedValue(new AppwriteException('No session', 401))
-    const router = renderAt('/secret')
+    const router = renderAt('/secret?tab=2#top')
     expect(await screen.findByText('Login page')).toBeTruthy()
-    expect(router.state.location.state).toEqual({ from: '/secret' })
+    expect(router.state.location.state).toEqual({ from: '/secret?tab=2#top' })
+  })
+
+  it('shows a retryable error instead of the login page when Appwrite is unreachable', async () => {
+    getUser.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    getUser.mockResolvedValueOnce({ $id: 'u1' } as never)
+    renderAt('/secret')
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Secret page')).toBeTruthy()
   })
 
   it('shows a protected page to a signed-in user', async () => {

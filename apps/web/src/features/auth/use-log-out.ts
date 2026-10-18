@@ -8,7 +8,7 @@ export function useLogOut() {
   const navigate = useNavigate()
   return useMutation({
     mutationFn: () => account.deleteSession({ sessionId: 'current' }),
-    onSettled: () => {
+    onSuccess: () => {
       // Drop every cached row so the next user never sees this user's data.
       queryClient.clear()
       queryClient.setQueryData(queryKeys.currentUser, null)
