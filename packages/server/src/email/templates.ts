@@ -67,7 +67,7 @@ export function invoiceEmail(input: {
   pdf: Uint8Array
 }): EmailContent {
   const amount = formatMoney(input.balanceDueCents, input.currency, LOCALE)
-  const period = `${periodLabel(input.periodStart, input.periodEnd)} ${input.periodEnd.slice(0, 4)}`
+  const period = periodLabelWithYear(input.periodStart, input.periodEnd)
   return {
     ...message(`Invoice ${input.displayNumber} from ${input.issuerName}`, [
       'Hello,',
@@ -191,14 +191,24 @@ function dayLabel(date: LocalDate): string {
   return `${WEEKDAYS[weekdayOf(date) - 1]} ${day} ${month}`
 }
 
-/** `October` for a whole month, else `16 October`, `1–7 October` or `28 September – 4 October`. */
+/**
+ * `October` for a whole month, else `16 October`, `1–7 October` or `28 September – 4 October`.
+ * A period across a new year names both years: `28 December 2026 – 3 January 2027`.
+ */
 function periodLabel(start: LocalDate, end: LocalDate): string {
   const from = dateParts(start)
   const to = dateParts(end)
+  if (from.year !== to.year) return `${longDate(start)} – ${longDate(end)}`
   if (start === end) return `${from.day} ${from.month}`
   if (from.day === 1 && end === endOfMonth(start)) return from.month
   if (start.slice(0, 7) === end.slice(0, 7)) return `${from.day}–${to.day} ${to.month}`
   return `${from.day} ${from.month} – ${to.day} ${to.month}`
+}
+
+/** `periodLabel` with its year, given once: `October 2026`, `28 December 2026 – 3 January 2027`. */
+function periodLabelWithYear(start: LocalDate, end: LocalDate): string {
+  const label = periodLabel(start, end)
+  return dateParts(start).year === dateParts(end).year ? `${label} ${dateParts(end).year}` : label
 }
 
 /** `8:02 am` on the wall clock in `timeZone`. */

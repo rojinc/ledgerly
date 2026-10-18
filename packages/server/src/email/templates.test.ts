@@ -64,6 +64,17 @@ describe('statementReadyEmail', () => {
     ['2026-10-01', '2026-10-14', 'Your 1–14 October invoice for Acme is ready to review'],
     // One day, for example a reissue.
     ['2026-10-16', '2026-10-16', 'Your 16 October invoice for Acme is ready to review'],
+    // Across a new year, or longer than a year: both years (#125).
+    [
+      '2026-12-28',
+      '2027-01-03',
+      'Your 28 December 2026 – 3 January 2027 invoice for Acme is ready to review',
+    ],
+    [
+      '2025-07-01',
+      '2026-10-31',
+      'Your 1 July 2025 – 31 October 2026 invoice for Acme is ready to review',
+    ],
   ])('names the period %s to %s', (start, end, subject) => {
     expect(ready('invoice', start, end).subject).toBe(subject)
   })
@@ -88,13 +99,22 @@ describe('invoiceEmail', () => {
     expect(content.attachments).toEqual([{ filename: 'INV-0010.pdf', content: invoice.pdf }])
   })
 
-  it('gives the year once for a period that crosses into a new year', () => {
+  it('gives both years, once each, for a period that crosses into a new year', () => {
     const content = invoiceEmail({
       ...invoice,
       periodStart: day('2026-12-28'),
       periodEnd: day('2027-01-03'),
     })
-    expect(content.text).toContain('for 28 December – 3 January 2027.')
+    expect(content.text).toContain('for 28 December 2026 – 3 January 2027.')
+  })
+
+  it('gives the year once for a period within one year', () => {
+    const content = invoiceEmail({
+      ...invoice,
+      periodStart: day('2026-09-28'),
+      periodEnd: day('2026-10-11'),
+    })
+    expect(content.text).toContain('for 28 September – 11 October 2026.')
   })
 
   it.each([
