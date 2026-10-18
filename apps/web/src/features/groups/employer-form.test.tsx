@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useSyncExternalStore } from 'react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
 import { useProfile } from '../profile/use-profile'
 import { ArchiveGroup } from './archive-group'
@@ -97,6 +97,27 @@ function liveGroup(group: Groups) {
   return (next: Groups) =>
     act(() => {
       current = { data: next, isError: false }
+      for (const listener of listeners) listener()
+    })
+}
+
+/** useMyMember as a live query, as liveGroup is for the group. */
+function liveMember(role: Members['role']) {
+  let current = { data: { role } as Members, isError: false }
+  const listeners = new Set<() => void>()
+  memberHook.mockImplementation(
+    () =>
+      useSyncExternalStore(
+        (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        () => current,
+      ) as ReturnType<typeof useMyMember>,
+  )
+  return (next: Members['role']) =>
+    act(() => {
+      current = { data: { role: next } as Members, isError: false }
       for (const listener of listeners) listener()
     })
 }
@@ -455,21 +476,33 @@ describe('toEmployerValues', () => {
 })
 
 describe('archiving a group (#37)', () => {
-  // jsdom has no showModal: open and close the native dialog by its attribute, and make the
-  // page behind an open modal inert, as browsers do, so focus() outside it does nothing.
+  // jsdom has no showModal: open and close the native dialog by its attribute, mark it modal
+  // only when showModal() opened it, and make the page behind a modal inert, as browsers do, so
+  // focus() outside it does nothing.
+  const original = {
+    showModal: HTMLDialogElement.prototype.showModal,
+    close: HTMLDialogElement.prototype.close,
+    focus: HTMLElement.prototype.focus,
+  }
   beforeAll(() => {
     HTMLDialogElement.prototype.showModal = function () {
       this.setAttribute('open', '')
+      this.dataset.modal = ''
     }
     HTMLDialogElement.prototype.close = function () {
       this.removeAttribute('open')
+      delete this.dataset.modal
     }
-    const focus = HTMLElement.prototype.focus
     HTMLElement.prototype.focus = function (options) {
-      const modal = document.querySelector('dialog[open]')
+      const modal = document.querySelector('dialog[open][data-modal]')
       if (modal && !modal.contains(this)) return
-      focus.call(this, options)
+      original.focus.call(this, options)
     }
+  })
+  afterAll(() => {
+    HTMLDialogElement.prototype.showModal = original.showModal
+    HTMLDialogElement.prototype.close = original.close
+    HTMLElement.prototype.focus = original.focus
   })
   const esc = (dialog: HTMLElement) => fireEvent(dialog, new Event('cancel', { cancelable: true }))
 
@@ -519,6 +552,36 @@ describe('archiving a group (#37)', () => {
     expect(document.activeElement).toBe(document.body)
   })
 
+  it('moves focus to the heading when the caller is made a member under the dialog', () => {
+    mockGroup(employer)
+    const demote = liveMember('admin')
+    renderAt('/groups/g1/settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+    demote('member')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+  })
+
+  it('leaves focus where it is when something else on the page still has it', () => {
+    mockGroup(employer)
+    const demote = liveMember('admin')
+    renderAt('/groups/g1/settings')
+    const name = screen.getByLabelText('Group name')
+    name.focus()
+    demote('member')
+    expect(document.activeElement).toBe(name)
+  })
+
+  it('keeps Esc from closing the dialog itself: React closes it', () => {
+    mockGroup(employer)
+    renderAt('/groups/g1/settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
+    const event = new Event('cancel', { cancelable: true })
+    fireEvent(screen.getByRole('alertdialog'), event)
+    expect(event.defaultPrevented).toBe(true)
+  })
+
   it('is offered to admins only', () => {
     mockGroup(employer, 'member')
     renderAt('/groups/g1/settings')
@@ -549,6 +612,7 @@ describe('archiving a group (#37)', () => {
     // focus out of it (the browser does the trap).
     expect(dialog.tagName).toBe('DIALOG')
     expect(dialog.hasAttribute('open')).toBe(true)
+    expect(dialog.dataset.modal).toBe('')
     expect(dialog.textContent).toContain('read-only')
     expect(dialog.textContent).toContain('schedules, reminders and statements stop')
     expect(dialog.textContent).toContain('history stays')

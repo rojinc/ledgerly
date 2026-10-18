@@ -48,19 +48,18 @@ export function EmployerSettingsPage() {
   const member = useMyMember(groupId, personId)
   const queryClient = useQueryClient()
   const heading = useRef<HTMLHeadingElement>(null)
-  // When the group turns archived under the page (another tab, or a save refused with ARCHIVED
-  // that reloads it), the form or dialog that had focus is gone: focus goes to the heading.
-  // Only a change while the page is open counts, not a group that was already archived when it
-  // loaded.
-  const archivedAt = group.data?.archivedAt
-  const wasOpen = useRef(false)
+  // When the page stops being the admin's (the group turns archived in another tab, the caller is
+  // made a member, or a refused save reloads either), the form or dialog that had focus is gone:
+  // focus goes to the heading. Only a change while the page is open counts, not how it loaded.
+  const adminView =
+    group.data !== undefined && !group.data.archivedAt && member.data?.role === 'admin'
+  const wasAdminView = useRef(false)
   useEffect(() => {
-    if (archivedAt === undefined) return
-    if (archivedAt && wasOpen.current && document.activeElement === document.body) {
+    if (!adminView && wasAdminView.current && document.activeElement === document.body) {
       heading.current?.focus()
     }
-    wasOpen.current = archivedAt === null
-  }, [archivedAt])
+    wasAdminView.current = adminView
+  }, [adminView])
 
   async function save(body: UpdateGroupBody): Promise<EmployerValues> {
     const result = await callFunction<Groups>('groups', 'PATCH', `/groups/${groupId}`, body)
