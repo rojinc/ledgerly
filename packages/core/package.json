@@ -12,5 +12,8 @@
   },
   "devDependencies": {
     "@vitest/coverage-v8": "^5.0.5"
+  },
+  "dependencies": {
+    "@date-fns/tz": "^1.5.0"
   }
 }
