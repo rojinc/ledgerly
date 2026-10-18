@@ -2,6 +2,7 @@ import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import type { Email } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
+import { vi } from 'vitest'
 import type { Files } from '../src/files'
 import { statementsRoutes } from '../src/main'
 import type { Services } from '../src/services'
@@ -337,5 +338,28 @@ export function snapshotClosing(
     transfers: [],
     invoice: { balanceDueCents: closings.sam ?? 0, paymentTermsDays: 14 },
     generatedAt: '2026-10-01T00:00:00.000Z',
+  })
+}
+
+/** One staged write, as another request would send it. */
+export function op(tableId: string, rowId: string, data: object, action = 'update'): object {
+  return { action, databaseId: 'main', tableId, rowId, data }
+}
+
+/**
+ * Commits `operations`, as another request finishing first would, just before this request's
+ * `nth` staging. A row that request changes is then seen by the checks after staging.
+ */
+export function beforeStaging(db: FakeDb, operations: object[], nth = 1) {
+  const stage = db.createOperations.bind(db)
+  let calls = 0
+  return vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
+    calls += 1
+    if (calls === nth) {
+      const { $id } = await db.createTransaction()
+      await stage({ transactionId: $id, operations })
+      await db.updateTransaction({ transactionId: $id, commit: true })
+    }
+    return stage(params)
   })
 }

@@ -23,6 +23,7 @@ import {
   conflictAsTryAgain,
   getRowOrNull,
   getStatement,
+  groupGuard,
   invalid,
   listAll,
   parseBody,
@@ -103,12 +104,13 @@ async function requireOldestUnfinished(db: Db, statement: Statements): Promise<v
 
 /**
  * Step 1: `finalizing`, and a write to the group row in the same transaction, so a ledger write
- * that checked for finalizing statements before this fails its commit (ledger.md#concurrency).
+ * that checked for finalizing statements before this fails its commit (ledger.md#concurrency),
+ * and so does a void or reissue in the group. Rule 5 is checked again after staging.
  */
 async function startFinalizing(db: Db, group: Groups, statement: Statements): Promise<Statements> {
-  return updateStatement(db, statement, { status: 'finalizing' }, [
-    { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { type: group.type } },
-  ])
+  return updateStatement(db, statement, { status: 'finalizing' }, [groupGuard(group)], () =>
+    requireOldestUnfinished(db, statement),
+  )
 }
 
 /**

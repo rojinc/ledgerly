@@ -5,6 +5,8 @@ import {
   BUSINESS,
   failure,
   fakes,
+  job,
+  member,
   ok,
   payment,
   rowsOf,
@@ -108,6 +110,15 @@ describe('POST /statements/preview', () => {
     expect(snapshot.invoice).toBeUndefined()
   })
 
+  it('previews an archived group', async () => {
+    const services = fakes({ groups: [job({}, { archivedAt: '2026-10-20T00:00:00.000Z' })] })
+    const { snapshot } = await ok<Preview>(services, 'POST', '/statements/preview', {
+      groupId: 'job',
+      periodEnd: '2026-10-31',
+    })
+    expect(snapshot.group.id).toBe('job')
+  })
+
   it.each([
     ['someone outside the group', 'u-dan', 403, 'NOT_A_MEMBER'],
     ['nobody signed in', null, 401, 'UNAUTHENTICATED'],
@@ -132,6 +143,29 @@ describe('POST /statements/{id}/refresh', () => {
     expect(snapshot.lines.map((line) => line.transactionId)).toEqual(['s1'])
     expect(snapshot.invoice?.balanceDueCents).toBe(5000)
     expect(refreshed.status).toBe('draft')
+  })
+
+  it('lets a viewer refresh, but not in an archived group', async () => {
+    const services = fakes({
+      members: [
+        member('m-alice', 'house', 'alice', 'admin'),
+        member('m-bob', 'house', 'bob', 'viewer'),
+      ],
+      statements: [statement('st-house', { groupId: 'house', type: 'divide' })],
+    })
+    const refreshed = await ok<Statements>(
+      services,
+      'POST',
+      '/statements/st-house/refresh',
+      undefined,
+      'u-bob',
+    )
+    expect(refreshed.status).toBe('draft')
+    const archived = fakes({
+      groups: [job({}, { archivedAt: '2026-10-20T00:00:00.000Z' })],
+      statements: [statement('st1')],
+    })
+    expect((await failure(archived, 'POST', '/statements/st1/refresh')).code).toBe('ARCHIVED')
   })
 
   it('refuses a statement that is no longer a draft', async () => {

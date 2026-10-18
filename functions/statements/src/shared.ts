@@ -1,8 +1,9 @@
-import type { Statements } from '@ledgerly/core/generated/rows'
+import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/schemas/statements'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { EmailError } from '@ledgerly/server/email/send-email'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
 
@@ -145,14 +146,17 @@ export function snapshotOf(statement: Statements): StatementSnapshot {
 
 /**
  * Writes `data` to the statement (with any `also` writes), then checks the stored row still has
- * the status read before, so a finalize, void or refresh that got in first is never
- * overwritten. Returns the statement as written.
+ * the status and the values of every column being written that were read before, so a
+ * finalize, void, send or refresh that got in first is never overwritten. `check` runs after
+ * that, inside the transaction, for anything else the write depends on. Returns the statement
+ * as written.
  */
 export async function updateStatement(
   db: Db,
   statement: Statements,
   data: Partial<Statements>,
   also: Write[] = [],
+  check?: () => Promise<void>,
 ): Promise<Statements> {
   await withTransaction(db, async (tx) => {
     await tx.write(
@@ -160,7 +164,42 @@ export async function updateStatement(
       ...also,
     )
     const stored = await getRowOrNull<Statements>(db, TABLES.statements, statement.$id)
-    if (stored?.status !== statement.status) throw tryAgain()
+    const columns = ['status', ...Object.keys(data)] as Array<keyof Statements>
+    if (!stored || columns.some((column) => stored[column] !== statement[column])) {
+      throw tryAgain()
+    }
+    await check?.()
   })
   return { ...statement, ...data }
+}
+
+/** The group's latest final statement by period end (void ones don't count), if any. */
+export async function latestFinal(db: Db, groupId: string): Promise<Statements | undefined> {
+  const { rows } = await db.listRows<Statements>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.statements,
+    queries: [
+      Query.equal('groupId', groupId),
+      Query.equal('status', 'final'),
+      Query.orderDesc('periodEnd'),
+      Query.limit(1),
+    ],
+    total: false,
+  })
+  return rows[0]
+}
+
+/** A no-op write to the group row (`type` never changes), to serialize with other writes. */
+export function groupGuard(group: Groups): Write {
+  return { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { type: group.type } }
+}
+
+/**
+ * An error's name, and Appwrite's code and type or Resend's, never a message: messages can quote
+ * stored text (security-and-privacy.md).
+ */
+export function describe(error: unknown): string {
+  if (error instanceof AppwriteException) return `AppwriteException ${error.code} ${error.type}`
+  if (error instanceof EmailError) return `EmailError ${error.type} ${error.status ?? ''}`.trim()
+  return error instanceof Error ? error.name : typeof error
 }

@@ -264,9 +264,9 @@ describe('POST /statements/{id}/finalize', () => {
       {
         to: ['billing@acme.example'],
         replyTo: 'sam@example.com',
-        idempotencyKey: 'invoice-st1-first',
+        idempotencyKey: 'invoice/st1/first/employer',
       },
-      { to: 'sam@example.com', replyTo: undefined, idempotencyKey: 'invoice-st1-first-copy' },
+      { to: 'sam@example.com', replyTo: undefined, idempotencyKey: 'invoice/st1/first/copy' },
     ])
     expect(services.sent[0]).toMatchObject({ subject: 'Invoice INV-0010 from Sam Cleans' })
     expect(services.sent[0]?.attachments?.[0]?.filename).toBe('INV-0010.pdf')

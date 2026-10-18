@@ -45,7 +45,7 @@ Appwrite runs the job as `POST /` on the `statements` function; nobody else can 
 - create a `draft` statement for the period, with a computed snapshot,
 - move `groups.nextCloseAt` to the next period's close.
 
-The period is the one that ended the day before the stored `nextCloseAt`, so a cycle or time zone change made after it ended can't skip it. If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period. A group that fails is logged (IDs only) and tried again on the next run. Until house divides are built ([#46](https://github.com/rojinc/ledgerly/issues/46)), the job drafts invoices only.
+The period is the one that ended the day before the stored `nextCloseAt`, so a cycle or time zone change made after it ended can't skip it. If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period. The job lists every due group first and then works through them, so a group that fails every time never keeps the others waiting; a failure is logged (IDs only) and tried again on the next run. Until house divides are built ([#46](https://github.com/rojinc/ledgerly/issues/46)), the job drafts invoices only.
 
 Then email the group admins at their verified addresses: "Your October invoice for Acme is ready to review", linking to `/groups/<groupId>/statements/<statementId>` in the web app. A failed email doesn't undo the draft. If the group setting `autoFinalize` is on, finalize straight away, without sending.
 
@@ -55,7 +55,7 @@ Drafts are **not** locked. Users can keep adding and fixing transactions. `POST 
 
 Admin only. Each step checks whether it has already been done, so an interrupted finalize can be called again safely.
 
-1. Set status `finalizing`, and stage a write to the group row in the same database transaction ([ledger concurrency](ledger.md#concurrency)). While any statement in a group is `finalizing`, the `ledger` function refuses writes to that group's transactions dated on or before the period end (`LOCKED`).
+1. Set status `finalizing`, and stage a write to the group row in the same database transaction ([ledger concurrency](ledger.md#concurrency)). Core rule 5 is checked again after staging. While any statement in a group is `finalizing`, the `ledger` function refuses writes to that group's transactions dated on or before the period end (`LOCKED`).
 2. **Invoices only:** if `number` is empty, increment the issuer's `profiles.lastInvoiceNumber` and store the result in `number`, with `displayNumber` = prefix + number padded to 4 digits (`INV-0010`), in **one** database transaction. The profile row is staged before it's checked, so two finalizes for one worker can't take the same number, and no number is lost.
 3. Recalculate the snapshot from: posted transactions with `statementId` empty and `date <= periodEnd`, plus any already locked to this statement (from an interrupted run).
 4. Lock: set `statementId` on those transactions, in batches of at most 90 operations per database transaction.
@@ -67,20 +67,20 @@ Admin only. Each step checks whether it has already been done, so an interrupted
 
 ### 3. Send and resend (`POST /statements/{id}/send`)
 
-- **Invoice:** sent to the group's `recipients` as they are now, with the PDF attached. Reply-to is the worker's verified email, and the worker gets a copy as a separate email. Each send has its own idempotency keys, so a retried request isn't delivered twice but a resend is. A failed send leaves `sentAt` as it was.
+- **Invoice:** sent to the group's `recipients` as they are now, with the PDF attached. Reply-to is the worker's verified email, and the worker gets a copy as a separate email. The idempotency keys come from the `sentAt` read at the start ([conventions](../engineering/conventions.md#functions)): a request retried before `sentAt` is stored reuses them, so Resend delivers each email once, and once `sentAt` is stored the next send is a resend with new keys. (A retry after `sentAt` was stored but its response was lost counts as a resend.) A failed send leaves `sentAt` as it was.
 - **Divide:** sent to every active member who has an account (with [#46](https://github.com/rojinc/ledgerly/issues/46)).
 
 ### 4. Void (`POST /statements/{id}/void`)
 
-Admin only, and only for the **latest** final statement in the group, so openings never break. It sets status `void` first, then unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
+Admin only, and only for the **latest** final statement in the group, so openings never break. It stages `void` with a write to the group row, then checks the stored rows: still the latest final, and no statement of the group `finalizing` (`CONFLICT`). Then it unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
 
-To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`. While that draft is unfinished, asking again returns it.
+To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`. The range must end after the latest final statement (`VALIDATION_FAILED` otherwise): a draft before it could never be finalized and would block every later one. While that draft is unfinished, asking again returns it.
 
 ## Snapshot
 
 `snapshotJson` holds everything needed to show or re-render the statement without reading other rows. It is a historical record and is never rewritten.
 
-`buildStatementSnapshot()` in `packages/core` builds it, and `checkSnapshot()` runs finalize step 5. `people` lists everyone with a non-zero opening or a share in the lines, sorted by `personId`; `lines` are sorted by date, then transaction ID. Divides get `suggestTransfers()` of the closings; invoices need an issuer who is a member, a recipient and payment terms, and get the worker's closing as `balanceDueCents`. `invoice.dueOn` stays empty until finalize step 7.
+`buildStatementSnapshot()` in `packages/core` builds it, and `checkSnapshot()` runs finalize step 5. `people` lists everyone with a non-zero opening or a share in the lines, sorted by `personId`; `lines` are sorted by date, then transaction ID. Divides get `suggestTransfers()` of the closings; invoices need an issuer who is a member, a recipient and payment terms, and get the worker's closing as `balanceDueCents`. `invoice.dueOn` stays empty until finalize step 6.
 
 ```ts
 type StatementSnapshot = {

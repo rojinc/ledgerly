@@ -8,53 +8,40 @@ import { ID, Query } from 'node-appwrite'
 import { joinedAdmins, verifiedEmails } from '../people'
 import { closeAfter, closingPeriod } from '../period'
 import type { Services } from '../services'
-import { activityWrite, getRowOrNull, teamRead } from '../shared'
+import { activityWrite, describe, getRowOrNull, listAll, teamRead } from '../shared'
 import { computeSnapshot, statementTypeOf } from '../snapshot'
 import { finalizeStatement } from './finalize'
 
-// Inside the function's 300 s timeout (environments-and-deploys.md): what's left waits an hour.
-const BUDGET_MS = 240_000
-const PAGE_SIZE = 100
+// Inside the function's 300 s timeout (environments-and-deploys.md), with room for one more
+// group's finalize: what's left waits an hour.
+const BUDGET_MS = 180_000
 
 /** Another run drafted this group's period first. */
 class AlreadyDrafted extends Error {}
 
 /**
  * The statements job (cron `15 * * * *`, statements.md#1-draft): drafts the statement of every
- * employer group whose `nextCloseAt` has passed. House divides come with #46.
+ * employer group whose `nextCloseAt` has passed. House divides come with #46. The due groups
+ * are listed first, so a group that fails every time never keeps the others waiting.
  */
 export async function draftDueStatements(
   services: Services,
 ): Promise<{ drafted: number; failed: number }> {
   const started = Date.now()
-  const seen = new Set<string>()
+  const due = await listAll<Groups>(services.db, TABLES.groups, [
+    Query.lessThanEqual('nextCloseAt', services.now.toISOString()),
+    Query.equal('type', 'employer'),
+  ])
   let drafted = 0
   let failed = 0
-  while (Date.now() - started < BUDGET_MS) {
-    const { rows } = await services.db.listRows<Groups>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.groups,
-      queries: [
-        Query.lessThanEqual('nextCloseAt', services.now.toISOString()),
-        Query.equal('type', 'employer'),
-        Query.orderAsc('nextCloseAt'),
-        Query.limit(PAGE_SIZE),
-      ],
-      total: false,
-    })
-    // A drafted group's nextCloseAt moves on, so it usually leaves the list. One that's still
-    // due (a job that fell behind) or that failed waits for the next run.
-    const due = rows.filter((group) => !seen.has(group.$id))
-    if (due.length === 0) break
-    for (const group of due) {
-      seen.add(group.$id)
-      try {
-        if (await draftFor(services, group as Groups & { nextCloseAt: string })) drafted += 1
-      } catch (error) {
-        failed += 1
-        // IDs only: no names, amounts or addresses in logs (security-and-privacy.md).
-        console.error(`statements: drafting failed for group ${group.$id}: ${describe(error)}`)
-      }
+  for (const group of due) {
+    if (Date.now() - started > BUDGET_MS) break
+    try {
+      if (await draftFor(services, group as Groups & { nextCloseAt: string })) drafted += 1
+    } catch (error) {
+      failed += 1
+      // IDs only: no names, amounts or addresses in logs (security-and-privacy.md).
+      console.error(`statements: drafting failed for group ${group.$id}: ${describe(error)}`)
     }
   }
   return { drafted, failed }
@@ -165,7 +152,7 @@ async function emailAdmins(
       await services.sendEmail({
         to,
         ...content,
-        idempotencyKey: `ready-${statementId}-${admin.personId}`,
+        idempotencyKey: `ready/${statementId}/${admin.personId}`,
       })
     } catch (error) {
       // The draft is made; the email is a courtesy (the app lists drafts too).
@@ -178,10 +165,4 @@ async function emailAdmins(
 
 function draftSummary(periodEnd: string): string {
   return `Statement for the period ending ${periodEnd} drafted`
-}
-
-// An error's name and message, never a stack or request data. EmailError and Appwrite messages
-// hold no personal data.
-function describe(error: unknown): string {
-  return error instanceof Error ? `${error.name}: ${error.message}` : 'unknown error'
 }

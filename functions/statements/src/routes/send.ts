@@ -61,16 +61,17 @@ export async function sendInvoice(
     dueOn: invoice.dueOn as LocalDate,
     pdf: await files.download(statement.pdfFileId),
   })
-  // A retry of this send finds the same sentAt, so it reuses the keys.
-  const key = `invoice-${statement.$id}-${statement.sentAt ?? 'first'}`
+  // conventions.md: one key per email. A retry before sentAt is stored finds the same sentAt,
+  // so it reuses the keys and Resend delivers each email once; a resend after that gets new ones.
+  const key = `invoice/${statement.$id}/${statement.sentAt ?? 'first'}`
   await services.sendEmail({
     to: recipients,
     ...content,
     replyTo: workerEmail,
-    idempotencyKey: key,
+    idempotencyKey: `${key}/employer`,
   })
   if (workerEmail) {
-    await services.sendEmail({ to: workerEmail, ...content, idempotencyKey: `${key}-copy` })
+    await services.sendEmail({ to: workerEmail, ...content, idempotencyKey: `${key}/copy` })
   }
   return updateStatement(db, statement, { sentAt: now.toISOString() }, [
     activityWrite(

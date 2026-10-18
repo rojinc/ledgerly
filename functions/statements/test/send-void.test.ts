@@ -1,7 +1,18 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { failure, fakes, job, NOW, ok, rowsOf, shift, statement } from './harness'
+import {
+  beforeStaging,
+  failure,
+  fakes,
+  job,
+  NOW,
+  ok,
+  op,
+  rowsOf,
+  shift,
+  statement,
+} from './harness'
 
 afterEach(() => vi.restoreAllMocks())
 
@@ -27,10 +38,10 @@ describe('POST /statements/{id}/send', () => {
     const again = await ok<{ sentAt: string }>(services, 'POST', '/statements/st1/send')
     expect(again.sentAt).toBe(services.now.toISOString())
     expect(services.sent.map((email) => email.idempotencyKey)).toEqual([
-      'invoice-st1-first',
-      'invoice-st1-first-copy',
-      `invoice-st1-${first.sentAt}`,
-      `invoice-st1-${first.sentAt}-copy`,
+      'invoice/st1/first/employer',
+      'invoice/st1/first/copy',
+      `invoice/st1/${first.sentAt}/employer`,
+      `invoice/st1/${first.sentAt}/copy`,
     ])
     expect(services.sent[0]).toMatchObject({
       to: ['billing@acme.example'],
@@ -195,5 +206,49 @@ describe('POST /statements/{id}/void', () => {
     const services = twoMonths()
     const response = await failure(services, 'POST', '/statements/st-sep/void', { reason: 'x' })
     expect(response.code).toBe('VALIDATION_FAILED')
+  })
+})
+
+describe('void and finalize at the same moment', () => {
+  const threeMonths = () =>
+    fakes(
+      rowsOf(shift('s0', '2026-09-10', 60), shift('s1', '2026-10-02', 240), {
+        statements: [
+          statement('st-sep', { periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
+          statement('st-oct'),
+          statement('st-nov', { periodStart: '2026-11-01', periodEnd: '2026-11-30' }),
+        ],
+      }),
+    )
+
+  it('refuses to void a statement that a later one was finalized on top of meanwhile', async () => {
+    const services = threeMonths()
+    await finalize(services, 'st-sep')
+    await finalize(services, 'st-oct')
+    beforeStaging(services.db, [op('statements', 'st-nov', { status: 'final' })])
+    const response = await failure(services, 'POST', '/statements/st-oct/void', { reason: 'x' })
+    expect(response.code).toBe('VALIDATION_FAILED')
+    expect(stored(services, 'st-oct').status).toBe('final')
+    expect(locks(services).s1).toBe('st-oct')
+  })
+
+  it('refuses while a later statement is being finalized', async () => {
+    const services = threeMonths()
+    await finalize(services, 'st-sep')
+    await finalize(services, 'st-oct')
+    beforeStaging(services.db, [op('statements', 'st-nov', { status: 'finalizing' })])
+    const response = await failure(services, 'POST', '/statements/st-oct/void', { reason: 'x' })
+    expect(response.code).toBe('CONFLICT')
+    expect(stored(services, 'st-oct').status).toBe('final')
+  })
+})
+
+describe('send at the same moment', () => {
+  it('answers CONFLICT when another send recorded sentAt first', async () => {
+    const services = fakes({ statements: [statement('st1')] })
+    await finalize(services, 'st1')
+    beforeStaging(services.db, [op('statements', 'st1', { sentAt: '2026-11-01T20:00:00.000Z' })])
+    expect((await failure(services, 'POST', '/statements/st1/send')).code).toBe('CONFLICT')
+    expect(stored(services, 'st1').sentAt).toBe('2026-11-01T20:00:00.000Z')
   })
 })

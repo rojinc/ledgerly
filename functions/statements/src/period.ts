@@ -4,7 +4,9 @@ import { closeAtFor, localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
 
 // statements.md#periods: a statement is due at 06:00 local on the day after its period ends.
-const GRACE_MS = 6 * 60 * 60 * 1000
+// Twelve hours before that is the evening of the last day, even on a night that a DST change
+// makes 5 or 7 hours long, or after the group's time zone moved by up to 6 hours.
+const BACK_TO_LAST_DAY_MS = 12 * 60 * 60 * 1000
 
 function cycleOf(group: Groups): { cycle: PeriodCycle; anchor: LocalDate | null } {
   // A group with no cycle counts in calendar months, for previews.
@@ -24,8 +26,8 @@ export function periodEndingOn(group: Groups, end: LocalDate): DateRange {
  * after the period ended (the groups function keeps a due `nextCloseAt`) can't skip it.
  */
 export function closingPeriod(group: Groups & { nextCloseAt: string }): DateRange {
-  const lastMoment = new Date(Date.parse(group.nextCloseAt) - GRACE_MS - 1)
-  return periodEndingOn(group, localToday(group.timezone, lastMoment))
+  const lastDay = new Date(Date.parse(group.nextCloseAt) - BACK_TO_LAST_DAY_MS)
+  return periodEndingOn(group, localToday(group.timezone, lastDay))
 }
 
 /** When the period after `periodEnd` closes, or null for a group with no cycle. */

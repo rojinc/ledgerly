@@ -1,7 +1,20 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { failure, fakes, job, member, OCTOBER_CLOSE, ok, rowsOf, shift, statement } from './harness'
+import {
+  beforeStaging,
+  failure,
+  fakes,
+  job,
+  member,
+  OCTOBER_CLOSE,
+  ok,
+  op,
+  rowsOf,
+  shift,
+  snapshotClosing,
+  statement,
+} from './harness'
 
 let errors: string[]
 beforeEach(() => {
@@ -44,7 +57,7 @@ describe('the statements job (POST /, cron)', () => {
     expect(services.sent[0]).toMatchObject({
       to: ['sam@example.com'],
       subject: 'Your October invoice for Acme is ready to review',
-      idempotencyKey: `ready-${draft?.$id}-sam`,
+      idempotencyKey: `ready/${draft?.$id}/sam`,
     })
     expect(services.sent[0]?.text).toContain(
       `https://app.example.com/groups/job/statements/${draft?.$id}`,
@@ -176,5 +189,104 @@ describe('POST /statements/reissue', () => {
     const services = fakes()
     expect((await failure(services, 'POST', '/statements/reissue', body, user)).code).toBe(code)
     expect(services.db.rows('statements')).toEqual([])
+  })
+})
+
+describe('reissue guards', () => {
+  const october = { groupId: 'job', periodStart: '2026-10-01', periodEnd: '2026-10-31' }
+
+  it('refuses a range that ends on or before the latest final statement', async () => {
+    const services = fakes({
+      statements: [
+        statement('st-oct', {
+          status: 'final',
+          snapshotJson: snapshotClosing({ start: '2026-10-01', end: '2026-10-31' }, {}),
+        }),
+      ],
+    })
+    const response = await failure(services, 'POST', '/statements/reissue', {
+      ...october,
+      periodStart: '2026-09-01',
+      periodEnd: '2026-09-30',
+    })
+    expect(response.code).toBe('VALIDATION_FAILED')
+    expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it('makes one draft when two requests reissue the same range at once', async () => {
+    const services = fakes()
+    beforeStaging(services.db, [
+      op('statements', 'st-other', { ...statement('st-other'), $id: undefined }, 'create'),
+    ])
+    expect((await failure(services, 'POST', '/statements/reissue', october)).code).toBe('CONFLICT')
+    vi.restoreAllMocks()
+    const again = await ok<Statements>(services, 'POST', '/statements/reissue', october)
+    expect(again.$id).toBe('st-other')
+    expect(services.db.rows('statements')).toHaveLength(1)
+  })
+})
+
+describe('the job and failing groups', () => {
+  it('drafts a healthy group even when more than a page of others fail every time', async () => {
+    // 101 groups with older closes and no employer member: every invoice lacks a recipient.
+    const broken = Array.from({ length: 101 }, (_, index) => ({
+      ...job({}, { nextCloseAt: '2026-09-30T20:00:00.000Z' }),
+      $id: `broken${String(index).padStart(3, '0')}`,
+    }))
+    const services = fakes({
+      groups: [...broken, job()],
+      members: [
+        member('m-sam', 'job', 'sam', 'admin'),
+        member('m-acme', 'job', 'acme', 'viewer', 'placeholder'),
+      ],
+    })
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 101 })
+    expect(services.db.rows('statements').map((row) => row.groupId)).toEqual(['job'])
+  })
+})
+
+describe('who the job emails', () => {
+  it('skips an unverified address and an admin who moved out', async () => {
+    const services = fakes({
+      identities: [
+        {
+          $id: 'i-sam',
+          key: 'email:sam@example.com',
+          type: 'email',
+          personId: 'sam',
+          verified: false,
+          verifiedAt: null,
+        },
+        {
+          $id: 'i-lee',
+          key: 'email:lee@example.com',
+          type: 'email',
+          personId: 'lee',
+          verified: true,
+          verifiedAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+      members: [
+        member('m-sam', 'job', 'sam', 'admin'),
+        member('m-acme', 'job', 'acme', 'viewer', 'placeholder'),
+        member('m-lee', 'job', 'lee', 'admin', 'left'),
+      ],
+    })
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    expect(services.sent).toEqual([])
+  })
+})
+
+describe('finalize keeps periods in order', () => {
+  it('refuses when an earlier draft appears just before it starts finalizing', async () => {
+    const services = fakes({
+      statements: [statement('st-nov', { periodStart: '2026-11-01', periodEnd: '2026-11-30' })],
+    })
+    beforeStaging(services.db, [
+      op('statements', 'st-oct', { ...statement('st-oct'), $id: undefined }, 'create'),
+    ])
+    const response = await failure(services, 'POST', '/statements/st-nov/finalize', { send: false })
+    expect(response.code).toBe('CONFLICT')
+    expect(services.db.rows('statements').find((row) => row.$id === 'st-nov')?.status).toBe('draft')
   })
 })
