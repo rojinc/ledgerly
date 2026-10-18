@@ -1,3 +1,4 @@
+import { LedgerError } from '../ledger/ledger-error'
 import type { StatementSnapshot } from '../schemas/statements'
 import { type Net, netsFromShares } from '../settle/nets'
 import { suggestTransfers } from '../settle/suggest-transfers'
@@ -7,12 +8,13 @@ type Line = StatementSnapshot['lines'][number]
 export type SnapshotInput = {
   group: StatementSnapshot['group']
   period: StatementSnapshot['period']
-  /** The group's members, for their names. */
+  /** Every member row of the group, whatever its status, for names. */
   people: readonly { personId: string; name: string }[]
   /** Each person's closing on the previous final statement; empty for the first one. */
   previousClosing: readonly Net[]
   /** The transactions being locked, with their shares (statements.md finalize step 3). */
   lines: readonly Line[]
+  /** Invoices (employer groups) only; ignored for divides. */
   issuer?: StatementSnapshot['issuer']
   recipient?: StatementSnapshot['recipient']
   paymentTermsDays?: number
@@ -26,11 +28,22 @@ export type SnapshotProblem = 'closing' | 'balanced' | 'fresh'
 const lineKey = (line: Line) => line.date + line.transactionId
 const byDateThenId = (a: Line, b: Line) => (lineKey(a) < lineKey(b) ? -1 : 1)
 
+// BigInt, so a sum near the safe-integer limit can't round to 0.
+const addsUpToZero = (cents: readonly number[]) =>
+  cents.reduce((sum, c) => sum + BigInt(c), 0n) === 0n
+
+/** Wrong input from the calling function is a bug, never the user's fault. */
+function bug(message: string): never {
+  throw new LedgerError('INVARIANT_VIOLATION', message)
+}
+
 /**
  * The statement snapshot (statements.md#snapshot): each person's opening (the
  * previous closing), what they gave and received in the lines, and their
  * closing. People with no opening and no shares are left out. Divides get the
- * suggested transfers; invoices get the worker's closing as the balance due.
+ * suggested transfers (none if the closings don't add up to 0, so
+ * `checkSnapshot` reports it); invoices get the worker's closing as the
+ * balance due.
  */
 export function buildStatementSnapshot(input: SnapshotInput): StatementSnapshot {
   const names = new Map(input.people.map((person) => [person.personId, person.name]))
@@ -48,7 +61,7 @@ export function buildStatementSnapshot(input: SnapshotInput): StatementSnapshot 
     .sort()
   const people = personIds.map((personId) => {
     const name = names.get(personId)
-    if (name === undefined) throw new Error('Every person in a statement must be a member')
+    if (name === undefined) bug('Every person in a statement must be a member')
     const openingCents = opening.get(personId) ?? 0
     const { givenCents, receivedCents } = moved.get(personId) ?? { givenCents: 0, receivedCents: 0 }
     const closingCents = openingCents + givenCents - receivedCents
@@ -65,22 +78,23 @@ export function buildStatementSnapshot(input: SnapshotInput): StatementSnapshot 
     period: input.period,
     people,
     lines: [...input.lines].sort(byDateThenId),
-    transfers: input.group.type === 'house' ? suggestTransfers(closings) : [],
+    transfers:
+      input.group.type === 'house' && addsUpToZero(closings.map((net) => net.netCents))
+        ? suggestTransfers(closings)
+        : [],
     generatedAt: input.generatedAt,
   }
-  if (input.recipient) snapshot.recipient = input.recipient
   if (input.group.type === 'employer') {
-    const issuer = input.issuer ?? invoiceNeeds('an issuer')
-    const terms = input.paymentTermsDays ?? invoiceNeeds('payment terms')
+    const issuer = input.issuer ?? bug('An invoice needs an issuer')
+    snapshot.recipient = input.recipient ?? bug('An invoice needs a recipient')
+    const terms = input.paymentTermsDays ?? bug('An invoice needs payment terms')
+    // A wrong issuer ID would otherwise make a silent $0 invoice.
+    if (!names.has(issuer.personId)) bug('The issuer must be a member')
     snapshot.issuer = issuer
     const worker = people.find((person) => person.personId === issuer.personId)
     snapshot.invoice = { balanceDueCents: worker?.closingCents ?? 0, paymentTermsDays: terms }
   }
   return snapshot
-}
-
-function invoiceNeeds(what: string): never {
-  throw new Error(`An invoice needs ${what}`)
 }
 
 /**
@@ -105,7 +119,7 @@ export function checkSnapshot(
     (person) => person.closingCents === person.openingCents + (nets.get(person.personId) ?? 0),
   )
   if (!everyoneListed || !closingsAddUp) problems.push('closing')
-  if (snapshot.people.reduce((sum, person) => sum + person.closingCents, 0) !== 0) {
+  if (!addsUpToZero(snapshot.people.map((person) => person.closingCents))) {
     problems.push('balanced')
   }
   const fresh = new Map(freshBalances.map((net) => [net.personId, net.netCents]))

@@ -79,7 +79,7 @@ To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, 
 
 `snapshotJson` holds everything needed to show or re-render the statement without reading other rows. It is a historical record and is never rewritten.
 
-`buildStatementSnapshot()` in `packages/core` builds it, and `checkSnapshot()` runs finalize step 5. `people` lists everyone with a non-zero opening or a share in the lines, sorted by `personId`; `lines` are sorted by date, then transaction ID. Divides get `suggestTransfers()` of the closings; invoices get the worker's closing as `balanceDueCents`.
+`buildStatementSnapshot()` in `packages/core` builds it, and `checkSnapshot()` runs finalize step 5. `people` lists everyone with a non-zero opening or a share in the lines, sorted by `personId`; `lines` are sorted by date, then transaction ID. Divides get `suggestTransfers()` of the closings; invoices need an issuer who is a member, a recipient and payment terms, and get the worker's closing as `balanceDueCents`. `invoice.dueOn` stays empty until finalize step 7.
 
 ```ts
 type StatementSnapshot = {

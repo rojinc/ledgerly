@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseLocalDate } from '../dates/local-date'
+import { LedgerError } from '../ledger/ledger-error'
 import { type StatementSnapshot, statementSnapshotSchema } from '../schemas/statements'
 import { buildStatementSnapshot, checkSnapshot, type SnapshotInput } from './snapshot'
 
@@ -192,7 +193,7 @@ describe('buildStatementSnapshot', () => {
     expect(snapshot.invoice).toEqual({ balanceDueCents: 0, paymentTermsDays: 14 })
   })
 
-  it('throws for a person who isn’t a member, or an invoice without issuer or terms', () => {
+  it('throws for a non-member, or an invoice without issuer, recipient or terms', () => {
     const stranger = [
       line('2026-10-02', 'payment', 100, [share('zoe', 100, 0), share('worker', 0, 100)]),
     ]
@@ -203,6 +204,42 @@ describe('buildStatementSnapshot', () => {
     expect(() =>
       buildStatementSnapshot({ ...employerInput([], []), paymentTermsDays: undefined }),
     ).toThrow('payment terms')
+    expect(() =>
+      buildStatementSnapshot({ ...employerInput([], []), recipient: undefined }),
+    ).toThrow('recipient')
+    // A user ID passed as the issuer's person ID must not make a $0 invoice.
+    const shift = [
+      line('2026-10-02', 'shift', 12500, [share('worker', 12500, 0), share('employer', 0, 12500)]),
+    ]
+    const wrongIssuer = { personId: 'usr_owner', name: 'Sam', business }
+    let caught: unknown
+    try {
+      buildStatementSnapshot({ ...employerInput(shift, []), issuer: wrongIssuer })
+    } catch (error) {
+      caught = error
+    }
+    expect(caught).toBeInstanceOf(LedgerError)
+    expect((caught as LedgerError).code).toBe('INVARIANT_VIOLATION')
+    expect((caught as LedgerError).message).toMatch('issuer must be a member')
+  })
+
+  it('suggests no transfers for a divide whose closings don’t add up, so the check catches it', () => {
+    const snapshot = buildStatementSnapshot({
+      group: {
+        id: 'grp_house',
+        name: '12 Smith St',
+        type: 'house',
+        currency: 'AUD',
+        timezone: 'Australia/Sydney',
+      },
+      period: { start: d('2026-10-01'), end: d('2026-10-31') },
+      people: [{ personId: 'alice', name: 'Alice' }],
+      previousClosing: [{ personId: 'alice', netCents: 100 }],
+      lines: [],
+      generatedAt: '2026-11-01T00:00:00.000Z',
+    })
+    expect(snapshot.transfers).toEqual([])
+    expect(checkSnapshot(snapshot, [{ personId: 'alice', netCents: 100 }])).toEqual(['balanced'])
   })
 })
 
