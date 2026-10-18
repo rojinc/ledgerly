@@ -76,10 +76,10 @@ describe('sendEmail', () => {
       to: ['boss@acme.example', 'accounts@acme.example'],
       replyTo: 'sam@example.com',
       attachments: [{ filename: 'INV-0010.pdf', content: pdf }],
-      idempotencyKey: 'finalize/stmt-1',
+      idempotencyKey: 'finalize/stmt-1/employer',
     })
     const { init, body } = sent()
-    expect(init.headers).toMatchObject({ 'idempotency-key': 'finalize/stmt-1' })
+    expect(init.headers).toMatchObject({ 'idempotency-key': 'finalize/stmt-1/employer' })
     expect(body.to).toEqual(['boss@acme.example', 'accounts@acme.example'])
     expect(body.reply_to).toBe('sam@example.com')
     expect(body.attachments).toEqual([
@@ -89,19 +89,21 @@ describe('sendEmail', () => {
     expect(Buffer.from(attachment?.content as string, 'base64').toString()).toBe('%PDF-1.7 invoice')
   })
 
-  it.each(['RESEND_API_KEY', 'EMAIL_FROM'])(
-    'fails clearly without %s and sends nothing',
-    async (name) => {
-      vi.stubEnv(name, '')
-      const error = await failure(sendEmail(email))
-      expect(error.type).toBe('missing_config')
-      expect(error.status).toBeUndefined()
-      expect(error.message).toBe(
-        `${name} is not set. Add it as an Appwrite project variable (environments-and-deploys.md).`,
-      )
-      expect(fetchMock).not.toHaveBeenCalled()
-    },
-  )
+  it.each([
+    ['RESEND_API_KEY', ''],
+    ['EMAIL_FROM', ''],
+    ['RESEND_API_KEY', '  '],
+    ['EMAIL_FROM', '\n'],
+  ])('fails clearly when %s is %j and sends nothing', async (name, value) => {
+    vi.stubEnv(name, value)
+    const error = await failure(sendEmail(email))
+    expect(error.type).toBe('missing_config')
+    expect(error.status).toBeUndefined()
+    expect(error.message).toBe(
+      `${name} is not set. Add it as an Appwrite project variable (environments-and-deploys.md).`,
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
 
   it("keeps Resend's error name and status but never its message", async () => {
     answer(422, {
@@ -139,8 +141,30 @@ describe('sendEmail', () => {
     await expect(sendEmail(email)).resolves.toEqual({ id: undefined })
   })
 
-  it('passes on a network failure', async () => {
-    fetchMock.mockRejectedValue(new TypeError('fetch failed'))
-    await expect(sendEmail(email)).rejects.toThrow(TypeError)
+  it.each([
+    ['timeout', new DOMException('The operation was aborted due to timeout', 'TimeoutError')],
+    ['network', new TypeError('fetch failed')],
+    ['network', new Error('getaddrinfo ENOTFOUND api.resend.com')],
+  ])('reports a send that never got an answer as %s', async (type, thrown) => {
+    fetchMock.mockRejectedValue(thrown)
+    const error = await failure(sendEmail(email))
+    expect(error).toMatchObject({ type, status: undefined })
+    expect(error.message).toBe(`Resend could not be reached: ${type}`)
+  })
+
+  it('gives up on a request that hangs for 10 seconds', async () => {
+    // Fake timers don't drive AbortSignal.timeout, so the 10 s signal is swapped for a 1 ms one.
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal)
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockImplementation(() => realTimeout(1))
+    // Like fetch, reject when the request's signal aborts.
+    fetchMock.mockImplementation(
+      (_url, init) =>
+        new Promise((_resolve, reject) =>
+          init?.signal?.addEventListener('abort', () => reject(init.signal?.reason)),
+        ),
+    )
+    const error = await failure(sendEmail(email))
+    expect(timeout).toHaveBeenCalledWith(10_000)
+    expect(error.type).toBe('timeout')
   })
 })
