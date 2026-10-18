@@ -17,6 +17,7 @@
     "fileSecurity": true,
     "name": "statements",
     "enabled": true,
+    "maximumFileSize": 10485760,
     "allowedFileExtensions": ["pdf"],
     "compression": "none",
     "encryption": true,
