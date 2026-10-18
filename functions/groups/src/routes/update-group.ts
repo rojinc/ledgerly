@@ -68,7 +68,8 @@ export async function updateGroup(
   // then moves it on; without a cycle there is none.
   if ('statementCycle' in after || 'cycleAnchor' in after || 'timezone' in after) {
     const stored = group.nextCloseAt
-    const due = cycle !== 'none' && stored !== null && stored <= now.toISOString()
+    // Compared as instants: Appwrite may return the stored datetime with an offset, not Z.
+    const due = cycle !== 'none' && stored !== null && Date.parse(stored) <= now.getTime()
     data.nextCloseAt = due
       ? stored
       : nextCloseAtFor(cycle, anchor, columns.timezone ?? group.timezone, now)

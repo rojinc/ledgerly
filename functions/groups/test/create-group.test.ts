@@ -293,6 +293,17 @@ describe('POST /groups', () => {
     expect(services.db.rows('groups')).toEqual([])
   })
 
+  it('uses a team an earlier try left empty: teams.create answers 409, the caller joins it', async () => {
+    const services = setUp({ g1: [] })
+    const create = vi.spyOn(services.teams, 'create')
+    await ok(services, 'POST', '/groups', HOUSE)
+    await expect(create.mock.results[0]?.value).rejects.toMatchObject({ code: 409 })
+    expect(services.teams.members('g1')).toEqual([
+      { $id: expect.any(String), userId: 'u1', roles: [] },
+    ])
+    expect(services.db.rows('groups')).toHaveLength(1)
+  })
+
   it('finishes when an earlier try left a team holding just the caller', async () => {
     const services = setUp({ g1: ['u1'] })
     await ok(services, 'POST', '/groups', HOUSE)

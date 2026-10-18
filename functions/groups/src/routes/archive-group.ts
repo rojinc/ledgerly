@@ -4,7 +4,14 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import type { Services } from '../services'
-import { activityWrite, conflictAsTryAgain, invalid, parseBody } from '../shared'
+import {
+  activityWrite,
+  conflictAsTryAgain,
+  getRowOrNull,
+  invalid,
+  parseBody,
+  tryAgain,
+} from '../shared'
 
 /**
  * `groups POST /groups/{id}/archive`: admin only, permanent in v1. Archiving an archived group
@@ -24,18 +31,22 @@ export async function archiveGroup(
   if (group.archivedAt) return group
   if (group.type === 'personal') throw invalid("A personal group can't be archived.")
   await conflictAsTryAgain(() =>
-    withTransaction(db, (tx) =>
-      tx.write(
-        {
-          action: 'update',
-          tableId: TABLES.groups,
-          rowId: groupId,
-          // The statements cron selects groups by nextCloseAt, so an archived group leaves it.
-          data: { archivedAt: now.toISOString(), nextCloseAt: null },
-        },
+    withTransaction(db, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: TABLES.groups,
+        rowId: groupId,
+        // The statements cron selects groups by nextCloseAt, so an archived group leaves it.
+        data: { archivedAt: now.toISOString(), nextCloseAt: null },
+      })
+      // Stage, then check (conventions.md): an archive committed since the first read would
+      // get a second group.archived. The retry returns the stored group instead.
+      const current = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+      if (current?.archivedAt) throw tryAgain()
+      await tx.write(
         activityWrite(groupId, person.$id, 'group.archived', `${group.name} archived`, now),
-      ),
-    ),
+      )
+    }),
   )
   return db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId })
 }

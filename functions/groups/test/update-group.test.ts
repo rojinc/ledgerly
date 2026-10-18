@@ -105,6 +105,15 @@ describe('PATCH /groups/{id}', () => {
     expect(none).toMatchObject({ nextCloseAt: null })
   })
 
+  it('compares a due nextCloseAt as an instant, whatever its offset', async () => {
+    // 19:00 UTC on 31 October, written with Sydney's offset: later as text, earlier in time.
+    const due = '2026-11-01T06:00:00.000+11:00'
+    const services = setUp('employer', { nextCloseAt: due })
+    services.now = new Date('2026-10-31T20:00:00.000Z')
+    const perth = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Perth' })
+    expect(perth).toMatchObject({ nextCloseAt: due })
+  })
+
   it('keeps nextCloseAt when nothing it depends on changes', async () => {
     const services = setUp('employer', { nextCloseAt: '2026-10-31T19:00:00.000Z' })
     const updated = await ok(services, 'PATCH', '/groups/g1', { name: 'Work', region: 'AU-VIC' })
@@ -219,6 +228,30 @@ describe('PATCH /groups/{id}', () => {
       message: TRY_AGAIN,
     })
     expect(services.db.rows('groups')[0]?.name).toBe('Other')
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('answers CONFLICT when the group was archived after the first read', async () => {
+    const services = setUp('employer', {
+      $updatedAt: '2026-10-01T00:00:00.000Z',
+      nextCloseAt: '2026-10-31T13:00:00.000Z',
+    })
+    const archivedAt = '2026-10-18T19:59:00.000Z'
+    beforeStaging(services.db, 1, () =>
+      updateRow(services.db, 'groups', 'g1', { archivedAt, nextCloseAt: null }),
+    )
+    const body = { timezone: 'Australia/Perth' }
+    expect(await failure(services, 'PATCH', '/groups/g1', body)).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    // The archive stands: no time zone change, and no nextCloseAt to bring statements back.
+    expect(services.db.rows('groups')[0]).toMatchObject({
+      archivedAt,
+      nextCloseAt: null,
+      timezone: 'Australia/Sydney',
+    })
     expect(services.db.rows('activity')).toEqual([])
   })
 

@@ -255,6 +255,18 @@ describe('POST /groups/{id}/leave', () => {
     expect(services.db.rows('activity')).toEqual([])
   })
 
+  it.each([
+    ['joinedOn', { joinedOn: '2026-10-25' }],
+    ['leftOn', { leftOn: '2026-10-30' }],
+  ])('answers CONFLICT when %s changes before it is staged', async (_, change) => {
+    const services = houseFixture()
+    beforeStaging(services.db, 1, () => updateRow(services.db, 'members', 'm2', change))
+    expect(await leave(services, 'u2')).toMatchObject({ code: 'CONFLICT', message: TRY_AGAIN })
+    expect(memberRow(services, 'm2')).toMatchObject({ ...change, status: 'active' })
+    expect(services.db.rows('activity')).toEqual([])
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+
   it('answers CONFLICT when the row stopped being theirs after it was read', async () => {
     const services = houseFixture()
     // Another leave committed between requireMember's read and this one's staging.

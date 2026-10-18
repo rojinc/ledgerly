@@ -101,15 +101,46 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
     ])
   })
 
-  it('keeps someone who never joined a placeholder, with the role given', async () => {
+  it('moves out someone who never joined: still a placeholder, now a viewer', async () => {
     const services = house()
     expect(await patch(services, 'm3', { leftOn: '2026-10-19' })).toMatchObject({
       status: 'placeholder',
-      role: 'member',
+      role: 'viewer',
       leftOn: '2026-10-19',
     })
-    expect(await patch(services, 'm3', { role: 'viewer' })).toMatchObject({
+    expect(await patchFails(services, 'm3', { role: 'member' })).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: 'A member who left can only be a viewer.',
+    })
+  })
+
+  it('moves out an admin placeholder as a viewer, with no joined-admin check', async () => {
+    // m1 is the only joined admin; a placeholder admin moving out takes no joined admin away.
+    const services = house([member('m6', 'g1', 'p9', 'admin', 'placeholder')])
+    expect(await patch(services, 'm6', { leftOn: '2026-10-19' })).toMatchObject({
       status: 'placeholder',
+      role: 'viewer',
+      leftOn: '2026-10-19',
+    })
+    expect(changesOf(services)).toEqual([
+      { before: { role: 'admin', leftOn: null }, after: { role: 'viewer', leftOn: '2026-10-19' } },
+    ])
+  })
+
+  it('refuses any role but viewer when moving someone out', async () => {
+    const services = house([member('m6', 'g1', 'p9', 'admin', 'placeholder')])
+    for (const [memberId, role] of [
+      ['m2', 'member'],
+      ['m6', 'admin'],
+    ] as const) {
+      expect(await patchFails(services, memberId, { leftOn: '2026-10-19', role })).toEqual({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+        message: 'A member who left can only be a viewer.',
+      })
+    }
+    expect(await patch(services, 'm6', { leftOn: '2026-10-19', role: 'viewer' })).toMatchObject({
       role: 'viewer',
     })
   })
@@ -221,6 +252,21 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
       message: TRY_AGAIN,
     })
     expect(services.db.rows('members')[2]).toMatchObject({ displayName: 'Member m3' })
+  })
+
+  it.each([
+    ['joinedOn', { joinedOn: '2026-10-05' }, { leftOn: '2026-10-01' }],
+    ['leftOn', { leftOn: '2026-10-10' }, { displayName: 'Sam' }],
+  ])('answers CONFLICT when %s changes before it is staged', async (_, change, body) => {
+    const services = house()
+    beforeStaging(services.db, 1, () => updateRow(services.db, 'members', 'm2', change))
+    expect(await patchFails(services, 'm2', body)).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('members')[1]).toMatchObject({ ...change, displayName: 'Member m2' })
+    expect(services.db.rows('activity')).toEqual([])
   })
 
   it('answers CONFLICT when the row changes after it is staged', async () => {

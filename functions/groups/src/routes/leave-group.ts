@@ -60,7 +60,14 @@ export async function leaveGroup(
         // Stage, then check (transaction.ts): from here on, any change to the row fails the
         // commit. Read the stored row, not this transaction's view, which has the new status.
         const current = await getRowOrNull<Members>(db, TABLES.members, member.$id)
-        if (!isJoinedBy(current, person.$id)) throw tryAgain()
+        // leftOn above came from the dates read first, so they must still hold too.
+        if (
+          !isJoinedBy(current, person.$id) ||
+          current.joinedOn !== member.joinedOn ||
+          current.leftOn !== member.leftOn
+        ) {
+          throw tryAgain()
+        }
         await requireSettled(db, groupId, person.$id)
         if (current.role === 'admin') {
           await keepAnotherAdmin(

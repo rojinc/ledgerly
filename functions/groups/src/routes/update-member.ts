@@ -19,8 +19,9 @@ type Fields = Pick<Members, 'displayName' | 'role' | 'status' | 'joinedOn' | 'le
 
 /**
  * `groups PATCH /groups/{id}/members/{memberId}`: writes only the fields that change. Setting
- * `leftOn` on a joined member moves them out (permissions.md#leaving-a-group): status `left`,
- * role `viewer`. Teams are left alone, so they can still see and settle what they owe.
+ * `leftOn` moves someone out (permissions.md#leaving-a-group): role `viewer`, and status `left`
+ * for someone who joined. Anyone with a `leftOn` stays a viewer. Teams are left alone, so they
+ * can still see and settle what they owe.
  */
 export async function updateMember(
   { db, now }: Services,
@@ -33,10 +34,13 @@ export async function updateMember(
   const { person: caller } = await requireMember(db, userId, groupId, { roles: ['admin'] })
   const stored = await getMemberOf(db, groupId, memberId)
 
+  const movingOut = changes.leftOn !== undefined
   const next: Fields = {
     displayName: changes.displayName ?? stored.displayName,
-    role: changes.role ?? stored.role,
-    status: stored.status,
+    // Moving someone out makes them a viewer, a placeholder too.
+    role: changes.role ?? (movingOut ? 'viewer' : stored.role),
+    // Only someone who joined becomes `left`; a placeholder stays one.
+    status: movingOut && stored.status === 'active' ? 'left' : stored.status,
     joinedOn: changes.joinedOn ?? stored.joinedOn,
     leftOn: changes.leftOn ?? stored.leftOn,
   }
@@ -44,12 +48,8 @@ export async function updateMember(
   if (next.leftOn !== null && next.leftOn < next.joinedOn) {
     throw invalid('leftOn must be on or after joinedOn.')
   }
-  if (stored.status === 'left' && changes.role !== undefined && changes.role !== 'viewer') {
+  if (next.leftOn !== null && next.role !== 'viewer') {
     throw invalid('A member who left can only be a viewer.')
-  }
-  if (changes.leftOn !== undefined && stored.status === 'active') {
-    next.status = 'left'
-    next.role = 'viewer'
   }
   const before: Partial<Fields> = {}
   const after: Partial<Fields> = {}
@@ -67,11 +67,14 @@ export async function updateMember(
       // Stage, then check (conventions.md): from here on, any change to the row fails the
       // commit. Read the stored row, not this transaction's view, which has the new values.
       const current = await getRowOrNull<Members>(db, TABLES.members, memberId)
-      // The admin check below goes by the stored role and status, so both must still hold.
+      // The admin check below goes by the stored role and status, and the date order and
+      // `before` by the stored dates, so all must still hold.
       if (
         current?.groupId !== groupId ||
         current.status !== stored.status ||
-        current.role !== stored.role
+        current.role !== stored.role ||
+        current.joinedOn !== stored.joinedOn ||
+        current.leftOn !== stored.leftOn
       ) {
         throw tryAgain()
       }

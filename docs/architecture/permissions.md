@@ -55,7 +55,7 @@ Members who haven't joined (`placeholder`) keep their role but have no access, a
 ### Leaving a group
 
 - **Moving out (house):** set `leftOn` and change the role to `viewer`. A joined member's status becomes `left`; they keep read access so they can see and settle what they owe. Someone who never joined stays `placeholder`. Clearing `leftOn` turns `left` back into `active` only while the person is still in the team.
-- **Removing completely:** only allowed when the person has no shares in the group. Otherwise use `left`.
+- **Removing completely:** only allowed when the person has no shares in the group and isn't named in a transaction that isn't posted yet (`scheduled`, `running` or `due`, including its items' splits) or in a schedule's template. Otherwise use `left`.
 - **Leaving voluntarily:** a member may leave once their balance is 0. In one database transaction their status becomes `left`, their role `viewer` and `leftOn` today if empty; then their team membership is removed. Their history stays. Coming back after leaving voluntarily isn't supported in v1, so someone who left can only be a `viewer`. `leftOn` is never before `joinedOn`. Someone already marked `left` (moved out) still needs a balance of 0 to leave, and leaving can be finished in an archived group.
 
 ## Function-side checks

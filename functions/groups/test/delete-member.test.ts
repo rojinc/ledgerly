@@ -18,9 +18,22 @@ import {
 } from './harness'
 
 /** House g1: m1 u1 admin, m2 u2 member, m3 a placeholder. m9 is in another group. */
-function house(extra: { members?: ReturnType<typeof member>[]; shares?: object[] } = {}) {
+type Row = Record<string, unknown> & { $id: string }
+
+function house(
+  extra: {
+    members?: ReturnType<typeof member>[]
+    shares?: object[]
+    transactions?: Row[]
+    items?: Row[]
+    schedules?: Row[]
+  } = {},
+) {
   return fakes(
     {
+      transactions: extra.transactions ?? [],
+      items: extra.items ?? [],
+      schedules: extra.schedules ?? [],
       groups: [group('g1', 'house'), group('g2', 'house')],
       persons: [person(1), person(2), person(9), placeholder('pX')],
       members: [
@@ -35,6 +48,61 @@ function house(extra: { members?: ReturnType<typeof member>[]; shares?: object[]
     { g1: ['u1', 'u2'], g2: ['u9'] },
   )
 }
+
+/** A transaction row; `input` is what inputJson holds. */
+function transaction(id: string, status: string, input: object, groupId = 'g1'): Row {
+  return {
+    $id: id,
+    groupId,
+    kind: 'bill',
+    status,
+    date: '2026-10-01',
+    description: 'Power',
+    totalCents: 9000,
+    inputJson: JSON.stringify(input),
+    createdBy: 'p1',
+    updatedBy: 'p1',
+  }
+}
+
+/** A bill paid by p1, split equally between `personIds`. */
+function bill(id: string, status: string, personIds: string[], groupId = 'g1'): Row {
+  return transaction(
+    id,
+    status,
+    { payers: [{ personId: 'p1', cents: 9000 }], split: { mode: 'equal', personIds } },
+    groupId,
+  )
+}
+
+function item(id: string, transactionId: string, personIds: string[]): Row {
+  return {
+    $id: id,
+    transactionId,
+    position: 0,
+    name: 'Milk',
+    amountCents: 400,
+    splitJson: JSON.stringify({ mode: 'equal', personIds }),
+  }
+}
+
+function schedule(id: string, template: object): Row {
+  return {
+    $id: id,
+    groupId: 'g1',
+    kind: 'bill',
+    description: 'Rent',
+    templateJson: JSON.stringify(template),
+    rrule: 'FREQ=WEEKLY;BYDAY=TH',
+    startsOn: '2026-10-01',
+    skipPublicHolidays: false,
+    autoPost: false,
+    createdBy: 'p1',
+  }
+}
+
+const IS_NAMED =
+  "This person is named in a transaction that isn't posted yet, or in a schedule. Set leftOn instead."
 
 function remove(services: Fakes, memberId: string, userId = 'u1') {
   return ok(services, 'DELETE', `/groups/g1/members/${memberId}`, undefined, userId)
@@ -119,6 +187,90 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     expect(teamUsers(services)).toEqual(['u1', 'u2'])
   })
 
+  it.each([
+    ['a due bill', { transactions: [bill('t1', 'due', ['p1', 'p2'])] }],
+    ['a scheduled occurrence', { transactions: [bill('t1', 'scheduled', ['p1', 'p2'])] }],
+    [
+      'a running payment',
+      {
+        transactions: [
+          transaction('t1', 'running', { payment: { fromPersonId: 'p2', toPersonId: 'p1' } }),
+        ],
+      },
+    ],
+    [
+      "an unposted transaction's item",
+      {
+        transactions: [bill('t1', 'scheduled', ['p1'])],
+        items: [item('i1', 't1', ['p1']), item('i2', 't1', ['p1', 'p2'])],
+      },
+    ],
+    [
+      "a schedule's template",
+      {
+        schedules: [
+          schedule('sc1', {
+            payers: [{ personId: 'p1', cents: 9000 }],
+            items: [
+              {
+                name: 'Rent',
+                amountCents: 9000,
+                split: { mode: 'equal', personIds: ['p1', 'p2'] },
+              },
+            ],
+          }),
+        ],
+      },
+    ],
+  ])('refuses someone named in %s, and leaves the team alone', async (_, extra) => {
+    const services = house(extra)
+    expect(await removeFails(services, 'm2')).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: IS_NAMED,
+    })
+    expect(memberIds(services)).toContain('m2')
+    expect(teamUsers(services)).toEqual(['u1', 'u2'])
+  })
+
+  it('reads every page of unposted transactions', async () => {
+    const others = Array.from({ length: 100 }, (_, n) =>
+      bill(`t${String(n).padStart(3, '0')}`, 'due', ['p1']),
+    )
+    const services = house({ transactions: [...others, bill('t100', 'due', ['p2'])] })
+    expect(await removeFails(services, 'm2')).toMatchObject({ message: IS_NAMED })
+  })
+
+  it('removes someone named only in posted or void transactions, or in another group', async () => {
+    const services = house({
+      transactions: [
+        bill('t1', 'posted', ['p1', 'p2']),
+        bill('t2', 'void', ['p1', 'p2']),
+        bill('t3', 'due', ['p1']),
+        bill('t4', 'due', ['p9', 'p2'], 'g2'),
+      ],
+      items: [item('i1', 't1', ['p2']), item('i3', 't3', ['p1'])],
+      schedules: [schedule('sc1', { payers: [{ personId: 'p1', cents: 100 }] })],
+    })
+    expect(await remove(services, 'm2')).toEqual({})
+    expect(memberIds(services)).not.toContain('m2')
+  })
+
+  it('refuses someone named in a transaction committed after the first read', async () => {
+    const services = house()
+    beforeStaging(services.db, 1, () =>
+      createRow(services.db, 'transactions', bill('t1', 'due', ['p1', 'p2'])),
+    )
+    expect(await removeFails(services, 'm2')).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: IS_NAMED,
+    })
+    expect(memberIds(services)).toContain('m2')
+    expect(teamUsers(services)).toEqual(['u1', 'u2'])
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
   it('refuses to remove the last joined admin, and lets an admin remove themselves otherwise', async () => {
     const services = house({ members: [member('m6', 'g1', 'p9', 'admin', 'placeholder')] })
     expect(await removeFails(services, 'm1')).toMatchObject({
@@ -171,6 +323,26 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     expect(teamUsers(services)).toEqual(['u1', 'u2', 'u9'])
     expect(await remove(services, 'm4')).toEqual({})
     expect(teamUsers(services)).toEqual(['u1', 'u2'])
+  })
+
+  it("doesn't give team access back to someone who left at the same time", async () => {
+    const services = house()
+    beforeCommit(services.db, () =>
+      updateRow(services.db, 'members', 'm2', { status: 'left', role: 'viewer' }),
+    )
+    expect(await removeFails(services, 'm2')).toMatchObject({ code: 'CONFLICT' })
+    expect(memberIds(services)).toContain('m2')
+    expect(teamUsers(services)).toEqual(['u1'])
+  })
+
+  it('gives team access back to someone moved out earlier when the removal fails', async () => {
+    const services = house({
+      members: [member('m5', 'g1', 'p9', 'viewer', 'left', { leftOn: '2026-09-30' })],
+    })
+    await services.teams.createMembership({ teamId: 'g1', userId: 'u9', roles: [] })
+    beforeCommit(services.db, () => updateRow(services.db, 'members', 'm5', { displayName: 'X' }))
+    expect(await removeFails(services, 'm5')).toMatchObject({ code: 'CONFLICT' })
+    expect(teamUsers(services)).toEqual(['u1', 'u2', 'u9'])
   })
 
   it('answers CONFLICT when the other admin is demoted at the same time', async () => {

@@ -232,7 +232,11 @@ export function beforeStaging(db: FakeDb, nth: number, change: () => Promise<unk
 }
 
 /** Commits one new row outside the request under test. */
-export function createRow(db: Db, tableId: 'shares' | 'transactions' | 'groups', row: Row) {
+export function createRow(
+  db: Db,
+  tableId: 'shares' | 'transactions' | 'groups' | 'items' | 'schedules',
+  row: Row,
+) {
   const { $id, ...data } = row
   return withTransaction(db, (tx) => tx.write({ action: 'create', tableId, rowId: $id, data }))
 }

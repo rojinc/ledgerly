@@ -103,7 +103,9 @@ describe('POST /groups/{id}/members', () => {
       at: NOW.toISOString(),
       $permissions: ['read("team:g1")'],
     })
-    expect(JSON.stringify(activity)).not.toMatch(/example\.com|412/)
+    // Only the text fields can carry them; $id and $createdAt are random, so leave them out.
+    const text = `${activity?.summary} ${activity?.changesJson ?? ''}`
+    expect(text).not.toMatch(/example\.com|412\s?345\s?678/)
   })
 
   it('adds a registered person as a placeholder, outside the team, looking like anyone else', async () => {

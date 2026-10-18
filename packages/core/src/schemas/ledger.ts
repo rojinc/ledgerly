@@ -153,7 +153,7 @@ function withArticle(kind: TransactionKind): string {
 // These kinds also need the part named after them.
 const OWN_PARTS = ['shift', 'bill', 'payment', 'adjustment'] as const
 
-function everyPersonId(input: TransactionTemplate): string[] {
+export function everyPersonId(input: TransactionTemplate): string[] {
   return [
     ...(input.payers ?? []).map((payer) => payer.personId),
     ...(input.split ? splitPersonIds(input.split) : []),

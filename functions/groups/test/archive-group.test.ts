@@ -1,6 +1,18 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { describe, expect, it } from 'vitest'
-import { failure, fakes, group, member, NOW, ok, person, placeholder } from './harness'
+import {
+  beforeStaging,
+  failure,
+  fakes,
+  group,
+  member,
+  NOW,
+  ok,
+  person,
+  placeholder,
+  TRY_AGAIN,
+  updateRow,
+} from './harness'
 
 const CLOSE_AT = '2026-10-31T13:00:00.000Z'
 
@@ -49,6 +61,22 @@ describe('POST /groups/{id}/archive', () => {
     const again = await ok<Groups>(services, 'POST', '/groups/g1/archive', undefined)
     expect(again).toEqual(first)
     expect(services.db.rows('activity')).toHaveLength(1)
+  })
+
+  it('answers CONFLICT when another archive lands before staging, then returns the stored group', async () => {
+    const services = houseFixture()
+    const earlier = '2026-10-18T19:59:00.000Z'
+    beforeStaging(services.db, 1, () =>
+      updateRow(services.db, 'groups', 'g1', { archivedAt: earlier, nextCloseAt: null }),
+    )
+    expect(await failure(services, 'POST', '/groups/g1/archive')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('activity')).toEqual([])
+    expect(await ok(services, 'POST', '/groups/g1/archive')).toMatchObject({ archivedAt: earlier })
+    expect(services.db.rows('activity')).toEqual([])
   })
 
   it('makes the group read-only for write routes', async () => {
