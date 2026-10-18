@@ -45,9 +45,9 @@ Appwrite runs the job as `POST /` on the `statements` function; nobody else can 
 - create a `draft` statement for the period, with a computed snapshot,
 - move `groups.nextCloseAt` to the next period's close.
 
-The period is the one that ended the day before the stored `nextCloseAt`, so a cycle or time zone change made after it ended can't skip it. If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period. The job lists every due group first and then works through them, so a group that fails every time never keeps the others waiting; a failure is logged (IDs only) and tried again on the next run. Until house divides are built ([#46](https://github.com/rojinc/ledgerly/issues/46)), the job drafts invoices only.
+The period is the one that ended the day before the stored `nextCloseAt`, so a cycle or time zone change made after it ended can't skip it. If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period, and the run that lost doesn't count it as a failure. If a statement that isn't void already reaches the period's end (one reissued before the reissue rules in [§4](#4-void-post-statementsidvoid)), the job only moves `nextCloseAt` on. The job lists every due group first and then works through them, so a group that fails every time never keeps the others waiting; a failure is logged (IDs only) and tried again on the next run. Until house divides are built ([#46](https://github.com/rojinc/ledgerly/issues/46)), the job drafts invoices only.
 
-Then email the group admins at their verified addresses: "Your October invoice for Acme is ready to review", linking to `/groups/<groupId>/statements/<statementId>` in the web app. A failed email doesn't undo the draft. If the group setting `autoFinalize` is on, finalize straight away, without sending.
+Then email the group admins at their verified addresses: "Your October invoice for Acme is ready to review", linking to `/groups/<groupId>/statements/<statementId>` in the web app. A failed email, even one that can't be built, doesn't undo the draft or stop what follows. If the group setting `autoFinalize` is on, finalize straight away, without sending.
 
 Drafts are **not** locked. Users can keep adding and fixing transactions. `POST /statements/{id}/refresh` (called whenever the draft is opened) recalculates the snapshot.
 
@@ -57,13 +57,15 @@ Admin only. Each step checks whether it has already been done, so an interrupted
 
 1. Set status `finalizing`, with a guard write to the group row (a fresh `rev`) in the same database transaction ([ledger concurrency](ledger.md#concurrency)). Core rule 5 is checked again after staging. While any statement in a group is `finalizing`, the `ledger` function refuses writes to that group's transactions dated on or before the period end (`LOCKED`).
 2. **Invoices only:** if `number` is empty, increment the issuer's `profiles.lastInvoiceNumber` and store the result in `number`, with `displayNumber` = prefix + number padded to 4 digits (`INV-0010`), in **one** database transaction. The profile row is staged before it's checked, so two finalizes for one worker can't take the same number, and no number is lost.
-3. Recalculate the snapshot from: posted transactions with `statementId` empty and `date <= periodEnd`, plus any already locked to this statement (from an interrupted run).
+3. First finish the unlock of every void statement of the group: a void unlocks after it commits, so one still unlocking, or stopped half way, would leave its transactions out. Then recalculate the snapshot from: posted transactions with `statementId` empty and `date <= periodEnd`, plus any already locked to this statement (from an interrupted run). A transaction that another run of this finalize locks between the two reads counts once.
 4. Lock: set `statementId` on those transactions, in batches of at most 90 operations per database transaction.
-5. **Check:** each person's closing equals their opening plus the sum of their nets over the lines; the closings add up to 0; and the snapshot's balances equal a fresh sum of all locked shares in the group. If any check fails, unlock this statement's transactions (in batches), set it back to `draft` and log an error. Never send a wrong invoice. Going back to `draft` matters: a statement left `finalizing` would block the group's writes for that period forever. The number from step 2 stays on the draft and is reused next time.
+5. **Check:** each person's closing equals their opening plus the sum of their nets over the lines; the closings add up to 0; and the snapshot's balances equal a fresh sum of all locked shares in the group. If any check fails, set it back to `draft`, then unlock this statement's transactions (in batches) and log an error. Going back to `draft` is checked first: if another run of this finalize stored `issuedOn` meanwhile, its check passed, so this run answers `CONFLICT` and unlocks nothing. Never send a wrong invoice. Going back to `draft` matters: a statement left `finalizing` would block the group's writes for that period forever. The number from step 2 stays on the draft and is reused next time.
 6. Store the snapshot with `issuedOn` = local today and `dueOn` = issuedOn + payment terms (invoices; also `invoice.dueOn` in the snapshot). This happens before anything is rendered, so an interrupted finalize that runs again on another day prints the same dates.
 7. Render the PDF with `pdfmake`, upload it to the `statements` bucket with the statement's ID as its file ID (so a rerun finds it) and set `pdfFileId`.
 8. Set status `final` and `finalizedBy` (empty when the job auto-finalizes).
 9. If `send` was requested, email it and set `sentAt`.
+
+Two runs of one finalize at once (a double click, a retry while the first still runs, or `autoFinalize` and an admin) are safe: every step checks the stored row, so the slower run gets `CONFLICT` or finds the step done. A statement left `finalizing` by a crash or a timeout stays that way until finalize is called on it again; nothing resumes it on its own.
 
 ### 3. Send and resend (`POST /statements/{id}/send`)
 
@@ -74,7 +76,13 @@ Admin only. Each step checks whether it has already been done, so an interrupted
 
 Admin only, and only for the **latest** final statement in the group, so openings never break. It stages `void` with a guard write to the group row (a fresh `rev`), then checks the stored rows: still the latest final, and no statement of the group `finalizing` (`CONFLICT`). Then it unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
 
-To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`. The range must end after the latest final statement (`VALIDATION_FAILED` otherwise): a draft before it could never be finalized and would block every later one. While that draft is unfinished, asking again returns it.
+To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`. Once finalized it gets a new number; the void statement keeps its own. While that draft is unfinished, asking again returns it.
+
+A draft that could never be finalized would block every later statement of the group, so after staging the group row reissue refuses:
+- a range that doesn't end after the latest final statement (`VALIDATION_FAILED`), since its opening would come from before that statement;
+- a range that ends on the same day as another statement that isn't void (`VALIDATION_FAILED`);
+- a range that reaches the period the job drafts next (`VALIDATION_FAILED`), which the job would draft again;
+- any range while a statement of the group is `finalizing` (`CONFLICT`).
 
 ## Snapshot
 

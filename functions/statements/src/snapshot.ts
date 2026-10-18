@@ -63,7 +63,9 @@ export async function computeSnapshot(
       : [],
     previousFinal(db, group.$id, period),
   ])
-  const transactions = [...unlocked, ...locked]
+  // Another run of this finalize can lock a transaction between the two reads, putting it in
+  // both: it counts once.
+  const transactions = [...new Map([...unlocked, ...locked].map((row) => [row.$id, row])).values()]
   const shares = await sharesOf(db, transactions)
   const snapshot = buildStatementSnapshot({
     group: {

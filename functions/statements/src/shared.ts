@@ -190,6 +190,17 @@ export async function latestFinal(db: Db, groupId: string): Promise<Statements |
   return rows[0]
 }
 
+/** Whether a statement of the group is `finalizing` (`idx_group_period`). */
+export async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
+  const { rows } = await db.listRows<Statements>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.statements,
+    queries: [Query.equal('groupId', groupId), Query.equal('status', 'finalizing'), Query.limit(1)],
+    total: false,
+  })
+  return rows.length > 0
+}
+
 /**
  * A guard write to the group row: a fresh `rev`, so it is a real change that fails, or is
  * failed by, any other write to the group at the same moment (ledger.md#concurrency).

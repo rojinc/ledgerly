@@ -1,9 +1,7 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
 import { voidStatementBodySchema } from '@ledgerly/core/schemas/statements'
-import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
   activityWrite,
@@ -11,6 +9,7 @@ import {
   getStatement,
   groupGuard,
   invalid,
+  isFinalizing,
   latestFinal,
   parseBody,
   updateStatement,
@@ -75,14 +74,4 @@ export async function voidRoute(
     await unlock(db, statementId)
     return getStatement(db, statementId)
   })
-}
-
-async function isFinalizing(db: Services['db'], groupId: string): Promise<boolean> {
-  const { rows } = await db.listRows<Statements>({
-    databaseId: DATABASE_ID,
-    tableId: TABLES.statements,
-    queries: [Query.equal('groupId', groupId), Query.equal('status', 'finalizing'), Query.limit(1)],
-    total: false,
-  })
-  return rows.length > 0
 }

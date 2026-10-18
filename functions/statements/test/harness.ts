@@ -10,6 +10,7 @@ import type { Services } from '../src/services'
 // 07:00 on 2 November in Sydney: October's statement was due at 06:00 on 1 November.
 export const NOW = new Date('2026-11-01T20:00:00.000Z')
 export const OCTOBER_CLOSE = '2026-10-31T19:00:00.000Z'
+export const NOVEMBER_CLOSE = '2026-11-30T19:00:00.000Z'
 
 type Row = Record<string, unknown> & { $id: string }
 
@@ -344,6 +345,13 @@ export function snapshotClosing(
 /** One staged write, as another request would send it. */
 export function op(tableId: string, rowId: string, data: object, action = 'update'): object {
   return { action, databaseId: 'main', tableId, rowId, data }
+}
+
+/** Commits `operations` at once, as another request would. */
+export async function commitNow(db: FakeDb, operations: object[]) {
+  const { $id } = await db.createTransaction()
+  await db.createOperations({ transactionId: $id, operations })
+  await db.updateTransaction({ transactionId: $id, commit: true })
 }
 
 /**

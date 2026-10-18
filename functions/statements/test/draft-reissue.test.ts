@@ -7,7 +7,7 @@ import {
   fakes,
   job,
   member,
-  OCTOBER_CLOSE,
+  NOVEMBER_CLOSE,
   ok,
   op,
   rowsOf,
@@ -30,6 +30,9 @@ const runJob = (services: ReturnType<typeof fakes>) =>
 
 const snapshotOf = (row: { snapshotJson: string } | undefined) =>
   JSON.parse(row?.snapshotJson ?? '{}') as StatementSnapshot
+
+// The job has drafted October: November is the next period it drafts.
+const octoberDrafted = { groups: [job({}, { nextCloseAt: NOVEMBER_CLOSE })] }
 
 describe('the statements job (POST /, cron)', () => {
   it('drafts the period that ended, moves nextCloseAt on, and emails the admins', async () => {
@@ -138,6 +141,54 @@ describe('the statements job (POST /, cron)', () => {
     expect(errors).toHaveLength(1)
   })
 
+  it('skips a period that a statement already reaches, and moves nextCloseAt on', async () => {
+    // A reissue made before the guards above drafted the second half of October.
+    const services = fakes({ statements: [statement('st-oct', { periodStart: '2026-10-15' })] })
+    expect(await runJob(services)).toEqual({ drafted: 0, failed: 0 })
+    expect(services.db.rows('statements')).toHaveLength(1)
+    expect(services.db.rows('groups').find((g) => g.$id === 'job')?.nextCloseAt).toBe(
+      NOVEMBER_CLOSE,
+    )
+    expect(services.sent).toEqual([])
+  })
+
+  it('leaves an archived group alone, even with nextCloseAt still set', async () => {
+    const services = fakes({ groups: [job({}, { archivedAt: '2026-10-20T00:00:00.000Z' })] })
+    expect(await runJob(services)).toEqual({ drafted: 0, failed: 0 })
+    expect(services.db.rows('statements')).toEqual([])
+  })
+
+  it('doesn’t count a run that lost its commit to another run as failed', async () => {
+    const services = fakes()
+    const commit = services.db.updateTransaction.bind(services.db)
+    vi.spyOn(services.db, 'updateTransaction').mockImplementationOnce(async (params) => {
+      // The other run drafted October and moved nextCloseAt on just before this one commits.
+      const { $id } = await services.db.createTransaction()
+      await services.db.createOperations({
+        transactionId: $id,
+        operations: [op('groups', 'job', { nextCloseAt: NOVEMBER_CLOSE })],
+      })
+      await commit({ transactionId: $id, commit: true })
+      return commit(params)
+    })
+    expect(await runJob(services)).toEqual({ drafted: 0, failed: 0 })
+    expect(errors).toEqual([])
+    expect(services.db.rows('statements')).toEqual([])
+  })
+
+  it('still auto-finalizes when the ready email can’t be built', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-02', 60)),
+      groups: [job({ autoFinalize: true })],
+    })
+    services.appUrl = ''
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    expect(services.db.rows('statements')[0]?.status).toBe('final')
+    expect(errors).toEqual([
+      expect.stringMatching(/^statements: ready email failed for statement \S+: RangeError$/),
+    ])
+  })
+
   it('refuses a person, even an admin', async () => {
     const response = await failure(fakes(), 'POST', '/', undefined, 'u-sam')
     expect(response).toMatchObject({ status: 403, code: 'FORBIDDEN' })
@@ -148,22 +199,25 @@ describe('POST /statements/reissue', () => {
   const october = { groupId: 'job', periodStart: '2026-10-01', periodEnd: '2026-10-31' }
 
   it('drafts the range again, leaving nextCloseAt alone', async () => {
-    const services = fakes(
-      rowsOf(shift('s1', '2026-10-02', 60), {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-02', 60), {
         statements: [statement('st-void', { status: 'void' })],
       }),
-    )
+      ...octoberDrafted,
+    })
     const draft = await ok<Statements>(services, 'POST', '/statements/reissue', october)
     expect(draft).toMatchObject({ ...october, status: 'draft', type: 'invoice' })
     expect(snapshotOf(draft).lines.map((line) => line.transactionId)).toEqual(['s1'])
-    expect(services.db.rows('groups').find((g) => g.$id === 'job')?.nextCloseAt).toBe(OCTOBER_CLOSE)
+    expect(services.db.rows('groups').find((g) => g.$id === 'job')?.nextCloseAt).toBe(
+      NOVEMBER_CLOSE,
+    )
     expect(services.db.rows('activity')).toMatchObject([
       { actorPersonId: 'sam', action: 'statement.reissued' },
     ])
   })
 
   it('gives a retry the same draft', async () => {
-    const services = fakes()
+    const services = fakes(octoberDrafted)
     const first = await ok<Statements>(services, 'POST', '/statements/reissue', october)
     const again = await ok<Statements>(services, 'POST', '/statements/reissue', october)
     expect(again.$id).toBe(first.$id)
@@ -211,6 +265,53 @@ describe('reissue guards', () => {
     })
     expect(response.code).toBe('VALIDATION_FAILED')
     expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it('refuses a range ending on the same day as a statement that isn’t void', async () => {
+    // The job drafted October. A draft of its second half could never be finalized after it.
+    const services = fakes({ ...octoberDrafted, statements: [statement('st-oct')] })
+    const response = await failure(services, 'POST', '/statements/reissue', {
+      ...october,
+      periodStart: '2026-10-15',
+    })
+    expect(response.code).toBe('VALIDATION_FAILED')
+    expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it('refuses a period the job hasn’t drafted yet', async () => {
+    // November, on 2 November: the job would draft it again on 1 December.
+    const services = fakes(octoberDrafted)
+    const response = await failure(services, 'POST', '/statements/reissue', {
+      groupId: 'job',
+      periodStart: '2026-11-01',
+      periodEnd: '2026-11-30',
+    })
+    expect(response.code).toBe('VALIDATION_FAILED')
+    expect(services.db.rows('statements')).toEqual([])
+  })
+
+  const september = { groupId: 'job', periodStart: '2026-09-01', periodEnd: '2026-09-30' }
+  const septemberVoid = statement('st-sep', { ...september, status: 'void' })
+
+  it('refuses while a statement of the group is finalizing', async () => {
+    // September was voided; October stopped half-way through finalizing.
+    const services = fakes({
+      ...octoberDrafted,
+      statements: [septemberVoid, statement('st-oct', { status: 'finalizing', number: 10 })],
+    })
+    expect((await failure(services, 'POST', '/statements/reissue', september)).code).toBe(
+      'CONFLICT',
+    )
+    expect(services.db.rows('statements')).toHaveLength(2)
+  })
+
+  it('refuses when a statement starts finalizing just before the reissue is staged', async () => {
+    const services = fakes({ ...octoberDrafted, statements: [septemberVoid, statement('st-oct')] })
+    beforeStaging(services.db, [op('statements', 'st-oct', { status: 'finalizing' })])
+    expect((await failure(services, 'POST', '/statements/reissue', september)).code).toBe(
+      'CONFLICT',
+    )
+    expect(services.db.rows('statements')).toHaveLength(2)
   })
 
   it('makes one draft when two requests reissue the same range at once', async () => {

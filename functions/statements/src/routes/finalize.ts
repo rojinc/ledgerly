@@ -159,10 +159,10 @@ async function numberInvoice(db: Db, group: Groups, statement: Statements): Prom
 }
 
 /**
- * Steps 3 to 6: the snapshot of what's being locked, the locks, and the check
- * against a fresh sum of every locked share. If the check fails, everything is unlocked and
- * the statement goes back to `draft`. Then the snapshot is stored with `issuedOn` and `dueOn`,
- * before anything is rendered, so a run on another day prints the same dates.
+ * Steps 3 to 6: the snapshot of what's being locked, the locks, and the check against a fresh
+ * sum of every locked share. If the check fails, the statement goes back to `draft`, and only
+ * then are its locks taken off. Then the snapshot is stored with `issuedOn` and `dueOn`, before
+ * anything is rendered, so a run on another day prints the same dates.
  */
 async function lockAndIssue(
   services: Services,
@@ -174,6 +174,7 @@ async function lockAndIssue(
     start: statement.periodStart as LocalDate,
     end: statement.periodEnd as LocalDate,
   }
+  await finishVoids(db, group.$id)
   const { snapshot, unlockedIds } = await computeSnapshot(db, group, period, now, statement.$id)
   await writeInBatches(
     db,
@@ -186,8 +187,11 @@ async function lockAndIssue(
   )
   const problems = checkSnapshot(snapshot, await lockedBalances(db, group.$id))
   if (problems.length > 0) {
+    // Back to draft only if no other run of this finalize got past its check meanwhile: it
+    // would have stored issuedOn, and its locks must stay. That's checked before anything is
+    // unlocked, and a draft's leftover locks are this statement's again on its next finalize.
+    await updateStatement(db, statement, { status: 'draft', issuedOn: null })
     await unlock(db, statement.$id)
-    await updateStatement(db, statement, { status: 'draft' })
     // IDs and problem names only (security-and-privacy.md).
     console.error(`statements: statement ${statement.$id} failed its check: ${problems.join(', ')}`)
     throw new AppError(
@@ -213,6 +217,20 @@ async function lockedBalances(db: Db, groupId: string) {
   ])
   const shares = await sharesOf(db, locked)
   return netsFromShares([...shares.values()].flat())
+}
+
+/**
+ * Step 3 starts by finishing the unlock of every void statement of the group
+ * (`idx_group_period`). A void unlocks after it commits, so one still unlocking, or stopped half
+ * way, would otherwise leave its transactions out of this snapshot. No void can start once this
+ * statement is `finalizing` (statements.md#4-void).
+ */
+async function finishVoids(db: Db, groupId: string): Promise<void> {
+  const voids = await listAll<Statements>(db, TABLES.statements, [
+    Query.equal('groupId', groupId),
+    Query.equal('status', 'void'),
+  ])
+  for (const row of voids) await unlock(db, row.$id)
 }
 
 /** Takes this statement's locks off again (a failed check, or a void). */

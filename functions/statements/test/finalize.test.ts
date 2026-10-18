@@ -2,6 +2,8 @@ import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  beforeStaging,
+  commitNow,
   failure,
   fakes,
   job,
@@ -291,6 +293,58 @@ describe('POST /statements/{id}/finalize', () => {
     ])
     expect(services.sent[0]).toMatchObject({ subject: 'Invoice INV-0010 from Sam Cleans' })
     expect(services.sent[0]?.attachments?.[0]?.filename).toBe('INV-0010.pdf')
+  })
+})
+
+describe('two finalize runs of one statement at once', () => {
+  it('counts a transaction once when the other run locks it between this run’s two reads', async () => {
+    const services = fakes(october())
+    const list = services.db.listRows.bind(services.db)
+    let locked = false
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      // The read of what's already locked to st1 comes after the read of what's unlocked.
+      const lockedToThis =
+        params.tableId === 'transactions' &&
+        params.queries?.some((query) => query.includes('"equal","attribute":"statementId"'))
+      if (lockedToThis && !locked) {
+        locked = true
+        await commitNow(services.db, [op('transactions', 's1', { statementId: 'st1' })])
+      }
+      return list(params)
+    })
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.lines.map((line) => line.transactionId)).toEqual(['s1', 'p1'])
+    expect(snapshot.invoice?.balanceDueCents).toBe(7000)
+    expect(locks(services)).toEqual({ s1: 'st1', p1: 'st1', s2: null })
+  })
+
+  it('leaves the locks alone when its check fails after the other run stored the issue date', async () => {
+    // As in "unlocks everything and goes back to draft", the check fails. But the other run
+    // passed its check and stored issuedOn just before this one goes back to draft.
+    const services = fakes(
+      rowsOf(shift('s1', '2026-10-02', 240), {
+        statements: [
+          statement('st-sep', {
+            periodStart: '2026-09-01',
+            periodEnd: '2026-09-30',
+            status: 'final',
+            snapshotJson: snapshotClosing(
+              { start: '2026-09-01', end: '2026-09-30' },
+              { acme: -5000, sam: 5000 },
+            ),
+          }),
+          statement('st1'),
+        ],
+      }),
+    )
+    // This run's stagings: 1 finalizing, 2 the number, 3 the lock batch, 4 back to draft.
+    beforeStaging(services.db, [op('statements', 'st1', { issuedOn: '2026-11-02' })], 4)
+    const response = await failure(services, 'POST', '/statements/st1/finalize', { send: false })
+    expect(response.code).toBe('CONFLICT')
+    expect(stored(services)).toMatchObject({ status: 'finalizing', issuedOn: '2026-11-02' })
+    expect(locks(services)).toEqual({ s1: 'st1' })
   })
 })
 

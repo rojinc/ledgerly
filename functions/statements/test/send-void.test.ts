@@ -6,6 +6,7 @@ import {
   failure,
   fakes,
   job,
+  NOVEMBER_CLOSE,
   NOW,
   ok,
   op,
@@ -112,16 +113,17 @@ describe('POST /statements/{id}/send', () => {
 })
 
 describe('POST /statements/{id}/void', () => {
-  // September: 1 hour ($25.00). October: 4 hours ($100.00).
+  // September: 1 hour ($25.00). October: 4 hours ($100.00). The job drafted both.
   const twoMonths = () =>
-    fakes(
-      rowsOf(shift('s0', '2026-09-10', 60), shift('s1', '2026-10-02', 240), {
+    fakes({
+      ...rowsOf(shift('s0', '2026-09-10', 60), shift('s1', '2026-10-02', 240), {
         statements: [
           statement('st-sep', { periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
           statement('st-oct'),
         ],
       }),
-    )
+      groups: [job({}, { nextCloseAt: NOVEMBER_CLOSE })],
+    })
 
   it('voids the latest final statement and unlocks its transactions, keeping its PDF', async () => {
     const services = twoMonths()
@@ -206,6 +208,33 @@ describe('POST /statements/{id}/void', () => {
     const services = twoMonths()
     const response = await failure(services, 'POST', '/statements/st-sep/void', { reason: 'x' })
     expect(response.code).toBe('VALIDATION_FAILED')
+  })
+})
+
+describe('finalizing after a void', () => {
+  it('finishes the unlock of an interrupted void before taking the snapshot', async () => {
+    // September was voided, but the void stopped before it unlocked the 10 September shift.
+    const services = fakes(
+      rowsOf(
+        shift('s0', '2026-09-10', 60, { statementId: 'st-sep' }),
+        shift('s1', '2026-10-02', 240),
+        {
+          statements: [
+            statement('st-sep', {
+              periodStart: '2026-09-01',
+              periodEnd: '2026-09-30',
+              status: 'void',
+            }),
+            statement('st-oct'),
+          ],
+        },
+      ),
+    )
+    const final = await finalize(services, 'st-oct')
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.lines.map((line) => line.transactionId)).toEqual(['s0', 's1'])
+    expect(locks(services)).toEqual({ s0: 'st-oct', s1: 'st-oct' })
   })
 })
 
