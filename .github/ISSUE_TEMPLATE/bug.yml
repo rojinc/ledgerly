@@ -1,0 +1,34 @@
+name: Bug
+description: Something works differently from the docs.
+title: "[Bug] "
+labels: ["type:bug", "status:needs-spec"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Steps to reproduce, with the exact input (IDs, amounts, dates, timezone).
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What should happen
+      description: Link the doc that defines the correct behaviour if there is one.
+    validations:
+      required: true
+  - type: dropdown
+    id: money
+    attributes:
+      label: Can this produce a wrong amount, balance or invoice?
+      options:
+        - "No"
+        - "Yes, money is affected"
+        - "Not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Environment
+      description: dev or prod, browser, commit or version. No personal data.

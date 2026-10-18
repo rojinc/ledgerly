@@ -1,0 +1,182 @@
+# The ledger
+
+This is the money model. Every module (employer, house, personal, lend/borrow) uses it. Read this page before touching anything that creates, changes or shows an amount.
+
+The code for everything here lives in `packages/core` as pure functions with tests. Functions and apps call those functions; they never re-implement the maths.
+
+## Concepts in one minute
+
+- A **group** has **members** (people).
+- A **transaction** is one event: a shift, an expense, a bill, a payment and so on.
+- When a transaction is **posted**, it gets one **share** per person involved.
+- A share records what that person **gave** (`givenCents`) and **received** (`receivedCents`).
+- **Net** = given − received. A person's **balance** in a group is the sum of their nets.
+- Positive balance: the group owes you. Negative: you owe the group.
+
+This is the same idea as Splitwise's "paid share / owed share". We use *given* and *received* because the words fit shifts and payments as well as purchases.
+
+## Invariants
+
+These must hold for every posted transaction, always. `packages/core` exports `assertShareInvariants()`; the `ledger` function calls it before every write, and a nightly job re-checks production (M4).
+
+1. **I-1 Balanced:** Σ `givenCents` = Σ `receivedCents` = `totalCents`. So the nets in a transaction always add up to 0.
+2. **I-2 Integers:** every amount is an integer number of cents. No floats are ever stored.
+3. **I-3 Members only:** every share's person is a member of the transaction's group, and the transaction date falls between their `joinedOn` and `leftOn` (inclusive). Placeholders count as members.
+4. **I-4 One sign:** for a normal transaction every amount is ≥ 0. For a refund (`totalCents` < 0) every amount is ≤ 0. Signs are never mixed within one transaction, except in `adjustment`.
+5. **I-5 One share per person:** at most one share per person per transaction.
+6. **I-6 Only posted counts:** only `posted` transactions have shares. `scheduled`, `running`, `due` and `void` transactions have none.
+7. **I-7 Locked is final:** a transaction with a `statementId` pointing at a final statement is never changed or voided.
+
+## Transaction kinds
+
+| Kind | Allowed in | Who gives | Who receives | Notes |
+| --- | --- | --- | --- | --- |
+| `shift` | employer | worker: amount | employer: amount | amount = `round(minutes × rateCents / 60)`. The worker is the group owner. |
+| `expense` | all | payers | split (or items) | Purchases, groceries, employer-related spending |
+| `bill` | house, personal, pair | payers | split (default `days` in a house) | Has a billing period and due date. `due` until paid. |
+| `payment` | all except personal | `fromPersonId`: total | `toPersonId`: total | Money moving between members: settle-ups, employer paying you, loan repayments |
+| `loan` | pair, house | lender: total | borrower(s): split | An expense with a different label in the UI |
+| `income` | personal | you: total | you: total | Recorded for reports; net 0 |
+| `adjustment` | all | explicit | explicit | Shares given directly. Needs a reason. The only way to correct locked history. |
+
+### Employer presets
+
+Employer expenses are ordinary `expense` transactions. The UI offers presets so nobody has to think in shares:
+
+| Preset | payers | split | Effect |
+| --- | --- | --- | --- |
+| I paid for them (reimbursable) | worker | employer | Employer owes worker more |
+| Bought on their card, for work | employer | employer | Net 0; listed on the invoice for transparency |
+| Personal, on their card / cash advance | employer | worker | Employer owes worker less |
+
+## Worked examples
+
+| Event | Shares (given / received) | Nets |
+| --- | --- | --- |
+| Electricity $90, Alice paid, split equally between 3 | Alice 9000/3000 · Bob 0/3000 · Cara 0/3000 | Alice +6000, Bob −3000, Cara −3000 |
+| Bob pays Alice $30 | Bob 3000/0 · Alice 0/3000 | Bob +3000, Alice −3000 |
+| Thursday shift 5h × $25 | Worker 12500/0 · Employer 0/12500 | Worker +12500, Employer −12500 |
+| Employer pays $500 | Employer 50000/0 · Worker 0/50000 | Employer +50000, Worker −50000 |
+| $120 on employer's card for work | Employer 12000/12000 | 0 |
+| Lend Sam $50 | You 5000/0 · Sam 0/5000 | You +5000, Sam −5000 |
+| Refund of $20 on a shared $60 purchase Alice paid (split Alice/Bob) | Alice −2000/−1000 · Bob 0/−1000 | Alice −1000, Bob +1000 |
+
+## Statuses
+
+```
+             ┌─────────────┐
+ schedule ──►│  scheduled  │──post──┐
+             └─────────────┘        │
+ timer start ┌─────────────┐        ▼
+ ───────────►│   running   │──stop──► posted ──(final statement)──► locked
+             └─────────────┘        ▲     │
+ new bill    ┌─────────────┐        │     └──void──► void
+ ───────────►│     due     │──pay───┘
+             └─────────────┘
+ anything not yet locked ──void──► void   (row kept; shares deleted)
+```
+
+- `scheduled`: created by a schedule for a future or current date. Shown dashed on the calendar.
+- `running`: a timer shift that has started but not stopped. `startedAt` is set.
+- `due`: a bill waiting to be paid. Shown dashed until paid.
+- `posted`: real and counted. Has shares.
+- `void`: cancelled. Kept for history and so schedules don't re-create it. Has no shares.
+
+*Locked* is not a status. It means `statementId` is set by a final statement.
+
+## Splits
+
+A **split spec** says how an amount is divided. It is stored in the transaction's `inputJson`, so the UI can show and edit it exactly as the user entered it. Shares are always rebuilt from it.
+
+```ts
+type SplitSpec =
+  | { mode: 'equal';   personIds: string[] }
+  | { mode: 'exact';   amounts: { personId: string; cents: number }[] }        // must sum to the amount
+  | { mode: 'percent'; percents: { personId: string; basisPoints: number }[] } // 10000 = 100%; must sum to 10000
+  | { mode: 'weights'; weights: { personId: string; weight: number }[] }       // positive integers
+  | { mode: 'days';    personIds?: string[] }                                  // bills only; default: everyone present in the period
+```
+
+### Days present
+
+For a bill with period `[periodStart, periodEnd]`, each member's weight is the number of days in that period between their `joinedOn` and `leftOn` (inclusive). Members with 0 days are left out. If everyone has 0 days, the request fails with `VALIDATION_FAILED`.
+
+Example: period 1 Jul–30 Sep (92 days). Alice and Bob were there all along (92 each); Cara moved in 1 Aug (61). Weights are 92 : 92 : 61.
+
+## Allocation and rounding
+
+Every split ends with `allocate(totalCents, weights)`:
+
+1. Give each person `floor(total × weight / Σweights)`.
+2. Hand out the leftover cents one at a time, largest fractional remainder first. Ties go to whoever comes first in the spec, so the result is deterministic.
+3. For negative totals, allocate the absolute value and flip the sign.
+
+The result always sums to exactly `totalCents`. Example: `allocate(1000, [1, 1, 1])` → `[334, 333, 333]`.
+
+Other rounding rules:
+
+- Shift amount: `Math.round(minutes × rateCents / 60)`, so half a cent rounds up.
+- Statement and report totals are **sums of stored amounts**, never recalculated from hours × rate. So PDFs always add up.
+
+## Payers
+
+`payers: { personId, cents }[]` says who gave money and must sum to the total. The default is the caller paying everything. Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill).
+
+## Items (itemised receipts)
+
+- The transaction total equals the sum of item `amountCents` (items may be negative, such as discounts).
+- Each item is allocated by its own split spec.
+- A person's `receivedCents` is the sum of their parts of every item.
+- The final per-person amounts must still meet invariant I-4. If a discount would push someone below 0, the request fails.
+- Limits: at most **30 items** and **15 people** per transaction. That keeps any write under the Appwrite Free plan's 100 operations per transaction. See [Scaling](scaling.md#appwrite-limits-we-design-around).
+
+## Building shares
+
+`buildShares(input, context) → Share[]` in `packages/core` is the only code that turns a transaction into shares. The `context` holds the group type, owner and members with join/leave dates. The function is pure: same input, same output.
+
+Rules:
+
+- Shares are **rebuilt completely** on every write. In one database transaction the function deletes the old share rows and creates the new ones. Never patch a single share.
+- Each share copies `groupId`, `date`, `kind` and `category` from its transaction so the main queries need one index. Because shares are always rebuilt, these copies can't drift. ([D-007](decisions.md))
+
+## Balances
+
+- **Group balance per person** = Σ (`givenCents` − `receivedCents`) over that person's shares in the group.
+- **Employer balance due** = the worker's balance in the employer group (equal to minus the employer's).
+- The **dashboard** shows each group's balance for the user.
+
+v1 works balances out on read. When that gets slow, the `ledger` function will maintain a `balances` table inside the same transaction (M4). See [Scaling](scaling.md).
+
+## Settle up (suggested transfers)
+
+`suggestTransfers(nets) → { fromPersonId, toPersonId, cents }[]`:
+
+1. Drop people with net 0.
+2. Sort creditors (net > 0) by amount, largest first, and debtors (net < 0) by size, largest first. Ties are broken by `personId`, so output is deterministic.
+3. Match the largest debtor with the largest creditor and transfer the smaller of the two amounts. Reduce both and drop anyone who reaches 0. Repeat.
+
+This gives at most n − 1 transfers. It works **within one group only**. We never net across groups, because that would leak one group's data into another.
+
+## Reports
+
+All reports are sums over the user's shares. Nothing is copied into the personal group.
+
+| Report | Formula (for person P, date range R) |
+| --- | --- |
+| My spending | Σ `receivedCents` where kind ∈ {expense, bill}, by category |
+| Earnings | Σ `givenCents` where kind = shift |
+| Money received | Σ `receivedCents` where kind = payment |
+| Money paid out | Σ `givenCents` where kind ∈ {expense, bill, payment, loan} |
+| Personal income | Σ `totalCents` of `income` transactions in P's personal group |
+| Owed to me / I owe | per-group balances, positive and negative |
+
+## Editing and voiding
+
+- **Edit**: replace the transaction's input. Shares and items are rebuilt and an activity row records before and after. Allowed until the transaction is locked.
+- **Void**: set status `void`, delete shares and keep the row. Allowed until locked.
+- **Locked**: create an `adjustment` instead. It shows on the next statement.
+- Editing a schedule-generated occurrence sets `overridden = true`. See [Scheduling](scheduling.md).
+
+## Currency
+
+Each group has exactly one currency. Amounts in different currencies are never added together. Totals across groups are shown per currency.
