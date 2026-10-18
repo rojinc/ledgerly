@@ -103,3 +103,10 @@ Format: ID, date, status (`accepted`, `superseded by D-xxx`), decision, why, tra
 **Decision:** No payments, wallets or bank connections. Settlements are recorded after they happen outside the app.
 **Why:** Moving money brings licensing, compliance and fraud work that this product doesn't need.
 **Trade-off:** Users pay each other outside the app (we show bank details and PayID).
+
+### D-015: The lead agent runs the project day to day
+*2026-10-18 · accepted*
+
+**Decision:** The owner handed day-to-day decisions to the lead agent: priorities, task specs, contract approvals, design decisions, reviews and merging every PR. The owner keeps accounts, billing, secrets and console access.
+**Why:** The owner asked to step back, and work shouldn't stall waiting for a person.
+**Trade-off:** No human looks at a PR before it merges. To make up for it, every PR is reviewed by a different agent, CI must be green, `security` PRs get a security pass, and design decisions are written down here so the owner can check them at any time.

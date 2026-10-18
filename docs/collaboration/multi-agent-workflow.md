@@ -6,8 +6,8 @@ Several AI agents (Claude Code, Codex, others) and people work on this repo **at
 
 | Role | Who | Does |
 | --- | --- | --- |
-| **Owner** | Rojin (human) | Sets priorities, approves task specs and contract changes, holds secrets and console access, does the final review and **merges every PR** |
-| **Lead agent** (optional) | one agent session at a time | Turns roadmap items into task issues, checks scope overlaps, reviews PRs. Never merges. |
+| **Owner** | Rojin (human) | Holds accounts, billing, secrets and console access. Has handed day-to-day decisions to the lead agent ([D-015](../architecture/decisions.md)). |
+| **Lead agent** | one agent session at a time (now: the Claude Code session that runs Agent 1) | Sets priorities, writes and approves task specs, approves contract changes, makes design decisions (recorded in the decision log), reviews PRs and **merges every PR** |
 | **Implementing agent** | Claude Code, Codex, … | Picks one ready task, implements it on its own branch and worktree, opens a PR, responds to review |
 | **Reviewing agent** | a *different* agent from the author | Reviews a PR against its issue and these docs, and comments |
 
@@ -34,7 +34,7 @@ Several AI agents (Claude Code, Codex, others) and people work on this repo **at
 ## Task lifecycle
 
 ```
-needs-spec ──(owner approves spec)──► ready ──(agent claims)──► in-progress ──(PR opened)──► in-review ──(owner merges)──► closed
+needs-spec ──(lead approves spec)──► ready ──(agent claims)──► in-progress ──(PR opened)──► in-review ──(lead merges)──► closed
                                          ▲                          │
                                          └──── blocked ◄────────────┘ (with a comment saying why)
 ```
@@ -47,7 +47,7 @@ Only pick an issue that:
 - has every issue in its **Depends on** list closed,
 - has no `status:in-progress` issue whose **Scope** overlaps with its own (see below).
 
-Take tasks in milestone order, lowest issue number first, unless the owner says otherwise.
+Take tasks in milestone order, lowest issue number first, unless the lead agent says otherwise.
 
 ### 2. Claim it
 
@@ -58,7 +58,7 @@ Take tasks in milestone order, lowest issue number first, unless the owner says 
    ```
 3. If two agents claim at the same moment, the **earlier comment wins**. The other un-claims and picks something else.
 
-A claim with no activity (commits, comments or a PR) for **48 hours** may be released by the owner or the lead agent.
+A claim with no activity (commits, comments or a PR) for **48 hours** may be released by the lead agent.
 
 ### 3. Work
 
@@ -66,7 +66,7 @@ A claim with no activity (commits, comments or a PR) for **48 hours** may be rel
 - Read `AGENTS.md`, then the docs listed in the issue's **Read first** section, before writing code.
 - **Stay inside the issue's Scope paths.** If you need to change a file outside your scope:
   - small and obviously safe (a one-line route registration in `apps/web/src/routes.tsx`): go ahead and mention it in the PR;
-  - anything else: stop, comment on the issue explaining what you need and why, and wait for the owner. Or open a new issue for it.
+  - anything else: stop, comment on the issue explaining what you need and why, and wait for the lead agent. Or open a new issue for it.
 - Follow [conventions](../engineering/conventions.md) and [testing](../engineering/testing.md).
 - Push early, and open a **draft PR** once you have something, so others can see your direction.
 
@@ -75,7 +75,7 @@ A claim with no activity (commits, comments or a PR) for **48 hours** may be rel
 1. Rebase on `main`. Lint, typecheck, test and build must all pass locally.
 2. Update the docs if behaviour, the contract or a rule changed.
 3. Mark the PR ready using the template, with `Closes #<issue>`. Labels: `status:in-review` on the issue; `area:*`, `type:*` and `agent:*` on the PR.
-4. Ask for a review from a different agent (comment on the PR) and from the owner.
+4. Ask for review: comment `Ready for review` on the PR. If you can message other Claude Code sessions, also send the PR link to the lead agent's session; the lead also sweeps open PRs regularly.
 
 ### 5. Review
 
@@ -88,7 +88,16 @@ A reviewing agent checks, and comments with findings:
 - Are the docs updated?
 - Is it as simple as it could be? Look for code to delete.
 
-The reviewer **comments only**. The owner does the final review and merges.
+The reviewer **comments only**. Findings are marked **blocking** or **optional**.
+
+The lead agent merges (squash) when all of these hold:
+
+- a different agent has reviewed it (for the lead's own PRs: another lane agent, or a separate reviewer sub-agent) and no blocking finding is open,
+- CI is green on the latest commit (once CI exists, #2),
+- the acceptance criteria are met and the PR stays inside Scope,
+- for `security` PRs, the review included a security pass (permissions, identity, secrets, file access).
+
+Implementing agents never merge, including their own PRs.
 
 ### 6. Blocked or handing off
 
@@ -116,7 +125,7 @@ A **contract** is anything other tasks build on:
 Rules:
 
 1. Contract changes go in their **own PR** labelled `contract`, separate from feature code where possible.
-2. The owner must approve them.
+2. The lead agent must approve them.
 3. They merge **before** the tasks that depend on them start, so everyone builds on the same contract.
 4. If you discover mid-task that the contract is wrong, stop and comment on the issue. Don't quietly change it inside a feature PR.
 

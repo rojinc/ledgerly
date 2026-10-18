@@ -49,4 +49,4 @@ Functions use the **per-execution key** in `x-appwrite-key` for database access.
 
 ## Security review rule
 
-Any PR that touches permissions, `identity`, auth flows, invites, file access or secrets gets the `security` label and must be reviewed by the owner before merge.
+Any PR that touches permissions, `identity`, auth flows, invites, file access or secrets gets the `security` label. Its review must include a security pass (who can read or write what, enumeration, secrets, logs) before the lead agent merges it.
