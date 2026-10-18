@@ -12,11 +12,11 @@
   },
   "scripts": {
     "lint": "biome check .",
-    "format": "biome format --write .",
+    "format": "biome check --write .",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run --passWithNoTests",
     "build": "npm run build --workspaces --if-present",
-    "dev": "npm run dev --workspaces --if-present"
+    "dev": "npm run dev -w @ledgerly/web"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
