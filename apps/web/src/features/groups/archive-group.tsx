@@ -1,6 +1,7 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { type KeyboardEvent, useEffect, useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { callFunction, type Err } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
 import { Button } from '../../ui/button'
@@ -31,18 +32,16 @@ export function ArchiveGroup({ group, onArchived }: { group: Groups; onArchived:
   const headingId = useId()
   const archive = useMutation({
     mutationFn: async () => {
+      // The server answers a repeat archive with the group, so ARCHIVED doesn't come back here.
       const result = await callFunction<Groups>('groups', 'POST', `/groups/${group.$id}/archive`)
-      // Archived meanwhile, say in another tab: the outcome the user asked for. Reload the group,
-      // and the page then shows the archived notice.
-      if (!result.ok && result.error.code === 'ARCHIVED') return null
       if (!result.ok) throw new Error(writeErrorMessage(result.error))
       return result.data
     },
     onSuccess: async (archived) => {
-      if (archived) queryClient.setQueryData(queryKeys.group(group.$id), archived)
-      else void queryClient.invalidateQueries({ queryKey: queryKeys.group(group.$id) })
-      // The button that opened the dialog is gone now: focus goes where the page says.
-      setOpen(false)
+      queryClient.setQueryData(queryKeys.group(group.$id), archived)
+      // The button that opened the dialog is gone now: focus goes where the page says. The
+      // modal must be gone first, as the page behind it is inert until then.
+      flushSync(() => setOpen(false))
       onArchived()
       await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
     },
@@ -51,7 +50,8 @@ export function ArchiveGroup({ group, onArchived }: { group: Groups; onArchived:
   if (group.type === 'personal' || group.archivedAt) return null
 
   function close() {
-    setOpen(false)
+    // Unmount the modal first: while it's open the page is inert, and focus() does nothing.
+    flushSync(() => setOpen(false))
     archive.reset()
     trigger.current?.focus()
   }
@@ -96,44 +96,41 @@ function ConfirmArchive({
 }) {
   const titleId = useId()
   const textId = useId()
-  const dialog = useRef<HTMLDivElement>(null)
+  const dialog = useRef<HTMLDialogElement>(null)
   const cancel = useRef<HTMLButtonElement>(null)
 
-  // Focus starts on Cancel, the safe choice.
-  useEffect(() => cancel.current?.focus(), [])
-
-  // Esc closes; Tab stays inside the dialog.
-  function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
-    if (event.key === 'Escape' && !pending) {
-      event.preventDefault()
-      onCancel()
-      return
-    }
-    if (event.key !== 'Tab') return
-    const buttons = [...(dialog.current?.querySelectorAll<HTMLButtonElement>('button') ?? [])]
-    const first = buttons[0]
-    const last = buttons.at(-1)
-    if (event.shiftKey && document.activeElement === first) {
-      event.preventDefault()
-      last?.focus()
-    } else if (!event.shiftKey && document.activeElement === last) {
-      event.preventDefault()
-      first?.focus()
-    }
-  }
+  // A native modal dialog: the page behind is inert, so focus can't leave it, whatever is
+  // clicked. Focus starts on Cancel, the safe choice.
+  useEffect(() => {
+    const element = dialog.current
+    element?.showModal()
+    cancel.current?.focus()
+    return () => element?.close()
+  }, [])
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-      <div
-        ref={dialog}
-        role="alertdialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={textId}
-        onKeyDown={onKeyDown}
-        className="flex w-full max-w-md flex-col gap-4 rounded-md border border-border bg-background p-4"
-      >
-        <h2 id={titleId} className="text-lg font-semibold">
+    <dialog
+      ref={dialog}
+      role="alertdialog"
+      aria-labelledby={titleId}
+      aria-describedby={textId}
+      // Esc: React decides, so it can wait while archiving; the dialog closes by unmounting.
+      onCancel={(event) => {
+        event.preventDefault()
+        if (!pending) onCancel()
+      }}
+      // The browser can still close it itself: a second Esc without a click in between can't be
+      // cancelled. Reopen while archiving, so the answer has somewhere to show; else it's a Cancel.
+      onClose={() => {
+        const element = dialog.current
+        if (!element || element.open) return
+        if (pending) element.showModal()
+        else onCancel()
+      }}
+      className="m-auto w-[calc(100%-2rem)] max-w-md rounded-md border border-border bg-background p-4 text-foreground backdrop:bg-black/50"
+    >
+      <div className="flex flex-col gap-4">
+        <h2 id={titleId} className="text-lg font-semibold break-words">
           Archive {name}?
         </h2>
         <div id={textId} className="flex flex-col gap-2 text-sm">
@@ -147,7 +144,7 @@ function ConfirmArchive({
           </p>
         )}
         <div className="flex flex-wrap justify-end gap-3">
-          {/* aria-disabled, not disabled: a disabled button loses focus, which leaves the dialog. */}
+          {/* aria-disabled, not disabled: a disabled button loses focus. */}
           <Button
             ref={cancel}
             variant="outline"
@@ -161,6 +158,6 @@ function ConfirmArchive({
           </Button>
         </div>
       </div>
-    </div>
+    </dialog>
   )
 }
