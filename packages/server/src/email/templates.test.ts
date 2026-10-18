@@ -172,7 +172,20 @@ describe('timerRunningEmail', () => {
   })
 
   // A plain date would otherwise show as 11:00 am, a time nobody started at.
-  it.each(['2026-10-16', 'not a time', '2026-10-16T25:00:00Z'])('refuses %j', (startedAt) => {
+  it('reads an offset as well as Z', () => {
+    expect(timer('2026-10-16T08:02:00.000+11:00').text).toContain(
+      'running since Friday 16 October, 8:02 am.',
+    )
+  })
+
+  it.each([
+    '2026-10-16',
+    'not a time',
+    '2026-10-16T25:00:00Z',
+    // No Z or offset: Date would read it in the machine's timezone.
+    '2026-10-16T10:00',
+    '2026-10-16T10:00:00.000',
+  ])('refuses %j', (startedAt) => {
     expect(() => timer(startedAt)).toThrow('startedAt must be an ISO date and time')
   })
 })

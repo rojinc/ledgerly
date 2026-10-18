@@ -12,6 +12,8 @@ export type EmailContent = {
 }
 
 const LOCALE = 'en-AU'
+// An ISO date and time with `Z` or an offset, as Appwrite stores datetimes.
+const INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?(Z|[+-]\d{2}:\d{2})$/
 const MONTHS = [
   'January',
   'February',
@@ -114,8 +116,9 @@ export function timerRunningEmail(input: {
   url: string
 }): EmailContent {
   const started = new Date(input.startedAt)
-  // A plain date would parse as UTC midnight and show a made-up time (11:00 am in Sydney).
-  if (!input.startedAt.includes('T') || Number.isNaN(started.getTime())) {
+  // Without a time or an offset, Date guesses (UTC midnight, or the machine's timezone) and
+  // the email shows a made-up time.
+  if (!INSTANT.test(input.startedAt) || Number.isNaN(started.getTime())) {
     throw new RangeError('startedAt must be an ISO date and time, e.g. 2026-10-15T21:02:00.000Z')
   }
   const since = `${dayLabel(localToday(input.timeZone, started))}, ${clockTime(started, input.timeZone)}`

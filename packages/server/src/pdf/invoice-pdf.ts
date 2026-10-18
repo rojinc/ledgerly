@@ -1,4 +1,4 @@
-import type { LocalDate } from '@ledgerly/core/dates/local-date'
+import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { formatMoney } from '@ledgerly/core/money/format'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import pdfmake from 'pdfmake'
@@ -35,8 +35,12 @@ const KIND_LABELS: Record<string, string> = {
 
 type Line = StatementSnapshot['lines'][number]
 
-/** What finalize gives the statement before it renders the PDF (statements.md#2-finalize). */
-export type InvoiceDetails = { displayNumber: string; issuedOn: LocalDate; dueOn: LocalDate }
+/**
+ * The statement row's number and issue date, which the snapshot doesn't hold. The due date
+ * is worked out here as `issuedOn` plus the payment terms (statements.md#2-finalize, step 7),
+ * so the PDF's dates and terms always agree.
+ */
+export type InvoiceDetails = { displayNumber: string; issuedOn: LocalDate }
 
 /**
  * The employer invoice PDF, laid out as statements.md#invoice-pdf-layout-employer says. Lines
@@ -51,6 +55,7 @@ export async function renderInvoicePdf(
   if (!issuer || !recipient || !invoice)
     throw new Error('renderInvoicePdf needs an invoice snapshot')
   const money = (cents: number) => formatMoney(cents, snapshot.group.currency, LOCALE)
+  const dueOn = addDays(details.issuedOn, invoice.paymentTermsDays)
   const business = issuer.business
   const worker = snapshot.people.find((person) => person.personId === issuer.personId)
   const openingCents = worker?.openingCents ?? 0
@@ -88,7 +93,7 @@ export async function renderInvoicePdf(
                 body: [
                   field('Number', details.displayNumber),
                   field('Issued', formatDate(details.issuedOn)),
-                  field('Due', formatDate(details.dueOn)),
+                  field('Due', formatDate(dueOn)),
                   field(
                     'Period',
                     `${formatDate(snapshot.period.start)} – ${formatDate(snapshot.period.end)}`,
@@ -135,7 +140,14 @@ export async function renderInvoicePdf(
     )
   }
   content.push(amountLine('Balance due', money(invoice.balanceDueCents), 'balance'))
-  if (invoice.balanceDueCents <= 0) content.push('Nothing to pay this time.')
+  // The same words as the covering email (email/templates.ts).
+  if (invoice.balanceDueCents < 0) {
+    content.push(
+      `You have a credit of ${money(-invoice.balanceDueCents)}, so there is nothing to pay.`,
+    )
+  } else if (invoice.balanceDueCents === 0) {
+    content.push('There is nothing to pay this time.')
+  }
   if (records.length > 0) {
     content.push(
       { text: 'For your records', style: 'heading' },
@@ -158,7 +170,7 @@ export async function renderInvoicePdf(
           business.bank &&
             `Bank transfer: ${business.bank.accountName}, BSB ${business.bank.bsb.replace(/^(\d{3})(\d{3})$/, '$1-$2')}, account ${business.bank.accountNumber}`,
           business.payId && `PayID: ${business.payId}`,
-          `Payment terms: ${invoice.paymentTermsDays} days. Please pay by ${formatDate(details.dueOn)}, with ${details.displayNumber} as the reference.`,
+          `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with ${details.displayNumber} as the reference.`,
         ]),
       ],
     })
@@ -197,8 +209,16 @@ function present(texts: (string | false | undefined)[]): string[] {
   return texts.filter((text): text is string => Boolean(text))
 }
 
+// A word pdfmake can't break widens its column until the amounts fall off the page, so long
+// runs without a space (a pasted reference or URL) get a zero-width space every 20 characters.
 function lineText(line: Line): string {
-  return line.description || KIND_LABELS[line.kind] || line.kind
+  const text = line.description || KIND_LABELS[line.kind] || line.kind
+  return text.replace(/\S{20}(?=\S)/g, '$&\u200B')
+}
+
+function terms(days: number): string {
+  if (days === 0) return 'Payment terms: due on receipt.'
+  return `Payment terms: ${days} ${days === 1 ? 'day' : 'days'}.`
 }
 
 /** A table of date, description, then numbers, which are right-aligned. */

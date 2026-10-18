@@ -96,7 +96,6 @@ const goldenSnapshot = (business?: BusinessDetails) => buildStatementSnapshot(go
 const details: InvoiceDetails = {
   displayNumber: 'INV-0010',
   issuedOn: d('2026-11-01'),
-  dueOn: d('2026-11-15'),
 }
 
 async function pdfText(pdf: Buffer): Promise<string> {
@@ -104,6 +103,20 @@ async function pdfText(pdf: Buffer): Promise<string> {
     mergePages: true,
   })
   return text.replace(/\s+/g, ' ')
+}
+
+// Text drawn past the right edge of its page, which a reader would never see.
+async function textBeyondPage(pdf: Buffer): Promise<string[]> {
+  const doc = await getDocumentProxy(new Uint8Array(pdf))
+  const beyond: string[] = []
+  for (let number = 1; number <= doc.numPages; number++) {
+    const page = await doc.getPage(number)
+    const right = page.view[2] as number
+    for (const item of (await page.getTextContent()).items) {
+      if ('str' in item && item.transform[4] + item.width > right) beyond.push(item.str)
+    }
+  }
+  return beyond
 }
 
 describe('renderInvoicePdf', () => {
@@ -198,7 +211,9 @@ describe('renderInvoicePdf', () => {
     expect(text).toContain('Opening balance (from the previous invoice) $0.00')
     expect(text).not.toContain('Work and charges')
     expect(text).toContain('21 Oct 2026 advance -$10.00')
-    expect(text).toContain('Balance due -$510.00 Nothing to pay this time.')
+    expect(text).toContain(
+      'Balance due -$510.00 You have a credit of $510.00, so there is nothing to pay.',
+    )
     expect(text).not.toContain('How to pay')
   })
 
@@ -211,8 +226,39 @@ describe('renderInvoicePdf', () => {
     expect(snapshot.people.map((person) => person.personId)).toEqual(['employer'])
     const text = await pdfText(await renderInvoicePdf(snapshot, details))
     expect(text).toContain('Opening balance (from the previous invoice) $0.00')
-    expect(text).toContain('Balance due $0.00 Nothing to pay this time.')
+    expect(text).toContain('Balance due $0.00 There is nothing to pay this time.')
     expect(text).toContain('12 Oct 2026 Expense $120.00')
+  })
+
+  it.each([
+    [14, 'Payment terms: 14 days. Please pay by 15 Nov 2026,'],
+    [1, 'Payment terms: 1 day. Please pay by 2 Nov 2026,'],
+    [0, 'Payment terms: due on receipt. Please pay by 1 Nov 2026,'],
+  ])('works out the due date from %i days of terms', async (days, line) => {
+    const snapshot = buildStatementSnapshot({ ...goldenInput(), paymentTermsDays: days })
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    expect(text).toContain(line)
+  })
+
+  it('wraps a long word in a description, so no amount falls off the page', async () => {
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      lines: [
+        shift('2026-10-01', 12500),
+        line(
+          '2026-10-02',
+          'expense',
+          4000,
+          [share('worker', 4000, 0), share('employer', 0, 4000)],
+          {
+            description: `Order ${'X'.repeat(60)}`,
+          },
+        ),
+      ],
+    })
+    const pdf = await renderInvoicePdf(snapshot, details)
+    expect(await textBeyondPage(pdf)).toEqual([])
+    expect(await pdfText(pdf)).toContain('Total work and charges $165.00')
   })
 
   it('refuses a divide', async () => {

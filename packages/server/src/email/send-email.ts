@@ -90,5 +90,5 @@ function requireEnv(name: 'RESEND_API_KEY' | 'EMAIL_FROM'): string {
       'missing_config',
     )
   }
-  return value
+  return value.trim()
 }

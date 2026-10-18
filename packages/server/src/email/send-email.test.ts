@@ -105,6 +105,15 @@ describe('sendEmail', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('sends the settings without stray spaces or newlines', async () => {
+    vi.stubEnv('RESEND_API_KEY', ' re_test_key\n')
+    vi.stubEnv('EMAIL_FROM', ' Ledgerly <hello@ledgerly.example>\n')
+    await sendEmail(email)
+    const { init, body } = sent()
+    expect(init.headers).toMatchObject({ authorization: 'Bearer re_test_key' })
+    expect(body.from).toBe('Ledgerly <hello@ledgerly.example>')
+  })
+
   it("keeps Resend's error name and status but never its message", async () => {
     answer(422, {
       statusCode: 422,
