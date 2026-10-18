@@ -1,0 +1,202 @@
+import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import { formatMoney } from '@ledgerly/core/money/format'
+import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
+import { type ReactNode, useState } from 'react'
+import { Link, useParams } from 'react-router'
+import { Button } from '../../ui/button'
+import { TextField } from '../../ui/field'
+import { useBootstrap } from '../auth/use-bootstrap'
+import { useCurrentUser } from '../auth/use-current-user'
+import { useGroup, useMyMember } from '../groups/use-groups'
+import { KIND_LABEL, STATUS_LABEL } from './history-page'
+import {
+  ARCHIVED_NOTICE,
+  useMembers,
+  useShares,
+  useTransaction,
+  useVoidTransaction,
+} from './use-transactions'
+
+function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
+  return (
+    <p
+      role={alert ? 'alert' : 'status'}
+      className={alert ? 'text-destructive' : 'text-muted-foreground'}
+    >
+      {children}
+    </p>
+  )
+}
+
+// The stored input's note, or nothing if it can't be read.
+function noteOf(inputJson: string): string | undefined {
+  try {
+    const stored = transactionTemplateSchema.safeParse(JSON.parse(inputJson))
+    return stored.success ? stored.data.note : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/** `/transactions/{id}`: one transaction, linked from the calendar and history (#31). */
+export function TransactionPage() {
+  const id = useParams().transactionId ?? ''
+  const transaction = useTransaction(id)
+  return (
+    <div className="flex flex-col gap-6">
+      <h1 className="text-2xl font-semibold">{transaction.data?.description ?? 'Transaction'}</h1>
+      {transaction.data ? (
+        <Details row={transaction.data} />
+      ) : transaction.isError ? (
+        <Message alert>We couldn’t load this transaction. Reload the page to try again.</Message>
+      ) : (
+        <Message>Loading…</Message>
+      )}
+    </div>
+  )
+}
+
+function Details({ row }: { row: Transactions }) {
+  const userId = useCurrentUser().data?.$id ?? ''
+  const personId = useBootstrap(userId).data?.personId ?? ''
+  const group = useGroup(row.groupId)
+  const member = useMyMember(row.groupId, personId)
+  const members = useMembers(row.groupId)
+  const shares = useShares(row.$id)
+  // Here, not in the void form: an optimistic void hides the form, and after a rollback the
+  // error and the typed reason must still be there.
+  const voidRow = useVoidTransaction(row.$id)
+  const [reason, setReason] = useState('')
+
+  if (!group.data || member.data === undefined) {
+    return (group.isError && !group.data) || member.isError ? (
+      <Message alert>We couldn’t load this transaction. Reload the page to try again.</Message>
+    ) : (
+      <Message>Loading…</Message>
+    )
+  }
+  const names = new Map((members.data ?? []).map((m) => [m.personId, m.displayName]))
+  const role = member.data?.role
+  // permissions.md: the creator or an admin, never a viewer; the function checks again.
+  const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
+  const locked = row.statementId !== null
+  const archived = group.data.archivedAt !== null
+  const note = noteOf(row.inputJson)
+
+  return (
+    <>
+      <Message>
+        {STATUS_LABEL[row.status]}
+        {row.status === 'void' && row.voidReason ? `. Reason: ${row.voidReason}` : ''}
+      </Message>
+      {archived && <Message>{ARCHIVED_NOTICE}</Message>}
+      {!archived && locked && <Message>It’s on a final invoice, so it can’t be changed.</Message>}
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+        <dt className="text-muted-foreground">Amount</dt>
+        <dd className="tabular-nums">
+          {row.status === 'running'
+            ? 'Timer running'
+            : formatMoney(row.totalCents, group.data.currency)}
+        </dd>
+        <dt className="text-muted-foreground">Date</dt>
+        <dd>{row.date}</dd>
+        <dt className="text-muted-foreground">Kind</dt>
+        <dd>{KIND_LABEL[row.kind]}</dd>
+        {row.category && (
+          <>
+            <dt className="text-muted-foreground">Category</dt>
+            <dd>
+              {row.category[0]?.toUpperCase()}
+              {row.category.slice(1)}
+            </dd>
+          </>
+        )}
+        <dt className="text-muted-foreground">Group</dt>
+        <dd>
+          <GroupLink group={group.data} />
+        </dd>
+        {note && (
+          <>
+            <dt className="text-muted-foreground">Note</dt>
+            <dd className="whitespace-pre-wrap">{note}</dd>
+          </>
+        )}
+      </dl>
+      {shares.data && shares.data.length > 0 && (
+        <section aria-labelledby="shares-heading" className="flex flex-col gap-2">
+          <h2 id="shares-heading" className="font-medium">
+            Who paid, and who it was for
+          </h2>
+          <ul className="flex flex-col gap-1 text-sm">
+            {shares.data.map((share) => (
+              <li key={share.$id}>
+                {names.get(share.personId) ?? 'Someone'}:{' '}
+                {[
+                  share.givenCents !== 0 &&
+                    `paid ${formatMoney(share.givenCents, group.data.currency)}`,
+                  share.receivedCents !== 0 &&
+                    `for them ${formatMoney(share.receivedCents, group.data.currency)}`,
+                ]
+                  .filter(Boolean)
+                  .join(', ')}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      {mayChange && !locked && !archived && row.status !== 'void' && (
+        <VoidForm voidRow={voidRow} reason={reason} onReason={setReason} />
+      )}
+    </>
+  )
+}
+
+function GroupLink({ group }: { group: Groups }) {
+  return group.type === 'employer' ? (
+    <Link to={`/transactions?groupId=${group.$id}`} className="underline underline-offset-4">
+      {group.name}
+    </Link>
+  ) : (
+    group.name
+  )
+}
+
+function VoidForm({
+  voidRow,
+  reason,
+  onReason,
+}: {
+  voidRow: ReturnType<typeof useVoidTransaction>
+  reason: string
+  onReason: (reason: string) => void
+}) {
+  const [error, setError] = useState<string>()
+  return (
+    <form
+      noValidate
+      className="flex flex-col gap-3 border-t border-border pt-4"
+      onSubmit={(event) => {
+        event.preventDefault()
+        if (reason.trim() === '') {
+          setError('Say why, for example “Entered twice”.')
+          return
+        }
+        setError(undefined)
+        voidRow.mutate({ reason: reason.trim() })
+      }}
+    >
+      <TextField
+        id="voidReason"
+        label="Reason for voiding"
+        value={reason}
+        maxLength={200}
+        onChange={(event) => onReason(event.target.value)}
+        error={error ? { type: 'validate', message: error } : undefined}
+      />
+      {voidRow.isError && <Message alert>{voidRow.error.message}</Message>}
+      <Button type="submit" variant="outline" className="self-start" disabled={voidRow.isPending}>
+        Void
+      </Button>
+    </form>
+  )
+}
