@@ -1,8 +1,8 @@
 import type { ComponentProps, ReactNode } from 'react'
 import type { FieldError } from 'react-hook-form'
-import { cn } from '../../lib/utils'
-import { Input } from '../../ui/input'
-import { Label } from '../../ui/label'
+import { cn } from '../lib/utils'
+import { Input } from './input'
+import { Label } from './label'
 
 type FieldProps = {
   id: string
