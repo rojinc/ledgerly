@@ -158,7 +158,7 @@ v1 works balances out on read. When that gets slow, the `ledger` function will m
 2. Sort creditors (net > 0) by amount, largest first, and debtors (net < 0) by size, largest first. Ties are broken by `personId`, so output is deterministic.
 3. Match the largest debtor with the largest creditor and transfer the smaller of the two amounts. Reduce both and drop anyone who reaches 0. Repeat, picking the largest remaining debtor and creditor again each round (same tie rule).
 
-`netsFromShares(shares)` gives the nets: one `{ personId, netCents }` per person with shares, sorted by `personId`. If the nets don't add up to 0, `suggestTransfers` throws, because the stored shares are broken.
+`netsFromShares(shares)` gives the nets: one `{ personId, netCents }` per person with shares, sorted by `personId`. If the nets aren't whole cents, one per person, adding up to 0, `suggestTransfers` throws, because the stored shares are broken.
 
 This gives at most n − 1 transfers. It works **within one group only**. We never net across groups, because that would leak one group's data into another.
 

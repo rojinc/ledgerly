@@ -28,9 +28,17 @@ describe('suggestTransfers', () => {
     expect(suggestTransfers(nets({ alice: 0, bob: 0 }))).toEqual([])
   })
 
-  it('throws if the nets don’t add up to 0 or aren’t whole cents', () => {
+  it('throws unless the nets are whole cents, one per person, adding up to 0', () => {
     expect(() => suggestTransfers(nets({ alice: 100, bob: -99 }))).toThrow(RangeError)
     expect(() => suggestTransfers(nets({ alice: 0.5, bob: -0.5 }))).toThrow(RangeError)
+    const duplicate = [
+      { personId: 'alice', netCents: 100 },
+      { personId: 'alice', netCents: -100 },
+    ]
+    expect(() => suggestTransfers(duplicate)).toThrow(RangeError)
+    // As floats this sum rounds to 0; it is really +1.
+    const huge = nets({ a: Number.MAX_SAFE_INTEGER, b: 2, c: -Number.MAX_SAFE_INTEGER, d: -1 })
+    expect(() => suggestTransfers(huge)).toThrow(RangeError)
   })
 
   // Seeded, so a failing case repeats on every run.
@@ -46,11 +54,16 @@ describe('suggestTransfers', () => {
     const random = seededRandom(15)
     for (let run = 0; run < 2000; run++) {
       const count = 1 + Math.floor(random() * 15)
-      const amounts = Array.from({ length: count - 1 }, () =>
-        Math.floor((random() - 0.5) * 2_000_000),
-      )
+      // Every other run uses tiny amounts, so ties and zeros are common.
+      const range = run % 2 === 0 ? 2_000_000 : 20
+      const amounts = Array.from({ length: count - 1 }, () => Math.floor((random() - 0.5) * range))
       amounts.push(0 - amounts.reduce((sum, cents) => sum + cents, 0))
       const input = amounts.map((netCents, i) => ({ personId: `p${i}`, netCents }))
+      const shuffled = [...input]
+      for (let i = shuffled.length - 1; i > 0; i--) {
+        const j = Math.floor(random() * (i + 1))
+        ;[shuffled[i], shuffled[j]] = [shuffled[j] as Net, shuffled[i] as Net]
+      }
 
       const transfers = suggestTransfers(input)
       const balance = new Map(input.map((net) => [net.personId, net.netCents]))
@@ -64,7 +77,7 @@ describe('suggestTransfers', () => {
       expect([...balance.values()].every((cents) => cents === 0)).toBe(true)
       const owing = input.filter((net) => net.netCents !== 0).length
       expect(transfers.length).toBeLessThanOrEqual(Math.max(owing - 1, 0))
-      expect(suggestTransfers([...input].reverse())).toEqual(transfers)
+      expect(suggestTransfers(shuffled)).toEqual(transfers)
     }
   })
 })

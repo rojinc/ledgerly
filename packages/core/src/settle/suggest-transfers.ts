@@ -10,13 +10,18 @@ const largestFirst = (a: Open, b: Open) => b.cents - a.cents || (a.personId < b.
 /**
  * The transfers that settle one group (ledger.md#settle-up-suggested-transfers):
  * each round the largest debtor pays the largest creditor the smaller of the
- * two amounts. At most n − 1 transfers. Throws if the nets don't add up to 0.
+ * two amounts. At most n − 1 transfers. Throws unless the nets are whole
+ * cents, one per person, adding up to 0.
  */
 export function suggestTransfers(nets: readonly Net[]): Transfer[] {
   if (!nets.every((net) => Number.isSafeInteger(net.netCents))) {
     throw new RangeError('nets must be whole cents')
   }
-  if (nets.reduce((sum, net) => sum + net.netCents, 0) !== 0) {
+  if (new Set(nets.map((net) => net.personId)).size !== nets.length) {
+    throw new RangeError('nets must have one entry per person')
+  }
+  // BigInt, so a sum near the safe-integer limit can't round to 0.
+  if (nets.reduce((sum, net) => sum + BigInt(net.netCents), 0n) !== 0n) {
     throw new RangeError('nets must add up to 0')
   }
   const creditors: Open[] = nets
