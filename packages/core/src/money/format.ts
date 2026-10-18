@@ -1,0 +1,45 @@
+import { assertAmountCents } from './amount'
+
+// "Cents" means the currency's smallest unit (glossary.md): 2 decimals for
+// AUD, 0 for JPY, 3 for KWD. Intl knows each currency's decimals.
+function currencyFormat(currency: string, locale?: string) {
+  const format = new Intl.NumberFormat(locale, { style: 'currency', currency })
+  // Always set for style 'currency'.
+  const digits = format.resolvedOptions().maximumFractionDigits as number
+  return { format, digits }
+}
+
+/**
+ * Formats cents for display, e.g. `formatMoney(1234, 'AUD', 'en-AU')` → `$12.34`.
+ * The amount goes to Intl as an exact decimal string, never a float.
+ */
+export function formatMoney(cents: number, currency: string, locale?: string): string {
+  assertAmountCents(cents)
+  const { format, digits } = currencyFormat(currency, locale)
+  const sign = cents < 0 ? '-' : ''
+  const units = String(Math.abs(cents)).padStart(digits + 1, '0')
+  const whole = units.slice(0, units.length - digits)
+  const fraction = digits > 0 ? `.${units.slice(units.length - digits)}` : ''
+  return format.format(`${sign}${whole}${fraction}` as Intl.StringNumericLiteral)
+}
+
+const MONEY_TEXT = /^(-?)(\d+)(?:\.(\d+))?$/
+
+/**
+ * Parses a typed amount into cents of `currency`: `parseMoney('12.34', 'AUD')` → `1234`,
+ * `parseMoney('1234', 'JPY')` → `1234`. Throws on anything else, including more
+ * decimals than the currency has and thousands separators. The message never
+ * repeats the input, so it is safe to log.
+ */
+export function parseMoney(text: string, currency: string): number {
+  const { digits } = currencyFormat(currency)
+  const match = MONEY_TEXT.exec(text.trim())
+  const [, sign, whole, fraction = ''] = match ?? []
+  if (!match || fraction.length > digits) {
+    throw new RangeError(`Not an amount of ${currency} (up to ${digits} decimals)`)
+  }
+  // Exact while the result is within MAX_AMOUNT_CENTS; anything bigger throws below.
+  const cents = Number(whole) * 10 ** digits + Number(fraction.padEnd(digits, '0'))
+  assertAmountCents(cents)
+  return sign === '-' ? 0 - cents : cents
+}
