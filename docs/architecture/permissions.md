@@ -60,17 +60,17 @@ Members who haven't joined (`placeholder`) keep their role but have no access, a
 
 ## Function-side checks
 
-Every function route that changes data starts with the same steps (helper `requireMember()` in `packages/server`):
+Every HTTP request runs step 1 once, in `createHandler`. Every route that changes data then runs steps 2–5 (helper `requireMember()` in `packages/server`):
 
-1. Read the caller's user ID from the `x-appwrite-user-id` header. If it is missing, return `UNAUTHENTICATED`.
+1. Verify the caller: call Appwrite's `account.get()` with the JWT from the `x-appwrite-user-jwt` header, on a separate node-appwrite client with the function's endpoint and project, `setJWT` and no API key. Pass the header exactly as received; never split or trim it. The returned user's `$id` is the caller. If the JWT is missing, or Appwrite rejects it, return `UNAUTHENTICATED`. Never trust `x-appwrite-user-id` (see [Function execute permissions](#function-execute-permissions)).
 2. Load the caller's person (`persons.userId = caller`).
 3. Load their `members` row for the target group. If it is missing or `status = placeholder`, return `NOT_A_MEMBER`.
 4. Check the role against the table above. If it fails, return `FORBIDDEN`.
 5. If the group is archived, return `ARCHIVED`.
 
-Routes that don't act as a joined member of an existing group skip these steps: `groups POST /groups`, `identity GET /groups/pending` and `POST /groups/{id}/join` (join needs the caller's own member row instead), and the other identity routes except `POST /invites`, which checks the role as in step 4.
+Routes that don't act as a joined member of an existing group skip steps 2–5, never step 1: `groups POST /groups`, `identity GET /groups/pending` and `POST /groups/{id}/join` (join needs the caller's own member row instead), and the other identity routes except `POST /invites`, which checks the role as in step 4.
 
-Scheduled jobs run with the server key and no caller. They write as the system and record `actorPersonId = null` in `activity`.
+Scheduled jobs run with the server key and no caller. They write as the system and record `actorPersonId = null` in `activity`. A run is a scheduled job only when `x-appwrite-trigger` is exactly `schedule`. A missing JWT never makes a request a scheduled job; on any other request it means `UNAUTHENTICATED`. (A forged `X-Appwrite-Trigger: schedule` arrives merged as `schedule, http`, so the exact match fails closed.)
 
 ## Storage
 
@@ -83,3 +83,7 @@ Scheduled jobs run with the server key and no caller. They write as the system a
 | --- | --- |
 | `ledger`, `groups`, `identity` | `users` (any signed-in user; the function checks the rest) |
 | `scheduler`, `statements` | `users` for their HTTP routes; cron runs need no execute permission |
+
+Execute is `users` only, never `any` or `guests`, and no function gets a custom domain. Appwrite serves a function's domains (the generated `*.appwrite.run` one and any custom one) only when execute includes `any` or `guests`, so the only way in is `createExecution` by a signed-in user. No user is ever made an impersonator, because Appwrite's impersonation headers would let them execute as someone else.
+
+**Why functions verify the JWT.** Appwrite refuses execution headers that start with `x-appwrite` only when they are lower-case. On `ledgerly-dev` (2026-10-18), a client sent `X-Appwrite-User-Id` and `X-Appwrite-User-Jwt` with made-up values in an execution's `headers`, and the function received them. For an anonymous caller (the test function had execute `any`) `x-appwrite-user-id` was the forged value. For a signed-in caller it was `"<forged>, <real>"`. `account.get()` accepts a JWT only if Appwrite signed it, it hasn't expired and its session still exists, so a made-up or merged value fails.

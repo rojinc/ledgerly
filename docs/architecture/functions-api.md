@@ -19,7 +19,7 @@ const execution = await functions.createExecution({
 
 - Synchronous executions have a **30-second hard limit**. Every route must finish well within it (target under 2 seconds).
 - `statements … /finalize` is called with `async: true`. Async executions return no body, so the UI watches the statement row through Realtime until it is `final`.
-- The function gets the caller from the `x-appwrite-user-id` header and talks to the database with the per-execution API key in the `x-appwrite-key` header.
+- The function gets the caller by verifying the JWT in the `x-appwrite-user-jwt` header with Appwrite. It never trusts `x-appwrite-user-id`, which a client can forge ([permissions](permissions.md#function-side-checks)). It talks to the database with the per-execution API key in the `x-appwrite-key` header.
 
 ## Response envelope
 
@@ -234,4 +234,4 @@ functions/<name>/
   test/<route>.test.ts
 ```
 
-`createHandler` (in `packages/server`) does the routing by method and path, reads the caller, turns `AppError` into the envelope above and logs one structured line per request (no personal data).
+`createHandler` (in `packages/server`) does the routing by method and path, verifies the caller's JWT ([permissions step 1](permissions.md#function-side-checks)), turns `AppError` into the envelope above and logs one structured line per request (no personal data).

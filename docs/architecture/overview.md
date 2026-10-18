@@ -49,7 +49,7 @@
 1. The app builds a payload. User-created rows get a client-generated ID, which makes retries safe.
 2. It calls a function synchronously (`functions.createExecution`) with a path and method, for example `POST /transactions`.
 3. The function:
-   1. reads the caller's user ID from the `x-appwrite-user-id` header,
+   1. verifies the caller with `account.get()` using the JWT in the `x-appwrite-user-jwt` header (never `x-appwrite-user-id`; see [Permissions](permissions.md#function-side-checks)),
    2. validates the payload with the shared zod schema from `packages/core`,
    3. checks membership and role in `members`,
    4. builds the rows with pure functions from `packages/core`,
