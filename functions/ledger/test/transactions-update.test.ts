@@ -316,6 +316,37 @@ describe('PATCH /transactions/{id}', () => {
     expect(response.body.error?.code).toBe('LOCKED')
   })
 
+  it('refuses to move a transaction out of a period being finalized', async () => {
+    const db = await withExpense()
+    await db.updateTransaction({
+      transactionId: (
+        await db.createOperations({
+          transactionId: (await db.createTransaction()).$id,
+          operations: [
+            {
+              action: 'create',
+              databaseId: 'main',
+              tableId: 'statements',
+              rowId: 'st1',
+              data: {
+                groupId: 'house',
+                type: 'divide',
+                periodStart: '2026-10-01',
+                periodEnd: '2026-10-31',
+                status: 'finalizing',
+                snapshotJson: '{}',
+              },
+            },
+          ],
+        })
+      ).$id,
+      commit: true,
+    })
+    const response = await call(db, 'PATCH', '/transactions/t1', expense({ date: '2026-11-02' }))
+    expect(response.body.error?.code).toBe('LOCKED')
+    expect(rows.transactions(db)[0]?.date).toBe('2026-10-10')
+  })
+
   it('returns LOCKED, writing nothing, when finalize locks the row before the edit stages', async () => {
     const db = await withExpense()
     const stage = db.createOperations.bind(db)

@@ -154,7 +154,11 @@ export async function requireNotFinalizing(
   const { rows } = await db.listRows<Statements>({
     databaseId: DATABASE_ID,
     tableId: TABLES.statements,
-    queries: [Query.equal('status', 'finalizing'), Query.equal('groupId', groupId)],
+    queries: [
+      Query.equal('status', 'finalizing'),
+      Query.equal('groupId', groupId),
+      Query.limit(100),
+    ],
   })
   if (rows.some((statement) => dates.some((date) => date <= statement.periodEnd))) {
     throw new AppError(
@@ -241,7 +245,8 @@ export async function guardGroupAndMembers(
 
 /**
  * Guards the group row (ledger.md#concurrency), with any other guard writes in `also`: stages a
- * write of `groups.type`, which never changes, then checks the currency and archive date.
+ * write of `groups.type`, which never changes, then checks the currency, archive date, time zone
+ * and settings the route read are still the same.
  */
 export async function guardGroup(
   tx: Tx,
@@ -260,16 +265,18 @@ export async function guardGroup(
       tableId: TABLES.groups,
       rowId: group.$id,
     })
-    if (staged.currency !== group.currency || staged.archivedAt !== group.archivedAt) {
-      throw new Raced()
-    }
+    // Everything the route read from the group: the plan used its time zone and settings.
+    const changed = (['currency', 'archivedAt', 'timezone', 'settingsJson'] as const).some(
+      (column) => staged[column] !== group[column],
+    )
+    if (changed) throw new Raced()
   })
 }
 
 // A row deleted before the guard staged: run the route again with the group as it is now.
-async function rerunIfGone(guard: () => Promise<void>): Promise<void> {
+async function rerunIfGone<T>(guard: () => Promise<T>): Promise<T> {
   try {
-    await guard()
+    return await guard()
   } catch (error) {
     if (error instanceof AppwriteException && error.code === 404) throw new Raced()
     throw error
@@ -549,12 +556,16 @@ export async function guardTransaction(
   updatedBy: string,
   statuses: readonly TransactionStatus[],
 ): Promise<Transactions> {
-  await tx.write({ action: 'update', tableId: TABLES.transactions, rowId, data: { updatedBy } })
-  const staged = await db.getRow<Transactions>({
-    databaseId: DATABASE_ID,
-    tableId: TABLES.transactions,
-    rowId,
-    transactionId: tx.id,
+  // A row deleted meanwhile (a schedule edit removes its future occurrences): the rerun finds
+  // it gone and answers NOT_FOUND.
+  const staged = await rerunIfGone(async () => {
+    await tx.write({ action: 'update', tableId: TABLES.transactions, rowId, data: { updatedBy } })
+    return db.getRow<Transactions>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.transactions,
+      rowId,
+      transactionId: tx.id,
+    })
   })
   requireUnlocked(staged)
   if (!statuses.includes(staged.status)) throw new Raced()

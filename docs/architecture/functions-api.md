@@ -74,7 +74,7 @@ type TransactionInput = {
   description: string           // 1–200 chars
   category?: Category
   totalCents?: number           // required unless kind = shift (computed) or items are given (sum of items)
-  payers?: { personId: string; cents: number }[]   // default: the caller pays everything
+  payers?: { personId: string; cents: number }[]   // default: see "Payers when none are given" below
   split?: SplitSpec             // expense, bill, loan
   items?: ItemInput[]           // expense, bill; at most 30
   shift?: {                     // kind = shift
@@ -141,6 +141,10 @@ What every write does, in **one TablesDB transaction**:
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
 A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
+
+**Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
+
+`/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
 
 ## groups
 

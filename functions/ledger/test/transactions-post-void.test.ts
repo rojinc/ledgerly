@@ -203,6 +203,17 @@ describe('POST /transactions/{id}/post', () => {
     const response = await call(db, 'POST', '/transactions/b1/post', {}, 'u-cara')
     expect(response.body.error?.code).toBe('FORBIDDEN')
   })
+  it.each([
+    ['someone outside the group', 'u-dan', 'NOT_A_MEMBER'],
+    ['a viewer', 'u-cara', 'FORBIDDEN'],
+  ])('refuses %s posting or voiding', async (_case, user, code) => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', dueBill)
+    const posted = await call(db, 'POST', '/transactions/b1/post', {}, user)
+    const voided = await call(db, 'POST', '/transactions/b1/void', { reason: 'Wrong' }, user)
+    expect([posted.body.error?.code, voided.body.error?.code]).toEqual([code, code])
+    expect(rows.transactions(db)[0]?.status).toBe('due')
+  })
 })
 
 describe('POST /transactions/{id}/void', () => {

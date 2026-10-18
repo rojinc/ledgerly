@@ -133,7 +133,7 @@ Other rounding rules:
 
 ## Payers
 
-`payers: { personId, cents }[]` says who gave money and must sum to the total. The default is the caller paying everything. Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill). Only expenses, bills and loans have payers; giving payers for any other kind fails.
+`payers: { personId, cents }[]` says who gave money and must sum to the total. When a new transaction gives none, the caller pays everything; an edit without payers keeps who paid before ([functions API](functions-api.md#ledger)). Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill). Only expenses, bills and loans have payers; giving payers for any other kind fails.
 
 ## Items (itemised receipts)
 
@@ -209,7 +209,7 @@ Every ledger write checks what it depends on only after staging a write to it in
 
 - **The transaction row:** edit, post and void stage a write to it first, then read it, its shares, items and stored input. So they never act on a version that another edit, post, void or lock (I-7) has replaced.
 - **The member rows (I-3):** every create, edit and post stages a write to the `members` row of each person the transaction names (payers, splits, items, payment, adjustment) or gives a share, then reads it and checks it still belongs to that person (a [merge](identity-and-invites.md#merging-two-persons) gives a member row to another person). This includes a `due` or `scheduled` transaction, which has no shares yet. A member removed meanwhile can't be left with a share, or named in a transaction that would give them one when it's posted. The `groups` function refuses to remove anyone an unposted transaction names, so the two checks together cover both orders.
-- **The group row:** every create, edit, post and void stages a write to the group row, then checks its currency and archive date. A currency change or archive that lands meanwhile makes the write run again with the group as it is now.
+- **The group row:** every create, edit, post and void stages a write to the group row, then checks that its currency, archive date, time zone and settings are what the write read. A change to any of them that lands meanwhile makes the write run again with the group as it is now.
 - **Statements being finalized:** the `finalizing` check runs after the group row is staged. Finalize step 1 stages the group row in the same database transaction that sets `finalizing` ([statements](statements.md#2-finalize-post-statementsidfinalize)), so a write that checked just before then fails its commit, runs again and gets `LOCKED`.
 
 These no-op writes set a column that never changes (`groups.type`, `members.groupId`), so they can't undo someone else's change. Because every write stages the group row, two writes to the same group at the same moment are serialized: the second one's commit fails and it runs again.
