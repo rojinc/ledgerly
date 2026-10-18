@@ -110,6 +110,7 @@ export type InvitesChannel = (typeof InvitesChannel)[keyof typeof InvitesChannel
 export type Persons = Models.Row & {
     userId: string | null;
     displayName: string;
+    claimedAt: string | null;
     mergedInto: string | null;
     deletedAt: string | null;
 }

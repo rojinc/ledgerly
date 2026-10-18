@@ -24,6 +24,13 @@
         "default": null
       },
       {
+        "key": "claimedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
         "key": "mergedInto",
         "type": "varchar",
         "size": 36,
