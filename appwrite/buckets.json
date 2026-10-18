@@ -1,0 +1,25 @@
+[
+  {
+    "$id": "receipts",
+    "$permissions": ["create(\"users\")"],
+    "fileSecurity": true,
+    "name": "receipts",
+    "enabled": true,
+    "maximumFileSize": 10485760,
+    "allowedFileExtensions": ["jpg", "jpeg", "png", "webp", "heic", "pdf"],
+    "compression": "none",
+    "encryption": true,
+    "antivirus": true
+  },
+  {
+    "$id": "statements",
+    "$permissions": [],
+    "fileSecurity": true,
+    "name": "statements",
+    "enabled": true,
+    "allowedFileExtensions": ["pdf"],
+    "compression": "none",
+    "encryption": true,
+    "antivirus": true
+  }
+]

@@ -16,7 +16,8 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run --passWithNoTests",
     "build": "npm run build --workspaces --if-present",
-    "dev": "npm run dev -w @ledgerly/web"
+    "dev": "npm run dev -w @ledgerly/web",
+    "appwrite:types": "appwrite types packages/core/src/generated/rows.ts --language ts --enum-style const"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.15",
