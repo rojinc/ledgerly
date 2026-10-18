@@ -1,9 +1,9 @@
 import { ROLES, type Role } from '@ledgerly/core/constants/domain'
 import type { Groups, Members, Persons } from '@ledgerly/core/generated/rows'
-import { AppwriteException, Query } from 'node-appwrite'
+import { Query } from 'node-appwrite'
 import type { Db } from '../appwrite/client'
 import { DATABASE_ID, TABLES } from '../appwrite/tables'
-import type { TeamsApi } from '../appwrite/teams'
+import { isInTeam, type TeamsApi } from '../appwrite/teams'
 import { AppError } from '../http/app-error'
 
 export type Membership = { person: Persons; member: Members; group: Groups }
@@ -42,7 +42,7 @@ export async function requireMember(
     !person ||
     !member ||
     member.status === 'placeholder' ||
-    (member.status === 'left' && !(await inTeam(teams, groupId, callerId)))
+    (member.status === 'left' && !(await isInTeam(teams, groupId, callerId)))
   ) {
     throw new AppError('NOT_A_MEMBER', "You're not a member of this group.")
   }
@@ -58,24 +58,6 @@ export async function requireMember(
     throw new AppError('ARCHIVED', 'This group is archived, so it can no longer be changed.')
   }
   return { person, member, group }
-}
-
-// Team ID = group ID (D-004). A team that's gone has no one in it.
-async function inTeam(
-  teams: Pick<TeamsApi, 'listMemberships'>,
-  teamId: string,
-  userId: string,
-): Promise<boolean> {
-  try {
-    const { memberships } = await teams.listMemberships({
-      teamId,
-      queries: [Query.equal('userId', userId), Query.limit(1)],
-    })
-    return memberships.length > 0
-  } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404) return false
-    throw error
-  }
 }
 
 async function findOne<R extends Persons | Members>(

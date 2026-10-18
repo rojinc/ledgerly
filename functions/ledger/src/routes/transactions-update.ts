@@ -1,9 +1,8 @@
 import { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { requireMember } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
-import { teamsFor } from '../teams'
+import type { ServicesFor } from '../services'
 import {
   activityWrite,
   changedColumns,
@@ -21,6 +20,7 @@ import {
   readView,
   replaceRows,
   requireCreatorOrAdmin,
+  requireMemberOf,
   requireNotFinalizing,
   requireNotTooFarAhead,
   requireUnlocked,
@@ -38,15 +38,13 @@ export const updateTransactionSchema = transactionInputSchema
  * body, rebuilds its shares and items, and records before and after in an activity row
  * (ledger.md#editing). Its status stays: posting a due bill is `/post`.
  */
-export const updateTransaction = route(
-  'PATCH',
-  '/transactions/:id',
-  ({ userId, params, body, db, headers }) =>
+export const updateTransaction = (services: ServicesFor) =>
+  route('PATCH', '/transactions/:id', ({ userId, params, body, db, headers }) =>
     ledgerRoute(async () => {
       const input = parseBody(updateTransactionSchema, body)
       if (input.id !== params.id) invalid('The body’s id must match the transaction.')
       const found = await getTransaction(db, params.id)
-      const membership = await requireMember(db, teamsFor(headers), userId, found.groupId, {
+      const membership = await requireMemberOf(db, services({ headers }).teams, userId, found, {
         roles: ['admin', 'member'],
       })
       requireCreatorOrAdmin(membership, found)
@@ -132,7 +130,7 @@ export const updateTransaction = route(
       }
       return readView(db, found.$id)
     }),
-)
+  )
 
 // Rows hold the same data, in the same order, as `data`.
 function sameRows(

@@ -138,6 +138,8 @@ What every write does, in **one TablesDB transaction**:
 3. Write the transaction row, replace its items and shares, and append an `activity` row.
 4. Commit. On conflict, retry once from step 1.
 
+On `PATCH`, `/post` and `/void`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use.
+
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
 - `people` has one entry per person with shares in the group, sorted by `personId`. Anyone else is at 0.
@@ -160,7 +162,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 | `POST /groups/{id}/members` | `{ displayName, email?, phone?, role?, joinedOn? }` | `member` | admin (house: member too) |
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn? }` | `member` | admin |
 | `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares and aren't named in an unposted transaction or a schedule template (`VALIDATION_FAILED`). Also removes any team membership. |
-| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin. Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
+| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin, except a retry of their own leave cut off before the team step, which finishes anyway ([leaving](permissions.md#leaving-a-group)). Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. Removing one with `DELETE /groups/{id}/members/{memberId}` also returns `VALIDATION_FAILED`; archive the group instead. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 

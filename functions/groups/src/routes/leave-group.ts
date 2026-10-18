@@ -1,11 +1,12 @@
-import type { Members } from '@ledgerly/core/generated/rows'
+import type { Activity, Members } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
-import { TABLES } from '@ledgerly/server/appwrite/tables'
+import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
   activityWrite,
@@ -23,7 +24,8 @@ import {
  * `groups POST /groups/{id}/leave` (permissions.md#leaving-a-group): once the caller's balance
  * is 0 and they aren't the last joined admin, their row becomes `left` and `viewer` in one
  * transaction, then their team membership goes. A caller who is already `left` only has the
- * team step left to do, so a retry finishes an interrupted leave, even in an archived group.
+ * team step left to do, so a retry finishes an interrupted leave, even in an archived group and
+ * even if a share landed on them after the leave committed.
  */
 export async function leaveGroup(
   { db, teams, now }: Services,
@@ -40,7 +42,11 @@ export async function leaveGroup(
   }
   if (group.type === 'personal') throw invalid("You can't leave your personal group.")
   if (member.status === 'left') {
-    await requireSettled(db, groupId, person.$id)
+    // Their own leave already committed (its member.left row says so): only the team step is
+    // left, even if a share landed on them since. Someone who moved out still settles up first.
+    // permissions.md#leaving-a-group: leaving on your own is final for that row.
+    if (!(await leftOnTheirOwn(db, groupId, person.$id, member.$createdAt)))
+      await requireSettled(db, groupId, person.$id)
   } else {
     const joinedOn = member.joinedOn
     const todayHere = today(group, now)
@@ -86,6 +92,33 @@ export async function leaveGroup(
   }
   await removeFromTeam(teams, groupId, userId)
   return {}
+}
+
+// Leaving on your own is final for that row (permissions.md#leaving-a-group): the retry skips
+// the balance check only when the newest member.left or member.joined row for this person,
+// since this member row was created, is member.left. A later member.joined (they came back,
+// say through a merge) means a fresh membership that has to settle up first. Uses
+// idx_group_at (groupId, at).
+async function leftOnTheirOwn(
+  db: Db,
+  groupId: string,
+  personId: string,
+  memberCreatedAt: string,
+): Promise<boolean> {
+  const { rows } = await db.listRows<Activity>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.activity,
+    queries: [
+      Query.equal('groupId', groupId),
+      Query.equal('action', ['member.left', 'member.joined']),
+      Query.equal('actorPersonId', personId),
+      Query.greaterThanEqual('$createdAt', memberCreatedAt),
+      Query.orderDesc('at'),
+      Query.limit(1),
+    ],
+    total: false,
+  })
+  return rows[0]?.action === 'member.left'
 }
 
 async function requireSettled(db: Db, groupId: string, personId: string): Promise<void> {

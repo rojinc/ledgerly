@@ -1,29 +1,12 @@
 import type { Activity, Items, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
-import { createHandler, type Route } from '@ledgerly/server/http/create-handler'
-import { groupBalances } from '../src/routes/balances'
-import { startTimer } from '../src/routes/timer-start'
-import { stopTimer } from '../src/routes/timer-stop'
-import { createTransaction } from '../src/routes/transactions-create'
-import { postTransaction } from '../src/routes/transactions-post'
+import { createHandler } from '@ledgerly/server/http/create-handler'
+import { ledgerRoutes } from '../src/main'
 import type { TransactionView } from '../src/routes/transactions-shared'
-import { updateTransaction } from '../src/routes/transactions-update'
-import { voidTransaction } from '../src/routes/transactions-void'
-import { setTeamsForTests } from '../src/teams'
 
 // "Today" in every test: 2026-10-18 in Sydney.
 export const NOW = new Date('2026-10-18T01:00:00.000Z')
-
-const routes: Route[] = [
-  createTransaction,
-  updateTransaction,
-  postTransaction,
-  voidTransaction,
-  startTimer,
-  stopTimer,
-  groupBalances,
-]
 
 export const member = (
   $id: string,
@@ -160,9 +143,9 @@ export async function call<T = TransactionView>(
   body: unknown,
   user: string | null = 'u-alice',
 ): Promise<Response<T>> {
-  setTeamsForTests(teamsOf(db))
+  const teams = teamsOf(db)
   const handler = createHandler(
-    routes,
+    ledgerRoutes(() => ({ teams })),
     () => db,
     async (jwt) => jwt.slice('jwt-'.length),
   )

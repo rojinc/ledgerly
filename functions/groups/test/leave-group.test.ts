@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vitest'
+import { AppwriteException } from 'node-appwrite'
+import { describe, expect, it, vi } from 'vitest'
 import {
   beforeCommit,
   beforeStaging,
@@ -20,7 +21,9 @@ import {
 type Row = Record<string, unknown> & { $id: string }
 
 // u1 is the admin, u2 a member who wants to leave, pX a placeholder with an account (u4).
-function houseFixture(extra: { m2?: object; members?: Row[]; shares?: Row[] } = {}) {
+function houseFixture(
+  extra: { m2?: object; members?: Row[]; shares?: Row[]; activity?: Row[] } = {},
+) {
   return fakes(
     {
       persons: [person(1), person(2), person(4, { $id: 'pX' })],
@@ -32,6 +35,7 @@ function houseFixture(extra: { m2?: object; members?: Row[]; shares?: Row[] } = 
         ...(extra.members ?? []),
       ],
       shares: extra.shares ?? [],
+      activity: extra.activity ?? [],
     },
     { g1: ['u1', 'u2'] },
   )
@@ -151,7 +155,96 @@ describe('POST /groups/{id}/leave', () => {
     expect(await leave(services, 'u2')).toMatchObject({ status: 403, code: 'NOT_A_MEMBER' })
   })
 
-  it('still needs a balance of 0 to finish an interrupted leave', async () => {
+  it('finishes its own interrupted leave even if a share landed after it committed (#121)', async () => {
+    const services = houseFixture()
+    // The leave commits, then removing the team membership fails.
+    vi.spyOn(services.teams, 'deleteMembership').mockRejectedValueOnce(
+      new AppwriteException('Connection lost', 503),
+    )
+    expect((await leave(services, 'u2')).status).toBe(500)
+    expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', role: 'viewer' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+    // A share lands on them before the retry.
+    await createRow(services.db, 'shares', share('s1', 'g1', 'p2', 0, 200))
+    expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+    expect(teamUsers(services, 'g1')).toEqual(['u1'])
+  })
+
+  it("doesn't count a leave from an earlier membership for someone who moved out (#121)", async () => {
+    // p2 left on their own once, was deleted and added again, then moved out owing money.
+    const services = houseFixture({
+      m2: {
+        status: 'left',
+        role: 'viewer',
+        leftOn: '2026-10-10',
+        $createdAt: '2026-09-01T00:00:00.000Z',
+      },
+      shares: [share('s1', 'g1', 'p2', 0, 200)],
+      activity: [
+        {
+          $id: 'a0',
+          $createdAt: '2026-08-01T00:00:00.000Z',
+          groupId: 'g1',
+          actorPersonId: 'p2',
+          action: 'member.left',
+          transactionId: null,
+          summary: 'Member m2 left',
+          changesJson: null,
+          at: '2026-08-01T00:00:00.000Z',
+        },
+      ],
+    })
+    expect(await leave(services, 'u2')).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+
+  it('needs a balance of 0 when they came back after their own leave (#121)', async () => {
+    // p2 left on their own, came back on this row (a member.joined since), then moved out owing.
+    const at = (time: string) => ({ $createdAt: time, at: time })
+    const activity = (id: string, action: string, time: string) => ({
+      $id: id,
+      ...at(time),
+      groupId: 'g1',
+      actorPersonId: 'p2',
+      action,
+      transactionId: null,
+      summary: 'Member m2',
+      changesJson: null,
+    })
+    const services = houseFixture({
+      m2: {
+        status: 'left',
+        role: 'viewer',
+        leftOn: '2026-10-10',
+        $createdAt: '2026-09-01T00:00:00.000Z',
+      },
+      shares: [share('s1', 'g1', 'p2', 0, 400)],
+      activity: [
+        activity('a1', 'member.left', '2026-09-10T00:00:00.000Z'),
+        activity('a2', 'member.joined', '2026-09-20T00:00:00.000Z'),
+      ],
+    })
+    expect(await leave(services, 'u2')).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+
+  it("can't be made a member again after leaving on their own (#121)", async () => {
+    // Leaving on your own is final for that row: an admin can't make them a member again, so
+    // the interrupted leave can still finish.
+    const services = houseFixture()
+    vi.spyOn(services.teams, 'deleteMembership').mockRejectedValueOnce(
+      new AppwriteException('Connection lost', 503),
+    )
+    expect((await leave(services, 'u2')).status).toBe(500)
+    expect(
+      await failure(services, 'PATCH', '/groups/g1/members/m2', { role: 'member' }, 'u1'),
+    ).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', role: 'viewer' })
+    expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+    expect(teamUsers(services, 'g1')).toEqual(['u1'])
+  })
+
+  it('still needs a balance of 0 from someone who moved out', async () => {
     const services = houseFixture({
       m2: { status: 'left', role: 'viewer', leftOn: '2026-10-10' },
       shares: [share('s1', 'g1', 'p2', 0, 200)],

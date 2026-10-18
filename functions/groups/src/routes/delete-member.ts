@@ -9,7 +9,7 @@ import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import { everyPersonId, type TransactionTemplate } from '@ledgerly/core/schemas/ledger'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
-import { addToTeam, removeFromTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
+import { addToTeam, isInTeam, removeFromTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { type Models, Query } from 'node-appwrite'
@@ -163,11 +163,7 @@ async function leaveTeam(
 ): Promise<string | null> {
   const person = await getRowOrNull<Persons>(db, TABLES.persons, personId)
   if (!person?.userId) return null
-  const { memberships } = await teams.listMemberships({
-    teamId: groupId,
-    queries: [Query.equal('userId', person.userId), Query.limit(1)],
-  })
-  if (memberships.length === 0) return null
+  if (!(await isInTeam(teams, groupId, person.userId))) return null
   await removeFromTeam(teams, groupId, person.userId)
   return person.userId
 }

@@ -7,10 +7,9 @@ import {
 } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { requireMember } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
 import { z } from 'zod'
-import { teamsFor } from '../teams'
+import type { ServicesFor } from '../services'
 import {
   activityWrite,
   changedColumns,
@@ -27,6 +26,7 @@ import {
   readView,
   replaceRows,
   requireCreatorOrAdmin,
+  requireMemberOf,
   requireNotFinalizing,
   requireNotTooFarAhead,
   requireUnlocked,
@@ -46,14 +46,12 @@ const kindRules = (kind: TransactionKind) =>
  * transaction into a `posted` one with shares, with the body's date, payers and shift
  * changes. A due bill is posted when it's paid, on the day it was paid.
  */
-export const postTransaction = route(
-  'POST',
-  '/transactions/:id/post',
-  ({ userId, params, body, db, headers }) =>
+export const postTransaction = (services: ServicesFor) =>
+  route('POST', '/transactions/:id/post', ({ userId, params, body, db, headers }) =>
     ledgerRoute(async () => {
       const changes = parseBody(postTransactionBodySchema, body)
       const found = await getTransaction(db, params.id)
-      const membership = await requireMember(db, teamsFor(headers), userId, found.groupId, {
+      const membership = await requireMemberOf(db, services({ headers }).teams, userId, found, {
         roles: ['admin', 'member'],
       })
       requireCreatorOrAdmin(membership, found)
@@ -129,4 +127,4 @@ export const postTransaction = route(
       }
       return readView(db, found.$id)
     }),
-)
+  )

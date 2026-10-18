@@ -10,7 +10,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { Query } from 'node-appwrite'
-import { teamsFor } from '../teams'
+import type { ServicesFor } from '../services'
 import { OCCURRENCE_ID } from './transactions-create'
 import {
   activityWrite,
@@ -39,105 +39,112 @@ const DESCRIPTION = 'Shift'
  * has no shares until it stops (I-6). A person has one running timer at a time: starting another
  * is a CONFLICT that names the running one. A retry with the same `id` gets the timer back.
  */
-export const startTimer = route('POST', '/timer/start', ({ userId, body, db, headers }) =>
-  ledgerRoute(async () => {
-    const start = parseBody(startTimerBodySchema, body)
-    if (OCCURRENCE_ID.test(start.id)) invalid('This id is kept for schedule occurrences.')
-    const membership = await requireMember(db, teamsFor(headers), userId, start.groupId, {
-      roles: ['admin'],
-    })
-    const { group } = membership
-    const settings = groupSettingsSchema.parse(JSON.parse(group.settingsJson))
-    if (settings.type !== 'employer') invalid('Only an employer group has a timer.')
-    // A shift always pays the group's owner (ledger.md#transaction-kinds), so only they time it.
-    if (membership.person.$id !== group.ownerPersonId) {
-      throw new AppError('FORBIDDEN', 'Only the person this group pays can start its timer.')
-    }
-    const now = new Date()
-    const person = membership.person.$id
-    const input: TransactionInput = {
-      id: start.id,
-      groupId: group.$id,
-      kind: 'shift',
-      date: localToday(group.timezone, now),
-      description: start.description ?? DESCRIPTION,
-      shift: {
-        minutes: 0,
-        rateCents: start.rateCents ?? settings.defaultRateCents,
-        startTime: localTime(group.timezone, now),
-      },
-    }
-
-    const existing = await findTransaction(db, input.id)
-    if (existing) {
-      // The date and start time are left out: a retry can come a minute, or a day, later.
-      const same =
-        existing.groupId === input.groupId &&
-        existing.kind === 'shift' &&
-        existing.startedAt !== null &&
-        existing.createdBy === person &&
-        existing.description === input.description &&
-        existing.voidReason === null &&
-        storedInputSchema.parse(JSON.parse(existing.inputJson)).shift?.rateCents ===
-          input.shift?.rateCents
-      if (!same) throw new AppError('CONFLICT', 'A different transaction already has this ID.')
-      return readView(db, existing.$id)
-    }
-
-    const ledger = await loadLedger(db, membership)
-    const planned = plan(input, 'running', ledger)
-    const personal = await findPersonalGroup(db, person)
-    await withTransaction(db, async (tx) => {
-      await guardGroupAndMembers(tx, db, group, ledger, planned.people)
-      // Every start by this person, in any group, also writes their personal group's row. So of
-      // two starts at once one commit fails, and its rerun finds the other's timer below
-      // (ledger.md#concurrency).
-      await tx.write({
-        action: 'update',
-        tableId: TABLES.groups,
-        rowId: personal.$id,
-        data: { rev: randomId() },
-      })
-      await requireNotFinalizing(db, group.$id, [input.date])
-      const running = await findRunning(db, person)
-      if (running) {
-        throw new AppError('CONFLICT', 'A timer is already running.', {
-          transactionId: running.$id,
-        })
-      }
-      const row = { $id: input.id, groupId: input.groupId, description: input.description }
-      await tx.write(
+export const startTimer = (services: ServicesFor) =>
+  route('POST', '/timer/start', ({ userId, body, db, headers }) =>
+    ledgerRoute(async () => {
+      const start = parseBody(startTimerBodySchema, body)
+      if (OCCURRENCE_ID.test(start.id)) invalid('This id is kept for schedule occurrences.')
+      const membership = await requireMember(
+        db,
+        services({ headers }).teams,
+        userId,
+        start.groupId,
         {
-          action: 'create',
-          tableId: TABLES.transactions,
-          rowId: input.id,
-          data: {
-            ...transactionColumns(input, planned),
-            scheduleId: null,
-            overridden: false,
-            statementId: null,
-            receiptFileIds: null,
-            startedAt: now.toISOString(),
-            remindedAt: null,
-            voidReason: null,
-            createdBy: person,
-            updatedBy: person,
-          },
-          permissions: teamRead(input.groupId),
+          roles: ['admin'],
         },
-        activityWrite(
-          row,
-          person,
-          'transaction.created',
-          `Started the timer for “${input.description}”`,
-          null,
-          now,
-        ),
       )
-    })
-    return readView(db, input.id)
-  }),
-)
+      const { group } = membership
+      const settings = groupSettingsSchema.parse(JSON.parse(group.settingsJson))
+      if (settings.type !== 'employer') invalid('Only an employer group has a timer.')
+      // A shift always pays the group's owner (ledger.md#transaction-kinds), so only they time it.
+      if (membership.person.$id !== group.ownerPersonId) {
+        throw new AppError('FORBIDDEN', 'Only the person this group pays can start its timer.')
+      }
+      const now = new Date()
+      const person = membership.person.$id
+      const input: TransactionInput = {
+        id: start.id,
+        groupId: group.$id,
+        kind: 'shift',
+        date: localToday(group.timezone, now),
+        description: start.description ?? DESCRIPTION,
+        shift: {
+          minutes: 0,
+          rateCents: start.rateCents ?? settings.defaultRateCents,
+          startTime: localTime(group.timezone, now),
+        },
+      }
+
+      const existing = await findTransaction(db, input.id)
+      if (existing) {
+        // The date and start time are left out: a retry can come a minute, or a day, later.
+        const same =
+          existing.groupId === input.groupId &&
+          existing.kind === 'shift' &&
+          existing.startedAt !== null &&
+          existing.createdBy === person &&
+          existing.description === input.description &&
+          existing.voidReason === null &&
+          storedInputSchema.parse(JSON.parse(existing.inputJson)).shift?.rateCents ===
+            input.shift?.rateCents
+        if (!same) throw new AppError('CONFLICT', 'A different transaction already has this ID.')
+        return readView(db, existing.$id)
+      }
+
+      const ledger = await loadLedger(db, membership)
+      const planned = plan(input, 'running', ledger)
+      const personal = await findPersonalGroup(db, person)
+      await withTransaction(db, async (tx) => {
+        await guardGroupAndMembers(tx, db, group, ledger, planned.people)
+        // Every start by this person, in any group, also writes their personal group's row. So of
+        // two starts at once one commit fails, and its rerun finds the other's timer below
+        // (ledger.md#concurrency).
+        await tx.write({
+          action: 'update',
+          tableId: TABLES.groups,
+          rowId: personal.$id,
+          data: { rev: randomId() },
+        })
+        await requireNotFinalizing(db, group.$id, [input.date])
+        const running = await findRunning(db, person)
+        if (running) {
+          throw new AppError('CONFLICT', 'A timer is already running.', {
+            transactionId: running.$id,
+          })
+        }
+        const row = { $id: input.id, groupId: input.groupId, description: input.description }
+        await tx.write(
+          {
+            action: 'create',
+            tableId: TABLES.transactions,
+            rowId: input.id,
+            data: {
+              ...transactionColumns(input, planned),
+              scheduleId: null,
+              overridden: false,
+              statementId: null,
+              receiptFileIds: null,
+              startedAt: now.toISOString(),
+              remindedAt: null,
+              voidReason: null,
+              createdBy: person,
+              updatedBy: person,
+            },
+            permissions: teamRead(input.groupId),
+          },
+          activityWrite(
+            row,
+            person,
+            'transaction.created',
+            `Started the timer for “${input.description}”`,
+            null,
+            now,
+          ),
+        )
+      })
+      return readView(db, input.id)
+    }),
+  )
 
 /**
  * The person's running timer in any group that isn't archived: they work one shift at a time. A

@@ -1,7 +1,7 @@
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeTeams } from './fake-teams'
-import { addToTeam, ensureTeam, removeFromTeam } from './teams'
+import { addToTeam, ensureTeam, isInTeam, removeFromTeam } from './teams'
 
 describe('ensureTeam', () => {
   it('creates the team with no roles, and counts one that already exists as done', async () => {
@@ -41,6 +41,18 @@ describe('removeFromTeam', () => {
     expect(teams.members('g1')?.map((membership) => membership.userId)).toEqual(['u2'])
   })
 
+  it("deletes only a membership with that user ID, not only through the query's filter (#121)", async () => {
+    const teams = new FakeTeams({ g1: ['u1', 'u2'] })
+    const other = teams.members('g1')?.find((membership) => membership.userId === 'u2')
+    vi.spyOn(teams, 'listMemberships').mockResolvedValue({
+      total: 1,
+      memberships: [other as never],
+    })
+    const deleteMembership = vi.spyOn(teams, 'deleteMembership')
+    await removeFromTeam(teams, 'g1', 'u1')
+    expect(deleteMembership).not.toHaveBeenCalled()
+  })
+
   it('counts a membership or team that is already gone as done', async () => {
     const teams = new FakeTeams({ g1: ['u2'] })
     await removeFromTeam(teams, 'g1', 'u1')
@@ -68,5 +80,29 @@ describe('FakeTeams', () => {
     await expect(teams.deleteMembership({ teamId: 'g1', membershipId: 'x' })).rejects.toMatchObject(
       { code: 404 },
     )
+  })
+})
+
+describe('isInTeam', () => {
+  it('is true only for a member of the team, and false for a team that is gone', async () => {
+    const teams = new FakeTeams({ g1: ['u1', 'u2'] })
+    expect(await isInTeam(teams, 'g1', 'u1')).toBe(true)
+    expect(await isInTeam(teams, 'g1', 'u3')).toBe(false)
+    expect(await isInTeam(teams, 'gone', 'u1')).toBe(false)
+  })
+
+  it("checks the user ID itself, not only the query's filter (#121)", async () => {
+    // As if the filter were dropped: Teams answers with someone else's membership.
+    const teams = { listMemberships: async () => ({ memberships: [{ $id: 'x', userId: 'u2' }] }) }
+    expect(await isInTeam(teams, 'g1', 'u1')).toBe(false)
+  })
+
+  it('rethrows any other error', async () => {
+    const teams = {
+      listMemberships: async () => {
+        throw new AppwriteException('Server error', 500)
+      },
+    }
+    await expect(isInTeam(teams, 'g1', 'u1')).rejects.toMatchObject({ code: 500 })
   })
 })

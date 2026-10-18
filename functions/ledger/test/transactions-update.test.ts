@@ -261,16 +261,25 @@ describe('PATCH /transactions/{id}', () => {
 
   it.each([
     ['a viewer', 'u-cara', 'FORBIDDEN'],
-    ['someone outside the group', 'u-dan', 'NOT_A_MEMBER'],
+    // NOT_FOUND, as for a missing ID, so outsiders can't probe IDs (#121).
+    ['someone outside the group', 'u-dan', 'NOT_FOUND'],
   ])('refuses %s', async (_case, user, code) => {
     const db = await withExpense()
     const response = await call(db, 'PATCH', '/transactions/t1', expense(), user)
     expect(response.body.error?.code).toBe(code)
   })
 
-  it('returns NOT_FOUND for a transaction that does not exist', async () => {
-    const response = await call(seed(), 'PATCH', '/transactions/t1', expense())
-    expect(response.body.error?.code).toBe('NOT_FOUND')
+  it('answers an outsider exactly as for a transaction that does not exist (#121)', async () => {
+    const missing = await call(seed(), 'PATCH', '/transactions/t1', expense(), 'u-dan')
+    const elsewhere = await call(
+      await withExpense(),
+      'PATCH',
+      '/transactions/t1',
+      expense(),
+      'u-dan',
+    )
+    expect(missing.body.error?.code).toBe('NOT_FOUND')
+    expect(elsewhere).toEqual(missing)
   })
 
   it.each([
