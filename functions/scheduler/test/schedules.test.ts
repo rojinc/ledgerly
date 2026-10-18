@@ -94,6 +94,17 @@ function create(services: Fakes, body: object, userId = 'u1') {
   return ok<ScheduleResult>(services, 'POST', '/schedules', { body, userId })
 }
 
+function archive(services: Fakes, groupId = 'acme') {
+  return withTransaction(services.db, (tx) =>
+    tx.write({
+      action: 'update',
+      tableId: 'groups',
+      rowId: groupId,
+      data: { archivedAt: '2026-10-18T21:00:00.000Z' },
+    }),
+  )
+}
+
 function setRow(services: Fakes, tableId: 'transactions' | 'members', rowId: string, data: object) {
   return withTransaction(services.db, (tx) =>
     tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
@@ -204,6 +215,10 @@ describe('POST /schedules', () => {
     expect(items[0]).toMatchObject({ transactionId: 'groceriesElm00000001_20261019', name: 'Milk' })
     // 3 writes per occurrence plus 4 guards: 121 occurrences need 5 transactions, plus the create.
     expect(begin.mock.calls.length).toBeGreaterThanOrEqual(6)
+    // Deleting them takes batches of at most 90 writes too, with the group's guard.
+    expect(await ok(services, 'DELETE', `/schedules/${groceries.id}`)).toEqual({})
+    expect(services.db.rows('transactions')).toEqual([])
+    expect(services.db.rows('items')).toEqual([])
   })
 
   it('returns the schedule again for a retry, and refuses the same id with other content', async () => {
@@ -216,6 +231,14 @@ describe('POST /schedules', () => {
       await failure(services, 'POST', '/schedules', {
         body: { ...thursdays, description: 'Other' },
       }),
+    ).toEqual({ status: 409, code: 'CONFLICT' })
+    // Another admin sending the same body didn't make it, so it isn't a retry.
+    await setRow(services, 'members', 'acme-pAcme', { status: 'active' })
+    await withTransaction(services.db, (tx) =>
+      tx.write({ action: 'update', tableId: 'persons', rowId: 'pAcme', data: { userId: 'u9' } }),
+    )
+    expect(
+      await failure(services, 'POST', '/schedules', { body: thursdays, userId: 'u9' }),
     ).toEqual({ status: 409, code: 'CONFLICT' })
   })
 
@@ -287,6 +310,17 @@ describe('POST /schedules', () => {
     expect(services.db.rows('schedules')).toEqual([])
     expect(services.db.rows('transactions')).toEqual([])
   })
+
+  it('makes a member’s removal fail if the schedule naming them commits first', async () => {
+    const services = seeded()
+    const removal = withTransaction(services.db, async (tx) => {
+      await tx.write({ action: 'delete', tableId: 'members', rowId: 'elm-pAlex' })
+      await create(services, rent)
+    })
+    await expect(removal).rejects.toMatchObject({ code: 409 })
+    expect(services.db.rows('members').some((row) => row.$id === 'elm-pAlex')).toBe(true)
+    expect(occurrences(services, rent.id).length).toBeGreaterThan(0)
+  })
 })
 
 describe('PATCH /schedules/{id}', () => {
@@ -347,7 +381,7 @@ describe('PATCH /schedules/{id}', () => {
       status: 400,
       code: 'VALIDATION_FAILED',
     })
-    expect(await send({ ...thursdays, kind: 'income', template: { totalCents: 100 } })).toEqual({
+    expect(await send({ ...thursdays, kind: 'expense', template: { totalCents: 100 } })).toEqual({
       status: 400,
       code: 'VALIDATION_FAILED',
     })
@@ -366,6 +400,12 @@ describe('PATCH /schedules/{id}', () => {
     expect((await patch(services, rent, 'u1')).schedule.description).toBe('Rent')
     expect(
       await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: rent, userId: 'u3' }),
+    ).toEqual({ status: 403, code: 'FORBIDDEN' })
+    // Alex can't edit one Sam made.
+    const water = { ...rent, id: 'waterElmSam000000001', description: 'Water' }
+    await create(services, water)
+    expect(
+      await failure(services, 'PATCH', `/schedules/${water.id}`, { body: water, userId: 'u2' }),
     ).toEqual({ status: 403, code: 'FORBIDDEN' })
     expect(
       await failure(services, 'PATCH', '/schedules/missingSchedule00001', {
@@ -528,6 +568,17 @@ describe('POST /schedules/{id}/end', () => {
     })
   })
 
+  it('changes nothing when the group is archived while it commits', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    beforeCommit(services.db, () => archive(services))
+    expect(
+      await failure(services, 'POST', `/schedules/${ID}/end`, { body: { endsOn: '2026-11-12' } }),
+    ).toEqual({ status: 409, code: 'ARCHIVED' })
+    expect(scheduleRow(services)?.endsOn).toBeNull()
+    expect(occurrences(services)).toHaveLength(11)
+  })
+
   it('works even when the template no longer fits the ledger', async () => {
     const services = seeded()
     await create(services, rent)
@@ -585,5 +636,66 @@ describe('DELETE /schedules/{id}', () => {
       code: 'VALIDATION_FAILED',
     })
     expect(occurrences(services)).toHaveLength(11)
+  })
+
+  it('keeps the schedule when the group is archived while it runs', async () => {
+    // Archived before the occurrences' deletes commit, then before the schedule's is staged.
+    const before = [
+      (services: Fakes) => beforeCommit(services.db, () => archive(services)),
+      (services: Fakes) =>
+        beforeStaging(
+          services.db,
+          (operations) =>
+            operations.includes('"action":"delete"') &&
+            operations.includes('"tableId":"schedules"'),
+          () => archive(services),
+        ),
+    ]
+    for (const [index, hook] of before.entries()) {
+      const services = seeded()
+      await create(services, thursdays)
+      hook(services)
+      expect(await failure(services, 'DELETE', `/schedules/${ID}`)).toEqual({
+        status: 409,
+        code: 'ARCHIVED',
+      })
+      expect(scheduleRow(services)).toBeDefined()
+      expect(occurrences(services)).toHaveLength(index === 0 ? 11 : 0)
+    }
+  })
+
+  it('deletes an occurrence a cron run creates meanwhile too', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    beforeStaging(
+      services.db,
+      (operations) =>
+        operations.includes('"action":"delete"') && operations.includes('"tableId":"schedules"'),
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'create',
+            tableId: 'transactions',
+            rowId: `${ID}_20261217`,
+            data: {
+              groupId: 'acme',
+              kind: 'shift',
+              status: 'scheduled',
+              date: '2026-12-17',
+              description: 'Thursday shift',
+              totalCents: 12_500,
+              inputJson: '{}',
+              scheduleId: ID,
+              overridden: false,
+              statementId: null,
+              createdBy: 'pSam',
+              updatedBy: 'pSam',
+            },
+          }),
+        ),
+    )
+    expect(await ok(services, 'DELETE', `/schedules/${ID}`)).toEqual({})
+    expect(services.db.rows('schedules')).toEqual([])
+    expect(services.db.rows('transactions')).toEqual([])
   })
 })

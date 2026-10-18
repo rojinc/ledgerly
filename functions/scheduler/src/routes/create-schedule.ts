@@ -12,7 +12,7 @@ import {
 } from '@ledgerly/server/ledger/transactions'
 import { generateOccurrences } from '../occurrences'
 import { parseBody } from '../parse-body'
-import { checkTemplate, findSchedule, scheduleColumns } from '../schedule-rows'
+import { checkTemplate, findSchedule, getSchedule, scheduleColumns } from '../schedule-rows'
 import type { Services } from '../services'
 
 export type ScheduleResult = { schedule: Schedules; created: number }
@@ -45,11 +45,12 @@ export async function createSchedule(
     }
     const ledger = await loadLedger(db, membership)
     if (!existing) {
+      // Due at once, so a cron run finishes the expansion if this request can't.
       const row = {
         groupId,
         ...columns,
         generatedThrough: null,
-        nextRunAt: null,
+        nextRunAt: now.toISOString(),
         createdBy: person,
       }
       const people = checkTemplate({ $id: id, ...row }, ledger)
@@ -65,9 +66,9 @@ export async function createSchedule(
         })
       })
     }
-    const schedule = (await findSchedule(db, id)) as Schedules
+    const schedule = await getSchedule(db, id)
     const created = await generateOccurrences(db, schedule, membership.group, ledger, now)
-    return { schedule: (await findSchedule(db, id)) as Schedules, created }
+    return { schedule: await getSchedule(db, id), created }
   })
 }
 

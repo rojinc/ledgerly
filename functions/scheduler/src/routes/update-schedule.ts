@@ -9,7 +9,7 @@ import { generateOccurrences, guardSchedule, removeOccurrences } from '../occurr
 import { parseBody } from '../parse-body'
 import {
   checkTemplate,
-  findSchedule,
+  getSchedule,
   requireScheduleWriter,
   scheduleColumns,
 } from '../schedule-rows'
@@ -49,6 +49,8 @@ export async function updateSchedule(
       ...scheduleColumns(input),
       // Expand again from today; dates before it that were never expanded still will be.
       generatedThrough: generated && compareDates(generated, yesterday) > 0 ? yesterday : generated,
+      // Due at once, so a cron run finishes the expansion if this request can't.
+      nextRunAt: now.toISOString(),
     }
     const ledger = await loadLedger(db, membership)
     const people = checkTemplate({ ...schedule, ...changes }, ledger)
@@ -57,9 +59,16 @@ export async function updateSchedule(
       // The people the new template names stay members while it exists (ledger.md#concurrency).
       await guardGroupAndMembers(tx, db, membership.group, ledger, people)
     })
-    const removed = await removeOccurrences(db, scheduleId, today)
-    const updated = (await findSchedule(db, scheduleId)) as Schedules
-    const created = await generateOccurrences(db, updated, membership.group, ledger, now)
-    return { schedule: (await findSchedule(db, scheduleId)) as Schedules, created, removed }
+    const removed = await removeOccurrences(db, membership.group, scheduleId, today)
+    const updated = await getSchedule(db, scheduleId)
+    const created = await generateOccurrences(
+      db,
+      updated,
+      membership.group,
+      ledger,
+      now,
+      changes.generatedThrough,
+    )
+    return { schedule: await getSchedule(db, scheduleId), created, removed }
   })
 }

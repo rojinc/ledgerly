@@ -9,6 +9,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import {
+  guardGroup,
   guardGroupAndMembers,
   type Ledger,
   listAll,
@@ -66,8 +67,9 @@ export function occurrenceInput(schedule: ScheduleTemplate, date: LocalDate): Tr
 
 /**
  * Plans the occurrence on `date`: `scheduled`, or `due` for a bill (ledger.md#statuses), with
- * the schedule's creator paying when the template names no payers. Throws the ledger's error
- * for a template that breaks a ledger rule.
+ * the schedule's creator as the payer when the template names none. The row stores no payer,
+ * so whoever posts it pays then. Throws the ledger's error for a template that breaks a
+ * ledger rule.
  */
 export function planOccurrence(
   schedule: ScheduleTemplate,
@@ -86,9 +88,9 @@ export function nextRunAt(today: LocalDate, timeZone: string): string {
 }
 
 /**
- * Step 1 for one schedule: creates its occurrences from the day after `generatedThrough` (or
- * `startsOn`) to `endsOn` or the horizon, whichever comes first, then sets `generatedThrough`
- * and `nextRunAt`. An occurrence whose row exists already, voided or edited, is left as it is
+ * Step 1 for one schedule: creates its occurrences from the day after `after` (by default
+ * `generatedThrough`; `startsOn` when empty) to `endsOn` or the horizon, whichever comes
+ * first, then sets `generatedThrough` and `nextRunAt`. An occurrence whose row exists already, voided or edited, is left as it is
  * (scheduling.md#idempotency). Returns how many it created.
  *
  * Each batch of at most 90 writes is guarded (ledger.md#concurrency): it stages its progress on
@@ -102,12 +104,12 @@ export async function generateOccurrences(
   group: Groups,
   ledger: Ledger,
   now: Date,
+  // An edit expands from its own reset point: another run may have moved generatedThrough on
+  // before the edit deleted the occurrences it made (scheduling.md#schedule-routes).
+  after = schedule.generatedThrough as LocalDate | null,
 ): Promise<number> {
   const today = localToday(group.timezone, now)
-  const from = laterOf(
-    schedule.startsOn as LocalDate,
-    schedule.generatedThrough ? addDays(schedule.generatedThrough as LocalDate, 1) : null,
-  )
+  const from = laterOf(schedule.startsOn as LocalDate, after ? addDays(after, 1) : null)
   const horizon = addDays(today, schedule.horizonDays)
   const endsOn = schedule.endsOn as LocalDate | null
   const to = endsOn && compareDates(endsOn, horizon) < 0 ? endsOn : horizon
@@ -151,11 +153,13 @@ export async function generateOccurrences(
 /**
  * Deletes the schedule's occurrences dated `from` or later that are still `scheduled` or `due`
  * and not edited (`overridden`), with their items. `all` deletes every one that isn't posted,
- * for `DELETE /schedules/{id}`. Each batch stages its deletes, then checks the stored rows:
- * a row edited, posted or voided meanwhile throws `Raced`. Returns how many it deleted.
+ * for `DELETE /schedules/{id}`. Each batch guards the group, stages its deletes, then checks
+ * the stored rows: a row edited, posted or voided meanwhile throws `Raced`, and so does an
+ * archive or settings change (ledger.md#concurrency). Returns how many it deleted.
  */
 export async function removeOccurrences(
   db: Db,
+  group: Groups,
   scheduleId: string,
   from: LocalDate | null,
   options: { all?: boolean } = {},
@@ -173,34 +177,38 @@ export async function removeOccurrences(
   ).filter(removable)
   for (let start = 0; start < rows.length; start += PAGE) {
     const page = rows.slice(start, start + PAGE)
-    const ids = page.map((row) => row.$id)
     // idx_transaction_position
-    const items = await listAll<Items>(db, TABLES.items, [Query.equal('transactionId', ids)])
-    const deletes: Write[] = [
-      ...page.map((row) => ({
-        action: 'delete' as const,
-        tableId: TABLES.transactions,
-        rowId: row.$id,
-      })),
-      ...items.map((item) => ({
-        action: 'delete' as const,
-        tableId: TABLES.items,
-        rowId: item.$id,
-      })),
-    ]
-    for (let first = 0; first < deletes.length; first += MAX_OPS_PER_DB_TRANSACTION) {
-      const batch = deletes.slice(first, first + MAX_OPS_PER_DB_TRANSACTION)
+    const items = await listAll<Items>(db, TABLES.items, [
+      Query.equal(
+        'transactionId',
+        page.map((row) => row.$id),
+      ),
+    ])
+    // Each occurrence goes with its items, in transactions of at most 90 writes, so no item
+    // is ever left without its transaction.
+    const units = page.map((row) => [
+      row.$id,
+      ...items.filter((item) => item.transactionId === row.$id).map((item) => item.$id),
+    ])
+    for (const batch of packed(units)) {
       await withTransaction(db, async (tx) => {
-        await tx.write(...batch)
+        await guardGroup(tx, db, group)
+        await tx.write(
+          ...batch.flatMap(([rowId, ...itemIds]) => [
+            { action: 'delete' as const, tableId: TABLES.transactions, rowId: rowId as string },
+            ...itemIds.map((itemId) => ({
+              action: 'delete' as const,
+              tableId: TABLES.items,
+              rowId: itemId,
+            })),
+          ]),
+        )
         // The stored rows, not this transaction's view, where they're already gone.
-        const doomed = batch.filter((write) => write.tableId === TABLES.transactions)
+        const ids = batch.map(([rowId]) => rowId as string)
         const stored = await listAll<Transactions>(db, TABLES.transactions, [
-          Query.equal(
-            '$id',
-            doomed.map((write) => write.rowId),
-          ),
+          Query.equal('$id', ids),
         ])
-        if (stored.length !== doomed.length || !stored.every(removable)) throw new Raced()
+        if (stored.length !== ids.length || !stored.every(removable)) throw new Raced()
       })
     }
   }
@@ -302,6 +310,22 @@ function occurrenceWrites(schedule: Schedules, { input, planned }: Occurrence): 
       permissions,
     ),
   ]
+}
+
+// Groups of ids (an occurrence first, then its items) packed into transactions of at most 90
+// writes, after the group's guard. An occurrence has at most 30 items, so each group fits.
+function packed(units: string[][]): string[][][] {
+  const batches: string[][][] = []
+  let writes = MAX_OPS_PER_DB_TRANSACTION
+  for (const unit of units) {
+    if (writes + unit.length > MAX_OPS_PER_DB_TRANSACTION) {
+      batches.push([])
+      writes = 1
+    }
+    batches.at(-1)?.push(unit)
+    writes += unit.length
+  }
+  return batches
 }
 
 function laterOf(date: LocalDate, other: LocalDate | null): LocalDate {

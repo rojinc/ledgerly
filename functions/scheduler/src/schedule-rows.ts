@@ -27,6 +27,13 @@ export function scheduleColumns(input: Omit<ScheduleInput, 'id' | 'groupId'>) {
   }
 }
 
+/** The schedule, or NOT_FOUND (a DELETE may have got there first). */
+export async function getSchedule(db: Db, scheduleId: string): Promise<Schedules> {
+  const schedule = await findSchedule(db, scheduleId)
+  if (!schedule) throw new AppError('NOT_FOUND', 'There is no such schedule.')
+  return schedule
+}
+
 export async function findSchedule(db: Db, scheduleId: string): Promise<Schedules | undefined> {
   try {
     return await db.getRow<Schedules>({
@@ -50,8 +57,7 @@ export async function requireScheduleWriter(
   userId: string | null,
   scheduleId: string,
 ): Promise<{ schedule: Schedules; membership: Membership }> {
-  const schedule = await findSchedule(services.db, scheduleId)
-  if (!schedule) throw new AppError('NOT_FOUND', 'There is no such schedule.')
+  const schedule = await getSchedule(services.db, scheduleId)
   const membership = await requireMember(services.db, services.teams, userId, schedule.groupId, {
     roles: ['admin', 'member'],
   })
@@ -71,7 +77,7 @@ export function checkTemplate(
   ledger: Ledger,
 ): string[] {
   // Like POST /transactions until receipts have their Storage check.
-  if (JSON.parse(schedule.templateJson).receiptFileIds) {
+  if (JSON.parse(schedule.templateJson).receiptFileIds?.length) {
     throw new AppError('VALIDATION_FAILED', "Receipts aren't supported yet.")
   }
   return planOccurrence(schedule, schedule.startsOn as LocalDate, ledger).planned.people

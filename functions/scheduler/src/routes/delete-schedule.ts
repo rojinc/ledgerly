@@ -2,7 +2,7 @@ import type { Transactions } from '@ledgerly/core/generated/rows'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { ledgerRoute, Raced } from '@ledgerly/server/ledger/transactions'
+import { guardGroup, ledgerRoute, Raced } from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
 import { removeOccurrences } from '../occurrences'
 import { requireScheduleWriter } from '../schedule-rows'
@@ -20,16 +20,18 @@ export async function deleteSchedule(
 ): Promise<Record<string, never>> {
   const { db } = services
   return ledgerRoute(async () => {
-    await requireScheduleWriter(services, userId, scheduleId)
+    const { membership } = await requireScheduleWriter(services, userId, scheduleId)
     if ((await occurrences(services, scheduleId, [Query.equal('status', 'posted')])).length > 0) {
       throw new AppError(
         'VALIDATION_FAILED',
         'This schedule has posted transactions, so end it instead of deleting it.',
       )
     }
-    await removeOccurrences(db, scheduleId, null, { all: true })
+    await removeOccurrences(db, membership.group, scheduleId, null, { all: true })
     await withTransaction(db, async (tx) => {
       await tx.write({ action: 'delete', tableId: TABLES.schedules, rowId: scheduleId })
+      // An archive that lands meanwhile makes this run again and get ARCHIVED.
+      await guardGroup(tx, db, membership.group)
       // An occurrence created meanwhile (a cron run) would be left without its schedule. One
       // created after this was staged also wrote the schedule row, so the commit fails.
       if ((await occurrences(services, scheduleId, [])).length > 0) throw new Raced()
