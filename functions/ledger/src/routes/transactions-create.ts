@@ -5,6 +5,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
+import { teamsFor } from '../teams'
 import {
   activityWrite,
   findTransaction,
@@ -35,13 +36,13 @@ const OCCURRENCE_ID = /_\d{8}$/
  * and an activity row in one TablesDB transaction. A retry with the same `id` and content
  * gets the stored transaction back; different content is a CONFLICT.
  */
-export const createTransaction = route('POST', '/transactions', ({ userId, body, db }) =>
+export const createTransaction = route('POST', '/transactions', ({ userId, body, db, headers }) =>
   ledgerRoute(async () => {
     const input = parseBody(createTransactionSchema, body)
     // scheduling.md: `<scheduleId>_<YYYYMMDD>` belongs to a schedule occurrence. A client
     // taking one would stop the scheduler creating it.
     if (OCCURRENCE_ID.test(input.id)) invalid('This id is kept for schedule occurrences.')
-    const membership = await requireMember(db, userId, input.groupId, {
+    const membership = await requireMember(db, teamsFor(headers), userId, input.groupId, {
       roles: ['admin', 'member'],
     })
     const now = new Date()

@@ -1,8 +1,9 @@
 import { ROLES, type Role } from '@ledgerly/core/constants/domain'
 import type { Groups, Members, Persons } from '@ledgerly/core/generated/rows'
-import { Query } from 'node-appwrite'
+import { AppwriteException, Query } from 'node-appwrite'
 import type { Db } from '../appwrite/client'
 import { DATABASE_ID, TABLES } from '../appwrite/tables'
+import type { TeamsApi } from '../appwrite/teams'
 import { AppError } from '../http/app-error'
 
 export type Membership = { person: Persons; member: Members; group: Groups }
@@ -16,10 +17,12 @@ export function requireUser(userId: string | null): string {
 /**
  * permissions.md#function-side-checks. `roles` lists the roles allowed to do this (default:
  * all); routes check anything finer, such as "creator or admin", themselves. Archived groups
- * stay readable, so read-only routes pass `allowArchived`.
+ * stay readable, so read-only routes pass `allowArchived`. A `left` member counts only while
+ * still in the group's team: one who moved out is, one who left on their own isn't.
  */
 export async function requireMember(
   db: Db,
+  teams: Pick<TeamsApi, 'listMemberships'>,
   userId: string | null,
   groupId: string,
   options: { roles?: readonly Role[]; allowArchived?: boolean } = {},
@@ -33,7 +36,14 @@ export async function requireMember(
       Query.equal('personId', person.$id),
     ]))
   // D-016: a placeholder hasn't joined the group, even if the person has an account.
-  if (!person || !member || member.status === 'placeholder') {
+  // permissions.md#members: the same `left` row for both, told apart by the team membership,
+  // which leaving on your own removes. Checked before the role, so they get NOT_A_MEMBER everywhere.
+  if (
+    !person ||
+    !member ||
+    member.status === 'placeholder' ||
+    (member.status === 'left' && !(await inTeam(teams, groupId, callerId)))
+  ) {
     throw new AppError('NOT_A_MEMBER', "You're not a member of this group.")
   }
   if (!(options.roles ?? ROLES).includes(member.role)) {
@@ -48,6 +58,24 @@ export async function requireMember(
     throw new AppError('ARCHIVED', 'This group is archived, so it can no longer be changed.')
   }
   return { person, member, group }
+}
+
+// Team ID = group ID (D-004). A team that's gone has no one in it.
+async function inTeam(
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  teamId: string,
+  userId: string,
+): Promise<boolean> {
+  try {
+    const { memberships } = await teams.listMemberships({
+      teamId,
+      queries: [Query.equal('userId', userId), Query.limit(1)],
+    })
+    return memberships.length > 0
+  } catch (error) {
+    if (error instanceof AppwriteException && error.code === 404) return false
+    throw error
+  }
 }
 
 async function findOne<R extends Persons | Members>(

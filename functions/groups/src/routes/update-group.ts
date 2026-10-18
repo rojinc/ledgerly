@@ -22,13 +22,15 @@ import {
 
 /** `groups PATCH /groups/{id}` (admin): changes only the fields given, and returns the group. */
 export async function updateGroup(
-  { db, now }: Services,
+  { db, teams, now }: Services,
   userId: string,
   groupId: string,
   body: unknown,
 ): Promise<Groups> {
   const { settings, ...columns } = parseBody(updateGroupBodySchema, body)
-  const { person, member, group } = await requireMember(db, userId, groupId, { roles: ['admin'] })
+  const { person, member, group } = await requireMember(db, teams, userId, groupId, {
+    roles: ['admin'],
+  })
   const storedSettings = JSON.parse(group.settingsJson) as GroupSettings
   if (settings && settings.type !== storedSettings.type) {
     throw invalid('The settings must match the group type.')

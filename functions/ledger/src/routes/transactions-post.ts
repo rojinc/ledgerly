@@ -10,6 +10,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
 import { z } from 'zod'
+import { teamsFor } from '../teams'
 import {
   activityWrite,
   changedColumns,
@@ -48,11 +49,11 @@ const kindRules = (kind: TransactionKind) =>
 export const postTransaction = route(
   'POST',
   '/transactions/:id/post',
-  ({ userId, params, body, db }) =>
+  ({ userId, params, body, db, headers }) =>
     ledgerRoute(async () => {
       const changes = parseBody(postTransactionBodySchema, body)
       const found = await getTransaction(db, params.id)
-      const membership = await requireMember(db, userId, found.groupId, {
+      const membership = await requireMember(db, teamsFor(headers), userId, found.groupId, {
         roles: ['admin', 'member'],
       })
       requireCreatorOrAdmin(membership, found)

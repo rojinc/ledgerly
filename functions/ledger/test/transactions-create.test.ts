@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { amounts, call, expense, GROUPS, NOW, rows, seed } from './harness'
+import { amounts, call, expense, GROUPS, leftOnTheirOwn, NOW, rows, seed } from './harness'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -196,6 +196,15 @@ describe('POST /transactions', () => {
     const response = await call(db, 'POST', '/transactions', expense(), user)
     expect(response.status).toBe(status)
     expect(response.body.error?.code).toBe(code)
+    expect(rows.transactions(db)).toEqual([])
+  })
+
+  it('refuses someone who left on their own as not a member, not as a viewer (#117)', async () => {
+    const db = seed()
+    leftOnTheirOwn(db, 'u-lee')
+    const response = await call(db, 'POST', '/transactions', expense(), 'u-lee')
+    expect(response.status).toBe(403)
+    expect(response.body.error?.code).toBe('NOT_A_MEMBER')
     expect(rows.transactions(db)).toEqual([])
   })
 

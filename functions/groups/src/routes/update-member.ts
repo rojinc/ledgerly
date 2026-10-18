@@ -24,14 +24,14 @@ type Fields = Pick<Members, 'displayName' | 'role' | 'status' | 'joinedOn' | 'le
  * can still see and settle what they owe.
  */
 export async function updateMember(
-  { db, now }: Services,
+  { db, teams, now }: Services,
   userId: string,
   groupId: string,
   memberId: string,
   body: unknown,
 ): Promise<Members> {
   const changes = parseBody(updateMemberBodySchema, body)
-  const { person: caller } = await requireMember(db, userId, groupId, { roles: ['admin'] })
+  const { person: caller } = await requireMember(db, teams, userId, groupId, { roles: ['admin'] })
   const stored = await getMemberOf(db, groupId, memberId)
 
   const movingOut = changes.leftOn !== undefined
