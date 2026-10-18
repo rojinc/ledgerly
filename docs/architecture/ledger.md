@@ -97,6 +97,16 @@ type SplitSpec =
   | { mode: 'days';    personIds?: string[] }                                  // bills only; default: everyone present in the period
 ```
 
+### Default split
+
+When an expense, bill or loan names no split and has no items:
+
+- a **bill in a house** uses the group's `defaultBillSplit` (`days` unless the group set `equal`),
+- a **loan** is split equally between everyone present on the date except the payers (the borrowers),
+- anything else is split equally between everyone present on the date (`joinedOn` ≤ date ≤ `leftOn`).
+
+If that leaves nobody, the request fails with `VALIDATION_FAILED`.
+
 ### Days present
 
 For a bill with period `[periodStart, periodEnd]`, each member's weight is the number of days in that period between their `joinedOn` and `leftOn` (inclusive). Members with 0 days are left out. If everyone has 0 days, the request fails with `VALIDATION_FAILED`.
@@ -122,7 +132,9 @@ Other rounding rules:
 
 ## Payers
 
-`payers: { personId, cents }[]` says who gave money and must sum to the total. The default is the caller paying everything. Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill).
+`payers: { personId, cents }[]` says who gave money and must sum to the total. The default is the caller paying everything. Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill). Only expenses, bills and loans have payers; giving payers for any other kind fails.
+
+Rule-breaking input (payers or exact amounts that don't add up, a discount that pushes someone below 0, a kind the group type doesn't allow) fails with `VALIDATION_FAILED`. `assertShareInvariants()` runs afterwards as a last guard; if it ever fails, that's a bug (`INVARIANT_VIOLATION`).
 
 ## Items (itemised receipts)
 
@@ -134,7 +146,7 @@ Other rounding rules:
 
 ## Building shares
 
-`buildShares(input, context) → Share[]` in `packages/core` is the only code that turns a transaction into shares. The `context` holds the group type, owner and members with join/leave dates. The function is pure: same input, same output.
+`buildShares(input, context) → Share[]` in `packages/core/src/ledger` is the only code that turns a transaction into shares. The `context` holds the group type, owner, caller (the default payer), members with join/leave dates and, for houses, `defaultBillSplit`. The function is pure: same input, same output, with shares sorted by `personId`.
 
 Rules:
 
