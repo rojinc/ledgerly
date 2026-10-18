@@ -7,7 +7,7 @@ Several AI agents (Claude Code, Codex, others) and people work on this repo **at
 | Role | Who | Does |
 | --- | --- | --- |
 | **Owner** | Rojin (human) | Holds accounts, billing, secrets and console access. Has handed day-to-day decisions to the lead agent ([D-015](../architecture/decisions.md)). |
-| **Lead agent** | one agent session at a time (now: the Claude Code session that runs Agent 1) | Sets priorities, writes and approves task specs, approves contract changes, makes design decisions (recorded in the decision log), reviews PRs and **merges every PR** |
+| **Lead agent** | one agent session at a time, named in [D-015](../architecture/decisions.md) | Sets priorities, writes and approves task specs, approves contract changes, makes design decisions (recorded in the decision log), reviews PRs and **merges every PR** |
 | **Implementing agent** | Claude Code, Codex, … | Picks one ready task, implements it on its own branch and worktree, opens a PR, responds to review |
 | **Reviewing agent** | a *different* agent from the author | Reviews a PR against its issue and these docs, and comments |
 
@@ -75,7 +75,7 @@ A claim with no activity (commits, comments or a PR) for **48 hours** may be rel
 1. Rebase on `main`. Lint, typecheck, test and build must all pass locally.
 2. Update the docs if behaviour, the contract or a rule changed.
 3. Mark the PR ready using the template, with `Closes #<issue>`. Labels: `status:in-review` on the issue; `area:*`, `type:*` and `agent:*` on the PR.
-4. Ask for review: comment `Ready for review` on the PR. If you can message other Claude Code sessions, also send the PR link to the lead agent's session; the lead also sweeps open PRs regularly.
+4. Ask for review: comment `Ready for review` on the PR. If you can message other Claude Code sessions, also send the PR link to the lead agent's session; the lead also checks open PRs regularly. For other agents' PRs, the lead's own review counts as the review by a different agent.
 
 ### 5. Review
 
@@ -88,16 +88,16 @@ A reviewing agent checks, and comments with findings:
 - Are the docs updated?
 - Is it as simple as it could be? Look for code to delete.
 
-The reviewer **comments only**. Findings are marked **blocking** or **optional**.
+The reviewer **comments only**. Findings are marked **blocking** or **optional**. A blocking finding closes only when it is fixed or the reviewer agrees it doesn't apply. If the lead overrules one, the lead writes why on the PR.
 
 The lead agent merges (squash) when all of these hold:
 
-- a different agent has reviewed it (for the lead's own PRs: another lane agent, or a separate reviewer sub-agent) and no blocking finding is open,
-- CI is green on the latest commit (once CI exists, #2),
+- a different agent has reviewed it and no blocking finding is open. For the lead's own PRs, the reviewer is a fresh agent (another agent's session, or a sub-agent) that gets only the PR, the issue and these docs, not the lead's reasoning,
+- CI is green on the latest commit. Until CI exists (#2), the lead runs lint, typecheck, test and build on the PR branch before merging,
 - the acceptance criteria are met and the PR stays inside Scope,
-- for `security` PRs, the review included a security pass (permissions, identity, secrets, file access).
+- for `security` PRs, the review included a [security pass](../architecture/security-and-privacy.md#security-review-rule).
 
-Implementing agents never merge, including their own PRs.
+Only the lead agent merges. No other agent merges, not even its own PR.
 
 ### 6. Blocked or handing off
 
@@ -141,7 +141,7 @@ All agents get the same rules from `AGENTS.md`. Don't put rules only in a tool-s
 
 ## What agents must never do
 
-- Push to `main`, merge PRs, or change branch protection.
+- Push to `main` or change branch protection. Merge a PR unless you are the lead agent.
 - Edit Appwrite resources in the console, or push the schema from a laptop.
 - Commit secrets, `.env` files or real personal data.
 - Delete or skip tests to make CI pass.

@@ -17,7 +17,7 @@ M0 Foundation ──► M1 Ledger core + Employer (MVP) ──► M2 Personal + 
 
 **Critical path through M1:** #1 → #5 → #7 → #8 → #9 → #20 → #21 → #22 → #25 → #32. Keep these moving first; everything else fills in around them.
 
-**Most parallel moments:** wave 3 (dates, schema, API schemas, identity normalisation, settle) and wave 9 (timer and balances, scheduler, statements, calendar). That's when it pays to run 4–5 agents at once.
+**Most parallel moments:** wave 3 (CI, dates, schema, API schemas, identity normalisation, settle) and wave 9 (timer and balances, scheduler, statements, calendar). That's when it pays to run 4–6 agents at once.
 
 ## Exit criteria
 

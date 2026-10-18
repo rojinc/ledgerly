@@ -15,7 +15,7 @@ Rules for every coding agent (Claude Code, Codex, others) and every person worki
 ## Rules that always apply
 
 - **Stay inside your issue's Scope paths.** Need more? Comment on the issue and ask.
-- **Never** push to `main`, force-push someone else's branch, edit Appwrite resources in the console, or commit secrets or `.env` files. Only the **lead agent** merges PRs, after a review by a different agent ([who merges](docs/collaboration/multi-agent-workflow.md#roles)).
+- **Never** push to `main`, force-push someone else's branch, edit Appwrite resources in the console, or commit secrets or `.env` files. Only the **lead agent** merges PRs, after a review by a different agent ([merge rules](docs/collaboration/multi-agent-workflow.md#5-review)).
 - **Money is integer cents.** Splitting always uses `allocate()`. Never use floats for money.
 - **Dates are `YYYY-MM-DD` strings in the group's timezone.** Never `new Date('YYYY-MM-DD')`. Use the date helpers in `packages/core`.
 - **Clients never write to the database.** Every write goes through a function ([D-003](docs/architecture/decisions.md)).
