@@ -229,7 +229,10 @@ describe('POST /claim', () => {
     })
     expect(statusOf(services, 'm1')).toBe('placeholder')
     expect(services.db.rows('activity')).toEqual([])
+    // Not joined, so the team membership from step 1 is taken back, even with no retry.
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
     expect(await claimed(services)).toEqual(['g1'])
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin', 'u1'])
     expect(services.db.rows('activity')).toEqual([
       expect.objectContaining({ summary: 'Sam L joined' }),
     ])

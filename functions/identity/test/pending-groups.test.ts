@@ -1,4 +1,5 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import type { PendingGroup } from '../src/routes/pending-groups'
 import {
@@ -142,7 +143,9 @@ describe('POST /groups/{id}/join', () => {
   })
 
   it('sets left, not active, for someone who moved out before joining', async () => {
-    const services = fixture([placeholderRow('m1', 'g1', 'pSam', BEFORE, { leftOn: '2026-09-30' })])
+    const services = fixture([
+      placeholderRow('m1', 'g1', 'pSam', BEFORE, { role: 'viewer', leftOn: '2026-09-30' }),
+    ])
     expect((await ok<Joined>(services, 'POST', '/groups/g1/join')).member.status).toBe('left')
   })
 
@@ -155,18 +158,42 @@ describe('POST /groups/{id}/join', () => {
     expect(services.db.rows('activity')).toHaveLength(1)
   })
 
-  it('returns an active or left row unchanged, without touching the team', async () => {
+  it('returns an active row, or a moved-out one still in the team, unchanged without a team call', async () => {
     const services = fixture([
       ...defaultMembers(),
-      placeholderRow('m5', 'g4', 'pSam', BEFORE, { status: 'left', leftOn: '2026-09-30' }),
+      // Moved out after joining: `left`, still in g4's team.
+      placeholderRow('m5', 'g4', 'pSam', BEFORE, {
+        status: 'left',
+        role: 'viewer',
+        leftOn: '2026-09-30',
+      }),
     ])
+    await services.teams.createMembership({ teamId: 'g4', roles: [], userId: 'u1' })
     const add = vi.spyOn(services.teams, 'createMembership')
     expect((await ok<Joined>(services, 'POST', '/groups/g3/join')).member.status).toBe('active')
-    // g4's team doesn't hold Sam, and a retry leaves it that way.
-    expect((await ok<Joined>(services, 'POST', '/groups/g4/join')).member.status).toBe('left')
+    const movedOut = await ok<Joined>(services, 'POST', '/groups/g4/join')
+    expect(movedOut).toMatchObject({ group: { $id: 'g4' }, member: { status: 'left' } })
+    expect(add).not.toHaveBeenCalled()
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('is NOT_A_MEMBER for someone who left on their own, and changes nothing', async () => {
+    // Left voluntarily: `left`, `viewer`, and no longer in g4's team.
+    const services = fixture([
+      placeholderRow('m5', 'g4', 'pSam', BEFORE, {
+        status: 'left',
+        role: 'viewer',
+        leftOn: '2026-09-30',
+      }),
+    ])
+    const add = vi.spyOn(services.teams, 'createMembership')
+    expect(await failure(services, 'POST', '/groups/g4/join')).toMatchObject({
+      status: 403,
+      code: 'NOT_A_MEMBER',
+    })
     expect(add).not.toHaveBeenCalled()
     expect(teamUsers(services, 'g4')).toEqual(['uAdmin'])
-    expect(services.db.rows('activity')).toEqual([])
+    expect(memberRow(services, 'm5')?.status).toBe('left')
   })
 
   it('is safe to send twice', async () => {
@@ -249,8 +276,37 @@ describe('POST /groups/{id}/join', () => {
       code: 'CONFLICT',
       message: TRY_AGAIN,
     })
+    // Not joined, so the team membership from step 1 is taken back.
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(memberRow(services, 'm1')?.status).toBe('placeholder')
     expect((await ok<Joined>(services, 'POST', '/groups/g1/join')).member.status).toBe('active')
     expect(services.db.rows('activity')).toHaveLength(1)
+  })
+
+  it('takes back the team membership when the join fails for another reason', async () => {
+    const services = fixture()
+    vi.spyOn(services.db, 'updateTransaction').mockRejectedValueOnce(new Error('network down'))
+    expect((await failure(services, 'POST', '/groups/g1/join')).code).toBe('INTERNAL')
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(memberRow(services, 'm1')?.status).toBe('placeholder')
+  })
+
+  it("is NOT_A_MEMBER when the row is deleted before the commit (Appwrite's 404)", async () => {
+    const services = fixture()
+    const commit = services.db.updateTransaction.bind(services.db)
+    let done = false
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      if (done || !params.commit) return commit(params)
+      done = true
+      await withTransaction(services.db, (tx) =>
+        tx.write({ action: 'delete', tableId: 'members', rowId: 'm1' }),
+      )
+      // What Appwrite answers when a staged row was deleted meanwhile (checked on dev, #105).
+      throw new AppwriteException('Row not found', 404, 'row_not_found')
+    })
+    expect((await failure(services, 'POST', '/groups/g1/join')).code).toBe('NOT_A_MEMBER')
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(services.db.rows('activity')).toEqual([])
   })
 
   it('returns the row joined by a claim running at the same time', async () => {

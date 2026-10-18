@@ -2,11 +2,12 @@ import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
 import { parseBody } from '../parse-body'
-import { findPersonOfUser, getRowOrNull, SET_UP_FIRST } from '../rows'
+import { findPersonOfUser, getRowOrNull, isAppwriteError, SET_UP_FIRST } from '../rows'
 import type { Services } from '../services'
 
 const PAGE_SIZE = 100
@@ -45,7 +46,9 @@ export async function listPendingGroups(
 /**
  * `identity POST /groups/{id}/join` (identity-and-invites.md#joining-a-group). Reads the
  * caller's own member row before the group, so someone who isn't in it learns nothing. A row
- * already `active` or `left` is returned unchanged without touching the team, so a retry is safe.
+ * already `active`, or `left` while still in the team (moved out), is returned unchanged without
+ * touching the team, so a retry is safe; `left` and out of the team (left on their own) is
+ * NOT_A_MEMBER.
  */
 export async function joinPendingGroup(
   services: Services,
@@ -58,6 +61,11 @@ export async function joinPendingGroup(
   const person = await findPersonOfUser(db, userId)
   let member = person ? await ownMemberRow(db, groupId, person.$id) : undefined
   if (!person || !member) throw notAMember()
+  // Someone who left on their own is out of the team, and coming back isn't supported in v1;
+  // a member who moved out (`left`, still in the team) gets the group as before.
+  if (member.status === 'left' && !(await isInTeam(services.teams, groupId, userId))) {
+    throw notAMember()
+  }
   // Only now, so someone who isn't in the group learns nothing about it. A member row without
   // its group (a create that failed partway) must not join a team.
   const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
@@ -70,6 +78,19 @@ export async function joinPendingGroup(
     if (!member || member.status === 'placeholder') throw notAMember()
   }
   return { group, member }
+}
+
+async function isInTeam(teams: TeamsApi, teamId: string, userId: string): Promise<boolean> {
+  try {
+    const { memberships } = await teams.listMemberships({
+      teamId,
+      queries: [Query.equal('userId', userId), Query.limit(1)],
+    })
+    return memberships.length > 0
+  } catch (error) {
+    if (isAppwriteError(error, 404)) return false
+    throw error
+  }
 }
 
 function notAMember(): AppError {

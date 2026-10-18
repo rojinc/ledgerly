@@ -43,11 +43,14 @@ export async function joinGroup(
         permissions: [Permission.read(Role.team(current.groupId))],
       })
     })
-    return true
   } catch (error) {
     const current = await getRowOrNull<Members>(db, TABLES.members, member.$id)
-    // Still pending: a commit conflict means another change to the row won; claim again.
-    if (isPendingFor(current, personId)) throw isAppwriteError(error, 409) ? tryAgain() : error
+    if (isPendingFor(current, personId)) {
+      // Still pending (a commit conflict, or any other failure): take back step 1, so no one
+      // keeps team access without having joined, even if they never retry.
+      await removeFromTeam(teams, member.groupId, userId)
+      throw isAppwriteError(error, 409) ? tryAgain() : error
+    }
     // The row is gone (an admin removed it) or now belongs to another person (a merge): take
     // back the team membership from step 1, so no one keeps access without a member row. A
     // row now `active` or `left` for this person was joined by a claim running at the same
@@ -55,6 +58,10 @@ export async function joinGroup(
     if (current?.personId !== personId) await removeFromTeam(teams, member.groupId, userId)
     return false
   }
+  // A parallel join that failed while the row was still pending may have taken back the
+  // membership from step 1 just before this commit; the row is joined now, so add it again.
+  await addToTeam(teams, member.groupId, userId)
+  return true
 }
 
 // Narrows to a placeholder row only, so a row that fails the check can still be another row.
