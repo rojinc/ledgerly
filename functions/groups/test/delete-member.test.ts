@@ -141,7 +141,10 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
   it("leaves someone else's membership alone if Teams answers with it (#121)", async () => {
     const services = house()
     const admin = services.teams.members('g1')?.find((membership) => membership.userId === 'u1')
-    vi.spyOn(services.teams, 'listMemberships').mockResolvedValue({ memberships: [admin as never] })
+    vi.spyOn(services.teams, 'listMemberships').mockResolvedValue({
+      total: 1,
+      memberships: [admin as never],
+    })
     const add = vi.spyOn(services.teams, 'createMembership')
     expect(await remove(services, 'm2')).toEqual({})
     expect(teamUsers(services)).toContain('u1')

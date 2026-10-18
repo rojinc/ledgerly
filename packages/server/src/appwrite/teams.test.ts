@@ -44,7 +44,10 @@ describe('removeFromTeam', () => {
   it("deletes only a membership with that user ID, not only through the query's filter (#121)", async () => {
     const teams = new FakeTeams({ g1: ['u1', 'u2'] })
     const other = teams.members('g1')?.find((membership) => membership.userId === 'u2')
-    vi.spyOn(teams, 'listMemberships').mockResolvedValue({ memberships: [other as never] })
+    vi.spyOn(teams, 'listMemberships').mockResolvedValue({
+      total: 1,
+      memberships: [other as never],
+    })
     const deleteMembership = vi.spyOn(teams, 'deleteMembership')
     await removeFromTeam(teams, 'g1', 'u1')
     expect(deleteMembership).not.toHaveBeenCalled()
