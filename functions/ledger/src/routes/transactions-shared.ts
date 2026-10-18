@@ -144,7 +144,7 @@ export function requireUnlocked(row: Pick<Transactions, 'statementId'>): void {
 /**
  * LOCKED while a statement of the group that covers one of these dates is `finalizing`
  * (statements.md#2-finalize, step 1). Finalizing statements are rare, so the query uses
- * `idx_status`.
+ * `idx_status`. Routes call it after staging the group row (ledger.md#concurrency).
  */
 export async function requireNotFinalizing(
   db: Db,
@@ -198,9 +198,10 @@ export async function loadLedger(db: Db, membership: Membership): Promise<Ledger
 
 /**
  * Guards the group row and the member row of everyone in `people` (ledger.md#concurrency):
- * stages a write of a column that never changes to each, then reads them in the transaction.
- * A member row removed meanwhile (I-3), an archive or a currency change reruns the route; one
- * that commits after this makes the commit fail with 409, which reruns it too.
+ * stages a write of a column that never changes to each (`groups.type`, `members.groupId`),
+ * then reads them in the transaction. A member row removed or given to another person (a
+ * merge) meanwhile (I-3), an archive or a currency change reruns the route; one that commits
+ * after this makes the commit fail with 409, which reruns it too.
  */
 export async function guardGroupAndMembers(
   tx: Tx,
@@ -211,28 +212,65 @@ export async function guardGroupAndMembers(
 ): Promise<void> {
   const memberRows = people.map((personId) => ledger.memberRows.get(personId))
   if (memberRows.some((rowId) => rowId === undefined)) throw new Raced()
-  try {
+  await guardGroup(
+    tx,
+    db,
+    group,
+    memberRows.map((rowId) => ({
+      action: 'update' as const,
+      tableId: TABLES.members,
+      rowId: rowId as string,
+      data: { groupId: group.$id },
+    })),
+  )
+  await rerunIfGone(async () => {
+    const rows = await Promise.all(
+      memberRows.map((rowId) =>
+        db.getRow<Members>({
+          databaseId: DATABASE_ID,
+          transactionId: tx.id,
+          tableId: TABLES.members,
+          rowId: rowId as string,
+        }),
+      ),
+    )
+    // identity-and-invites.md#merging-two-persons: a merge gives the member row to another person.
+    if (rows.some((row, index) => row.personId !== people[index])) throw new Raced()
+  })
+}
+
+/**
+ * Guards the group row (ledger.md#concurrency), with any other guard writes in `also`: stages a
+ * write of `groups.type`, which never changes, then checks the currency and archive date.
+ */
+export async function guardGroup(
+  tx: Tx,
+  db: Db,
+  group: Groups,
+  also: readonly Write[] = [],
+): Promise<void> {
+  await rerunIfGone(async () => {
     await tx.write(
       { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { type: group.type } },
-      ...people.map((personId, index) => ({
-        action: 'update' as const,
-        tableId: TABLES.members,
-        rowId: memberRows[index] as string,
-        data: { personId },
-      })),
+      ...also,
     )
-    const read = { databaseId: DATABASE_ID, transactionId: tx.id }
-    const staged = await db.getRow<Groups>({ ...read, tableId: TABLES.groups, rowId: group.$id })
+    const staged = await db.getRow<Groups>({
+      databaseId: DATABASE_ID,
+      transactionId: tx.id,
+      tableId: TABLES.groups,
+      rowId: group.$id,
+    })
     if (staged.currency !== group.currency || staged.archivedAt !== group.archivedAt) {
       throw new Raced()
     }
-    await Promise.all(
-      memberRows.map((rowId) =>
-        db.getRow<Members>({ ...read, tableId: TABLES.members, rowId: rowId as string }),
-      ),
-    )
+  })
+}
+
+// A row deleted before the guard staged: run the route again with the group as it is now.
+async function rerunIfGone(guard: () => Promise<void>): Promise<void> {
+  try {
+    await guard()
   } catch (error) {
-    // A row deleted before the guard staged: run the route again with the group as it is now.
     if (error instanceof AppwriteException && error.code === 404) throw new Raced()
     throw error
   }

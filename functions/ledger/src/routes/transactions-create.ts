@@ -66,13 +66,13 @@ export const createTransaction = route('POST', '/transactions', ({ userId, body,
       }
       return readView(db, existing.$id)
     }
-    await requireNotFinalizing(db, input.groupId, [input.date])
 
     const person = membership.person.$id
     const row = { $id: input.id, ...columns }
     const permissions = teamRead(input.groupId)
     await withTransaction(db, async (tx) => {
       await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
+      await requireNotFinalizing(db, input.groupId, [input.date])
       await tx.write(
         {
           action: 'create',

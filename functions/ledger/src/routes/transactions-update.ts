@@ -76,10 +76,15 @@ export const updateTransaction = route(
           ) {
             invalid('Mark a due bill as paid with “post”, not by editing it.')
           }
-          // Without payers, whoever paid before still pays, not the person editing.
+          // Without payers, whoever paid before still pays, not the person editing. An
+          // unposted row stores no payer: who pays is settled when it's posted.
           const stored = storedInputSchema.parse(JSON.parse(existing.inputJson))
           const payer =
-            stored.payers?.length === 1 ? stored.payers[0]?.personId : existing.createdBy
+            stored.payers?.length === 1
+              ? stored.payers[0]?.personId
+              : existing.status === 'posted'
+                ? existing.createdBy
+                : person
           const planned = plan(input, existing.status, ledger, payer)
           const content = transactionColumns(input, planned)
           const columns = {
@@ -103,8 +108,8 @@ export const updateTransaction = route(
           if (Object.keys(changes).length === 0 && sameRows(oldShares, shareData)) {
             throw new Unchanged()
           }
-          await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
+          await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
           await tx.write(
             { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
             ...replaceRows(TABLES.shares, oldShares, shareData, permissions),

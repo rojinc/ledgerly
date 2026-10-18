@@ -12,7 +12,7 @@ export const NOW = new Date('2026-10-18T01:00:00.000Z')
 
 const routes: Route[] = [createTransaction, updateTransaction, postTransaction, voidTransaction]
 
-const member = (
+export const member = (
   $id: string,
   groupId: string,
   personId: string,

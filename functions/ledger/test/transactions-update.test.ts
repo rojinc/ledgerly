@@ -116,6 +116,34 @@ describe('PATCH /transactions/{id}', () => {
     ])
   })
 
+  it('edits a due bill after the person who added it was removed from the group', async () => {
+    const db = seed()
+    const bill = {
+      id: 'b1',
+      groupId: 'house',
+      kind: 'bill',
+      date: '2026-10-20',
+      description: 'Electricity',
+      totalCents: 1200,
+      split: { mode: 'equal', personIds: ['alice', 'cara'] },
+      bill: { status: 'due', dueOn: '2026-10-25' },
+    }
+    expect((await call(db, 'POST', '/transactions', bill, 'u-bob')).status).toBe(200)
+    // groups DELETE: Bob has no shares and the bill doesn't name him.
+    const { $id } = await db.createTransaction()
+    await db.createOperations({
+      transactionId: $id,
+      operations: [{ action: 'delete', databaseId: 'main', tableId: 'members', rowId: 'm-bob' }],
+    })
+    await db.updateTransaction({ transactionId: $id, commit: true })
+    const response = await call(db, 'PATCH', '/transactions/b1', {
+      ...bill,
+      bill: { status: 'due', dueOn: '2026-10-26' },
+    })
+    expect(response.status).toBe(200)
+    expect(rows.transactions(db)[0]).toMatchObject({ status: 'due', dueOn: '2026-10-26' })
+  })
+
   it('records changed items in the activity row', async () => {
     const items = (name: string) => [
       { name, amountCents: 9000, split: { mode: 'equal', personIds: ['alice', 'bob'] } },

@@ -1,9 +1,15 @@
+import type { TransactionKind } from '@ledgerly/core/constants/domain'
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
-import { postTransactionBodySchema } from '@ledgerly/core/schemas/ledger'
+import {
+  checkKindRules,
+  postTransactionBodySchema,
+  type TransactionTemplate,
+} from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
+import { z } from 'zod'
 import {
   activityWrite,
   changedColumns,
@@ -30,6 +36,9 @@ import {
 } from './transactions-shared'
 
 export { postTransactionBodySchema }
+
+const kindRules = (kind: TransactionKind) =>
+  z.unknown().superRefine((input, ctx) => checkKindRules(kind, input as TransactionTemplate, ctx))
 
 /**
  * `POST /transactions/{id}/post` (functions-api.md#ledger): turns a `scheduled` or `due`
@@ -74,8 +83,10 @@ export const postTransaction = route(
             ...(stored.shift ? { shift: { ...stored.shift, ...changes.shift } } : {}),
             ...(stored.bill ? { bill: { ...stored.bill, status: 'paid' as const } } : {}),
           }
-          // The shift's minutes × rate can only be checked against its stored values here, so
-          // buildShares turns one past the maximum into VALIDATION_FAILED.
+          // The body's payers and shift meet the stored input only here, so the result is
+          // checked as a new transaction would be: payers only where the kind has them, at most
+          // 15 people. buildShares turns minutes × rate past the maximum into VALIDATION_FAILED.
+          parseBody(kindRules(existing.kind), input)
           const planned = plan(input, 'posted', ledger)
           const columns = {
             status: 'posted' as const,
@@ -89,8 +100,8 @@ export const postTransaction = route(
             if (Object.keys(changed).length === 0) throw new Unchanged()
             invalid('Only a scheduled or due transaction can be posted.')
           }
-          await requireNotFinalizing(db, existing.groupId, [existing.date, date])
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
+          await requireNotFinalizing(db, existing.groupId, [existing.date, date])
           const oldShares = await listShares(db, existing.$id)
           const row = { ...existing, date }
           await tx.write(

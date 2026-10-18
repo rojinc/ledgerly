@@ -146,6 +146,75 @@ describe('a request that read the row before another one committed', () => {
     expect(rows.transactions(db)).toEqual([])
   })
 
+  it('a member row given to another person meanwhile (a merge) reruns the write, and stays theirs', async () => {
+    const db = seed()
+    before(db, () =>
+      commitNow(db, [
+        {
+          action: 'update',
+          databaseId: 'main',
+          tableId: 'members',
+          rowId: 'm-cara',
+          data: { personId: 'cara2' },
+        },
+      ]),
+    )
+    const response = await call(db, 'POST', '/transactions', withCara)
+    // The rerun finds Cara no longer in the group (I-3).
+    expect(response.body.error?.code).toBe('VALIDATION_FAILED')
+    expect(db.rows('members').find((row) => row.$id === 'm-cara')?.personId).toBe('cara2')
+    expect(rows.transactions(db)).toEqual([])
+  })
+
+  it('a statement that starts finalizing before the guard stages makes the write LOCKED', async () => {
+    const db = seed({
+      statements: [
+        {
+          $id: 'st1',
+          groupId: 'house',
+          type: 'divide',
+          periodStart: '2026-10-01',
+          periodEnd: '2026-10-31',
+          status: 'draft',
+          snapshotJson: '{}',
+        },
+      ],
+    })
+    before(db, () =>
+      commitNow(db, [
+        {
+          action: 'update',
+          databaseId: 'main',
+          tableId: 'statements',
+          rowId: 'st1',
+          data: { status: 'finalizing' },
+        },
+      ]),
+    )
+    const response = await call(db, 'POST', '/transactions', expense())
+    expect(response.body.error?.code).toBe('LOCKED')
+    expect(rows.transactions(db)).toEqual([])
+  })
+
+  it('a void that loses to an archive runs again and is refused', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', expense())
+    beforeCommit(db, () =>
+      commitNow(db, [
+        {
+          action: 'update',
+          databaseId: 'main',
+          tableId: 'groups',
+          rowId: 'house',
+          data: { archivedAt: '2026-10-18T00:00:00.000Z' },
+        },
+      ]),
+    )
+    const response = await call(db, 'POST', '/transactions/t1/void', { reason: 'Duplicate' })
+    expect(response.body.error?.code).toBe('ARCHIVED')
+    expect(rows.transactions(db)[0]?.status).toBe('posted')
+  })
+
   it('a currency change between the check and the commit makes the write run again', async () => {
     const db = seed()
     beforeCommit(db, () =>

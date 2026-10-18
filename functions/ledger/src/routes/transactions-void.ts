@@ -6,6 +6,7 @@ import { route } from '@ledgerly/server/http/create-handler'
 import {
   activityWrite,
   getTransaction,
+  guardGroup,
   guardTransaction,
   invalid,
   ledgerRoute,
@@ -55,6 +56,7 @@ export const voidTransaction = route(
             if (existing.voidReason === reason) throw new Unchanged()
             invalid('This transaction is already voided.')
           }
+          await guardGroup(tx, db, membership.group)
           await requireNotFinalizing(db, existing.groupId, [existing.date])
           const shares = await listShares(db, existing.$id)
           await tx.write(

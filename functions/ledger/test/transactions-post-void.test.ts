@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { amounts, call, expense, NOW, rows, seed } from './harness'
+import { amounts, call, expense, MEMBERS, member, NOW, rows, seed } from './harness'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -144,6 +144,44 @@ describe('POST /transactions/{id}/post', () => {
   ])('refuses to post %s', async (_case, run) => {
     const response = await run(seed())
     expect(response.body.error?.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('checks the body and the stored input together, as for a new transaction', async () => {
+    // Alice and 14 others share the bill; payers from the body would make it sixteen.
+    const others = Array.from({ length: 14 }, (_, index) => `p${index}`)
+    const people = ['alice', ...others]
+    const db = seed({
+      members: [
+        ...MEMBERS,
+        ...[...others, 'q'].map((id) => member(`m-${id}`, 'house', id, 'member', 'placeholder')),
+      ],
+    })
+    await call(db, 'POST', '/transactions', {
+      ...dueBill,
+      totalCents: 1500,
+      split: { mode: 'equal', personIds: people },
+    })
+    const response = await call(db, 'POST', '/transactions/b1/post', {
+      payers: [
+        { personId: 'p0', cents: 1500 },
+        { personId: 'q', cents: 0 },
+      ],
+    })
+    expect(response.body.error?.code).toBe('VALIDATION_FAILED')
+    expect(rows.transactions(db)[0]?.status).toBe('due')
+  })
+
+  it('refuses payers on a shift', async () => {
+    const db = seed({ transactions: [scheduledShift] })
+    const response = await call(
+      db,
+      'POST',
+      '/transactions/sch1_20261016/post',
+      { payers: [{ personId: 'sam', cents: 12500 }] },
+      'u-sam',
+    )
+    expect(response.body.error?.code).toBe('VALIDATION_FAILED')
+    expect(rows.transactions(db)[0]?.status).toBe('scheduled')
   })
 
   it('gives a retried post the posted transaction back, writing nothing', async () => {
