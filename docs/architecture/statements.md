@@ -55,7 +55,7 @@ Drafts are **not** locked. Users can keep adding and fixing transactions. `POST 
 
 Admin only. Each step checks whether it has already been done, so an interrupted finalize can be called again safely.
 
-1. Set status `finalizing`. While any statement in a group is `finalizing`, the `ledger` function refuses writes to that group's transactions dated on or before the period end (`LOCKED`).
+1. Set status `finalizing`, and stage a write to the group row in the same database transaction ([ledger concurrency](ledger.md#concurrency)). While any statement in a group is `finalizing`, the `ledger` function refuses writes to that group's transactions dated on or before the period end (`LOCKED`).
 2. **Invoices only:** if `number` is empty, atomically increment the issuer's `profiles.lastInvoiceNumber` and store the result in `number`. Store `displayNumber` = prefix + number padded to 4 digits (`INV-0010`). A crash between these two writes can leave a gap in numbering; that is acceptable and logged.
 3. Recalculate the snapshot from: posted transactions with `statementId` empty and `date <= periodEnd`, plus any already locked to this statement (from an interrupted run).
 4. Lock: set `statementId` on those transactions, in batches of at most 90 operations per database transaction.

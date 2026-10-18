@@ -147,6 +147,7 @@ export type Groups = Models.Row & {
     nextCloseAt: string | null;
     settingsJson: string;
     archivedAt: string | null;
+    rev: string | null;
 }
 
 export type Members = Models.Row & {
@@ -157,6 +158,7 @@ export type Members = Models.Row & {
     status: MembersStatus;
     joinedOn: string;
     leftOn: string | null;
+    rev: string | null;
 }
 
 export type Transactions = Models.Row & {

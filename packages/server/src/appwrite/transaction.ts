@@ -1,4 +1,5 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
+import { AppwriteException } from 'node-appwrite'
 import type { Db } from './client'
 import { DATABASE_ID, type TableId } from './tables'
 
@@ -103,10 +104,28 @@ export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): 
   if (staged === 0) {
     await rollback(db, transactionId)
   } else {
-    await db.updateTransaction({ transactionId, commit: true })
+    await commit(db, transactionId)
   }
   return result
 }
+
+/**
+ * Commits. Appwrite fails a commit with 404 when a row it staged was deleted meanwhile (checked
+ * on ledgerly-dev, #105): the same race as a 409, so it is reported as one and routes handle
+ * both alike.
+ */
+async function commit(db: Db, transactionId: string): Promise<void> {
+  try {
+    await db.updateTransaction({ transactionId, commit: true })
+  } catch (error) {
+    if (error instanceof AppwriteException && error.code === 404 && ROW_GONE.includes(error.type)) {
+      throw new AppwriteException(error.message, 409, 'transaction_conflict')
+    }
+    throw error
+  }
+}
+
+const ROW_GONE = ['row_not_found', 'document_not_found']
 
 /**
  * Commits `writes` in batches of MAX_OPS_PER_DB_TRANSACTION, one transaction each. Only for

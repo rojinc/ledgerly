@@ -1,7 +1,9 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // ES2023 like core, whose money/format.ts this function imports.
+    "lib": ["ES2023"],
     "types": ["node"]
   },
-  "include": ["src"]
+  "include": ["src", "test"]
 }

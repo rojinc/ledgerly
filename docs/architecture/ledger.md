@@ -133,7 +133,7 @@ Other rounding rules:
 
 ## Payers
 
-`payers: { personId, cents }[]` says who gave money and must sum to the total. The default is the caller paying everything. Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill). Only expenses, bills and loans have payers; giving payers for any other kind fails.
+`payers: { personId, cents }[]` says who gave money and must sum to the total. When a new transaction gives none, the caller pays everything; an edit without payers keeps who paid before ([functions API](functions-api.md#ledger)). Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill). Only expenses, bills and loans have payers; giving payers for any other kind fails.
 
 ## Items (itemised receipts)
 
@@ -149,7 +149,7 @@ Other rounding rules:
 
 Rules:
 
-- Shares are **rebuilt completely** on every write. In one database transaction the function deletes the old share rows and creates the new ones. Never patch a single share.
+- Shares are **rebuilt completely** on every write, in one database transaction: every share row is rewritten whole from the new set, extra rows are created and rows left over are deleted. Never patch a single share. Items are rebuilt the same way. Rewriting rows instead of deleting and recreating them keeps the largest edit (15 people, 30 items) within one transaction's 90 writes.
 - Each share copies `groupId`, `date`, `kind` and `category` from its transaction so the main queries need one index. Because shares are always rebuilt, these copies can't drift. ([D-007](decisions.md))
 - A person whose given and received are both 0 (for example 1 cent split three ways) gets no share row.
 
@@ -202,6 +202,17 @@ All reports are sums over the user's shares in groups they have joined ([D-016](
 - **Void**: set status `void`, delete shares and keep the row. Allowed until locked.
 - **Locked**: create an `adjustment` instead. It shows on the next statement.
 - Editing a schedule-generated occurrence sets `overridden = true`. See [Scheduling](scheduling.md).
+
+## Concurrency
+
+Every ledger write checks what it depends on only after staging a write to it in its database transaction ([conventions](../engineering/conventions.md#functions)). A change by anyone else after that makes the commit fail with 409 (a delete fails it with 404, which `withTransaction` reports as 409), and the write runs once more from the start.
+
+- **The transaction row:** edit, post and void stage a write to it first, then read it, its shares, items and stored input. So they never act on a version that another edit, post, void or lock (I-7) has replaced.
+- **The member rows (I-3):** every create, edit and post stages a guard write to the `members` row of each person the transaction names (payers, splits, items, payment, adjustment) or gives a share, then reads it and checks it still belongs to that person (a [merge](identity-and-invites.md#merging-two-persons) gives a member row to another person). This includes a `due` or `scheduled` transaction, which has no shares yet. A member removed meanwhile can't be left with a share, or named in a transaction that would give them one when it's posted. The `groups` function refuses to remove anyone an unposted transaction names, so the two checks together cover both orders.
+- **The group row:** every create, edit, post and void stages a guard write to the group row, then checks that its currency, archive date, time zone and settings are what the write read. A change to any of them that lands meanwhile makes the write run again with the group as it is now.
+- **Statements being finalized:** the `finalizing` check runs after the group row is staged. Finalize step 1 stages the group row in the same database transaction that sets `finalizing` ([statements](statements.md#2-finalize-post-statementsidfinalize)), so a write that checked just before then fails its commit, runs again and gets `LOCKED`.
+
+A **guard write** sets the row's `rev` to a fresh random value ([data model](data-model.md#groups)). Appwrite counts only real changes when it checks a commit: a write that leaves a row as it was (a "no-op") neither fails anyone else's commit nor is noticed by them (checked on `ledgerly-dev`, #105). So the guard must change something, and `rev` exists only for that: writing it never undoes anyone else's change, and it makes the order work both ways. A member delete or currency change staged before a ledger write commits now fails its own commit, because the ledger's guard changed the row. Because every write guards the group row, two writes to the same group at the same moment are serialized: the second one's commit fails and it runs again.
 
 ## Currency
 

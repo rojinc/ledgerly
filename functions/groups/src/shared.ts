@@ -7,6 +7,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
 
 // Small helpers shared by the groups routes. identity has copies of the first few
@@ -210,9 +211,9 @@ export async function joinedAdmins(db: Db, groupId: string): Promise<Members[]> 
 /**
  * For a change that takes away a joined admin (leaving, demoting, moving out, removing): keeps
  * another one. Call it inside the transaction, after staging the change itself. It stages a
- * no-op on one other joined admin (its personId, which never changes), then checks that row is
- * still a joined admin, so a concurrent change to it fails this commit (stage, then check:
- * conventions.md). With no other joined admin, VALIDATION_FAILED with `message`.
+ * guard write (a fresh `rev`) on one other joined admin, then checks that row is still a joined
+ * admin, so a concurrent change to it fails this commit, and this one fails a change staged
+ * earlier (stage, then check: conventions.md). With no other joined admin, VALIDATION_FAILED with `message`.
  */
 export async function keepAnotherAdmin(
   db: Db,
@@ -227,7 +228,7 @@ export async function keepAnotherAdmin(
     action: 'update',
     tableId: TABLES.members,
     rowId: other.$id,
-    data: { personId: other.personId },
+    data: { rev: randomId() },
   })
   const current = await getRowOrNull<Members>(db, TABLES.members, other.$id)
   if (current?.groupId !== groupId || current.role !== 'admin' || current.status !== 'active') {
