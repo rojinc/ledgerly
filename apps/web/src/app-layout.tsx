@@ -9,6 +9,7 @@ import { Button } from './ui/button'
 // Only screens that exist. Each feature adds its own entry when it lands.
 const NAV = [
   { to: '/', label: 'Home' },
+  { to: '/groups', label: 'Groups' },
   { to: '/profile', label: 'Profile' },
 ]
 
@@ -24,7 +25,8 @@ export function AppLayout() {
               <NavLink
                 key={item.to}
                 to={item.to}
-                end
+                // Home only on `/`; other tabs stay active on their subpages.
+                end={item.to === '/'}
                 className={({ isActive }) =>
                   cn(
                     'rounded-md px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',

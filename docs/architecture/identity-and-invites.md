@@ -17,7 +17,7 @@ Every email or phone number goes through `normalizeEmail()` or `normalizePhone()
 | Type | Rule | Example |
 | --- | --- | --- |
 | email | Trim and lowercase. Dots and `+tags` are kept. | ` Sam@Example.com ` → `email:sam@example.com` |
-| phone | Parse with `libphonenumber-js`, using the country from the caller's profile `region` as the default (`AU-NSW` → `AU`); reject numbers that `libphonenumber-js` (min metadata) calls invalid, in national or E.164 form, and numbers with an extension; format as E.164 | `0412 345 678` (AU) → `phone:+61412345678` |
+| phone | Parse with `libphonenumber-js`, using the country from the group's `region` as the default (the group the person is being added to; `AU-NSW` → `AU`); reject numbers that `libphonenumber-js` (min metadata) calls invalid, in national or E.164 form, and numbers with an extension; format as E.164 | `0412 345 678` (AU) → `phone:+61412345678` |
 
 ## First login (bootstrap)
 
@@ -82,7 +82,7 @@ A member joins a group only through the person's own action ([D-016](decisions.m
 Joining, done by the `identity` function, in this order so a retry can always finish it:
 
 1. Add the user to the group's team ("already a member" counts as done).
-2. In one database transaction: set the status to `active` (or `left` if `leftOn` is already set, so a former housemate can still see and settle up) and write one `member.joined` activity row. If the member row is gone by now (an admin removed it meanwhile), remove the team membership from step 1 again, so a removed person keeps no access.
+2. In one database transaction: set the status to `active` (or `left` if `leftOn` is already set, so a former housemate can still see and settle up) and write one `member.joined` activity row. If this step fails, or the member row is gone by now (an admin removed it meanwhile), remove the team membership from step 1 again, so no one keeps access without having joined. Only a row a parallel join has just joined keeps it.
 
 All three ways write the same row, so the group can't tell which one happened.
 

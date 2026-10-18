@@ -74,7 +74,7 @@ type TransactionInput = {
   description: string           // 1–200 chars
   category?: Category
   totalCents?: number           // required unless kind = shift (computed) or items are given (sum of items)
-  payers?: { personId: string; cents: number }[]   // default: the caller pays everything
+  payers?: { personId: string; cents: number }[]   // default: see "Payers when none are given" below
   split?: SplitSpec             // expense, bill, loan
   items?: ItemInput[]           // expense, bill; at most 30
   shift?: {                     // kind = shift
@@ -110,7 +110,7 @@ Each route parses its body with its schema from `packages/core/src/schemas/` bef
 - **Bills** (one-off transactions, not schedule templates): a `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`.
 - **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it.
 - **Lists:** at most 10 `receiptFileIds` (the ledger function checks each file) and 366 `exdates`.
-- **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365.
+- **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365. `region` must be a country or state the public holiday library knows (`publicHolidayChecker`), checked by the function on create and `PATCH`.
 - **Business details:** `abn` (11), `bsb` (6) and `accountNumber` (up to 12) are stored as digits only. Spaces and dashes are dropped.
 - **Schedules:** `rrule` is one of the shapes in [Rules the UI builds](scheduling.md#rules-the-ui-builds): weekly on plain `BYDAY` codes with an optional `INTERVAL` of 1–4, or monthly on a `BYMONTHDAY` of 1–28 or `-1`, either with an optional `COUNT` (1–500) or `UNTIL=YYYYMMDD`, not both. `UNTIL` is not before `startsOn`, and an unknown rule part gets the fixed message "Unsupported rule part". `startsOn`, `endsOn` and `exdates` are on or after 2000-01-01. The preview `count` is 1–100.
 - **Invites:** `POST /invites/accept` takes any token text up to 128 characters. A malformed token is just an unknown one, so it returns `INVITE_INVALID`.
@@ -142,6 +142,10 @@ What every write does, in **one TablesDB transaction**:
 
 A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
 
+**Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
+
+`/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
+
 ## groups
 
 | Route | Body | Returns | Who |
@@ -151,12 +155,14 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 | `POST /groups/{id}/archive` | none | `group` | admin |
 | `POST /groups/{id}/members` | `{ displayName, email?, phone?, role?, joinedOn? }` | `member` | admin (house: member too) |
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn? }` | `member` | admin |
-| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares. Also removes any team membership. |
+| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares and aren't named in an unposted transaction or a schedule template (`VALIDATION_FAILED`). Also removes any team membership. |
 | `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin |
 
-`counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
+`counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. Removing one with `DELETE /groups/{id}/members/{memberId}` also returns `VALIDATION_FAILED`; archive the group instead. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
-Archiving is permanent in v1; there is no unarchive route. A `personal` group can't be archived (`VALIDATION_FAILED`).
+When `POST /groups` leaves them out, `currency`, `timezone` and `region` come from the creator's profile, and `settings` takes its defaults ([data model](data-model.md#groups)). In a house, a member who isn't an admin can add people only with the default role.
+
+Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseAt`, so no more statements are drafted. A `personal` group can't be archived (`VALIDATION_FAILED`).
 
 ## identity
 
@@ -177,7 +183,7 @@ Archiving is permanent in v1; there is no unarchive route. A `personal` group ca
 `/groups/pending` and `/join` are how someone who already had an account when they were added joins a group ([Joining a group](identity-and-invites.md#joining-a-group)). Both act only on the caller's own person:
 
 - `/groups/pending` lists the groups where that person is a `placeholder` member (`members.idx_person_status`), archived ones included.
-- `/join` reads the caller's member row in that group first, so someone who isn't in the group learns nothing about it; with no row it returns `NOT_A_MEMBER`. It then runs the steps in [Joining a group](identity-and-invites.md#joining-a-group): team first, then `active` (or `left` if `leftOn` is set) with a `member.joined` row. If the row is already `active` or `left`, it returns `{ group, member }` unchanged and doesn't touch the team, so a retry is safe. Joining writes no ledger data, so it works on archived groups, the same as claim and invites.
+- `/join` reads the caller's member row in that group first, so someone who isn't in the group learns nothing about it; with no row it returns `NOT_A_MEMBER`. It then runs the steps in [Joining a group](identity-and-invites.md#joining-a-group): team first, then `active` (or `left` if `leftOn` is set) with a `member.joined` row. If the row is already `active`, or `left` for someone who moved out (still in the team), it returns `{ group, member }` unchanged and doesn't touch the team, so a retry is safe. Someone who left on their own (`left`, no longer in the team) gets `NOT_A_MEMBER`: coming back after leaving isn't supported in v1. If the join fails while the row is still `placeholder`, the team membership from the first step is taken back. Joining writes no ledger data, so it works on archived groups, the same as claim and invites.
 
 Details: [People, identity and invites](identity-and-invites.md).
 
