@@ -106,7 +106,7 @@ When an expense, bill or loan names no split and has no items:
 - otherwise it is split equally. In a house that means everyone present on the date (`joinedOn` ≤ date ≤ `leftOn`); in a personal or pair group it means every member, because there `joinedOn` is only the day someone was added and back-dated entries are normal,
 - a **loan** leaves out the payers, so it goes to the borrowers.
 
-Default splits list members by `personId`, so leftover cents go in that order. If that leaves nobody, the request fails with `VALIDATION_FAILED`.
+Default splits, and `days` splits without `personIds`, list members by `personId`, so leftover cents go in that order. If that leaves nobody, the request fails with `VALIDATION_FAILED`.
 
 ### Days present
 
@@ -145,7 +145,7 @@ Other rounding rules:
 
 ## Building shares
 
-`buildShares(input, context) → { totalCents, shares }` in `packages/core/src/ledger` is the only code that turns a transaction into its total and shares. The total comes from the input: `minutes × rate` for a shift, the sum of items, the sum of an adjustment's given amounts, or `totalCents`. With items or an adjustment, a `totalCents` in the input must match; a shift can't carry one ([Validation](functions-api.md#validation)). A total of 0 gives no shares. The `context` holds the group type, owner, caller (the default payer), members with join/leave dates and, for houses, `defaultBillSplit`. The function is pure: same input, same output, with shares sorted by `personId`.
+`buildShares(input, context) → { totalCents, shares }` in `packages/core/src/ledger` is the only code that turns a transaction into its total and shares. The total comes from the input: `minutes × rate` for a shift, the sum of items, the sum of an adjustment's given amounts, or `totalCents`. With items or an adjustment, a `totalCents` in the input must match; a shift can't carry one ([Validation](functions-api.md#validation)). Outside adjustments, a total of 0 gives no shares. The `context` holds the group type, owner, caller (the default payer), members with join/leave dates and, for houses, `defaultBillSplit`. The function is pure: same input, same output, with shares sorted by `personId`.
 
 Rules:
 
