@@ -140,6 +140,10 @@ What every write does, in **one TablesDB transaction**:
 
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
+- `people` has one entry per person with shares in the group, sorted by `personId`. Anyone else is at 0.
+- It reads the shares a page at a time. If a write commits between two pages and the read doesn't add up, it reads again, up to 3 times.
+- Shares that still don't add up give `INVARIANT_VIOLATION`. A read that keeps losing its page cursor gives `CONFLICT`.
+
 A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
 
 **Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.

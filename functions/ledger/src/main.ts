@@ -1,4 +1,7 @@
 import { createHandler, route } from '@ledgerly/server/http/create-handler'
+import { groupBalances } from './routes/balances'
+import { startTimer } from './routes/timer-start'
+import { stopTimer } from './routes/timer-stop'
 import { createTransaction } from './routes/transactions-create'
 import { postTransaction } from './routes/transactions-post'
 import { updateTransaction } from './routes/transactions-update'
@@ -13,4 +16,7 @@ export default createHandler([
   updateTransaction,
   postTransaction,
   voidTransaction,
+  startTimer,
+  stopTimer,
+  groupBalances,
 ])
