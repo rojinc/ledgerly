@@ -183,6 +183,50 @@ describe('FakeDb transactions', () => {
     })
   })
 
+  // The four cases checked on ledgerly-dev with real TablesDB transactions (#105): a staged
+  // update of member m1, then another transaction commits first.
+  describe('when another transaction commits a change to a staged row first', () => {
+    async function race(other: object | null) {
+      const db = new FakeDb({ members: [{ $id: 'm1', ...rowsFor.member('g1', 'p1') }] })
+      const { $id } = await db.createTransaction()
+      await db.createOperations({
+        transactionId: $id,
+        operations: [op('update', 'members', 'm1', { displayName: 'Sam L' })],
+      })
+      if (other) await commit(db, [other])
+      return { db, commit: db.updateTransaction({ transactionId: $id, commit: true }) }
+    }
+
+    it('A: a same-value update is no change, so the staged commit goes through', async () => {
+      const { db, commit: staged } = await race(op('update', 'members', 'm1', { role: 'member' }))
+      await expect(staged).resolves.toMatchObject({ status: 'committed' })
+      expect(db.rows('members')[0]).toMatchObject({ displayName: 'Sam L' })
+    })
+
+    it('B: a different value fails the staged commit with 409', async () => {
+      const { commit: staged } = await race(op('update', 'members', 'm1', { role: 'admin' }))
+      await expect(staged).rejects.toMatchObject({ code: 409, type: 'transaction_conflict' })
+    })
+
+    it('C: nothing in between commits as usual', async () => {
+      const { commit: staged } = await race(null)
+      await expect(staged).resolves.toMatchObject({ status: 'committed' })
+    })
+
+    it('D: a delete fails the staged commit with 404', async () => {
+      const { commit: staged } = await race(op('delete', 'members', 'm1'))
+      await expect(staged).rejects.toMatchObject({ code: 404, type: 'row_not_found' })
+    })
+
+    it('leaves $updatedAt alone on an update that changes nothing', async () => {
+      const db = new FakeDb({
+        members: [{ $id: 'm1', $updatedAt: AT, ...rowsFor.member('g1', 'p1') }],
+      })
+      await commit(db, [op('update', 'members', 'm1', { role: 'member' })])
+      expect(db.rows('members')[0]?.$updatedAt).toBe(AT)
+    })
+  })
+
   it('replays operations in order, so a row can be deleted and created again', async () => {
     const db = new FakeDb({ shares: [{ $id: 't1_p1', ...rowsFor.share({ givenCents: 100 }) }] })
     await commit(db, [

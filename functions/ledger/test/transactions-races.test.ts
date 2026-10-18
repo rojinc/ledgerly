@@ -256,6 +256,40 @@ describe('a request that read the row before another one committed', () => {
     ).toBeGreaterThan(2)
   })
 
+  // ledgerly-dev (#105): Appwrite only counts real changes, so the guard writes a fresh rev.
+  it('a member delete staged before the write fails once the write commits (I-3)', async () => {
+    const db = seed()
+    const { $id } = await db.createTransaction()
+    await db.createOperations({ transactionId: $id, operations: [removeCara] })
+    expect((await call(db, 'POST', '/transactions', withCara)).status).toBe(200)
+    await expect(db.updateTransaction({ transactionId: $id, commit: true })).rejects.toMatchObject({
+      code: 409,
+    })
+    expect(db.rows('members').some((row) => row.$id === 'm-cara')).toBe(true)
+  })
+
+  it('a currency change staged before the write fails once the write commits', async () => {
+    const db = seed()
+    const { $id } = await db.createTransaction()
+    await db.createOperations({
+      transactionId: $id,
+      operations: [
+        {
+          action: 'update',
+          databaseId: 'main',
+          tableId: 'groups',
+          rowId: 'house',
+          data: { currency: 'USD' },
+        },
+      ],
+    })
+    expect((await call(db, 'POST', '/transactions', expense())).status).toBe(200)
+    await expect(db.updateTransaction({ transactionId: $id, commit: true })).rejects.toMatchObject({
+      code: 409,
+    })
+    expect(db.rows('groups').find((row) => row.$id === 'house')?.currency).toBe('AUD')
+  })
+
   it('a currency change between the check and the commit makes the write run again', async () => {
     const db = seed()
     beforeCommit(db, () =>

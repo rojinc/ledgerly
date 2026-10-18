@@ -172,14 +172,17 @@ export class FakeDb implements Db {
     }
     let tables: Tables
     try {
-      for (const { tableId, rowId, seen } of transaction.staged) {
-        if (this.version(tableId, rowId) !== seen) {
-          throw new AppwriteException(
-            `Row ${rowId} in ${tableId} changed after it was staged`,
-            409,
-            'transaction_conflict',
-          )
-        }
+      for (const { action, tableId, rowId, seen } of transaction.staged) {
+        if (this.version(tableId, rowId) === seen) continue
+        // As on Appwrite (checked on ledgerly-dev, #105): a row deleted after it was staged
+        // fails the commit with 404, any other change with 409.
+        const gone = !this.tables.get(tableId)?.has(rowId)
+        if (gone && (action === 'update' || action === 'delete')) throw rowNotFound(tableId, rowId)
+        throw new AppwriteException(
+          `Row ${rowId} in ${tableId} changed after it was staged`,
+          409,
+          'transaction_conflict',
+        )
       }
       // Apply to a copy and swap it in only if every operation succeeds: all or nothing.
       tables = withStaged(this.tables, transaction.staged, () => this.nextSequence())
@@ -187,9 +190,16 @@ export class FakeDb implements Db {
       transaction.status = 'failed'
       throw error
     }
+    const before = this.tables
     this.tables = tables
-    for (const { tableId, rowId } of transaction.staged) {
-      this.versions.set(`${tableId}/${rowId}`, this.version(tableId, rowId) + 1)
+    const touched = new Set(transaction.staged.map(({ tableId, rowId }) => `${tableId}/${rowId}`))
+    for (const key of touched) {
+      const [tableId = '', rowId = ''] = key.split('/')
+      // Appwrite counts only real changes: a write that leaves the row as it was doesn't fail
+      // anyone else's commit.
+      if (!sameRow(before.get(tableId)?.get(rowId), tables.get(tableId)?.get(rowId))) {
+        this.versions.set(key, this.version(tableId, rowId) + 1)
+      }
     }
     transaction.status = 'committed'
     return publicTransaction(transaction)
@@ -260,15 +270,15 @@ function apply(tables: Tables, operation: Operation, nextSequence: () => number)
         $updatedAt: new Date().toISOString(),
       })
       return
-    case 'update':
+    case 'update': {
       if (!existing) throw rowNotFound(tableId, rowId)
       checkData(tableId, data, false)
-      table.set(rowId, {
-        ...existing,
-        ...structuredClone(data),
-        $updatedAt: new Date().toISOString(),
-      })
+      const updated = { ...existing, ...structuredClone(data) }
+      // Like Appwrite, an update that changes nothing leaves the row, and $updatedAt, as it was.
+      if (sameRow(existing, updated)) return
+      table.set(rowId, { ...updated, $updatedAt: new Date().toISOString() })
       return
+    }
     case 'delete':
       if (!existing) throw rowNotFound(tableId, rowId)
       table.delete(rowId)
@@ -307,6 +317,18 @@ function insert(
     $tableId: tableId,
     $databaseId: DATABASE_ID,
   })
+}
+
+// The same columns and values, apart from $updatedAt. Rows that don't exist are the same.
+function sameRow(a: Row | undefined, b: Row | undefined): boolean {
+  if (!a || !b) return a === b
+  const values = (row: Row) =>
+    JSON.stringify(
+      Object.entries(row)
+        .filter(([key]) => key !== '$updatedAt')
+        .sort(([x], [y]) => (x < y ? -1 : 1)),
+    )
+  return values(a) === values(b)
 }
 
 function systemFields(row: Row): Row {

@@ -27,6 +27,7 @@ import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tab
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
 import type { Membership } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, ID, type Models, Query } from 'node-appwrite'
 import { z } from 'zod'
 
@@ -202,10 +203,11 @@ export async function loadLedger(db: Db, membership: Membership): Promise<Ledger
 
 /**
  * Guards the group row and the member row of everyone in `people` (ledger.md#concurrency):
- * stages a write of a column that never changes to each (`groups.type`, `members.groupId`),
- * then reads them in the transaction. A member row removed or given to another person (a
- * merge) meanwhile (I-3), an archive or a currency change reruns the route; one that commits
- * after this makes the commit fail with 409, which reruns it too.
+ * stages a guard write (a fresh `rev`) to each, then reads them in the transaction. A member
+ * row removed or given to another person (a merge) meanwhile (I-3), an archive or a currency
+ * change reruns the route. One that commits after this fails the commit with 409 (404 for a
+ * deleted row, which `withTransaction` also reports as 409), which reruns it too; and a delete
+ * or currency change staged before this commits fails its own commit instead.
  */
 export async function guardGroupAndMembers(
   tx: Tx,
@@ -224,7 +226,7 @@ export async function guardGroupAndMembers(
       action: 'update' as const,
       tableId: TABLES.members,
       rowId: rowId as string,
-      data: { groupId: group.$id },
+      data: { rev: randomId() },
     })),
   )
   await rerunIfGone(async () => {
@@ -245,8 +247,8 @@ export async function guardGroupAndMembers(
 
 /**
  * Guards the group row (ledger.md#concurrency), with any other guard writes in `also`: stages a
- * write of `groups.type`, which never changes, then checks the currency, archive date, time zone
- * and settings the route read are still the same.
+ * fresh `rev` on it, then checks the currency, archive date, time zone and settings the route
+ * read are still the same.
  */
 export async function guardGroup(
   tx: Tx,
@@ -256,7 +258,7 @@ export async function guardGroup(
 ): Promise<void> {
   await rerunIfGone(async () => {
     await tx.write(
-      { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { type: group.type } },
+      { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { rev: randomId() } },
       ...also,
     )
     const staged = await db.getRow<Groups>({

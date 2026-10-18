@@ -112,6 +112,7 @@ Row ID = Appwrite Team ID ([D-004](decisions.md)).
 | `nextCloseAt` | datetime? | When the current period's statement is due to be drafted ([statements](statements.md#periods)). Set by `groups` on create and whenever `statementCycle`, `cycleAnchor` or `timezone` changes; moved forward by `statements`. |
 | `settingsJson` | text | `GroupSettings` (below) |
 | `archivedAt` | datetime? | Archived groups are read-only |
+| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |
 
 Indexes: `idx_nextCloseAt (nextCloseAt)`, `idx_owner_type (ownerPersonId, type)` (bootstrap finds the caller's personal group on every login).
 Permissions: `read("team:<groupId>")`.
@@ -138,6 +139,7 @@ Defaults when `POST /groups` gives no `settings`: employer `{ defaultRateCents: 
 | `status` | enum(placeholder, active, left) | `placeholder`: hasn't joined this group, with or without an account. `active`: joined. `left`: joined, then moved out. A member who moves out before joining stays `placeholder` ([D-016](decisions.md)). Written only by the `groups` and `identity` functions. |
 | `joinedOn` | varchar(10) | Local date. The `groups` function sets it to the day they were added unless the caller gives one (not a database default). |
 | `leftOn` | varchar(10)? | Local date |
+| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |
 
 Indexes: `uniq_group_person (groupId, personId)` **unique**, `idx_person_status (personId, status)`, `idx_groupId (groupId)`.
 Permissions: `read("team:<groupId>")`.

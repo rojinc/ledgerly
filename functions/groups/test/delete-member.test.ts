@@ -357,15 +357,42 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     expect(teamUsers(services)).toEqual(['u1', 'u2'])
   })
 
-  it('guards the other admin with a write that changes nothing on it', async () => {
+  it('guards the other admin with a fresh rev, a real change that leaves everything else', async () => {
     const services = house()
     await updateRow(services.db, 'members', 'm2', { role: 'admin' })
     const stage = vi.spyOn(services.db, 'createOperations')
     expect(await remove(services, 'm2')).toEqual({})
     const operations = stage.mock.calls.flatMap(([params]) => params.operations ?? [])
     expect(operations).toContainEqual(
-      expect.objectContaining({ action: 'update', rowId: 'm1', data: { personId: 'p1' } }),
+      expect.objectContaining({
+        action: 'update',
+        rowId: 'm1',
+        data: { rev: expect.stringMatching(/^[a-z0-9]{20}$/) },
+      }),
     )
+    expect(services.db.rows('members')[0]).toMatchObject({ $id: 'm1', role: 'admin' })
+  })
+
+  it('fails a demotion of the other admin that was staged before it commits', async () => {
+    const services = house()
+    await updateRow(services.db, 'members', 'm2', { role: 'admin' })
+    const { $id } = await services.db.createTransaction()
+    await services.db.createOperations({
+      transactionId: $id,
+      operations: [
+        {
+          action: 'update',
+          databaseId: 'main',
+          tableId: 'members',
+          rowId: 'm1',
+          data: { role: 'member' },
+        },
+      ],
+    })
+    expect(await remove(services, 'm2')).toEqual({})
+    await expect(
+      services.db.updateTransaction({ transactionId: $id, commit: true }),
+    ).rejects.toMatchObject({ code: 409 })
     expect(services.db.rows('members')[0]).toMatchObject({ $id: 'm1', role: 'admin' })
   })
 

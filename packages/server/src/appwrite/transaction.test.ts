@@ -287,6 +287,24 @@ describe('withTransaction', () => {
     expect(db.rows('shares')).toHaveLength(2)
   })
 
+  it('reports a commit that fails because a staged row was deleted (404) as a conflict (409)', async () => {
+    const db = seeded()
+    const edit = withTransaction(db, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't1',
+        data: { description: 'Rent (Oct)' },
+      })
+      // Meanwhile, another request deletes t1.
+      await withTransaction(db, (other) =>
+        other.write({ action: 'delete', tableId: 'transactions', rowId: 't1' }),
+      )
+    })
+    await expect(edit).rejects.toBeInstanceOf(AppwriteException)
+    await expect(edit).rejects.toMatchObject({ code: 409, type: 'transaction_conflict' })
+  })
+
   it('does not see a change made before the write was staged, so checks come after staging', async () => {
     const db = seeded()
     await withTransaction(db, async (tx) => {
