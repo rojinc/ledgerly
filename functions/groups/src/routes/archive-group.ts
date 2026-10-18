@@ -1,11 +1,41 @@
+import type { Groups } from '@ledgerly/core/generated/rows'
+import { emptyBodySchema } from '@ledgerly/core/schemas/common'
+import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { requireMember } from '@ledgerly/server/auth/require-member'
 import type { Services } from '../services'
+import { activityWrite, conflictAsTryAgain, invalid, parseBody } from '../shared'
 
-// TODO(#21): stub, replaced by the route's implementation.
+/**
+ * `groups POST /groups/{id}/archive`: admin only, permanent in v1. Archiving an archived group
+ * returns it unchanged, so a retry is safe. Returns the group as stored.
+ */
 export async function archiveGroup(
-  _services: Services,
+  { db, now }: Services,
   userId: string,
   groupId: string,
   body: unknown,
-): Promise<unknown> {
-  throw new Error('Not implemented')
+): Promise<Groups> {
+  parseBody(emptyBodySchema, body ?? {})
+  const { person, group } = await requireMember(db, userId, groupId, {
+    roles: ['admin'],
+    allowArchived: true,
+  })
+  if (group.archivedAt) return group
+  if (group.type === 'personal') throw invalid("A personal group can't be archived.")
+  await conflictAsTryAgain(() =>
+    withTransaction(db, (tx) =>
+      tx.write(
+        {
+          action: 'update',
+          tableId: TABLES.groups,
+          rowId: groupId,
+          // The statements cron selects groups by nextCloseAt, so an archived group leaves it.
+          data: { archivedAt: now.toISOString(), nextCloseAt: null },
+        },
+        activityWrite(groupId, person.$id, 'group.archived', `${group.name} archived`, now),
+      ),
+    ),
+  )
+  return db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId })
 }
