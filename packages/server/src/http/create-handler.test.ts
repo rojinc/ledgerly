@@ -1,3 +1,4 @@
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Db } from '../appwrite/client'
 import { FakeDb } from '../appwrite/fake'
@@ -61,20 +62,36 @@ describe('createHandler', () => {
     expect(balances.body).toEqual({ ok: true, data: 'balances g1' })
   })
 
-  it('decodes params and treats header names case-insensitively', async () => {
+  it('accepts any Appwrite ID as a param, and header names in any case', async () => {
+    const id = 'sched_2026.10-18_abcdefghijklmnopqrs' // 36 chars: the longest Appwrite ID
     const result = await call(createHandler([echo]), {
       method: 'POST',
-      path: '/transactions/a%2Fb/post',
+      path: `/transactions/${id}/post`,
       headers: { 'X-Appwrite-User-Id': 'u2' },
     })
-    expect(result.body).toEqual({ ok: true, data: { id: 'a/b', body: undefined, userId: 'u2' } })
+    expect(result.body).toEqual({ ok: true, data: { id, body: undefined, userId: 'u2' } })
+  })
+
+  it('prefers the route with more literal segments, whatever the order', async () => {
+    const handler = createHandler([
+      route('POST', '/statements/:id', async ({ params }) => `statement ${params.id}`),
+      route('POST', '/statements/reissue', async () => 'reissue'),
+    ])
+    const reissue = await call(handler, { method: 'POST', path: '/statements/reissue' })
+    const statement = await call(handler, { method: 'POST', path: '/statements/s1' })
+    expect(reissue.body).toEqual({ ok: true, data: 'reissue' })
+    expect(statement.body).toEqual({ ok: true, data: 'statement s1' })
   })
 
   it.each([
     ['an unknown path', 'POST', '/nope'],
     ['the wrong method', 'GET', '/transactions/t1/post'],
     ['a missing param', 'POST', '/transactions//post'],
-    ['a malformed escape', 'POST', '/transactions/%E0%A4%A/post'],
+    ['an encoded slash', 'POST', '/transactions/a%2Fb/post'],
+    ['an encoded ..', 'POST', '/transactions/%2E%2E/post'],
+    ['..', 'POST', '/transactions/../post'],
+    ['a param starting with a special character', 'POST', '/transactions/_t1/post'],
+    ['a param longer than 36 characters', 'POST', `/transactions/${'a'.repeat(37)}/post`],
   ])('returns NOT_FOUND for %s', async (_, method, path) => {
     const result = await call(createHandler([echo]), { method, path })
     expect(result.status).toBe(404)
@@ -146,8 +163,24 @@ describe('createHandler', () => {
       route: 'GET /boom',
       status: 500,
       code: 'INTERNAL',
-      cause: 'TypeError: row.status is undefined',
+      cause: 'TypeError',
     })
+  })
+
+  it('logs only the name of a 5xx cause, never its message, which can quote input', async () => {
+    const handler = createHandler([
+      route('GET', '/profile', async () => JSON.parse('alice@example.com')),
+      route('GET', '/row', async () => {
+        throw new AppwriteException('Row bob@example.com not found', 404, 'row_not_found')
+      }),
+    ])
+    const parse = await call(handler, { path: '/profile' })
+    const appwrite = await call(handler, { path: '/row' })
+    expect(JSON.parse(parse.errors[0] ?? '')).toMatchObject({ cause: 'SyntaxError' })
+    expect(JSON.parse(appwrite.errors[0] ?? '')).toMatchObject({
+      cause: 'AppwriteException 404 row_not_found',
+    })
+    expect([...parse.errors, ...appwrite.errors].join('\n')).not.toMatch(/alice|bob|example/)
   })
 
   it('sends data: null when a route returns nothing', async () => {

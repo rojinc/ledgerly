@@ -1,8 +1,10 @@
 import { AppwriteException, type Models } from 'node-appwrite'
+import schema from '../../../../appwrite/tables.json' with { type: 'json' }
 import type { Db } from './client'
 import { DATABASE_ID } from './tables'
 
 type Row = Record<string, unknown> & { $id: string }
+type Tables = Map<string, Map<string, Row>>
 type Query = { method: string; attribute?: string; values?: unknown[] }
 type Operation = {
   action: string
@@ -11,19 +13,30 @@ type Operation = {
   rowId: string
   data?: unknown
 }
-type Transaction = Models.Transaction & { staged: Operation[] }
+// `seen` is the row's version when the operation was staged, for conflict detection.
+type Transaction = Models.Transaction & { staged: Array<Operation & { seen: number }> }
 
 // Appwrite's default page size when a query has no limit.
 const DEFAULT_LIMIT = 25
 
+// The unique indexes of every table in appwrite/tables.json, as lists of columns.
+const UNIQUE_INDEXES = new Map(
+  schema.map((table) => [
+    table.$id,
+    table.indexes.filter((index) => index.type === 'unique').map((index) => index.columns),
+  ]),
+)
+
 /**
- * In-memory TablesDB for tests. Reads take the same `Query` strings as Appwrite. Transactions
- * stage `createOperations` and apply them all or nothing on commit. Not modelled: column
- * validation, conflicts with writes from outside a transaction, and reads that see staged
- * changes. Seed rows may set `$createdAt`; other system fields are filled in.
+ * In-memory TablesDB for tests, with the tables and unique indexes of appwrite/tables.json.
+ * Reads take the same `Query` strings as Appwrite, and see a transaction's staged writes when
+ * given its `transactionId`. Transactions apply all or nothing on commit, and fail with 409
+ * when a staged row changed after it was staged, as on Appwrite. Not modelled: column names,
+ * types and required columns, and permissions. Seed rows may set `$createdAt`.
  */
 export class FakeDb implements Db {
-  private tables = new Map<string, Map<string, Row>>()
+  private tables: Tables = new Map()
+  private versions = new Map<string, number>()
   private transactions = new Map<string, Transaction>()
   private sequence = 0
 
@@ -35,16 +48,17 @@ export class FakeDb implements Db {
 
   /** Every row in a table, in insertion order, for assertions. */
   rows(tableId: string): Row[] {
-    return [...this.table(tableId).values()].map((row) => structuredClone(row))
+    return [...rowsOf(this.tables, tableId).values()].map((row) => structuredClone(row))
   }
 
   async getRow<R extends Models.Row>(params: {
     databaseId: string
     tableId: string
     rowId: string
+    transactionId?: string
   }): Promise<R> {
     checkDatabase(params.databaseId)
-    const row = this.table(params.tableId).get(params.rowId)
+    const row = rowsOf(this.view(params.transactionId), params.tableId).get(params.rowId)
     if (!row) throw rowNotFound(params.tableId, params.rowId)
     return structuredClone(row) as unknown as R
   }
@@ -53,10 +67,11 @@ export class FakeDb implements Db {
     databaseId: string
     tableId: string
     queries?: string[]
+    transactionId?: string
   }): Promise<Models.RowList<R>> {
     checkDatabase(params.databaseId)
     const queries = (params.queries ?? []).map((query) => JSON.parse(query) as Query)
-    let rows = [...this.table(params.tableId).values()]
+    let rows = [...rowsOf(this.view(params.transactionId), params.tableId).values()]
     let limit = DEFAULT_LIMIT
     let offset = 0
     let cursorAfter: unknown
@@ -126,7 +141,9 @@ export class FakeDb implements Db {
         throw new Error(`FakeDb does not support the "${operation.action}" operation`)
       }
       checkDatabase(operation.databaseId)
-      transaction.staged.push(structuredClone(operation))
+      checkTable(operation.tableId)
+      const seen = this.version(operation.tableId, operation.rowId)
+      transaction.staged.push({ ...structuredClone(operation), seen })
     }
     transaction.operations = transaction.staged.length
     return publicTransaction(transaction)
@@ -142,28 +159,40 @@ export class FakeDb implements Db {
       transaction.status = 'rolled_back'
       return publicTransaction(transaction)
     }
-    // Apply to a copy and swap it in only if every operation succeeds: all or nothing.
-    const tables = structuredClone(this.tables)
+    let tables: Tables
     try {
-      for (const operation of transaction.staged) {
-        apply(tables, operation, () => this.nextSequence())
+      for (const { tableId, rowId, seen } of transaction.staged) {
+        if (this.version(tableId, rowId) !== seen) {
+          throw new AppwriteException(
+            `Row ${rowId} in ${tableId} changed after it was staged`,
+            409,
+            'transaction_conflict',
+          )
+        }
       }
+      // Apply to a copy and swap it in only if every operation succeeds: all or nothing.
+      tables = withStaged(this.tables, transaction.staged, () => this.nextSequence())
     } catch (error) {
       transaction.status = 'failed'
       throw error
     }
     this.tables = tables
+    for (const { tableId, rowId } of transaction.staged) {
+      this.versions.set(`${tableId}/${rowId}`, this.version(tableId, rowId) + 1)
+    }
     transaction.status = 'committed'
     return publicTransaction(transaction)
   }
 
-  private table(tableId: string): Map<string, Row> {
-    let table = this.tables.get(tableId)
-    if (!table) {
-      table = new Map()
-      this.tables.set(tableId, table)
-    }
-    return table
+  // The tables as a transaction sees them: committed rows with its staged writes applied.
+  private view(transactionId: string | undefined): Tables {
+    if (transactionId === undefined) return this.tables
+    const { staged } = this.pendingTransaction(transactionId)
+    return withStaged(this.tables, staged, () => 0)
+  }
+
+  private version(tableId: string, rowId: string): number {
+    return this.versions.get(`${tableId}/${rowId}`) ?? 0
   }
 
   private pendingTransaction(transactionId: string): Transaction {
@@ -187,36 +216,43 @@ export class FakeDb implements Db {
   }
 }
 
-function apply(
-  tables: Map<string, Map<string, Row>>,
-  operation: Operation,
-  nextSequence: () => number,
-): void {
-  const table = tables.get(operation.tableId) ?? new Map<string, Row>()
-  tables.set(operation.tableId, table)
+function withStaged(tables: Tables, staged: Operation[], nextSequence: () => number): Tables {
+  const copy = structuredClone(tables)
+  for (const operation of staged) apply(copy, operation, nextSequence)
+  for (const tableId of new Set(staged.map((operation) => operation.tableId))) {
+    checkUnique(copy, tableId)
+  }
+  return copy
+}
+
+function apply(tables: Tables, operation: Operation, nextSequence: () => number): void {
+  const table = rowsOf(tables, operation.tableId)
   const existing = table.get(operation.rowId)
   const data = (operation.data ?? {}) as Record<string, unknown>
   switch (operation.action) {
     case 'create':
-      if (existing) {
-        throw new AppwriteException(
-          `Row with the requested ID ${operation.rowId} already exists`,
-          409,
-          'row_already_exists',
-        )
-      }
+      if (existing) throw alreadyExists(`Row with the requested ID ${operation.rowId}`)
       insert(tables, operation.tableId, { ...data, $id: operation.rowId }, nextSequence())
       return
     case 'upsert':
+      // Appwrite replaces the whole row: columns missing from `data` are not kept.
       if (!existing) {
         insert(tables, operation.tableId, { ...data, $id: operation.rowId }, nextSequence())
         return
       }
-      table.set(operation.rowId, update(existing, data))
+      table.set(operation.rowId, {
+        ...systemFields(existing),
+        ...structuredClone(data),
+        $updatedAt: new Date().toISOString(),
+      })
       return
     case 'update':
       if (!existing) throw rowNotFound(operation.tableId, operation.rowId)
-      table.set(operation.rowId, update(existing, data))
+      table.set(operation.rowId, {
+        ...existing,
+        ...structuredClone(data),
+        $updatedAt: new Date().toISOString(),
+      })
       return
     case 'delete':
       if (!existing) throw rowNotFound(operation.tableId, operation.rowId)
@@ -226,15 +262,13 @@ function apply(
 }
 
 function insert(
-  tables: Map<string, Map<string, Row>>,
+  tables: Tables,
   tableId: string,
   data: Record<string, unknown> & { $id: string },
   sequence: number,
 ): void {
-  const table = tables.get(tableId) ?? new Map<string, Row>()
-  tables.set(tableId, table)
   const now = new Date().toISOString()
-  table.set(data.$id, {
+  rowsOf(tables, tableId).set(data.$id, {
     $createdAt: now,
     $updatedAt: now,
     $permissions: [],
@@ -245,8 +279,32 @@ function insert(
   })
 }
 
-function update(existing: Row, data: Record<string, unknown>): Row {
-  return { ...existing, ...structuredClone(data), $updatedAt: new Date().toISOString() }
+function systemFields(row: Row): Row {
+  return Object.fromEntries(Object.entries(row).filter(([key]) => key.startsWith('$'))) as Row
+}
+
+// Like MariaDB, a unique index ignores rows where any of its columns is null.
+function checkUnique(tables: Tables, tableId: string): void {
+  for (const columns of UNIQUE_INDEXES.get(tableId) ?? []) {
+    const seen = new Set<string>()
+    for (const row of rowsOf(tables, tableId).values()) {
+      const values = columns.map((column) => row[column])
+      if (values.some((value) => value == null)) continue
+      const key = JSON.stringify(values)
+      if (seen.has(key)) throw alreadyExists(`A row in ${tableId} with this ${columns.join(', ')}`)
+      seen.add(key)
+    }
+  }
+}
+
+function rowsOf(tables: Tables, tableId: string): Map<string, Row> {
+  checkTable(tableId)
+  let table = tables.get(tableId)
+  if (!table) {
+    table = new Map()
+    tables.set(tableId, table)
+  }
+  return table
 }
 
 function matches(value: unknown, method: string, values: unknown[]): boolean {
@@ -287,12 +345,22 @@ function checkDatabase(databaseId: string): void {
   }
 }
 
+function checkTable(tableId: string): void {
+  if (!UNIQUE_INDEXES.has(tableId)) {
+    throw new AppwriteException(`Table ${tableId} not found`, 404, 'table_not_found')
+  }
+}
+
 function rowNotFound(tableId: string, rowId: string): AppwriteException {
   return new AppwriteException(
     `Row with the requested ID ${rowId} could not be found in ${tableId}`,
     404,
     'row_not_found',
   )
+}
+
+function alreadyExists(what: string): AppwriteException {
+  return new AppwriteException(`${what} already exists`, 409, 'row_already_exists')
 }
 
 function publicTransaction({ staged: _staged, ...transaction }: Transaction): Models.Transaction {

@@ -1,5 +1,7 @@
+import type { ErrorCode } from '@ledgerly/core/schemas/envelope'
+import { AppwriteException } from 'node-appwrite'
 import { type Db, dbFromRequest } from '../appwrite/client'
-import { AppError, type ErrorCode } from './app-error'
+import { AppError } from './app-error'
 
 /** The parts of the context Appwrite's Node runtime passes to a function that we use. */
 export type AppwriteContext = {
@@ -109,40 +111,42 @@ export function createHandler(
   }
 }
 
+// A param must look like an Appwrite ID. It is never URL-decoded: `%2E%2E` would become `..`,
+// and the SDK would send `rows/..` to another endpoint with the server key.
+const ID_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9._-]{0,35}$/
+
+// When several routes match, the one with the most literal segments wins, so a route like
+// `POST /statements/reissue` beats `POST /statements/:id`.
 function findRoute(
   routes: readonly Route[],
   method: string,
   path: string,
 ): { route: Route; params: Record<string, string> } | undefined {
   const parts = trimSlashes(path).split('/')
+  let best: { route: Route; params: Record<string, string>; literals: number } | undefined
   for (const route of routes) {
     if (route.method !== method) continue
     const pattern = trimSlashes(route.path).split('/')
     if (pattern.length !== parts.length) continue
     const params: Record<string, string> = {}
+    let literals = 0
     const matched = pattern.every((segment, index) => {
       const part = parts[index] ?? ''
-      if (!segment.startsWith(':')) return segment === part
-      const value = decode(part)
-      if (!value) return false
-      params[segment.slice(1)] = value
+      if (!segment.startsWith(':')) {
+        literals += 1
+        return segment === part
+      }
+      if (!ID_SEGMENT.test(part)) return false
+      params[segment.slice(1)] = part
       return true
     })
-    if (matched) return { route, params }
+    if (matched && (!best || literals > best.literals)) best = { route, params, literals }
   }
-  return undefined
+  return best
 }
 
 function trimSlashes(path: string): string {
   return path.replace(/^\/+|\/+$/g, '')
-}
-
-function decode(segment: string): string | undefined {
-  try {
-    return decodeURIComponent(segment)
-  } catch {
-    return undefined // malformed %-escape: treat as no match
-  }
 }
 
 function parseBody(text: string): unknown {
@@ -154,8 +158,11 @@ function parseBody(text: string): unknown {
   }
 }
 
-// For the log line of a 5xx. Error messages from our code and the SDK name IDs, not people.
+// Names the error behind a 5xx for the log line, never its message: messages can quote input
+// (JSON.parse puts the text it failed on in its message), and logs hold no personal data.
 function describe(thrown: unknown): string {
-  const text = thrown instanceof Error ? `${thrown.name}: ${thrown.message}` : String(thrown)
-  return text.slice(0, 300)
+  if (thrown instanceof AppwriteException) {
+    return `AppwriteException ${thrown.code} ${thrown.type}`
+  }
+  return thrown instanceof Error ? thrown.name : typeof thrown
 }

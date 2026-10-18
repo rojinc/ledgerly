@@ -231,4 +231,132 @@ describe('FakeDb transactions', () => {
       }),
     ).rejects.toThrow('does not support the "increment" operation')
   })
+
+  it('replaces the whole row on upsert, keeping only system fields, like Appwrite', async () => {
+    const db = new FakeDb({
+      members: [
+        { $id: 'm1', role: 'member', leftOn: '2026-10-01', $createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    })
+    await commit(db, [
+      {
+        action: 'upsert',
+        databaseId: 'main',
+        tableId: 'members',
+        rowId: 'm1',
+        data: { role: 'admin' },
+      },
+    ])
+    const [row] = db.rows('members')
+    expect(row).toMatchObject({ role: 'admin', $createdAt: '2026-01-01T00:00:00.000Z' })
+    expect(row).not.toHaveProperty('leftOn')
+  })
+
+  it('keeps permissions on an update that does not set them', async () => {
+    const db = new FakeDb({
+      members: [{ $id: 'm1', role: 'member', $permissions: ['read("team:g1")'] }],
+    })
+    await commit(db, [
+      {
+        action: 'update',
+        databaseId: 'main',
+        tableId: 'members',
+        rowId: 'm1',
+        data: { role: 'admin' },
+      },
+    ])
+    expect(db.rows('members')[0]).toMatchObject({
+      role: 'admin',
+      $permissions: ['read("team:g1")'],
+    })
+  })
+
+  it('shows staged writes to reads that pass the transactionId, and only to them', async () => {
+    const db = new FakeDb({ members: [{ $id: 'm1', groupId: 'g1', role: 'member' }] })
+    const { $id } = await db.createTransaction()
+    await db.createOperations({
+      transactionId: $id,
+      operations: [
+        {
+          action: 'update',
+          databaseId: 'main',
+          tableId: 'members',
+          rowId: 'm1',
+          data: { role: 'admin' },
+        },
+        {
+          action: 'create',
+          databaseId: 'main',
+          tableId: 'members',
+          rowId: 'm2',
+          data: { groupId: 'g1' },
+        },
+      ],
+    })
+    const inside = { databaseId: 'main', tableId: 'members', transactionId: $id }
+    expect(await db.getRow({ ...inside, rowId: 'm1' })).toMatchObject({
+      groupId: 'g1',
+      role: 'admin',
+    })
+    expect((await db.listRows({ ...inside, queries: [Query.equal('groupId', 'g1')] })).total).toBe(
+      2,
+    )
+    expect(await db.getRow({ databaseId: 'main', tableId: 'members', rowId: 'm1' })).toMatchObject({
+      role: 'member',
+    })
+    await expect(
+      db.getRow({ databaseId: 'main', tableId: 'members', rowId: 'm2' }),
+    ).rejects.toMatchObject({ code: 404 })
+  })
+
+  it('enforces the unique indexes from appwrite/tables.json, ignoring nulls', async () => {
+    const db = new FakeDb({
+      members: [{ $id: 'm1', groupId: 'g1', personId: 'p1' }],
+      identities: [{ $id: 'i1', key: null }],
+    })
+    await expect(
+      commit(db, [
+        {
+          action: 'create',
+          databaseId: 'main',
+          tableId: 'members',
+          rowId: 'm2',
+          data: { groupId: 'g1', personId: 'p1' },
+        },
+      ]),
+    ).rejects.toMatchObject({ code: 409, type: 'row_already_exists' })
+    await commit(db, [
+      {
+        action: 'create',
+        databaseId: 'main',
+        tableId: 'members',
+        rowId: 'm3',
+        data: { groupId: 'g2', personId: 'p1' },
+      },
+      {
+        action: 'create',
+        databaseId: 'main',
+        tableId: 'identities',
+        rowId: 'i2',
+        data: { key: null },
+      },
+    ])
+    expect(db.rows('members')).toHaveLength(2)
+    expect(db.rows('identities')).toHaveLength(2)
+  })
+
+  it('refuses tables that are not in appwrite/tables.json', async () => {
+    const db = new FakeDb()
+    await expect(db.listRows({ databaseId: 'main', tableId: 'member' })).rejects.toMatchObject({
+      code: 404,
+      type: 'table_not_found',
+    })
+    expect(() => new FakeDb({ member: [{ $id: 'm1' }] })).toThrow('Table member not found')
+  })
 })
+
+async function commit(db: FakeDb, operations: object[]) {
+  const { $id } = await db.createTransaction()
+  await db.createOperations({ transactionId: $id, operations })
+  await db.updateTransaction({ transactionId: $id, commit: true })
+}

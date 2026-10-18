@@ -4,7 +4,7 @@ import { DATABASE_ID, type TableId } from './tables'
 
 type RowData = Record<string, unknown>
 
-/** One staged write. `permissions` replace the row's permissions. */
+/** One write. `permissions` replace the row's permissions; leave them out to keep them. */
 export type Write =
   | {
       action: 'create' | 'update' | 'upsert'
@@ -16,36 +16,49 @@ export type Write =
   | { action: 'delete'; tableId: TableId; rowId: string }
 
 export type Tx = {
-  /** Pass as `transactionId` to reads that should see this transaction's staged changes. */
+  /** Pass as `transactionId` to reads to see this transaction's staged writes merged in. */
   id: string
-  write(...writes: Write[]): void
+  /**
+   * Stages the writes now, in one request. If any of these rows changes outside the
+   * transaction after this, the commit fails with 409. Always await it.
+   */
+  write(...writes: Write[]): Promise<void>
 }
 
 /**
- * Runs `work`, then stages everything it wrote in one `createOperations` call and commits.
- * If `work` or staging throws, the transaction is rolled back and the error rethrown. A
- * commit conflict (409: a row changed outside the transaction) is rethrown for the route to
- * retry. One transaction holds at most MAX_OPS_PER_DB_TRANSACTION writes (scaling.md).
+ * Runs `work` in a TablesDB transaction and commits what it staged. If `work` throws, the
+ * transaction is rolled back and the error rethrown. A commit conflict (409) is rethrown for
+ * the route to retry. One transaction holds at most MAX_OPS_PER_DB_TRANSACTION writes
+ * (scaling.md).
+ *
+ * To guard a row, for example never to change a locked transaction (I-7): stage the write to
+ * it first, then read it with `transactionId: tx.id` and check it. Appwrite only detects
+ * changes made after a row was staged, so check after staging, never before.
  */
 export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): Promise<T> {
   const { $id: transactionId } = await db.createTransaction()
-  const writes: Write[] = []
+  let staged = 0
+  const tx: Tx = {
+    id: transactionId,
+    async write(...writes) {
+      if (staged + writes.length > MAX_OPS_PER_DB_TRANSACTION) {
+        throw new Error(
+          `A transaction holds at most ${MAX_OPS_PER_DB_TRANSACTION} writes, got ${staged + writes.length}`,
+        )
+      }
+      const operations = writes.map(toOperation)
+      staged += writes.length
+      await db.createOperations({ transactionId, operations })
+    },
+  }
   let result: T
   try {
-    result = await work({ id: transactionId, write: (...more) => writes.push(...more) })
-    if (writes.length > MAX_OPS_PER_DB_TRANSACTION) {
-      throw new Error(
-        `A transaction holds at most ${MAX_OPS_PER_DB_TRANSACTION} writes, got ${writes.length}`,
-      )
-    }
-    if (writes.length > 0) {
-      await db.createOperations({ transactionId, operations: writes.map(toOperation) })
-    }
+    result = await work(tx)
   } catch (error) {
     await rollback(db, transactionId)
     throw error
   }
-  if (writes.length === 0) {
+  if (staged === 0) {
     await rollback(db, transactionId)
   } else {
     await db.updateTransaction({ transactionId, commit: true })
@@ -61,7 +74,7 @@ export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): 
 export async function writeInBatches(db: Db, writes: Write[]): Promise<void> {
   for (let start = 0; start < writes.length; start += MAX_OPS_PER_DB_TRANSACTION) {
     const batch = writes.slice(start, start + MAX_OPS_PER_DB_TRANSACTION)
-    await withTransaction(db, async (tx) => tx.write(...batch))
+    await withTransaction(db, (tx) => tx.write(...batch))
   }
 }
 
@@ -77,6 +90,11 @@ async function rollback(db: Db, transactionId: string): Promise<void> {
 function toOperation(write: Write): object {
   const target = { databaseId: DATABASE_ID, tableId: write.tableId, rowId: write.rowId }
   if (write.action === 'delete') return { action: 'delete', ...target }
+  // System fields such as $createdAt are Appwrite's alone; claim relies on it (D-016).
+  const systemKey = Object.keys(write.data).find((key) => key.startsWith('$'))
+  if (systemKey) {
+    throw new Error(`Row data may not set ${systemKey}; pass permissions as \`permissions\``)
+  }
   // createOperations has no permissions field, so they go into the row data as $permissions.
   const data =
     write.permissions === undefined

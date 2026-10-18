@@ -1,4 +1,6 @@
-// functions-api.md#response-envelope: every error code and its HTTP status.
+import type { ErrorCode } from '@ledgerly/core/schemas/envelope'
+
+// functions-api.md#response-envelope: the HTTP status of every error code.
 export const ERROR_STATUS = {
   UNAUTHENTICATED: 401,
   VALIDATION_FAILED: 400,
@@ -12,9 +14,7 @@ export const ERROR_STATUS = {
   RATE_LIMITED: 429,
   INVARIANT_VIOLATION: 500,
   INTERNAL: 500,
-} as const
-
-export type ErrorCode = keyof typeof ERROR_STATUS
+} as const satisfies Record<ErrorCode, number>
 
 /** Thrown by route code; `createHandler` turns it into `{ ok: false, error }` with the code's status. */
 export class AppError extends Error {
