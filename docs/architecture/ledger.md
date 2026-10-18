@@ -102,15 +102,15 @@ type SplitSpec =
 When an expense, bill or loan names no split and has no items:
 
 - an **employer** group has no default: the request must pick a [preset](#employer-presets),
-- a **bill in a house** with a billing period uses the group's `defaultBillSplit` (`days` unless the group set `equal`),
+- a **bill in a house** with a billing period uses the group's `defaultBillSplit`: `days`, or, if the group set `equal`, an equal split between the members with at least one day in the period (the same people `days` would pick),
 - otherwise it is split equally. In a house that means everyone present on the date (`joinedOn` ≤ date ≤ `leftOn`); in a personal or pair group it means every member, because there `joinedOn` is only the day someone was added and back-dated entries are normal,
 - a **loan** leaves out the payers, so it goes to the borrowers.
 
-If that leaves nobody, the request fails with `VALIDATION_FAILED`.
+Default splits list members by `personId`, so leftover cents go in that order. If that leaves nobody, the request fails with `VALIDATION_FAILED`.
 
 ### Days present
 
-For a bill with period `[periodStart, periodEnd]`, each member's weight is the number of days in that period between their `joinedOn` and `leftOn` (inclusive). Members with 0 days are left out. If everyone has 0 days, the request fails with `VALIDATION_FAILED`.
+For a bill with period `[periodStart, periodEnd]`, each member's weight is the number of days in that period between their `joinedOn` and `leftOn` (inclusive). Members with 0 days are left out. If everyone has 0 days, or the period is longer than 10,000 days (the weight limit), the request fails with `VALIDATION_FAILED`.
 
 Example: period 1 Jul–30 Sep (92 days). Alice and Bob were there all along (92 each); Cara moved in 1 Aug (61). Weights are 92 : 92 : 61.
 
@@ -135,8 +135,6 @@ Other rounding rules:
 
 `payers: { personId, cents }[]` says who gave money and must sum to the total. The default is the caller paying everything. Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill). Only expenses, bills and loans have payers; giving payers for any other kind fails.
 
-Rule-breaking input fails with `VALIDATION_FAILED`: payers or exact amounts that don't add up, a discount that pushes someone below 0, a kind the group type doesn't allow, a person who isn't a member, a total over `MAX_AMOUNT_CENTS`, a negative total on a kind that can't be a refund, or more than 15 people. A broken group (an employer group without exactly one employer) and a failed `assertShareInvariants()`, which runs afterwards as a last guard, are bugs and fail with `INVARIANT_VIOLATION`.
-
 ## Items (itemised receipts)
 
 - The transaction total equals the sum of item `amountCents` (items may be negative, such as discounts).
@@ -147,13 +145,15 @@ Rule-breaking input fails with `VALIDATION_FAILED`: payers or exact amounts that
 
 ## Building shares
 
-`buildShares(input, context) → { totalCents, shares }` in `packages/core/src/ledger` is the only code that turns a transaction into its total and shares. The total comes from the input: `minutes × rate` for a shift, the sum of items, the sum of an adjustment's given amounts, or `totalCents`. When the input also gives `totalCents`, it must match. The `context` holds the group type, owner, caller (the default payer), members with join/leave dates and, for houses, `defaultBillSplit`. The function is pure: same input, same output, with shares sorted by `personId`.
+`buildShares(input, context) → { totalCents, shares }` in `packages/core/src/ledger` is the only code that turns a transaction into its total and shares. The total comes from the input: `minutes × rate` for a shift, the sum of items, the sum of an adjustment's given amounts, or `totalCents`. With items or an adjustment, a `totalCents` in the input must match; a shift can't carry one ([Validation](functions-api.md#validation)). A total of 0 gives no shares. The `context` holds the group type, owner, caller (the default payer), members with join/leave dates and, for houses, `defaultBillSplit`. The function is pure: same input, same output, with shares sorted by `personId`.
 
 Rules:
 
 - Shares are **rebuilt completely** on every write. In one database transaction the function deletes the old share rows and creates the new ones. Never patch a single share.
 - Each share copies `groupId`, `date`, `kind` and `category` from its transaction so the main queries need one index. Because shares are always rebuilt, these copies can't drift. ([D-007](decisions.md))
 - A person whose given and received are both 0 (for example 1 cent split three ways) gets no share row.
+
+Rule-breaking input fails with `VALIDATION_FAILED`: payers or exact amounts that don't add up, a discount that pushes someone below 0, a kind the group type doesn't allow, a person who isn't a member, a total over `MAX_AMOUNT_CENTS`, a negative total on a kind that can't be a refund, or more than 15 people. A broken group (an employer group without exactly one employer) and a failed `assertShareInvariants()`, which runs afterwards as a last guard, are bugs and fail with `INVARIANT_VIOLATION`.
 
 ## Balances
 

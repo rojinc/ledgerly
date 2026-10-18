@@ -97,14 +97,14 @@ describe('buildShares', () => {
       ])
     })
 
-    it('rejects a total that doesn’t match, a missing shift, or an amount over the limit', () => {
+    it('rejects a given total, a missing shift, or an amount over the limit', () => {
       expectInvalid(
         () =>
           sharesOf(
-            tx({ kind: 'shift', totalCents: 1, shift: { minutes: 300, rateCents: 2500 } }),
+            tx({ kind: 'shift', totalCents: 12500, shift: { minutes: 300, rateCents: 2500 } }),
             employer,
           ),
-        /doesn’t match/,
+        /comes from its minutes/,
       )
       expectInvalid(() => sharesOf(tx({ kind: 'shift' }), employer), /needs minutes/)
       expectInvalid(
@@ -301,6 +301,76 @@ describe('buildShares', () => {
           defaultBillSplit: 'equal',
         }).map((s) => s.receivedCents),
       ).toEqual([9000, 9000, 9000])
+    })
+
+    it('splits an equal house bill between who lived there in the period, not on the paid date', () => {
+      // Bob moved out on 30 Sep and Dan moved in on 1 Oct; the bill for
+      // Jul–Sep is paid on 10 Oct.
+      const ctx: LedgerContext = {
+        ...house,
+        defaultBillSplit: 'equal',
+        members: [
+          member('alice'),
+          member('bob', '2026-01-01', '2026-09-30'),
+          member('dan', '2026-10-01'),
+        ],
+      }
+      const bill = {
+        status: 'paid' as const,
+        periodStart: d('2026-07-01'),
+        periodEnd: d('2026-09-30'),
+      }
+      expect(sharesOf(tx({ kind: 'bill', totalCents: 9000, bill }), ctx)).toEqual([
+        { personId: 'alice', givenCents: 9000, receivedCents: 4500 },
+        { personId: 'bob', givenCents: 0, receivedCents: 4500 },
+      ])
+      const before = {
+        status: 'paid' as const,
+        periodStart: d('2025-01-01'),
+        periodEnd: d('2025-03-31'),
+      }
+      expectInvalid(
+        () => sharesOf(tx({ kind: 'bill', totalCents: 9000, bill: before }), ctx),
+        /Nobody/,
+      )
+    })
+
+    it('rejects a days split over a period longer than the weight limit', () => {
+      const bill = {
+        status: 'paid' as const,
+        periodStart: d('1999-01-01'),
+        periodEnd: d('2026-09-30'),
+      }
+      expectInvalid(
+        () => sharesOf(tx({ kind: 'bill', totalCents: 9000, bill }), house),
+        /at most 10000 days/,
+      )
+    })
+
+    it('caps each item before splitting, and turns a total of -0 into 0', () => {
+      const items = [
+        {
+          name: 'Big',
+          amountCents: MAX_AMOUNT_CENTS + 1,
+          split: { mode: 'equal' as const, personIds: ['alice'] },
+        },
+        {
+          name: 'Discount',
+          amountCents: -2,
+          split: { mode: 'equal' as const, personIds: ['alice'] },
+        },
+      ]
+      expectInvalid(() => sharesOf(tx({ kind: 'expense', items }), house), /over the maximum/)
+      const nothing = build(
+        tx({
+          kind: 'payment',
+          totalCents: -0,
+          payment: { fromPersonId: 'bob', toPersonId: 'alice' },
+        }),
+        house,
+      )
+      expect(Object.is(nothing.totalCents, 0)).toBe(true)
+      expect(nothing.shares).toEqual([])
     })
 
     it('splits a bill outside a house equally between everyone present', () => {

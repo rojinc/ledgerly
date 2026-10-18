@@ -1,4 +1,5 @@
-import { type DateRange, type LocalDate, overlapDays } from '../dates/local-date'
+import { MAX_WEIGHT } from '../constants/limits'
+import { type DateRange, daysBetween, type LocalDate, overlapDays } from '../dates/local-date'
 import { allocate } from '../money/allocate'
 import type { SplitSpec } from '../schemas/split'
 import { invalid } from './ledger-error'
@@ -18,7 +19,7 @@ export const byPersonId = (a: { personId: string }, b: { personId: string }) =>
   a.personId < b.personId ? -1 : 1
 
 /** Days in `period` a member was there (ledger.md#days-present). */
-function daysPresent(member: LedgerMember, period: DateRange): number {
+export function daysPresent(member: LedgerMember, period: DateRange): number {
   return overlapDays(period, { start: member.joinedOn, end: member.leftOn ?? period.end })
 }
 
@@ -52,6 +53,10 @@ export function splitAmount(spec: SplitSpec, amountCents: number, ctx: SplitCont
     }
     case 'days': {
       const period = ctx.period ?? invalid('A days split needs the bill period')
+      // Day counts are allocate() weights, so they can't pass MAX_WEIGHT.
+      if (daysBetween(period.start, period.end) >= MAX_WEIGHT) {
+        invalid(`A days split's period can be at most ${MAX_WEIGHT} days`)
+      }
       const named = spec.personIds
       const members = named
         ? named.map(

@@ -150,7 +150,7 @@ Permissions: `read("team:<groupId>")`.
 | `date` | varchar(10) | Local date of the event (shift day, purchase day, day a bill was paid) |
 | `description` | varchar(200) | |
 | `category` | varchar(32)? | One of the categories in `packages/core` |
-| `totalCents` | integer | Negative only for refunds |
+| `totalCents` | integer | Negative only for refunds (expense, bill) and adjustments ([ledger](ledger.md#invariants)) |
 | `inputJson` | text | The parts of the user's input that have no column of their own: `payers`, `split`, `shift`, `bill` (period only; its status and `dueOn` live in the `status` and `dueOn` columns), `payment`, `adjustment`, `note`. Types in [Functions API](functions-api.md#transactioninput). |
 | `dueOn` | varchar(10)? | Bills only |
 | `scheduleId` | varchar(36)? | Set on occurrences created by a schedule |
