@@ -1,0 +1,16 @@
+{
+  "name": "@ledgerly/core",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run",
+    "coverage": "vitest run --coverage --coverage.include=src/** --coverage.exclude=src/constants/** --coverage.exclude=src/generated/** --coverage.thresholds.100"
+  },
+  "devDependencies": {
+    "@vitest/coverage-v8": "^5.0.5"
+  }
+}
