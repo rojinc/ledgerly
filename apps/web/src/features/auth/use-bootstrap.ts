@@ -21,6 +21,9 @@ export function bootstrapBody(): BootstrapBody {
 
 class SessionEnded extends Error {}
 
+/** A rejected request: sending it again can't change the answer. */
+class Rejected extends Error {}
+
 /**
  * `identity POST /bootstrap`, once per session and user: the query never goes
  * stale, and log out clears the cache. It is idempotent, so a retry is safe.
@@ -42,13 +45,16 @@ export function useBootstrap(userId: string) {
           queryClient.setQueryData(queryKeys.currentUser, null)
           throw new SessionEnded(result.error.message)
         }
+        if (result.error.code === 'VALIDATION_FAILED') throw new Rejected(result.error.message)
         throw new Error(result.error.message)
       }
       // The profile row ID is the user ID, so the profile page needn't fetch it again.
       queryClient.setQueryData(queryKeys.profile(userId), result.data.profile)
       return result.data
     },
-    retry: (failures, error) => !(error instanceof SessionEnded) && failures < 3,
+    // CONFLICT and network errors may pass next time; the others never will.
+    retry: (failures, error) =>
+      !(error instanceof SessionEnded || error instanceof Rejected) && failures < 3,
     staleTime: Number.POSITIVE_INFINITY,
   })
 }

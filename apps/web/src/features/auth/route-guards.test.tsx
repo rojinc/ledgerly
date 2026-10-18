@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { AppwriteException } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -41,7 +41,7 @@ function renderAt(path: string) {
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
-  return router
+  return { router, queryClient }
 }
 
 describe('route guards', () => {
@@ -53,7 +53,7 @@ describe('route guards', () => {
 
   it('sends a signed-out user to /login and remembers where they were going', async () => {
     getUser.mockRejectedValue(new AppwriteException('No session', 401))
-    const router = renderAt('/secret?tab=2#top')
+    const { router } = renderAt('/secret?tab=2#top')
     expect(await screen.findByText('Login page')).toBeTruthy()
     expect(router.state.location.state).toEqual({ from: '/secret?tab=2#top' })
   })
@@ -107,6 +107,36 @@ describe('route guards', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByText('Secret page')).toBeTruthy()
     expect(screen.getByText('We found 1 group you were added to.')).toBeTruthy()
+  })
+
+  it('retries a CONFLICT but not a VALIDATION_FAILED', async () => {
+    getUser.mockResolvedValue({ $id: 'u1' } as never)
+    call.mockResolvedValueOnce({ ok: false, error: { code: 'CONFLICT', message: 'Again' } })
+    call.mockResolvedValueOnce(bootstrapped())
+    renderAt('/secret')
+    expect(await screen.findByText('Secret page')).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(2)
+    cleanup()
+    call.mockReset()
+    call.mockResolvedValue({ ok: false, error: { code: 'VALIDATION_FAILED', message: 'Bad' } })
+    renderAt('/secret')
+    expect(await screen.findByText(/couldn’t set up your account/)).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the app up when a background refetch of bootstrap fails', async () => {
+    getUser.mockResolvedValue({ $id: 'u1' } as never)
+    call.mockResolvedValueOnce(bootstrapped())
+    const { queryClient } = renderAt('/secret')
+    expect(await screen.findByText('Secret page')).toBeTruthy()
+    // As after verifying an email, which re-runs bootstrap.
+    call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Boom' } })
+    await queryClient.invalidateQueries({ queryKey: ['bootstrap', 'u1'] })
+    await waitFor(() =>
+      expect(queryClient.getQueryState(['bootstrap', 'u1'])?.status).toBe('error'),
+    )
+    expect(screen.getByText('Secret page')).toBeTruthy()
+    expect(screen.queryByText(/couldn’t set up your account/)).toBeNull()
   })
 
   it('sends a signed-in user away from /login', async () => {
