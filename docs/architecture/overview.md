@@ -19,7 +19,8 @@
 │ Realtime    live updates to rows the user can read                    │
 │ Functions   ledger      all money writes                              │
 │             groups      groups, members, settings                     │
-│             identity    bootstrap, profile, claim, merge, invites     │
+│             identity    bootstrap, profile, claim, merge, invites,    │
+│                         join                                          │
 │             scheduler   cron: schedules, auto-post, reminders,        │
 │                         summaries                                     │
 │             statements  cron + HTTP: invoices, monthly divides, PDFs  │
