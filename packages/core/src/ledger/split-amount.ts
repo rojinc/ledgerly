@@ -13,6 +13,10 @@ export type SplitContext = {
   period?: DateRange
 }
 
+/** Orders by person ID (unique within a list), so leftover cents and output never depend on input order. */
+export const byPersonId = (a: { personId: string }, b: { personId: string }) =>
+  a.personId < b.personId ? -1 : 1
+
 /** Days in `period` a member was there (ledger.md#days-present). */
 function daysPresent(member: LedgerMember, period: DateRange): number {
   return overlapDays(period, { start: member.joinedOn, end: member.leftOn ?? period.end })
@@ -55,7 +59,7 @@ export function splitAmount(spec: SplitSpec, amountCents: number, ctx: SplitCont
               ctx.members.find((member) => member.personId === personId) ??
               invalid('A days split can only name members'),
           )
-        : ctx.members
+        : [...ctx.members].sort(byPersonId)
       const present = members
         .map((member) => ({ personId: member.personId, weight: daysPresent(member, period) }))
         .filter((member) => member.weight > 0)

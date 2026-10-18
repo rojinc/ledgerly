@@ -1,10 +1,17 @@
 import type { GroupType, TransactionKind } from '../constants/domain'
+import { MAX_AMOUNT_CENTS, MAX_PEOPLE_PER_TRANSACTION } from '../constants/limits'
 import type { LocalDate } from '../dates/local-date'
 import { shiftAmountCents } from '../money/shift-amount'
 import type { TransactionTemplate } from '../schemas/ledger'
 import type { SplitSpec } from '../schemas/split'
-import { invalid } from './ledger-error'
-import { type LedgerMember, type Part, type SplitContext, splitAmount } from './split-amount'
+import { invalid, LedgerError } from './ledger-error'
+import {
+  byPersonId,
+  type LedgerMember,
+  type Part,
+  type SplitContext,
+  splitAmount,
+} from './split-amount'
 
 /** One person's part in a posted transaction (ledger.md#concepts-in-one-minute). */
 export type Share = { personId: string; givenCents: number; receivedCents: number }
@@ -32,41 +39,57 @@ const KINDS_BY_GROUP: Record<GroupType, readonly TransactionKind[]> = {
 
 const sumOf = (parts: readonly Part[]) => parts.reduce((total, part) => total + part.cents, 0)
 
-function presentOn(date: LocalDate, members: readonly LedgerMember[]): string[] {
-  return members
-    .filter(
-      (member) => member.joinedOn <= date && (member.leftOn === null || date <= member.leftOn),
-    )
-    .map((member) => member.personId)
-}
-
 /** The split used when the input names none (ledger.md#default-split). */
 function defaultSplit(input: ShareInput, payers: readonly Part[], ctx: LedgerContext): SplitSpec {
-  if (input.kind === 'bill' && ctx.groupType === 'house' && ctx.defaultBillSplit !== 'equal') {
-    return { mode: 'days' }
+  if (ctx.groupType === 'employer') invalid('An employer expense needs a split (pick a preset)')
+  const hasPeriod = input.bill?.periodStart !== undefined && input.bill.periodEnd !== undefined
+  if (input.kind === 'bill' && ctx.groupType === 'house' && hasPeriod) {
+    if (ctx.defaultBillSplit !== 'equal') return { mode: 'days' }
   }
-  const present = presentOn(input.date, ctx.members)
-  // A loan goes to the borrowers: everyone present except whoever lent the money.
-  const personIds =
-    input.kind === 'loan'
-      ? present.filter((personId) => !payers.some((payer) => payer.personId === personId))
-      : present
+  // Only houses have real move-in and move-out dates; elsewhere joinedOn is just
+  // the day someone was added, and back-dated entries are normal.
+  const date = input.date
+  const personIds = [...ctx.members]
+    .sort(byPersonId)
+    .filter(
+      (member) =>
+        ctx.groupType !== 'house' ||
+        (member.joinedOn <= date && (member.leftOn === null || date <= member.leftOn)),
+    )
+    .map((member) => member.personId)
+    // A loan goes to the borrowers: everyone except whoever lent the money.
+    .filter((personId) => input.kind !== 'loan' || !payers.some((p) => p.personId === personId))
   if (personIds.length === 0) invalid('Nobody to split this between; give a split')
   return { mode: 'equal', personIds }
 }
 
-/**
- * Turns a transaction into shares (ledger.md#building-shares). Pure: the same
- * input and context always give the same shares, sorted by personId, with no
- * all-zero shares. Throws LedgerError('VALIDATION_FAILED') for input that breaks
- * a ledger rule.
- */
-export function buildShares(input: ShareInput, ctx: LedgerContext): Share[] {
-  if (!KINDS_BY_GROUP[ctx.groupType].includes(input.kind)) {
-    invalid(`A ${ctx.groupType} group can't have a ${input.kind}`)
+function shiftTotal(minutes: number, rateCents: number): number {
+  try {
+    return shiftAmountCents(minutes, rateCents)
+  } catch {
+    return invalid('This shift comes to more than the maximum amount')
   }
-  const usesPayers = input.kind === 'expense' || input.kind === 'bill' || input.kind === 'loan'
-  if (!usesPayers && input.payers !== undefined) invalid(`A ${input.kind} has no payers`)
+}
+
+/**
+ * Turns a transaction into its total and shares (ledger.md#building-shares).
+ * Pure: the same input and context always give the same result, with shares
+ * sorted by personId and no all-zero shares. Throws
+ * LedgerError('VALIDATION_FAILED') for input that breaks a ledger rule.
+ */
+export function buildShares(
+  input: ShareInput,
+  ctx: LedgerContext,
+): { totalCents: number; shares: Share[] } {
+  const { kind } = input
+  if (!KINDS_BY_GROUP[ctx.groupType].includes(kind)) {
+    invalid(`${ctx.groupType} groups can't have ${kind} transactions`)
+  }
+  const usesPayers = kind === 'expense' || kind === 'bill' || kind === 'loan'
+  if (!usesPayers && input.payers !== undefined) invalid(`This ${kind} can't have payers`)
+  if (input.items !== undefined && input.split !== undefined) {
+    invalid('Give either items or a split, not both')
+  }
 
   const given: Part[] = []
   const received: Part[] = []
@@ -77,27 +100,31 @@ export function buildShares(input: ShareInput, ctx: LedgerContext): Share[] {
     return computed
   }
   const required = <T>(value: T | undefined, what: string): T =>
-    value ?? invalid(`A ${input.kind} needs ${what}`)
+    value ?? invalid(`This ${kind} needs ${what}`)
+  let total: number
 
-  switch (input.kind) {
+  switch (kind) {
     case 'shift': {
       const shift = required(input.shift, 'minutes and a rate')
       const employers = ctx.members.filter((member) => member.personId !== ctx.ownerPersonId)
-      if (employers.length !== 1) invalid('An employer group must have exactly one employer')
-      const total = totalOr(shiftAmountCents(shift.minutes, shift.rateCents))
+      if (employers.length !== 1) {
+        // functions-api.md: employer groups always have exactly two members.
+        throw new LedgerError('INVARIANT_VIOLATION', 'Employer group without exactly one employer')
+      }
+      total = totalOr(shiftTotal(shift.minutes, shift.rateCents))
       given.push({ personId: ctx.ownerPersonId, cents: total })
       received.push({ personId: (employers[0] as LedgerMember).personId, cents: total })
       break
     }
     case 'payment': {
       const payment = required(input.payment, 'who paid whom')
-      const total = required(input.totalCents, 'totalCents')
+      total = required(input.totalCents, 'totalCents')
       given.push({ personId: payment.fromPersonId, cents: total })
       received.push({ personId: payment.toPersonId, cents: total })
       break
     }
     case 'income': {
-      const total = required(input.totalCents, 'totalCents')
+      total = required(input.totalCents, 'totalCents')
       given.push({ personId: ctx.ownerPersonId, cents: total })
       received.push({ personId: ctx.ownerPersonId, cents: total })
       break
@@ -109,12 +136,12 @@ export function buildShares(input: ShareInput, ctx: LedgerContext): Share[] {
         received.push({ personId: share.personId, cents: share.receivedCents })
       }
       if (sumOf(given) !== sumOf(received)) invalid('Adjustment shares must balance')
-      totalOr(sumOf(given))
+      total = totalOr(sumOf(given))
       break
     }
     default: {
       // expense, bill, loan: payers give, the split (or the items) receive.
-      const total = input.items
+      total = input.items
         ? totalOr(input.items.reduce((sum, item) => sum + item.amountCents, 0))
         : required(input.totalCents, 'totalCents')
       const payers = input.payers?.map((payer) => ({
@@ -144,6 +171,16 @@ export function buildShares(input: ShareInput, ctx: LedgerContext): Share[] {
     }
   }
 
+  if (Math.abs(total) > MAX_AMOUNT_CENTS) invalid('The total is over the maximum amount')
+  if (total < 0 && kind !== 'expense' && kind !== 'bill' && kind !== 'adjustment') {
+    invalid('Only expenses and bills can be refunds (a negative total)')
+  }
+  // I-3 as an input rule.
+  const memberIds = new Set(ctx.members.map((member) => member.personId))
+  if ([...given, ...received].some((part) => !memberIds.has(part.personId))) {
+    invalid('Only members of the group can be in a transaction')
+  }
+
   const byPerson = new Map<string, Share>()
   const shareOf = (personId: string) => {
     const share = byPerson.get(personId) ?? { personId, givenCents: 0, receivedCents: 0 }
@@ -155,15 +192,17 @@ export function buildShares(input: ShareInput, ctx: LedgerContext): Share[] {
 
   const shares = [...byPerson.values()]
     .filter((share) => share.givenCents !== 0 || share.receivedCents !== 0)
-    .sort((a, b) => (a.personId < b.personId ? -1 : 1))
+    .sort(byPersonId)
+  if (shares.length > MAX_PEOPLE_PER_TRANSACTION) {
+    invalid(`At most ${MAX_PEOPLE_PER_TRANSACTION} people per transaction`)
+  }
 
   // I-4 as an input rule: a discount or a payer can't push anyone past zero.
-  if (input.kind !== 'adjustment') {
-    const total = sumOf(given)
+  if (kind !== 'adjustment') {
     const amounts = shares.flatMap((share) => [share.givenCents, share.receivedCents])
     if (amounts.some((cents) => (total < 0 ? cents > 0 : cents < 0))) {
       invalid('Amounts can’t mix signs: nobody can end up below zero (or above it, for a refund)')
     }
   }
-  return shares
+  return { totalCents: total, shares }
 }

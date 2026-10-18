@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
+import { MAX_AMOUNT_CENTS } from '../constants/limits'
 import { parseLocalDate } from '../dates/local-date'
-import { buildShares, type LedgerContext, type ShareInput } from './build-shares'
+import { buildShares as build, type LedgerContext, type ShareInput } from './build-shares'
 import { LedgerError } from './ledger-error'
+
+const sharesOf = (input: ShareInput, ctx: LedgerContext) => build(input, ctx).shares
 
 const d = parseLocalDate
 const member = (personId: string, joinedOn = '2026-01-01', leftOn: string | null = null) => ({
@@ -55,23 +58,23 @@ const expectInvalid = (run: () => unknown, message?: RegExp) => {
 describe('buildShares', () => {
   it('only allows the kinds each group type has', () => {
     expectInvalid(
-      () => buildShares(tx({ kind: 'shift', shift: { minutes: 60, rateCents: 100 } }), house),
-      /house group can't have a shift/,
+      () => sharesOf(tx({ kind: 'shift', shift: { minutes: 60, rateCents: 100 } }), house),
+      /house groups can't have shift transactions/,
     )
     expectInvalid(() =>
-      buildShares(
+      sharesOf(
         tx({ kind: 'payment', totalCents: 100, payment: { fromPersonId: 'me', toPersonId: 'me' } }),
         personal,
       ),
     )
-    expectInvalid(() => buildShares(tx({ kind: 'income', totalCents: 100 }), house))
-    expectInvalid(() => buildShares(tx({ kind: 'loan', totalCents: 100 }), employer))
+    expectInvalid(() => sharesOf(tx({ kind: 'income', totalCents: 100 }), house))
+    expectInvalid(() => sharesOf(tx({ kind: 'loan', totalCents: 100 }), employer))
   })
 
   it('refuses payers on kinds that have none', () => {
     expectInvalid(
       () =>
-        buildShares(
+        sharesOf(
           tx({
             kind: 'payment',
             totalCents: 100,
@@ -80,45 +83,64 @@ describe('buildShares', () => {
           }),
           house,
         ),
-      /no payers/,
+      /can't have payers/,
     )
   })
 
   describe('shift', () => {
     it('the worker gives and the employer receives minutes × rate', () => {
       expect(
-        buildShares(tx({ kind: 'shift', shift: { minutes: 300, rateCents: 2500 } }), employer),
+        sharesOf(tx({ kind: 'shift', shift: { minutes: 300, rateCents: 2500 } }), employer),
       ).toEqual([
         { personId: 'boss', givenCents: 0, receivedCents: 12500 },
         { personId: 'worker', givenCents: 12500, receivedCents: 0 },
       ])
     })
 
-    it('rejects a total that doesn’t match, a missing shift, or a group without exactly one employer', () => {
+    it('rejects a total that doesn’t match, a missing shift, or an amount over the limit', () => {
       expectInvalid(
         () =>
-          buildShares(
+          sharesOf(
             tx({ kind: 'shift', totalCents: 1, shift: { minutes: 300, rateCents: 2500 } }),
             employer,
           ),
         /doesn’t match/,
       )
-      expectInvalid(() => buildShares(tx({ kind: 'shift' }), employer), /needs minutes/)
+      expectInvalid(() => sharesOf(tx({ kind: 'shift' }), employer), /needs minutes/)
       expectInvalid(
         () =>
-          buildShares(tx({ kind: 'shift', shift: { minutes: 60, rateCents: 100 } }), {
-            ...employer,
-            members: [...employer.members, member('boss2')],
-          }),
-        /exactly one employer/,
+          sharesOf(
+            tx({ kind: 'shift', shift: { minutes: 61, rateCents: MAX_AMOUNT_CENTS } }),
+            employer,
+          ),
+        /more than the maximum/,
       )
+    })
+
+    it('returns the computed total', () => {
+      expect(
+        build(tx({ kind: 'shift', shift: { minutes: 90, rateCents: 2533 } }), employer).totalCents,
+      ).toBe(3800)
+    })
+
+    it('treats an employer group without exactly one employer as broken data', () => {
+      let caught: unknown
+      try {
+        sharesOf(tx({ kind: 'shift', shift: { minutes: 60, rateCents: 100 } }), {
+          ...employer,
+          members: [...employer.members, member('boss2')],
+        })
+      } catch (error) {
+        caught = error
+      }
+      expect((caught as LedgerError).code).toBe('INVARIANT_VIOLATION')
     })
   })
 
   describe('payment', () => {
     it('from gives and to receives the total', () => {
       expect(
-        buildShares(
+        sharesOf(
           tx({
             kind: 'payment',
             totalCents: 3000,
@@ -134,12 +156,12 @@ describe('buildShares', () => {
 
     it('needs who paid whom and a total', () => {
       expectInvalid(
-        () => buildShares(tx({ kind: 'payment', totalCents: 3000 }), house),
+        () => sharesOf(tx({ kind: 'payment', totalCents: 3000 }), house),
         /who paid whom/,
       )
       expectInvalid(
         () =>
-          buildShares(
+          sharesOf(
             tx({ kind: 'payment', payment: { fromPersonId: 'bob', toPersonId: 'alice' } }),
             house,
           ),
@@ -150,10 +172,10 @@ describe('buildShares', () => {
 
   describe('income', () => {
     it('is given and received by the owner, so it nets to 0', () => {
-      expect(buildShares(tx({ kind: 'income', totalCents: 80000 }), personal)).toEqual([
+      expect(sharesOf(tx({ kind: 'income', totalCents: 80000 }), personal)).toEqual([
         { personId: 'me', givenCents: 80000, receivedCents: 80000 },
       ])
-      expectInvalid(() => buildShares(tx({ kind: 'income' }), personal), /totalCents/)
+      expectInvalid(() => sharesOf(tx({ kind: 'income' }), personal), /totalCents/)
     })
   })
 
@@ -164,10 +186,10 @@ describe('buildShares', () => {
         { personId: 'bob', givenCents: -200, receivedCents: 500 },
       ]
       expect(
-        buildShares(tx({ kind: 'adjustment', adjustment: { shares, reason: 'fix' } }), house),
+        sharesOf(tx({ kind: 'adjustment', adjustment: { shares, reason: 'fix' } }), house),
       ).toEqual(shares)
       expect(
-        buildShares(
+        sharesOf(
           tx({ kind: 'adjustment', totalCents: 300, adjustment: { shares, reason: 'fix' } }),
           house,
         ),
@@ -177,7 +199,7 @@ describe('buildShares', () => {
     it('must balance, match totalCents and have shares', () => {
       const shares = [{ personId: 'alice', givenCents: 500, receivedCents: 0 }]
       expectInvalid(
-        () => buildShares(tx({ kind: 'adjustment', adjustment: { shares, reason: 'x' } }), house),
+        () => sharesOf(tx({ kind: 'adjustment', adjustment: { shares, reason: 'x' } }), house),
         /balance/,
       )
       const balanced = [
@@ -186,7 +208,7 @@ describe('buildShares', () => {
       ]
       expectInvalid(
         () =>
-          buildShares(
+          sharesOf(
             tx({
               kind: 'adjustment',
               totalCents: 1,
@@ -196,7 +218,7 @@ describe('buildShares', () => {
           ),
         /doesn’t match/,
       )
-      expectInvalid(() => buildShares(tx({ kind: 'adjustment' }), house), /needs shares/)
+      expectInvalid(() => sharesOf(tx({ kind: 'adjustment' }), house), /needs shares/)
     })
   })
 
@@ -204,7 +226,7 @@ describe('buildShares', () => {
     it('defaults to the caller paying and an equal split between everyone present', () => {
       // Cara joins on 1 Aug, so she isn't present on 10 Jul.
       expect(
-        buildShares(tx({ kind: 'expense', totalCents: 1000, date: d('2026-07-10') }), house),
+        sharesOf(tx({ kind: 'expense', totalCents: 1000, date: d('2026-07-10') }), house),
       ).toEqual([
         { personId: 'alice', givenCents: 1000, receivedCents: 500 },
         { personId: 'bob', givenCents: 0, receivedCents: 500 },
@@ -216,7 +238,7 @@ describe('buildShares', () => {
         ...house,
         members: [member('alice'), member('bob', '2026-01-01', '2026-09-30')],
       }
-      expect(buildShares(tx({ kind: 'expense', totalCents: 1000 }), ctx)).toEqual([
+      expect(sharesOf(tx({ kind: 'expense', totalCents: 1000 }), ctx)).toEqual([
         { personId: 'alice', givenCents: 1000, receivedCents: 1000 },
       ])
     })
@@ -227,7 +249,7 @@ describe('buildShares', () => {
         { personId: 'bob', cents: 4000 },
       ]
       expect(
-        buildShares(
+        sharesOf(
           tx({
             kind: 'expense',
             totalCents: 9000,
@@ -242,18 +264,18 @@ describe('buildShares', () => {
         { personId: 'cara', givenCents: 0, receivedCents: 3000 },
       ])
       expectInvalid(
-        () => buildShares(tx({ kind: 'expense', totalCents: 9001, payers }), house),
+        () => sharesOf(tx({ kind: 'expense', totalCents: 9001, payers }), house),
         /Payers must add up/,
       )
     })
 
     it('needs a total unless it has items', () => {
-      expectInvalid(() => buildShares(tx({ kind: 'expense' }), house), /totalCents/)
+      expectInvalid(() => sharesOf(tx({ kind: 'expense' }), house), /totalCents/)
     })
 
     it('drops people whose share is zero both ways', () => {
       expect(
-        buildShares(
+        sharesOf(
           tx({
             kind: 'expense',
             totalCents: 1,
@@ -271,12 +293,10 @@ describe('buildShares', () => {
         periodEnd: d('2026-09-30'),
       }
       expect(
-        buildShares(tx({ kind: 'bill', totalCents: 27000, bill }), house).map(
-          (s) => s.receivedCents,
-        ),
+        sharesOf(tx({ kind: 'bill', totalCents: 27000, bill }), house).map((s) => s.receivedCents),
       ).toEqual([10139, 10139, 6722])
       expect(
-        buildShares(tx({ kind: 'bill', totalCents: 27000, bill }), {
+        sharesOf(tx({ kind: 'bill', totalCents: 27000, bill }), {
           ...house,
           defaultBillSplit: 'equal',
         }).map((s) => s.receivedCents),
@@ -285,18 +305,18 @@ describe('buildShares', () => {
 
     it('splits a bill outside a house equally between everyone present', () => {
       expect(
-        buildShares(tx({ kind: 'bill', totalCents: 40000, bill: { status: 'paid' } }), personal),
+        sharesOf(tx({ kind: 'bill', totalCents: 40000, bill: { status: 'paid' } }), personal),
       ).toEqual([{ personId: 'me', givenCents: 40000, receivedCents: 40000 }])
     })
 
     it('gives a loan to everyone present except the lender', () => {
-      expect(buildShares(tx({ kind: 'loan', totalCents: 5000 }), pair)).toEqual([
+      expect(sharesOf(tx({ kind: 'loan', totalCents: 5000 }), pair)).toEqual([
         { personId: 'me', givenCents: 5000, receivedCents: 0 },
         { personId: 'sam', givenCents: 0, receivedCents: 5000 },
       ])
       expectInvalid(
         () =>
-          buildShares(tx({ kind: 'loan', totalCents: 5000 }), { ...pair, members: [member('me')] }),
+          sharesOf(tx({ kind: 'loan', totalCents: 5000 }), { ...pair, members: [member('me')] }),
         /Nobody to split/,
       )
     })
@@ -310,14 +330,14 @@ describe('buildShares', () => {
         },
         { name: 'Beer', amountCents: 2000, split: { mode: 'equal' as const, personIds: ['bob'] } },
       ]
-      expect(
-        buildShares(tx({ kind: 'expense', items }), { ...house, callerPersonId: 'bob' }),
-      ).toEqual([
-        { personId: 'alice', givenCents: 0, receivedCents: 200 },
-        { personId: 'bob', givenCents: 2400, receivedCents: 2200 },
-      ])
+      expect(sharesOf(tx({ kind: 'expense', items }), { ...house, callerPersonId: 'bob' })).toEqual(
+        [
+          { personId: 'alice', givenCents: 0, receivedCents: 200 },
+          { personId: 'bob', givenCents: 2400, receivedCents: 2200 },
+        ],
+      )
       expectInvalid(
-        () => buildShares(tx({ kind: 'expense', items, totalCents: 1 }), house),
+        () => sharesOf(tx({ kind: 'expense', items, totalCents: 1 }), house),
         /doesn’t match/,
       )
     })
@@ -331,13 +351,13 @@ describe('buildShares', () => {
           split: { mode: 'equal' as const, personIds: ['bob'] },
         },
       ]
-      expectInvalid(() => buildShares(tx({ kind: 'expense', items }), house), /mix signs/)
+      expectInvalid(() => sharesOf(tx({ kind: 'expense', items }), house), /mix signs/)
       const payers = [
         { personId: 'alice', cents: 150 },
         { personId: 'bob', cents: -50 },
       ]
       expectInvalid(
-        () => buildShares(tx({ kind: 'expense', totalCents: 100, payers }), house),
+        () => sharesOf(tx({ kind: 'expense', totalCents: 100, payers }), house),
         /mix signs/,
       )
       // A refund can't make anyone positive either.
@@ -346,9 +366,145 @@ describe('buildShares', () => {
         { personId: 'bob', cents: 50 },
       ]
       expectInvalid(
-        () => buildShares(tx({ kind: 'expense', totalCents: -100, payers: refundPayers }), house),
+        () => sharesOf(tx({ kind: 'expense', totalCents: -100, payers: refundPayers }), house),
         /mix signs/,
       )
+    })
+  })
+
+  describe('stricter input rules', () => {
+    it('refuses people who aren’t members, wherever they are named', () => {
+      expectInvalid(
+        () =>
+          sharesOf(
+            tx({ kind: 'expense', totalCents: 100, split: { mode: 'equal', personIds: ['zoe'] } }),
+            house,
+          ),
+        /Only members/,
+      )
+      expectInvalid(
+        () =>
+          sharesOf(
+            tx({
+              kind: 'expense',
+              totalCents: 100,
+              payers: [{ personId: 'zoe', cents: 100 }],
+              split: { mode: 'equal', personIds: ['alice'] },
+            }),
+            house,
+          ),
+        /Only members/,
+      )
+      expectInvalid(
+        () =>
+          sharesOf(
+            tx({
+              kind: 'payment',
+              totalCents: 100,
+              payment: { fromPersonId: 'zoe', toPersonId: 'alice' },
+            }),
+            house,
+          ),
+        /Only members/,
+      )
+    })
+
+    it('caps the total of items', () => {
+      const big = { mode: 'equal' as const, personIds: ['alice'] }
+      const items = [
+        { name: 'A', amountCents: MAX_AMOUNT_CENTS, split: big },
+        { name: 'B', amountCents: 1, split: big },
+      ]
+      expectInvalid(() => sharesOf(tx({ kind: 'expense', items }), house), /over the maximum/)
+    })
+
+    it('refuses items and a split together', () => {
+      expectInvalid(
+        () =>
+          sharesOf(
+            tx({
+              kind: 'expense',
+              items: [
+                { name: 'A', amountCents: 100, split: { mode: 'equal', personIds: ['alice'] } },
+              ],
+              split: { mode: 'equal', personIds: ['bob'] },
+            }),
+            house,
+          ),
+        /either items or a split/,
+      )
+    })
+
+    it('allows negative totals only for expenses, bills and adjustments', () => {
+      expectInvalid(
+        () =>
+          sharesOf(
+            tx({
+              kind: 'payment',
+              totalCents: -100,
+              payment: { fromPersonId: 'bob', toPersonId: 'alice' },
+            }),
+            house,
+          ),
+        /refunds/,
+      )
+      expectInvalid(() => sharesOf(tx({ kind: 'loan', totalCents: -100 }), pair), /refunds/)
+      expectInvalid(() => sharesOf(tx({ kind: 'income', totalCents: -100 }), personal), /refunds/)
+      expect(
+        sharesOf(tx({ kind: 'bill', totalCents: -300, bill: { status: 'paid' } }), personal),
+      ).toEqual([{ personId: 'me', givenCents: -300, receivedCents: -300 }])
+    })
+
+    it('needs a split for an employer expense (the presets always send one)', () => {
+      expectInvalid(
+        () => sharesOf(tx({ kind: 'expense', totalCents: 100 }), employer),
+        /needs a split/,
+      )
+    })
+
+    it('refuses more than 15 people', () => {
+      const big: LedgerContext = {
+        ...house,
+        members: Array.from({ length: 16 }, (_, i) => member(`p${String(i).padStart(2, '0')}`)),
+      }
+      expectInvalid(
+        () =>
+          sharesOf(tx({ kind: 'expense', totalCents: 1600 }), { ...big, callerPersonId: 'p00' }),
+        /At most 15/,
+      )
+    })
+
+    it('ignores join dates outside houses, so back-dated entries work', () => {
+      const newPair: LedgerContext = {
+        ...pair,
+        members: [member('me', '2026-10-01'), member('sam', '2026-10-01')],
+      }
+      expect(
+        sharesOf(tx({ kind: 'loan', totalCents: 5000, date: d('2026-06-01') }), newPair),
+      ).toEqual([
+        { personId: 'me', givenCents: 5000, receivedCents: 0 },
+        { personId: 'sam', givenCents: 0, receivedCents: 5000 },
+      ])
+    })
+
+    it('splits a house bill without a period equally between everyone present', () => {
+      expect(
+        sharesOf(tx({ kind: 'bill', totalCents: 900, bill: { status: 'paid' } }), house).map(
+          (s) => s.receivedCents,
+        ),
+      ).toEqual([300, 300, 300])
+    })
+
+    it('gives the same result whatever order the members come in', () => {
+      const reversed = { ...house, members: [...house.members].reverse() }
+      const input = tx({ kind: 'expense', totalCents: 1000 })
+      expect(sharesOf(input, reversed)).toEqual(sharesOf(input, house))
+      const bill = tx({
+        kind: 'bill',
+        totalCents: 1000,
+        bill: { status: 'paid', periodStart: d('2026-07-01'), periodEnd: d('2026-09-30') },
+      })
+      expect(sharesOf(bill, reversed)).toEqual(sharesOf(bill, house))
     })
   })
 })
