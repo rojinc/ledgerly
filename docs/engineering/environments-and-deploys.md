@@ -47,7 +47,7 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 | `ledger` | HTTP | `users` | 15 s | `rows.*`, `files.*` (receipt permissions) |
 | `groups` | HTTP | `users` | 15 s | `rows.*`, `teams.*` |
 | `identity` | HTTP | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
-| `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*` |
+| `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*`, `users.read` (reminder emails) |
 | `statements` | HTTP + cron `15 * * * *` | `users` | 300 s | `rows.*`, `files.*` (PDFs) |
 
 Every function runs on `node-24`, the same Node as `.nvmrc`, CI and the build's `/health` check. Node 24 gets security fixes [until 2028-04-30](https://github.com/nodejs/Release); before then, move to the next LTS runtime. Check what Cloud offers with `functions.listRuntimes` on the project (on 2026-10-18 `ledgerly-dev` listed `node-22`, `node-24`, `node-25` and `node-26`), not the runtimes page, which lags. The CLI refuses to change a deployed function's runtime, so a move means deleting and recreating each function.

@@ -183,7 +183,7 @@ Details: [People, identity and invites](identity-and-invites.md).
 
 ## scheduler
 
-Cron: `5 * * * *`. HTTP routes:
+Cron: `5 * * * *`, sent as `POST /` with the `schedule` trigger (any other caller gets `FORBIDDEN`). HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
@@ -191,7 +191,7 @@ Cron: `5 * * * *`. HTTP routes:
 | `PATCH /schedules/{id}` | `ScheduleInput` (same `id`) | `{ schedule, created, removed }` | creator or admin |
 | `POST /schedules/{id}/end` | `{ endsOn: LocalDate }` | `{ schedule, removed }` | creator or admin |
 | `DELETE /schedules/{id}` | none | `{}` | creator or admin; no posted occurrences |
-| `POST /schedules/preview` | `ScheduleInput` without `id` + `{ count?: number }` | `{ dates: LocalDate[], skipped: { date, reason }[] }` | any member |
+| `POST /schedules/preview` | `ScheduleInput` without `id` + `{ count?: number }` (1–100, default 10) | `{ dates: LocalDate[], skipped: { date, reason: 'exdate' \| 'holiday' }[] }` | any member; not in an archived group |
 
 ```ts
 type ScheduleInput = {
