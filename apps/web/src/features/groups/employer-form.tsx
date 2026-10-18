@@ -108,6 +108,7 @@ export function toCreateBody(
     id,
     type: 'employer',
     name: values.name,
+    currency,
     counterpart: { displayName: values.name },
     ...cycleFields(values),
     settings: toSettings(values, currency),
@@ -205,7 +206,11 @@ type Props = {
   readOnly?: boolean
 } & (
   | { mode: 'create'; id: string; onSave: (body: CreateGroupBody) => Promise<unknown> }
-  | { mode: 'settings'; onSave: (body: UpdateGroupBody) => Promise<unknown> }
+  | {
+      mode: 'settings'
+      /** Resolves to the values of the group as stored. */
+      onSave: (body: UpdateGroupBody) => Promise<EmployerValues>
+    }
 )
 
 const TEXTAREA =
@@ -239,9 +244,8 @@ export function EmployerForm(props: Props) {
           if (props.mode === 'create') {
             await props.onSave(body as CreateGroupBody)
           } else {
-            await props.onSave(body as UpdateGroupBody)
-            // Show what was stored (trimmed, one email per line), not what was typed.
-            form.reset(toEmployerValues(body as UpdateGroupBody, currency))
+            // Show what was stored (trimmed, one email per line, the kept anchor), not what was typed.
+            form.reset(await props.onSave(body as UpdateGroupBody))
           }
         } catch (error) {
           form.setError('root', { message: (error as Error).message })

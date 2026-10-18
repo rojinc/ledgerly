@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
+import { useProfile } from '../profile/use-profile'
 import { centsToText, toEmployerValues } from './employer-form'
 import { EmployerSettingsPage } from './employer-settings-page'
 import { NewEmployerPage } from './new-employer-page'
@@ -14,11 +15,19 @@ vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $i
 vi.mock('../auth/use-bootstrap', () => ({
   useBootstrap: () => ({ data: { personId: 'p1', profile: { currency: 'AUD' } } }),
 }))
+vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn() }))
 vi.mock('./use-groups', () => ({ useGroup: vi.fn(), useMyMember: vi.fn() }))
 
 const call = vi.mocked(callFunction)
 const groupHook = vi.mocked(useGroup)
 const memberHook = vi.mocked(useMyMember)
+const profileHook = vi.mocked(useProfile)
+
+function mockProfile(currency: string) {
+  profileHook.mockReturnValue({ data: { currency }, isError: false } as ReturnType<
+    typeof useProfile
+  >)
+}
 
 const employer = {
   $id: 'g1',
@@ -76,7 +85,10 @@ function input(label: string | RegExp) {
 
 const created = { ok: true as const, data: { group: { ...employer, $id: 'g9' }, members: [] } }
 
-beforeEach(() => mockGroup(undefined))
+beforeEach(() => {
+  mockGroup(undefined)
+  mockProfile('AUD')
+})
 
 afterEach(() => {
   cleanup()
@@ -102,6 +114,7 @@ describe('NewEmployerPage', () => {
       id: (body as { id: string }).id,
       type: 'employer',
       name: 'Acme Cafe',
+      currency: 'AUD',
       counterpart: { displayName: 'Acme Cafe' },
       statementCycle: 'fortnightly',
       cycleAnchor: '2026-10-01',
@@ -115,6 +128,37 @@ describe('NewEmployerPage', () => {
     })
     expect((body as { id: string }).id).toMatch(/^[a-zA-Z0-9]/)
     await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g9/settings'))
+  })
+
+  it('parses the rate in the current profile currency and sends that currency', async () => {
+    mockProfile('JPY')
+    call.mockResolvedValue(created)
+    renderAt('/groups/new-employer')
+    type('Employer name', 'Acme Cafe')
+    type(/Default hourly rate/, '25')
+    fireEvent.click(screen.getByRole('button', { name: 'Create employer' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const body = call.mock.calls[0]?.[3] as {
+      currency: string
+      settings: { defaultRateCents: number }
+    }
+    expect(body.currency).toBe('JPY')
+    expect(body.settings.defaultRateCents).toBe(25)
+  })
+
+  it('says the employer may already exist on a conflict, keeping the id', async () => {
+    call.mockResolvedValue({ ok: false, error: { code: 'CONFLICT', message: 'That ID is taken.' } })
+    renderAt('/groups/new-employer')
+    type('Employer name', 'Acme Cafe')
+    type(/Default hourly rate/, '25')
+    fireEvent.click(screen.getByRole('button', { name: 'Create employer' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'This employer may already exist. Check Groups, or try again.',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Create employer' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    const ids = call.mock.calls.map((args) => (args[3] as { id: string }).id)
+    expect(ids[0]).toBe(ids[1])
   })
 
   it('sends no anchor for a monthly cycle, even if one was typed', async () => {
@@ -209,7 +253,18 @@ describe('NewEmployerPage', () => {
 describe('EmployerSettingsPage', () => {
   it('starts from the stored group and saves the changes', async () => {
     mockGroup(employer)
-    call.mockResolvedValue({ ok: true, data: { ...employer, name: 'Acme' } })
+    const saved = {
+      ...employer,
+      name: 'Acme',
+      settingsJson: JSON.stringify({
+        type: 'employer',
+        defaultRateCents: 3000,
+        paymentTermsDays: 7,
+        autoFinalize: true,
+        recipients: ['pay@acme.test', 'accounts@acme.test'],
+      }),
+    }
+    call.mockResolvedValue({ ok: true, data: saved })
     const { queryClient } = renderAt('/groups/g1/settings')
     expect(input('Group name').value).toBe('Acme Cafe')
     expect(input('Billing emails').value).toBe('pay@acme.test\nboss@acme.test')
@@ -239,7 +294,19 @@ describe('EmployerSettingsPage', () => {
     expect(await screen.findByText('Saved.')).toBeTruthy()
     expect(input('Billing emails').value).toBe('pay@acme.test\naccounts@acme.test')
     expect(input(/Default hourly rate/).value).toBe('30.00')
-    expect(queryClient.getQueryData(['group', 'g1'])).toEqual({ ...employer, name: 'Acme' })
+    expect(queryClient.getQueryData(['group', 'g1'])).toEqual(saved)
+  })
+
+  it('keeps the stored anchor after saving another cycle', async () => {
+    mockGroup(employer)
+    call.mockResolvedValue({ ok: true, data: { ...employer, statementCycle: 'monthly' } })
+    renderAt('/groups/g1/settings')
+    type('Invoice cycle', 'monthly')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Saved.')).toBeTruthy()
+    expect(call.mock.calls[0]?.[3]).not.toHaveProperty('cycleAnchor')
+    type('Invoice cycle', 'weekly')
+    expect(input('Cycle starts on').value).toBe('2026-10-05')
   })
 
   it('shows the function error', async () => {

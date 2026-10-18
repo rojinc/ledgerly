@@ -6,8 +6,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
-import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { useProfile } from '../profile/use-profile'
 import { EmployerForm, type EmployerValues } from './employer-form'
 
 const DEFAULTS: EmployerValues = {
@@ -23,7 +23,8 @@ const DEFAULTS: EmployerValues = {
 export function NewEmployerPage() {
   // RequireAuth renders this page only for a signed-in, bootstrapped user.
   const userId = useCurrentUser().data?.$id ?? ''
-  const bootstrap = useBootstrap(userId)
+  // Not the bootstrap copy, which keeps the currency from before a profile change.
+  const profile = useProfile(userId)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   // One ID per visit, so retrying after an error can't create the group twice.
@@ -36,7 +37,13 @@ export function NewEmployerPage() {
       '/groups',
       body,
     )
-    if (!result.ok) throw new Error(result.error.message)
+    if (!result.ok) {
+      if (result.error.code !== 'CONFLICT') throw new Error(result.error.message)
+      // Either a clash with another write, or an earlier try with this ID went through
+      // and its answer was lost (then the ID is taken by that group).
+      await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
+      throw new Error('This employer may already exist. Check Groups, or try again.')
+    }
     const { group } = result.data
     queryClient.setQueryData(queryKeys.group(group.$id), group)
     await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
@@ -46,12 +53,16 @@ export function NewEmployerPage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-semibold">New employer</h1>
-      {bootstrap.data ? (
+      {profile.isError ? (
+        <p role="alert" className="text-destructive">
+          We couldn’t load your profile. Reload the page to try again.
+        </p>
+      ) : profile.data ? (
         <EmployerForm
           mode="create"
           id={id}
-          // The group takes the currency from the profile, so amounts are parsed in it.
-          currency={bootstrap.data.profile.currency}
+          // Sent with the body, so the group has the currency the rate was typed in.
+          currency={profile.data.currency}
           defaultValues={DEFAULTS}
           onSave={create}
         />

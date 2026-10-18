@@ -7,7 +7,7 @@ import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
-import { EmployerForm, toEmployerValues } from './employer-form'
+import { EmployerForm, type EmployerValues, toEmployerValues } from './employer-form'
 import { useGroup, useMyMember } from './use-groups'
 
 function parseSettings(json: string) {
@@ -17,6 +17,10 @@ function parseSettings(json: string) {
   } catch {
     return undefined
   }
+}
+
+function formValues(group: Groups): EmployerValues {
+  return toEmployerValues({ ...group, settings: parseSettings(group.settingsJson) }, group.currency)
 }
 
 function Message({ children, alert = false }: { children: string; alert?: boolean }) {
@@ -38,11 +42,12 @@ export function EmployerSettingsPage() {
   const member = useMyMember(groupId, personId)
   const queryClient = useQueryClient()
 
-  async function save(body: UpdateGroupBody) {
+  async function save(body: UpdateGroupBody): Promise<EmployerValues> {
     const result = await callFunction<Groups>('groups', 'PATCH', `/groups/${groupId}`, body)
     if (!result.ok) throw new Error(result.error.message)
     queryClient.setQueryData(queryKeys.group(groupId), result.data)
     await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
+    return formValues(result.data)
   }
 
   let content: ReactNode
@@ -62,10 +67,7 @@ export function EmployerSettingsPage() {
         <EmployerForm
           mode="settings"
           currency={group.data.currency}
-          defaultValues={toEmployerValues(
-            { ...group.data, settings: parseSettings(group.data.settingsJson) },
-            group.data.currency,
-          )}
+          defaultValues={formValues(group.data)}
           readOnly={!isAdmin}
           onSave={save}
         />
