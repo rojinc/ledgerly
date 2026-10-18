@@ -41,6 +41,31 @@ describe('normalizePhone', () => {
   ])('rejects %s', (_, raw, country) => {
     expect(() => normalizePhone(raw, country)).toThrow(new RangeError('Not a valid phone number'))
   })
+
+  // With min metadata, some territories that share a calling code check a national
+  // number more loosely than its E.164 form, e.g. +1 for PR and +39 for VA.
+  it.each([
+    ['555 555 5555', 'PR'],
+    ['555 555 5555', 'AG'],
+    ['555 555 5555', 'VI'],
+    ['0000 000 000', 'VA'],
+  ])('rejects %s (%s), whose E.164 form is not valid', (raw, country) => {
+    expect(() => normalizePhone(raw, country)).toThrow(new RangeError('Not a valid phone number'))
+  })
+
+  it('returns only numbers that identityKey accepts as they are', () => {
+    const numbers = [
+      ['0412 345 678', 'AU'],
+      ['787 555 1234', 'PR'],
+      ['268 464 1234', 'AG'],
+      ['7624 123456', 'IM'],
+      ['06 698 12345', 'VA'],
+    ]
+    for (const [raw = '', country] of numbers) {
+      const e164 = normalizePhone(raw, country)
+      expect(identityKey('phone', e164)).toBe(`phone:${e164}`)
+    }
+  })
 })
 
 describe('identityKey', () => {

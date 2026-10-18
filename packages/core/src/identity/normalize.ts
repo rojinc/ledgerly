@@ -21,16 +21,20 @@ export function normalizeEmail(raw: string): string {
 export function normalizePhone(raw: string, defaultCountry?: string): string {
   const country = defaultCountry?.slice(0, 2) as CountryCode | undefined
   const phone = parsePhoneNumberFromString(raw, country)
-  // With min metadata, isValid() checks the length for the country. An extension
-  // can't receive an SMS, and dropping it would turn two numbers into one.
-  if (!phone?.isValid() || phone.ext) throw new RangeError('Not a valid phone number')
+  // An extension can't receive an SMS, and dropping it would turn two numbers into
+  // one. With min metadata, territories sharing a calling code (+1 for PR, +39 for
+  // VA) check a national number more loosely than its E.164 form, so that form must
+  // be valid too: then identityKey() accepts whatever this returns.
+  const valid =
+    phone?.isValid() && !phone.ext && parsePhoneNumberFromString(phone.number)?.isValid()
+  if (!phone || !valid) throw new RangeError('Not a valid phone number')
   return phone.number
 }
 
 /**
  * The `identities.key` for a normalized email or an E.164 phone number, e.g.
- * `email:sam@example.com` or `phone:+61412345678`. Normalizing again is a no-op
- * for those values, and throws for anything else.
+ * `email:sam@example.com` or `phone:+61412345678`. It normalizes the value again,
+ * which changes nothing for those, so the key is always canonical.
  */
 export function identityKey(type: IdentitiesType, value: string): string {
   return type === 'email' ? `email:${normalizeEmail(value)}` : `phone:${normalizePhone(value)}`
