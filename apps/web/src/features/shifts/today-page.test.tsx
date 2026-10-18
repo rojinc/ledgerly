@@ -34,6 +34,7 @@ function employer(id: string, name: string, extra: Partial<Groups> = {}): Groups
     timezone: 'Australia/Sydney',
     settingsJson: '{}',
     archivedAt: null,
+    ownerPersonId: 'p1',
     ...extra,
   } as Groups
 }
@@ -421,7 +422,7 @@ describe('TodayPage', () => {
     expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
   })
 
-  it('starts the timer only in groups where the caller is an admin', async () => {
+  it('starts the timer only in groups the caller owns as an admin', async () => {
     roles = { g1: 'member', g2: 'admin' }
     mockRows([])
     call.mockReturnValue(new Promise(() => {}))
@@ -431,6 +432,16 @@ describe('TodayPage', () => {
     expect(screen.queryByLabelText('Employer')).toBeNull()
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(call.mock.calls[0]?.[3]).toMatchObject({ groupId: 'g2' })
+  })
+
+  it("doesn't offer Start to an admin who isn't the group's owner (the worker)", async () => {
+    // The employer joined as an admin of Sam's group: the shift would pay Sam, so only Sam starts.
+    mockGroups([employer('g1', 'Acme Cafe', { ownerPersonId: 'p9' })])
+    roles = { g1: 'admin' }
+    mockRows([])
+    renderPage()
+    expect(await screen.findByRole('link', { name: 'Add a shift' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Start' })).toBeNull()
   })
 
   it('links the running timer to its shift, to void it', async () => {

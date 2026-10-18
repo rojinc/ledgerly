@@ -85,11 +85,14 @@ export function TodayPage() {
 
   const byId = new Map(employers.map((group) => [group.$id, group]))
   const open = employers.filter((group) => !group.archivedAt)
-  // permissions.md: admins and members add shifts; only admins time them (the function checks).
+  // permissions.md: admins and members add shifts; only the group's owner, the worker the shift
+  // pays, times them (functions-api.md#ledger; the function checks).
   const adders = open.filter((group) =>
     ['admin', 'member'].includes(roles.data.get(group.$id) ?? ''),
   )
-  const starters = open.filter((group) => roles.data.get(group.$id) === 'admin')
+  const starters = open.filter(
+    (group) => group.ownerPersonId === personId && roles.data.get(group.$id) === 'admin',
+  )
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
