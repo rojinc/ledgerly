@@ -8,6 +8,7 @@ import { route } from '@ledgerly/server/http/create-handler'
 import {
   activityWrite,
   findTransaction,
+  guardGroupAndMembers,
   invalid,
   ledgerRoute,
   listItems,
@@ -50,7 +51,8 @@ export const createTransaction = route('POST', '/transactions', ({ userId, body,
       throw new AppError('VALIDATION_FAILED', 'Receipts can’t be attached yet.')
     }
     const status = input.kind === 'bill' && input.bill?.status === 'due' ? 'due' : 'posted'
-    const planned = plan(input, status, await loadLedger(db, membership))
+    const ledger = await loadLedger(db, membership)
+    const planned = plan(input, status, ledger)
     const columns = transactionColumns(input, planned)
 
     const existing = await findTransaction(db, input.id)
@@ -70,6 +72,7 @@ export const createTransaction = route('POST', '/transactions', ({ userId, body,
     const row = { $id: input.id, ...columns }
     const permissions = teamRead(input.groupId)
     await withTransaction(db, async (tx) => {
+      await guardGroupAndMembers(tx, db, membership.group, ledger, planned.shares)
       await tx.write(
         {
           action: 'create',

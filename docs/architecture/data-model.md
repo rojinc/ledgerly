@@ -209,7 +209,7 @@ Permissions: `read("team:<groupId>")`.
 | `category` | varchar(32)? | |
 | `splitJson` | text | `SplitSpec` |
 
-Items get `ID.unique()` IDs and are rebuilt completely on every edit, like shares.
+Items are rebuilt completely on every edit, like shares ([building shares](ledger.md#building-shares)): rows are rewritten whole, and new ones get `ID.unique()` IDs.
 Indexes: `idx_transaction_position (transactionId, position)`.
 Permissions: `read("team:<groupId>")` (the function sets the group's team when it writes).
 

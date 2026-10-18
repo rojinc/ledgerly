@@ -163,7 +163,12 @@ export async function requireNotFinalizing(
   }
 }
 
-export type Ledger = { ctx: LedgerContext; memberIds: string[] }
+export type Ledger = {
+  ctx: LedgerContext
+  memberIds: string[]
+  /** Each person's `members` row in the group, by person ID. */
+  memberRows: Map<string, string>
+}
 
 /** Everything `buildShares` needs about the group (build-shares.ts). */
 export async function loadLedger(db: Db, membership: Membership): Promise<Ledger> {
@@ -186,6 +191,49 @@ export async function loadLedger(db: Db, membership: Membership): Promise<Ledger
       ...(defaultBillSplit ? { defaultBillSplit } : {}),
     },
     memberIds: members.map((member) => member.personId),
+    memberRows: new Map(members.map((member) => [member.personId, member.$id])),
+  }
+}
+
+/**
+ * Guards the group row and the member row of everyone in `shares` (ledger.md#concurrency):
+ * stages a write of a column that never changes to each, then reads them in the transaction.
+ * A member row removed meanwhile (I-3), an archive or a currency change reruns the route; one
+ * that commits after this makes the commit fail with 409, which reruns it too.
+ */
+export async function guardGroupAndMembers(
+  tx: Tx,
+  db: Db,
+  group: Groups,
+  ledger: Ledger,
+  shares: readonly Share[],
+): Promise<void> {
+  const memberRows = shares.map((share) => ledger.memberRows.get(share.personId))
+  if (memberRows.some((rowId) => rowId === undefined)) throw new Raced()
+  try {
+    await tx.write(
+      { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { type: group.type } },
+      ...shares.map((share, index) => ({
+        action: 'update' as const,
+        tableId: TABLES.members,
+        rowId: memberRows[index] as string,
+        data: { personId: share.personId },
+      })),
+    )
+    const read = { databaseId: DATABASE_ID, transactionId: tx.id }
+    const staged = await db.getRow<Groups>({ ...read, tableId: TABLES.groups, rowId: group.$id })
+    if (staged.currency !== group.currency || staged.archivedAt !== group.archivedAt) {
+      throw new Raced()
+    }
+    await Promise.all(
+      memberRows.map((rowId) =>
+        db.getRow<Members>({ ...read, tableId: TABLES.members, rowId: rowId as string }),
+      ),
+    )
+  } catch (error) {
+    // A row deleted before the guard staged: run the route again with the group as it is now.
+    if (error instanceof AppwriteException && error.code === 404) throw new Raced()
+    throw error
   }
 }
 

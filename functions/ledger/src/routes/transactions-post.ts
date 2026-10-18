@@ -8,6 +8,7 @@ import {
   activityWrite,
   changedColumns,
   getTransaction,
+  guardGroupAndMembers,
   guardTransaction,
   invalid,
   ledgerRoute,
@@ -89,6 +90,7 @@ export const postTransaction = route(
             invalid('Only a scheduled or due transaction can be posted.')
           }
           await requireNotFinalizing(db, existing.groupId, [existing.date, date])
+          await guardGroupAndMembers(tx, db, membership.group, ledger, planned.shares)
           const oldShares = await listShares(db, existing.$id)
           const row = { ...existing, date }
           await tx.write(

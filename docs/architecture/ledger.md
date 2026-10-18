@@ -149,7 +149,7 @@ Other rounding rules:
 
 Rules:
 
-- Shares are **rebuilt completely** on every write. In one database transaction the function deletes the old share rows and creates the new ones. Never patch a single share.
+- Shares are **rebuilt completely** on every write, in one database transaction: every share row is rewritten whole from the new set, extra rows are created and rows left over are deleted. Never patch a single share. Items are rebuilt the same way. Rewriting rows instead of deleting and recreating them keeps the largest edit (15 people, 30 items) within one transaction's 90 writes.
 - Each share copies `groupId`, `date`, `kind` and `category` from its transaction so the main queries need one index. Because shares are always rebuilt, these copies can't drift. ([D-007](decisions.md))
 - A person whose given and received are both 0 (for example 1 cent split three ways) gets no share row.
 
@@ -202,6 +202,16 @@ All reports are sums over the user's shares in groups they have joined ([D-016](
 - **Void**: set status `void`, delete shares and keep the row. Allowed until locked.
 - **Locked**: create an `adjustment` instead. It shows on the next statement.
 - Editing a schedule-generated occurrence sets `overridden = true`. See [Scheduling](scheduling.md).
+
+## Concurrency
+
+Every ledger write checks what it depends on only after staging a write to it in its database transaction ([conventions](../engineering/conventions.md#functions)). A change by anyone else after that makes the commit fail with 409, and the write runs once more from the start.
+
+- **The transaction row:** edit, post and void stage a write to it first, then read it, its shares, items and stored input. So they never act on a version that another edit, post, void or lock (I-7) has replaced.
+- **The member rows (I-3):** a write that creates shares stages a write to each share person's `members` row, then reads it. A member removed meanwhile can't be left with a share.
+- **The group row:** every write that builds shares stages a write to the group row, then checks its currency and archive date. A currency change or archive that lands meanwhile makes the write run again with the group as it is now.
+
+These no-op writes set a column that never changes (`groups.type`, `members.personId`), so they can't undo someone else's change. Because every write stages the group row, two writes to the same group at the same moment are serialized: the second one's commit fails and it runs again.
 
 ## Currency
 
