@@ -21,7 +21,7 @@ A row in `schedules` ([data model](data-model.md#schedules)) with:
 | On the 1st of every month | `FREQ=MONTHLY;BYMONTHDAY=1` |
 | On the last day of every month | `FREQ=MONTHLY;BYMONTHDAY=-1` |
 
-Any valid `RRULE` is accepted from the API, but the UI only offers these.
+The UI only offers these. The API accepts any `RRULE` with `FREQ` = `DAILY`, `WEEKLY`, `MONTHLY` or `YEARLY` and no `BYHOUR`, `BYMINUTE` or `BYSECOND`. Finer rules only repeat the same date (one occurrence per date) and can be very slow to expand, so they return `VALIDATION_FAILED`.
 
 ## Expanding occurrences
 
@@ -56,7 +56,7 @@ The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs *
 
 ### Step 1: expand due schedules
 
-Query `schedules` where `nextRunAt <= now`, ordered by `nextRunAt`. For each:
+Query `schedules` where `nextRunAt <= now`, ordered by `nextRunAt`. Skip (and clear `nextRunAt` for) schedules in archived groups. For each:
 
 ```
 today       = localToday(group.timezone)
@@ -66,20 +66,21 @@ for date in expandSchedule(schedule, from, to, holidays(group.region)):
     create transaction id=<scheduleId>_<YYYYMMDD>
         kind, description, category, totalCents, inputJson from the template
         status = 'scheduled' (shift, expense, income) or 'due' (bill, with dueOn = date)
-        scheduleId, date; ignore 409
+        scheduleId, date, createdBy = schedule.createdBy; ignore 409
 generatedThrough = to
 nextRunAt = next local 00:05 in group.timezone (as UTC), or empty if endsOn < today
 ```
 
-Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
+Occurrences are written in batches of at most 90 operations per database transaction (a daily rule with a 120-day horizon is 120 rows). Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
 
 ### Step 2: auto-post
 
 - **Shifts:** status `scheduled`, kind `shift`, `date < localToday`, and the schedule has `autoPost` → post. Shares are built with the same `buildShares()` the `ledger` function uses.
 - **Autopay bills:** status `due`, `dueOn <= localToday`, and the schedule has `autoPost` → post with the template's payers, `date = dueOn`.
 - **Other `scheduled` kinds** (expense, income): post when `date <= localToday` and `autoPost` is set.
+- Edited (`overridden`) occurrences auto-post too, with the edited values. Voided ones never do.
 
-Query with `idx_status_date` using the UTC date plus one day (some timezones are ahead), then check each group's local date before posting.
+Query with `idx_status_date` for dates from 7 days ago up to the UTC date plus one day (some timezones are ahead), then check each group's local date before posting. The 7-day floor matters: shifts waiting for manual confirmation stay `scheduled` for as long as the user ignores them, and without a floor every run would re-read all of them. An auto-post occurrence missed by more than 7 days (a long outage) waits for the user.
 
 ### Step 3: reminders
 
@@ -89,7 +90,7 @@ Query with `idx_status_date` using the UTC date plus one day (some timezones are
 | Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost`, `remindedAt` empty | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
-Set `remindedAt` in the same write that queues the email, so each reminder goes out once.
+Set `remindedAt` in the same write that queues the email, so each reminder goes out once. The shift query uses the same 7-day floor as step 2.
 
 ### Step 4: summary emails
 

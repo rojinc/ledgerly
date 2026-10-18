@@ -10,9 +10,10 @@ A **statement** summarises a group for a period and then locks that period. The 
 ## Core rules
 
 1. **Statements collect everything not yet locked.** A statement takes *every posted, unlocked transaction dated on or before the period end*, not only the ones inside the period. A forgotten shift or a late payment simply lands on the next statement.
-2. **Opening = previous closing.** Each person's opening balance is their closing balance on the group's previous final statement (0 for the first one).
+2. **Opening = previous closing.** Each person's opening balance is their closing balance on the group's previous final statement (0 for the first one). "Previous" and "latest" always mean by `periodEnd`, ignoring void statements.
 3. **Final means locked.** Finalizing sets `statementId` on every included transaction. From then on they cannot be edited or voided ([I-7](ledger.md#invariants)). Fixes are `adjustment` transactions, which land on the next statement.
 4. **Totals are sums of stored amounts.** Nothing is recalculated from hours × rate at statement time.
+5. **Periods lock in order.** Only the group's oldest unfinished statement (`draft` or `finalizing`, by `periodEnd`) can be finalized; finalizing any other returns `CONFLICT`. Otherwise a later draft would lock an earlier period's transactions and break the opening chain.
 
 ## Periods
 
@@ -37,7 +38,7 @@ A **statement** summarises a group for a period and then locks that period. The 
 
 ### 1. Draft (statements job, hourly at :15)
 
-For each group where `nextCloseAt <= now`, in **one database transaction**:
+For each group where `nextCloseAt <= now` and that isn't archived, in **one database transaction**:
 
 - create a `draft` statement for the period, with a computed snapshot,
 - move `groups.nextCloseAt` to the next period's close.
@@ -56,7 +57,7 @@ Admin only. Each step checks whether it has already been done, so an interrupted
 2. **Invoices only:** if `number` is empty, atomically increment the issuer's `profiles.lastInvoiceNumber` and store the result in `number`. Store `displayNumber` = prefix + number padded to 4 digits (`INV-0010`). A crash between these two writes can leave a gap in numbering; that is acceptable and logged.
 3. Recalculate the snapshot from: posted transactions with `statementId` empty and `date <= periodEnd`, plus any already locked to this statement (from an interrupted run).
 4. Lock: set `statementId` on those transactions, in batches of at most 90 operations per database transaction.
-5. **Check:** each person's closing equals their opening plus the sum of their nets over the lines; the closings add up to 0; and the snapshot's balances equal a fresh sum of all locked shares in the group. If any check fails, stop, leave it `finalizing` and log an error. Never send a wrong invoice.
+5. **Check:** each person's closing equals their opening plus the sum of their nets over the lines; the closings add up to 0; and the snapshot's balances equal a fresh sum of all locked shares in the group. If any check fails, unlock this statement's transactions (in batches), set it back to `draft` and log an error. Never send a wrong invoice. Going back to `draft` matters: a statement left `finalizing` would block the group's writes for that period forever. The number from step 2 stays on the draft and is reused next time.
 6. Render the PDF with `pdfmake`, upload it to the `statements` bucket and set `pdfFileId`.
 7. Set status `final`, `issuedOn` = local today, `dueOn` = issuedOn + payment terms (invoices), and `finalizedBy`.
 8. If `send` was requested, email it and set `sentAt`.

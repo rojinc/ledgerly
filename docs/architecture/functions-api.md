@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller isn't an active member of the group |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, finalizing a draft that isn't the oldest |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
@@ -110,7 +110,7 @@ All money writes.
 | `PATCH /transactions/{id}` | `TransactionInput` (same `id`) | `TransactionView` | creator or admin; not locked |
 | `POST /transactions/{id}/post` | `{ date?, payers?, shift?: { minutes?, rateCents?, breakMinutes? } }` | `TransactionView` | creator or admin; status `scheduled` or `due` |
 | `POST /transactions/{id}/void` | `{ reason: string }` | `TransactionView` | creator or admin; not locked |
-| `POST /timer/start` | `{ groupId, rateCents?, description? }` | `TransactionView` | admin (employer group) |
+| `POST /timer/start` | `{ id, groupId, rateCents?, description? }` | `TransactionView` | admin (employer group) |
 | `POST /timer/stop` | `{ transactionId, breakMinutes? }` | `TransactionView` | the person who started it |
 | `GET /groups/{groupId}/balances` | none | `{ people: { personId, netCents }[], transfers: { fromPersonId, toPersonId, cents }[] }` | any member |
 
@@ -128,14 +128,14 @@ What every write does, in **one TablesDB transaction**:
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /groups` | `{ id, type, name, currency?, timezone?, region?, statementCycle?, cycleAnchor?, settings?, counterpart?: { displayName, email?, phone? } }` | `{ group, members }` | any user (not `personal`; bootstrap makes that) |
-| `PATCH /groups/{id}` | `{ name?, timezone?, region?, statementCycle?, cycleAnchor?, settings? }` | `group` | admin |
+| `PATCH /groups/{id}` | `{ name?, currency?, timezone?, region?, statementCycle?, cycleAnchor?, settings? }` | `group` | admin |
 | `POST /groups/{id}/archive` | none | `group` | admin |
 | `POST /groups/{id}/members` | `{ displayName, email?, phone?, userId?, role?, joinedOn? }` | `member` | admin (house: member too) |
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn? }` | `member` | admin |
 | `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares |
-| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 |
+| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last admin |
 
-`counterpart` is required for `employer` and `pair` groups. It creates the second member (a placeholder unless their identity already has an account). `currency` cannot change after the group's first transaction.
+`counterpart` is required for `employer` and `pair` groups. It creates the second member (a placeholder unless their identity already has an account). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
 ## identity
 
@@ -163,12 +163,12 @@ Cron: `5 * * * *`. HTTP routes:
 
 ```ts
 type ScheduleInput = {
-  id: string
+  id: string                    // ID.unique(), exactly 20 chars (occurrence IDs append _YYYYMMDD)
   groupId: string
   kind: 'shift' | 'bill' | 'expense' | 'income'
   description: string
   template: Omit<TransactionInput, 'id' | 'groupId' | 'date' | 'kind' | 'description'>
-  rrule: string                 // RFC 5545
+  rrule: string                 // RFC 5545; FREQ DAILY/WEEKLY/MONTHLY/YEARLY only (scheduling.md)
   startsOn: LocalDate
   endsOn?: LocalDate
   exdates?: LocalDate[]

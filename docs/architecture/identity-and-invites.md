@@ -8,7 +8,7 @@ Ledgerly has to work with people who never sign up: employers, friends you lend 
 - **Identity** (`identities`): an email or phone number that belongs to a person. The `key` column is unique, so one email or phone number can only ever belong to one person.
 - **Member** (`members`): a person inside a group, with that group's display name for them.
 
-A person's contact details live only in `identities`. Group-specific names live only in `members.displayName`. Nothing else stores them.
+A person's contact details live only in `identities`. Group-specific names live only in `members.displayName`. Nothing else stores them. One exception: an employer group's billing addresses (`GroupSettings.recipients`) are invoice settings the worker typed, not identities, and they are never used to recognise or link a person.
 
 ## Normalising identities
 
@@ -17,7 +17,7 @@ Every email or phone number goes through `normalizeIdentity()` in `packages/core
 | Type | Rule | Example |
 | --- | --- | --- |
 | email | Trim and lowercase. Dots and `+tags` are kept. | ` Sam@Example.com ` → `email:sam@example.com` |
-| phone | Parse with `libphonenumber-js`, using the caller's profile country as the default; reject invalid numbers; format as E.164 | `0412 345 678` (AU) → `phone:+61412345678` |
+| phone | Parse with `libphonenumber-js`, using the country from the caller's profile `region` as the default (`AU-NSW` → `AU`); reject invalid numbers; format as E.164 | `0412 345 678` (AU) → `phone:+61412345678` |
 
 ## First login (bootstrap)
 
@@ -25,7 +25,7 @@ Every email or phone number goes through `normalizeIdentity()` in `packages/core
 
 1. If a profile already exists for this user, return it.
 2. Otherwise, in one database transaction:
-   - Find or create the user's **person**. If a verified identity already points at a placeholder, reuse that person (see Claim).
+   - Find or create the user's **person**. If one of the user's verified emails or phones matches an identity row that points at a placeholder, reuse that person (see Claim). Placeholder identity rows are never `verified` themselves, so match on the key, not the flag.
    - Create the **profile** (row ID = user ID) with defaults: timezone from the browser, region and currency from the timezone.
    - Create the **personal group**, its team, and an `admin` membership.
 3. Run **Claim** for any verified identities.
@@ -60,7 +60,7 @@ Claiming is what lets "Sam" see the $50 you lent them when Sam finally signs up.
    - **Points at a placeholder person P:**
      - If the user's person is brand new and has no data (bootstrap just made it), **adopt P**: set `P.userId` to the user and use P as their person.
      - Otherwise **merge P into the user's person** (next section).
-3. Add the user to the team of every group where their person is a member. Set those members' status to `active`.
+3. Add the user to the team of every group where their person is a member. Change `placeholder` members to `active`; members who have `left` stay `left`.
 4. Return the list of groups that were linked, so the app can say "We found 3 groups you were added to".
 
 ## Merging two persons
@@ -88,7 +88,7 @@ An invite is a convenience: a link that tells someone they've been added and hel
 1. The caller must be allowed to add members in that group ([permissions](permissions.md#roles)).
 2. **Rate limits:** at most 20 invites per inviter per day, and 3 per identity per 7 days. Otherwise return `RATE_LIMITED`.
 3. Create a random 32-byte token (base64url). Store only its SHA-256 hash, with `expiresAt` 14 days ahead.
-4. Send `https://<app>/invite/<token>` by email (Resend) or SMS (M3). The message names the inviter and the group, nothing else.
+4. Send `https://<app>/invite#<token>` by email (Resend) or SMS (M3). The token goes in the URL fragment, which browsers never send to servers or in `Referer` headers, so it stays out of logs. The message names the inviter and the group, nothing else.
 
 `identity POST /invites/accept` with `{ token }`:
 

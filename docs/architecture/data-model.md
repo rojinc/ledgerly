@@ -74,10 +74,10 @@ Row ID = the Appwrite user ID. One per user.
 | `invoicePrefix` | varchar(16) | default `INV-` |
 | `lastInvoiceNumber` | integer | default 0. Only the `statements` function changes it, with an atomic increment. |
 | `summaryFrequency` | enum(none, weekly, fortnightly, monthly) | default `none` |
-| `nextSummaryAt` | datetime? | Set by the scheduler |
+| `nextSummaryAt` | datetime? | Set by `identity` when `summaryFrequency` changes (empty for `none`), then moved forward by the scheduler |
 
 Indexes: `idx_nextSummaryAt (nextSummaryAt)`.
-Permissions: `read("user:<userId>")`. Writes only through `identity PATCH /profile`.
+Permissions: `read("user:<userId>")`. Writes go through `identity PATCH /profile`, except `lastInvoiceNumber` (`statements`) and `nextSummaryAt` (also `scheduler`).
 
 ```ts
 type BusinessDetails = {
@@ -106,7 +106,7 @@ Row ID = Appwrite Team ID ([D-004](decisions.md)).
 | `region` | varchar(16) | For public holidays |
 | `statementCycle` | enum(none, weekly, fortnightly, monthly) | default `none` (employer default `monthly`) |
 | `cycleAnchor` | varchar(10)? | First day of the first period, for weekly and fortnightly cycles |
-| `nextCloseAt` | datetime? | When the current period's statement is due to be drafted ([statements](statements.md#periods)) |
+| `nextCloseAt` | datetime? | When the current period's statement is due to be drafted ([statements](statements.md#periods)). Set by `groups` on create and whenever `statementCycle`, `cycleAnchor` or `timezone` changes; moved forward by `statements`. |
 | `settingsJson` | text | `GroupSettings` (below) |
 | `archivedAt` | datetime? | Archived groups are read-only |
 
@@ -116,7 +116,7 @@ Permissions: `read("team:<groupId>")`.
 ```ts
 type GroupSettings =
   | { type: 'employer'; defaultRateCents: number; paymentTermsDays: number; autoFinalize: boolean;
-      autoPostShifts: boolean; recipients: string[] /* billing emails */ }
+      recipients: string[] /* billing emails */ }   // auto-posting is per schedule (schedules.autoPost)
   | { type: 'house'; autoFinalize: boolean; defaultBillSplit: 'days' | 'equal' }
   | { type: 'personal' }
   | { type: 'pair' }
@@ -148,7 +148,7 @@ Permissions: `read("team:<groupId>")`.
 | `description` | varchar(200) | |
 | `category` | varchar(32)? | One of the categories in `packages/core` |
 | `totalCents` | integer | Negative only for refunds |
-| `inputJson` | text | The user's input without the fields that have their own columns: `payers`, `split`, `shift`, `bill`, `payment`, `adjustment`, `note`. Types in [Functions API](functions-api.md#transactioninput). |
+| `inputJson` | text | The parts of the user's input that have no column of their own: `payers`, `split`, `shift`, `bill` (period only; its status and `dueOn` live in the `status` and `dueOn` columns), `payment`, `adjustment`, `note`. Types in [Functions API](functions-api.md#transactioninput). |
 | `dueOn` | varchar(10)? | Bills only |
 | `scheduleId` | varchar(36)? | Set on occurrences created by a schedule |
 | `overridden` | boolean | default `false`. The user edited this occurrence. |
@@ -157,7 +157,7 @@ Permissions: `read("team:<groupId>")`.
 | `startedAt` | datetime? | Timer shifts |
 | `remindedAt` | datetime? | Last reminder sent (bill due, long-running timer) |
 | `voidReason` | varchar(200)? | |
-| `createdBy` | varchar(36) | personId |
+| `createdBy` | varchar(36) | personId. Schedule occurrences use the schedule's `createdBy`. |
 | `updatedBy` | varchar(36) | personId |
 
 Indexes:
@@ -165,7 +165,8 @@ Indexes:
 | Name | Columns | Used by |
 | --- | --- | --- |
 | `idx_group_date` | groupId, date | calendar, history |
-| `idx_group_status_date` | groupId, status, date | statements sweep, due bills |
+| `idx_group_status_date` | groupId, status, date | due bills |
+| `idx_group_statement_date` | groupId, statementId, date | statements sweep (unlocked rows have `statementId` null), so it doesn't read locked history |
 | `idx_schedule_date` | scheduleId, date | schedule edits |
 | `idx_statementId` | statementId | statement detail, void |
 | `idx_status_date` | status, date | scheduler auto-post |
