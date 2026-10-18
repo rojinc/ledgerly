@@ -99,7 +99,7 @@ Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a 
 | Frequency | Sent | Covers |
 | --- | --- | --- |
 | `weekly` | every Monday | the previous Monday to Sunday |
-| `fortnightly` | every 14 days, starting on the first Monday 07:00 after the frequency was set | the 14 days before (Monday to the Sunday before the send) |
+| `fortnightly` | every 14 days, starting on the first Monday 07:00 after the frequency or timezone was last set | the 14 days before (Monday to the Sunday before the send) |
 | `monthly` | the 1st of each month | the previous calendar month |
 
 - When `summaryFrequency` changes to a different value, or `timezone` changes, `identity PATCH /profile` sets `nextSummaryAt` to the first send time strictly after now. `none` clears it.

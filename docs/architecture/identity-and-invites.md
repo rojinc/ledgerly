@@ -80,11 +80,11 @@ A member joins a group only through the person's own action ([D-016](decisions.m
 Joining, done by the `identity` function, in this order so a retry can always finish it:
 
 1. Add the user to the group's team ("already a member" counts as done).
-2. In one database transaction: set the status to `active` (or `left` if `leftOn` is already set, so a former housemate can still see and settle up) and write one `member.joined` activity row.
+2. In one database transaction: set the status to `active` (or `left` if `leftOn` is already set, so a former housemate can still see and settle up) and write one `member.joined` activity row. If the member row is gone by now (an admin removed it meanwhile), remove the team membership from step 1 again, so a removed person keeps no access.
 
 All three ways write the same row, so the group can't tell which one happened.
 
-Until they join, the person doesn't see the group's data (only its name and type, in their pending list) and gets no notifications from it (an invite or an invoice sent to them on purpose is different). Records can still name them, exactly as for any placeholder. Before they join, the group can't tell whether they have an account. After they join, it may be able to (a merge changes their person ID); that's fine, because they chose to join.
+Until they join, the person doesn't see the group's data (only its name, type and whether it's archived, in their pending list) and gets no notifications from it (an invite or an invoice sent to them on purpose is different). Records can still name them, exactly as for any placeholder. Before they join, the group can't tell whether they have an account. After they join, it may be able to (a merge changes their person ID); that's fine, because they chose to join.
 
 ## Merging two persons
 

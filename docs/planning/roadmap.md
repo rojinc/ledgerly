@@ -84,7 +84,7 @@ Personal bills, recurring bills, lend & borrow, dashboard and reports, summary e
 | Issue | Task | Area | Depends on | Wave | Who |
 | --- | --- | --- | --- | :---: | --- |
 | [#33](https://github.com/rojinc/ledgerly/issues/33) | Bills: due → paid, recurring bills, autopay and bill reminders | functions, web | needs spec | - | agent |
-| [#34](https://github.com/rojinc/ledgerly/issues/34) | Lend & borrow: pair groups UI, plus the identity routes to list and join pending groups (D-016) | functions, web | needs spec | - | agent |
+| [#34](https://github.com/rojinc/ledgerly/issues/34) | Lend & borrow: pair groups UI, including the pending groups list (routes in [#76](https://github.com/rojinc/ledgerly/issues/76), D-016) | web | needs spec | - | agent |
 | [#35](https://github.com/rojinc/ledgerly/issues/35) | Personal dashboard and reports | core, web | needs spec | - | agent |
 | [#36](https://github.com/rojinc/ledgerly/issues/36) | Summary emails (weekly, fortnightly, monthly) | functions | needs spec | - | agent |
 | [#37](https://github.com/rojinc/ledgerly/issues/37) | Archive groups | functions, web | needs spec | - | agent |

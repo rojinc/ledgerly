@@ -140,6 +140,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
 Archiving is permanent in v1; there is no unarchive route. A `personal` group can't be archived (`VALIDATION_FAILED`).
+
 ## identity
 
 | Route | Body | Returns | Who |
