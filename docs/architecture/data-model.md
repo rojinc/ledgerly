@@ -113,7 +113,7 @@ Row ID = Appwrite Team ID ([D-004](decisions.md)).
 | `settingsJson` | text | `GroupSettings` (below) |
 | `archivedAt` | datetime? | Archived groups are read-only |
 
-Indexes: `idx_nextCloseAt (nextCloseAt)`.
+Indexes: `idx_nextCloseAt (nextCloseAt)`, `idx_owner_type (ownerPersonId, type)` (bootstrap finds the caller's personal group on every login).
 Permissions: `read("team:<groupId>")`.
 
 ```ts

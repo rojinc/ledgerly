@@ -20,7 +20,11 @@ export function VerifyEmailPage() {
   const verify = useMutation({
     mutationFn: (input: { userId: string; secret: string }) =>
       account.updateEmailVerification(input),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.currentUser }),
+    onSuccess: async (_, { userId }) => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.currentUser })
+      // A verified email can link records others made for it (claim), so bootstrap again.
+      await queryClient.invalidateQueries({ queryKey: queryKeys.bootstrap(userId) })
+    },
   })
 
   // The secret is single use, so make sure StrictMode's double effect only sends it once.
