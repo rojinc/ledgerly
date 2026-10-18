@@ -39,7 +39,7 @@ Refs #17
 2. **Small:** aim for under 400 changed lines, not counting lockfiles and generated code. Split bigger work into stacked issues.
 3. **Green CI:** lint, typecheck, tests and build must pass.
 4. **Docs updated** in the same PR whenever behaviour, an API, the schema or a rule changes.
-5. **Review:** at least one review. Agents review each other's PRs (Claude reviews Codex PRs and the other way round) and post comments. The **owner** reviews last and merges; the merge is the approval. Agents often push with the owner's GitHub account, and GitHub doesn't let you approve your own PR, so no formal approval is required.
+5. **Review:** at least one review. A different agent from the author reviews and posts comments. The **lead agent** reviews last and merges, following the merge rules in [Multi-agent workflow → Review](../collaboration/multi-agent-workflow.md#5-review); the merge is the approval. Agents often push with the owner's GitHub account, and GitHub doesn't let you approve your own PR, so no formal approval is required.
 6. **Squash merge** only. The branch is deleted after merge.
 7. Labels: one `area:*`, one `type:*`, `agent:*` (who wrote it), plus `contract` or `security` if they apply.
 

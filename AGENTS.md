@@ -15,12 +15,12 @@ Rules for every coding agent (Claude Code, Codex, others) and every person worki
 ## Rules that always apply
 
 - **Stay inside your issue's Scope paths.** Need more? Comment on the issue and ask.
-- **Never** push to `main`, merge a PR, force-push someone else's branch, edit Appwrite resources in the console, or commit secrets or `.env` files.
+- **Never** push to `main`, force-push someone else's branch, edit Appwrite resources in the console, or commit secrets or `.env` files. Only the **lead agent** merges PRs, after a review by a different agent ([merge rules](docs/collaboration/multi-agent-workflow.md#5-review)).
 - **Money is integer cents.** Splitting always uses `allocate()`. Never use floats for money.
 - **Dates are `YYYY-MM-DD` strings in the group's timezone.** Never `new Date('YYYY-MM-DD')`. Use the date helpers in `packages/core`.
 - **Clients never write to the database.** Every write goes through a function ([D-003](docs/architecture/decisions.md)).
 - **Every ledger write keeps the [invariants](docs/architecture/ledger.md#invariants)** and runs in one TablesDB transaction.
-- **Contracts change first, separately:** the data model, function API, zod schemas and ledger rules change in their own `contract` PR, approved by the owner.
+- **Contracts change first, separately:** the data model, function API, zod schemas and ledger rules change in their own `contract` PR, approved by the lead agent.
 - **Keep it simple.** Write the smallest change that meets the acceptance criteria. No speculative abstractions, no empty folders, no barrel `index.ts` files. Reuse what exists.
 - **No new dependency** without one line in the PR saying why ([conventions](docs/engineering/conventions.md#dependencies)).
 - **Tests:** money and date logic in `packages/core` needs full branch coverage, including invariant tests. Never skip or delete a failing test to get green.

@@ -5,7 +5,7 @@ Milestones run in order, M0 to M5. Inside a milestone, tasks run **in parallel**
 - **Task details live in GitHub Issues**: goal, scope, acceptance criteria and test plan. This page is the map; the issue is the spec. Status lives in issue labels, not here.
 - **Wave** = the earliest round a task can start in. Every task in the same wave can be worked on at the same time by different agents. A task can start once all of its dependencies are closed.
 - Tasks marked **owner** need a person with console or account access.
-- M2 and later are labelled `status:needs-spec`. The owner (or a lead agent, with the owner's approval) writes their full spec using [Writing a task](../collaboration/writing-tasks.md) before they become `status:ready`.
+- M2 and later are labelled `status:needs-spec`. The lead agent writes and approves their full spec using [Writing a task](../collaboration/writing-tasks.md) before they become `status:ready`.
 
 ## How the work flows
 
@@ -17,7 +17,7 @@ M0 Foundation ──► M1 Ledger core + Employer (MVP) ──► M2 Personal + 
 
 **Critical path through M1:** #1 → #5 → #7 → #8 → #9 → #20 → #21 → #22 → #25 → #32. Keep these moving first; everything else fills in around them.
 
-**Most parallel moments:** wave 3 (dates, schema, API schemas, identity normalisation, settle) and wave 9 (timer and balances, scheduler, statements, calendar). That's when it pays to run 4–5 agents at once.
+**Most parallel moments:** wave 3 (CI, dates, schema, API schemas, identity normalisation, settle) and wave 9 (timer and balances, scheduler, statements, calendar). That's when it pays to run 4–6 agents at once.
 
 ## Exit criteria
 
@@ -38,7 +38,7 @@ Monorepo, CI, Appwrite schema as code, function and web skeletons, deploys.
 | Issue | Task | Area | Depends on | Wave | Who |
 | --- | --- | --- | --- | :---: | --- |
 | [#1](https://github.com/rojinc/ledgerly/issues/1) | Monorepo tooling: npm workspaces, TypeScript, Biome, Vitest | infra | none | 1 | agent |
-| [#2](https://github.com/rojinc/ledgerly/issues/2) | CI workflow: lint, typecheck, test, build on every PR | infra | [#1](https://github.com/rojinc/ledgerly/issues/1) | 2 | agent |
+| [#2](https://github.com/rojinc/ledgerly/issues/2) | CI workflow: lint, typecheck, test, build on every PR | infra | [#1](https://github.com/rojinc/ledgerly/issues/1), [#5](https://github.com/rojinc/ledgerly/issues/5) | 3 | agent |
 | [#3](https://github.com/rojinc/ledgerly/issues/3) | Owner setup: Appwrite projects, API keys, email and GitHub secrets | infra | none | 1 | owner |
 | [#4](https://github.com/rojinc/ledgerly/issues/4) | Owner setup: connect GitBook Git Sync to docs/ | docs | none | 1 | owner |
 | [#5](https://github.com/rojinc/ledgerly/issues/5) | core: package setup + money module (allocate, format, shift amount) + constants | core | [#1](https://github.com/rojinc/ledgerly/issues/1) | 2 | agent |
@@ -63,8 +63,8 @@ The ledger in packages/core, the five functions, and the employer module end to 
 | [#17](https://github.com/rojinc/ledgerly/issues/17) | core: statement snapshot builder and checks | core | [#12](https://github.com/rojinc/ledgerly/issues/12), [#14](https://github.com/rojinc/ledgerly/issues/14), [#15](https://github.com/rojinc/ledgerly/issues/15) | 5 | agent |
 | [#18](https://github.com/rojinc/ledgerly/issues/18) | server: email module (Resend over fetch) + first templates | server | [#8](https://github.com/rojinc/ledgerly/issues/8) | 5 | agent |
 | [#19](https://github.com/rojinc/ledgerly/issues/19) | server: invoice PDF with pdfmake | server | [#8](https://github.com/rojinc/ledgerly/issues/8), [#12](https://github.com/rojinc/ledgerly/issues/12) | 5 | agent |
-| [#20](https://github.com/rojinc/ledgerly/issues/20) | fn identity: bootstrap, profile, claim (adopt only) + resolvePerson | functions | [#8](https://github.com/rojinc/ledgerly/issues/8), [#9](https://github.com/rojinc/ledgerly/issues/9), [#12](https://github.com/rojinc/ledgerly/issues/12), [#13](https://github.com/rojinc/ledgerly/issues/13) | 6 | agent |
-| [#21](https://github.com/rojinc/ledgerly/issues/21) | fn groups: groups, members, settings | functions | [#20](https://github.com/rojinc/ledgerly/issues/20) | 7 | agent |
+| [#20](https://github.com/rojinc/ledgerly/issues/20) | fn identity: bootstrap, profile, claim (adopt only) + resolvePerson | functions | [#6](https://github.com/rojinc/ledgerly/issues/6), [#8](https://github.com/rojinc/ledgerly/issues/8), [#9](https://github.com/rojinc/ledgerly/issues/9), [#12](https://github.com/rojinc/ledgerly/issues/12), [#13](https://github.com/rojinc/ledgerly/issues/13) | 6 | agent |
+| [#21](https://github.com/rojinc/ledgerly/issues/21) | fn groups: groups, members, settings | functions | [#6](https://github.com/rojinc/ledgerly/issues/6), [#20](https://github.com/rojinc/ledgerly/issues/20) | 7 | agent |
 | [#22](https://github.com/rojinc/ledgerly/issues/22) | fn ledger: create, update, post and void transactions | functions | [#14](https://github.com/rojinc/ledgerly/issues/14), [#21](https://github.com/rojinc/ledgerly/issues/21) | 8 | agent |
 | [#23](https://github.com/rojinc/ledgerly/issues/23) | fn ledger: timer start/stop and balances route | functions | [#15](https://github.com/rojinc/ledgerly/issues/15), [#22](https://github.com/rojinc/ledgerly/issues/22) | 9 | agent |
 | [#24](https://github.com/rojinc/ledgerly/issues/24) | fn scheduler: schedule routes, expansion, auto-post shifts, reminders | functions | [#16](https://github.com/rojinc/ledgerly/issues/16), [#18](https://github.com/rojinc/ledgerly/issues/18), [#22](https://github.com/rojinc/ledgerly/issues/22) | 9 | agent |
