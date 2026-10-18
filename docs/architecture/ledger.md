@@ -189,6 +189,13 @@ All reports are sums over the user's shares in groups they have joined ([D-016](
 | Personal income | Σ `totalCents` of `income` transactions in P's personal group |
 | Owed to me / I owe | per-group balances, positive and negative |
 
+`buildPersonalReport(personId, shares, groups)` in `packages/core/src/reports/personal-report.ts` computes every row but the last, one set per currency; `reportByMonth()` does the same for each month, taken as `date.slice(0, 7)` of the local-date text. Callers pass P's shares with their copied `kind`, `category` and `date`. A few details:
+
+- Personal income is Σ `receivedCents` of P's `income` shares in the personal group. By [I-1](#invariants) that equals Σ `totalCents` of those transactions, so no transaction rows are needed.
+- Spending with no category is reported under `none`, never `other`.
+- Refunds reduce the totals. A share whose group wasn't passed in throws, because dropping it would hide money.
+- Owed to me / I owe stays with the balances (`settle/` and `GET /groups/{groupId}/balances`).
+
 ## Editing and voiding
 
 - **Edit**: replace the transaction's input. Shares and items are rebuilt and an activity row records before and after. Allowed until the transaction is locked.

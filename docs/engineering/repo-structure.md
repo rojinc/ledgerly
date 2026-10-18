@@ -39,6 +39,7 @@ ledgerly/
 │   │       ├── dates/         LocalDate helpers, periods
 │   │       ├── ledger/        buildShares, splits, invariants
 │   │       ├── settle/        balances, suggestTransfers
+│   │       ├── reports/       buildPersonalReport, reportByMonth
 │   │       ├── recurrence/    expandSchedule, holidays
 │   │       ├── statements/    buildStatementSnapshot, checks
 │   │       ├── identity/      normalizeEmail, normalizePhone, identityKey
