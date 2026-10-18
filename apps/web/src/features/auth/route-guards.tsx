@@ -3,10 +3,20 @@ import type { ReactNode } from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
+import { LinkedGroupsNotice } from './linked-groups-notice'
+import { useBootstrap } from './use-bootstrap'
 import { useCurrentUser } from './use-current-user'
 
-/** Shows loading or a retryable error while we don't know who is signed in. */
-function UserGate({ query, children }: { query: UseQueryResult; children: ReactNode }) {
+/** Shows loading, or a retryable error, until the query has data. */
+function UserGate({
+  query,
+  failure = 'We couldn’t reach Ledgerly. Check your connection and try again.',
+  children,
+}: {
+  query: UseQueryResult
+  failure?: string
+  children: ReactNode
+}) {
   if (query.isPending) {
     return (
       <p role="status" className="p-6 text-center text-muted-foreground">
@@ -17,9 +27,7 @@ function UserGate({ query, children }: { query: UseQueryResult; children: ReactN
   if (query.isError) {
     return (
       <main className="mx-auto flex max-w-sm flex-col gap-4 px-4 py-10">
-        <Alert variant="destructive">
-          We couldn’t reach Ledgerly. Check your connection and try again.
-        </Alert>
+        <Alert variant="destructive">{failure}</Alert>
         <Button onClick={() => query.refetch()} disabled={query.isFetching}>
           Try again
         </Button>
@@ -29,17 +37,30 @@ function UserGate({ query, children }: { query: UseQueryResult; children: ReactN
   return children
 }
 
-/** Renders child routes only for a signed-in user; everyone else goes to /login. */
+/**
+ * Renders child routes only for a signed-in user whose person and profile exist
+ * (`identity /bootstrap`); everyone else goes to /login.
+ */
 export function RequireAuth() {
   const query = useCurrentUser()
   const { pathname, search, hash } = useLocation()
   return (
     <UserGate query={query}>
       {query.data ? (
-        <Outlet />
+        <Bootstrapped userId={query.data.$id} />
       ) : (
         <Navigate to="/login" replace state={{ from: pathname + search + hash }} />
       )}
+    </UserGate>
+  )
+}
+
+function Bootstrapped({ userId }: { userId: string }) {
+  const bootstrap = useBootstrap(userId)
+  return (
+    <UserGate query={bootstrap} failure="We couldn’t set up your account. Try again in a moment.">
+      <LinkedGroupsNotice count={bootstrap.data?.linkedGroupIds.length ?? 0} />
+      <Outlet />
     </UserGate>
   )
 }

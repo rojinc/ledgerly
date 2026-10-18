@@ -1,4 +1,4 @@
-import { Account, Client, Functions } from 'appwrite'
+import { Account, Client, Functions, TablesDB } from 'appwrite'
 
 export const client = new Client()
   .setEndpoint(import.meta.env.VITE_APPWRITE_ENDPOINT)
@@ -6,3 +6,7 @@ export const client = new Client()
 
 export const account = new Account(client)
 export const functions = new Functions(client)
+export const tablesDB = new TablesDB(client)
+
+// data-model.md: one database, `main`. Table IDs match appwrite/tables.json.
+export const DATABASE_ID = 'main'
