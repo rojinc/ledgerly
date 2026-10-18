@@ -154,11 +154,7 @@ export function buildShares(
       const { periodStart, periodEnd } = input.bill ?? {}
       const splitCtx: SplitContext = {
         members: ctx.members,
-        // The schema has already checked these are real dates.
-        period:
-          periodStart && periodEnd
-            ? { start: periodStart as LocalDate, end: periodEnd as LocalDate }
-            : undefined,
+        period: periodStart && periodEnd ? { start: periodStart, end: periodEnd } : undefined,
       }
       if (input.items) {
         for (const item of input.items) {
