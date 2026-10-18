@@ -110,7 +110,7 @@ ledgerly/
 | Script | Does |
 | --- | --- |
 | `npm run lint` | Biome check (lint + format check) |
-| `npm run format` | Biome format, writing changes |
+| `npm run format` | Biome check, writing safe fixes (formatting, import order, safe lint fixes) |
 | `npm run typecheck` | `tsc --noEmit` in every workspace |
 | `npm test` | Vitest in every workspace |
 | `npm run build` | Build web and bundle functions |
