@@ -172,6 +172,8 @@ Archiving is permanent in v1; there is no unarchive route. A `personal` group ca
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole.
 
+`linkedGroupIds` (`/bootstrap`, `/claim`) lists only the groups joined in that call, so after a retry it leaves out groups an earlier, interrupted call already joined.
+
 `/groups/pending` and `/join` are how someone who already had an account when they were added joins a group ([Joining a group](identity-and-invites.md#joining-a-group)). Both act only on the caller's own person:
 
 - `/groups/pending` lists the groups where that person is a `placeholder` member (`members.idx_person_status`), archived ones included.

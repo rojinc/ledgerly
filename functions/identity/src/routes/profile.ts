@@ -1,11 +1,12 @@
 import { nextSummaryAt } from '@ledgerly/core/dates/summary-period'
 import type { Profiles } from '@ledgerly/core/generated/rows'
 import { updateProfileBodySchema } from '@ledgerly/core/schemas/identity'
+import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { parseBody } from '../parse-body'
-import { conflictAsTryAgain, getRowOrNull, SET_UP_FIRST } from '../rows'
+import { conflictAsTryAgain, getRowOrNull, SET_UP_FIRST, tryAgain } from '../rows'
 import type { Services } from '../services'
 
 /** `identity PATCH /profile`: changes only the fields given, and returns the profile row. */
@@ -27,7 +28,8 @@ export async function updateProfile(
     data.nextSummaryAt = nextSummaryAt(frequency, timeZone, now)
   }
   const writes: Write[] = []
-  if (Object.keys(data).length > 0) {
+  const changesProfile = Object.keys(data).length > 0
+  if (changesProfile) {
     writes.push({ action: 'update', tableId: TABLES.profiles, rowId: userId, data })
   }
   // Profiles have no name: a registered person's own name is persons.displayName.
@@ -40,7 +42,26 @@ export async function updateProfile(
     })
   }
   if (writes.length > 0) {
-    await conflictAsTryAgain(() => withTransaction(db, (tx) => tx.write(...writes)))
+    await conflictAsTryAgain(() =>
+      withTransaction(db, async (tx) => {
+        await tx.write(...writes)
+        if (!changesProfile) return
+        // Stage, then check (transaction.ts): nextSummaryAt above follows the frequency and
+        // timezone read before staging, which another PATCH may have changed since. Read the
+        // stored row, not this transaction's view, which already shows the new values.
+        const stored = await profileRow(db, userId)
+        if (
+          stored.summaryFrequency !== profile.summaryFrequency ||
+          stored.timezone !== profile.timezone
+        ) {
+          throw tryAgain()
+        }
+      }),
+    )
   }
+  return profileRow(db, userId)
+}
+
+function profileRow(db: Db, userId: string): Promise<Profiles> {
   return db.getRow<Profiles>({ databaseId: DATABASE_ID, tableId: TABLES.profiles, rowId: userId })
 }

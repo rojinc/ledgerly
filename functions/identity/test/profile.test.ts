@@ -1,7 +1,16 @@
 import { nextSummaryAt } from '@ledgerly/core/dates/summary-period'
 import type { Profiles } from '@ledgerly/core/generated/rows'
 import { describe, expect, it } from 'vitest'
-import { beforeCommit, failure, fakes, NOW, ok, TRY_AGAIN, updateRow } from './harness'
+import {
+  beforeCommit,
+  beforeStaging,
+  failure,
+  fakes,
+  NOW,
+  ok,
+  TRY_AGAIN,
+  updateRow,
+} from './harness'
 
 // NOW is Monday 19 October, 07:00 in Sydney, so the next weekly summary is a week later.
 const NEXT_WEEKLY_SYDNEY = '2026-10-25T20:00:00.000Z'
@@ -106,6 +115,31 @@ describe('PATCH /profile', () => {
       message: TRY_AGAIN,
     })
     expect(services.db.rows('profiles')[0]?.region).toBe('AU-QLD')
+  })
+
+  it('says CONFLICT, try again, when the frequency changed after it was read, before staging', async () => {
+    // Device B changes the timezone having read `none`; device A turns on weekly summaries
+    // first. B's nextSummaryAt (null) would silently stop A's summaries.
+    const services = withProfile()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"profiles"'),
+      () =>
+        updateRow(services.db, 'profiles', 'u1', {
+          summaryFrequency: 'weekly',
+          nextSummaryAt: NEXT_WEEKLY_SYDNEY,
+        }),
+    )
+    expect(await failure(services, 'PATCH', '/profile', { timezone: 'Australia/Perth' })).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('profiles')[0]).toMatchObject({
+      timezone: 'Australia/Sydney',
+      summaryFrequency: 'weekly',
+      nextSummaryAt: NEXT_WEEKLY_SYDNEY,
+    })
   })
 
   it('writes nothing for an empty body', async () => {

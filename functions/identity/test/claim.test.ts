@@ -250,6 +250,22 @@ describe('POST /claim', () => {
     expect(services.db.rows('activity')).toEqual([])
   })
 
+  it('takes back the team membership when the row moved to another person meanwhile', async () => {
+    const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"members"'),
+      () => updateRow(services.db, 'members', 'm1', { personId: 'pElse' }),
+    )
+    expect(await claimed(services)).toEqual([])
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(services.db.rows('members')[0]).toMatchObject({
+      personId: 'pElse',
+      status: 'placeholder',
+    })
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
   it('writes one member.joined when a claim running at the same time joined first', async () => {
     const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
     let other: string[] | undefined
