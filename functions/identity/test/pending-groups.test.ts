@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { PendingGroup } from '../src/routes/pending-groups'
 import {
   BEFORE,
+  beforeCommit,
   beforeStaging,
   call,
   type Fakes,
@@ -10,6 +11,7 @@ import {
   fakes,
   ok,
   placeholderRow,
+  TRY_AGAIN,
   updateRow,
 } from './harness'
 
@@ -207,6 +209,48 @@ describe('POST /groups/{id}/join', () => {
     expect((await failure(services, 'POST', '/groups/g1/join')).code).toBe('NOT_A_MEMBER')
     expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
     expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('is NOT_A_MEMBER without joining when the group row is missing', async () => {
+    const services = fixture([placeholderRow('m9', 'gGone', 'pSam', BEFORE)])
+    const add = vi.spyOn(services.teams, 'createMembership')
+    expect((await failure(services, 'POST', '/groups/gGone/join')).code).toBe('NOT_A_MEMBER')
+    expect(add).not.toHaveBeenCalled()
+    expect(memberRow(services, 'm9')?.status).toBe('placeholder')
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('takes back the team membership when the row moved to another person meanwhile', async () => {
+    const services = fixture()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"members"'),
+      () => updateRow(services.db, 'members', 'm1', { personId: 'pElse' }),
+    )
+    expect((await failure(services, 'POST', '/groups/g1/join')).code).toBe('NOT_A_MEMBER')
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('uses the stored leftOn when it changed during the join', async () => {
+    const services = fixture()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"members"'),
+      () => updateRow(services.db, 'members', 'm1', { leftOn: '2026-10-05' }),
+    )
+    expect((await ok<Joined>(services, 'POST', '/groups/g1/join')).member.status).toBe('left')
+  })
+
+  it('says CONFLICT, try again, when the row changes after its join is staged, and a retry joins', async () => {
+    const services = fixture()
+    beforeCommit(services.db, () => updateRow(services.db, 'members', 'm1', { displayName: 'S' }))
+    expect(await failure(services, 'POST', '/groups/g1/join')).toMatchObject({
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect((await ok<Joined>(services, 'POST', '/groups/g1/join')).member.status).toBe('active')
+    expect(services.db.rows('activity')).toHaveLength(1)
   })
 
   it('returns the row joined by a claim running at the same time', async () => {

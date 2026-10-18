@@ -58,6 +58,10 @@ export async function joinPendingGroup(
   const person = await findPersonOfUser(db, userId)
   let member = person ? await ownMemberRow(db, groupId, person.$id) : undefined
   if (!person || !member) throw notAMember()
+  // Only now, so someone who isn't in the group learns nothing about it. A member row without
+  // its group (a create that failed partway) must not join a team.
+  const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+  if (!group) throw notAMember()
   if (member.status === 'placeholder') {
     await joinGroup(services, userId, person.$id, member)
     // Joined now, or by a claim at the same time; gone or someone else's (removed or merged
@@ -65,8 +69,6 @@ export async function joinPendingGroup(
     member = await ownMemberRow(db, groupId, person.$id)
     if (!member || member.status === 'placeholder') throw notAMember()
   }
-  const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
-  if (!group) throw notAMember()
   return { group, member }
 }
 
