@@ -4,6 +4,7 @@
   "tablesDB": [{ "$id": "main", "name": "main", "enabled": true }],
   "includes": {
     "tables": "./appwrite/tables.json",
-    "buckets": "./appwrite/buckets.json"
+    "buckets": "./appwrite/buckets.json",
+    "functions": "./appwrite/functions.json"
   }
 }

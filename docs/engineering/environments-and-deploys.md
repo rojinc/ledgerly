@@ -42,13 +42,15 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 
 ## Function settings
 
-| Function | Trigger | Execute | Timeout |
-| --- | --- | --- | --- |
-| `ledger` | HTTP | `users` | 15 s |
-| `groups` | HTTP | `users` | 15 s |
-| `identity` | HTTP | `users` | 15 s |
-| `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s |
-| `statements` | HTTP + cron `15 * * * *` | `users` | 300 s |
+| Function | Trigger | Execute | Timeout | Key scopes |
+| --- | --- | --- | --- | --- |
+| `ledger` | HTTP | `users` | 15 s | `rows.*`, `files.*` (receipt permissions) |
+| `groups` | HTTP | `users` | 15 s | `rows.*`, `teams.*` |
+| `identity` | HTTP | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
+| `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*` |
+| `statements` | HTTP + cron `15 * * * *` | `users` | 300 s | `rows.*`, `files.*` (PDFs) |
+
+Every function runs on the newest Node runtime on Appwrite Cloud, from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, so a deployment runs no install step. The key scopes are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`); give a function a new scope only when a route needs it. `GET /health` on every function returns `{ fn, version }`, where `version` is the commit the bundle was built from.
 
 Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, later `SMS_*` and `SENTRY_DSN`.
 
