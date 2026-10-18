@@ -97,6 +97,22 @@ describe('scheduleInputSchema', () => {
     ).toEqual(['template'])
   })
 
+  it('needs UNTIL on or after startsOn', () => {
+    const withRule = (rrule: string) => ({ ...shiftSchedule, rrule })
+    expect(paths(scheduleInputSchema, withRule('FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029'))).toEqual([])
+    expect(paths(scheduleInputSchema, withRule('FREQ=WEEKLY;BYDAY=TH;UNTIL=20261028'))).toEqual([
+      'rrule',
+    ])
+    expect(paths(scheduleInputSchema, withRule('FREQ=WEEKLY;BYDAY=TH;UNTIL=20261340'))).toEqual([
+      'rrule',
+    ])
+    expect(() =>
+      scheduleInputSchema.parse(withRule('FREQ=WEEKLY;BYDAY=TH;UNTIL=20261028')),
+    ).toThrow('UNTIL must not be before startsOn')
+    const { id: _id, ...unsaved } = withRule('FREQ=MONTHLY;BYMONTHDAY=1;UNTIL=20260101')
+    expect(paths(previewScheduleBodySchema, unsaved)).toEqual(['rrule'])
+  })
+
   it('needs endsOn on or after startsOn', () => {
     expect(paths(scheduleInputSchema, { ...shiftSchedule, endsOn: '2026-10-29' })).toEqual([])
     expect(paths(scheduleInputSchema, { ...shiftSchedule, endsOn: '2026-10-28' })).toEqual([
@@ -173,9 +189,9 @@ describe('rruleSchema', () => {
 
   // The #85 review: each of these passed before and took 1–19 s to expand.
   it.each([
-    ['FREQ=DAILY;BYWEEKNO=1;BYMONTH=6', 'BYWEEKNO is not supported'],
-    ['FREQ=DAILY;BYSETPOS=2', 'BYSETPOS is not supported'],
-    ['FREQ=DAILY;BYMONTH=4;BYMONTHDAY=31', 'BYMONTH is not supported'],
+    ['FREQ=DAILY;BYWEEKNO=1;BYMONTH=6', 'Unsupported rule part'],
+    ['FREQ=DAILY;BYSETPOS=2', 'Unsupported rule part'],
+    ['FREQ=DAILY;BYMONTH=4;BYMONTHDAY=31', 'Unsupported rule part'],
     ['FREQ=DAILY', 'FREQ must be WEEKLY or MONTHLY'],
   ])('rejects the slow rule %s', (rule, message) => {
     expect(() => rruleSchema.parse(rule)).toThrow(message)
@@ -190,8 +206,8 @@ describe('rruleSchema', () => {
     ['FREQ=WEEKLY;BYDAY=TH;BYMONTHDAY=1', "BYMONTHDAY can't be used with FREQ=WEEKLY"],
     ['FREQ=MONTHLY;BYMONTHDAY=1;BYDAY=MO', "BYDAY can't be used with FREQ=MONTHLY"],
     ['FREQ=MONTHLY;BYMONTHDAY=1;INTERVAL=2', "INTERVAL can't be used with FREQ=MONTHLY"],
-    ['FREQ=WEEKLY;BYDAY=TH;WKST=MO', 'WKST is not supported'],
-    ['FREQ=DAILY;BYHOUR=9', 'BYHOUR is not supported'],
+    ['FREQ=WEEKLY;BYDAY=TH;WKST=MO', 'Unsupported rule part'],
+    ['FREQ=DAILY;BYHOUR=9', 'Unsupported rule part'],
     ['FREQ=WEEKLY;BYDAY=TH;FREQ=WEEKLY', 'FREQ appears more than once'],
     ['FREQ=WEEKLY;BYDAY=-1FR', 'BYDAY has an invalid value'],
     ['FREQ=WEEKLY;BYDAY=2MO', 'BYDAY has an invalid value'],
@@ -220,6 +236,11 @@ describe('rruleSchema', () => {
     ['', 'Expected KEY=VALUE parts separated by semicolons'],
   ])('rejects %j', (rule, message) => {
     expect(() => rruleSchema.parse(rule)).toThrow(message)
+  })
+
+  it('never repeats an unknown part in its message', () => {
+    const result = rruleSchema.safeParse('FREQ=WEEKLY;BYDAY=TH;SECRETPART=1')
+    expect(result.error?.issues.map((issue) => issue.message)).toEqual(['Unsupported rule part'])
   })
 
   it('fits the 255-character column', () => {

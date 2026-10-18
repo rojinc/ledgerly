@@ -25,7 +25,7 @@ The UI only offers these, and the API accepts only these shapes, with the parts 
 
 - `FREQ=WEEKLY;BYDAY=<days>`, where `<days>` is one or more of `MO`–`SU` (no ordinals such as `-1FR`), with an optional `INTERVAL` of 1–4.
 - `FREQ=MONTHLY;BYMONTHDAY=<n>`, where `n` is 1–28 or `-1` (the last day), so every month has it.
-- Either shape may add `COUNT` (1–500) or `UNTIL=<YYYYMMDD>` on a real calendar day, but not both.
+- Either shape may add `COUNT` (1–500) or `UNTIL=<YYYYMMDD>` on a real calendar day no earlier than `startsOn`, but not both.
 
 `startsOn`, `endsOn` and every `exdate` must be on or after 2000-01-01. Anything else returns `VALIDATION_FAILED`: other rules (`DAILY`, `YEARLY`, `BYSETPOS`, `BYWEEKNO`, `BYMONTH`, impossible days) and very early start dates can take seconds to expand, and `POST /schedules` and `/schedules/preview` expand while the caller waits.
 

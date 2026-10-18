@@ -72,7 +72,7 @@ export const createGroupBodySchema = z
     const needsCounterpart = group.type !== 'house'
     if (needsCounterpart !== (group.counterpart !== undefined)) {
       const message = needsCounterpart
-        ? `Required for a ${group.type} group`
+        ? `Required for ${group.type === 'employer' ? 'an' : 'a'} ${group.type} group`
         : 'Only employer and pair groups have a counterpart'
       ctx.addIssue({ code: 'custom', message, path: ['counterpart'] })
     }
