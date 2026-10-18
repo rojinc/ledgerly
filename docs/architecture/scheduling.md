@@ -62,7 +62,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Each step processes items in batches of 100 and stops when its time budget is used up; anything left is picked up on the next run.
+The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -100,7 +100,12 @@ Query with `idx_status_date` (autopay bills: `idx_status_dueOn`) for dates from 
 | Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost`, `remindedAt` empty | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
-Set `remindedAt` in the same write that queues the email, so each reminder goes out once. The shift query uses the same 7-day floor as step 2. Reminders go out only once it is 07:00 or later in the group's timezone, so nobody gets one in the middle of the night; a later run picks up the rest. Archived groups get none.
+Each reminder goes out once. In one database transaction, `remindedAt` is staged first, then the stored row is checked: still the same status, date or `startedAt`, not locked and not reminded. Only then is the email sent, with Resend's idempotency key `reminder-<transactionId>`, before the commit. A row that changed after the page was read gets nothing. One that changes after staging fails the commit, and the next run looks at it again; if the email had gone out, Resend doesn't deliver it twice within 24 hours. A failed send leaves `remindedAt` empty, so the next run tries again, except for an email Resend will never take (a bad address, or the same key with different content), which is marked. Any other failure on one row is counted, and the run carries on. Bill reminders add `dueOn` to the key: a new due date clears `remindedAt` and needs its own reminder.
+
+- **Who gets it:** only an active member with an account and a verified email (`users.get`, so the function has the `users.read` scope). With nobody to send to, `remindedAt` is still set, so the row isn't read every hour.
+- **Shift to confirm:** also for a `scheduled` shift that has no schedule, since nothing will post it. The shift's date must be before today in the group's timezone. The query uses the same 7-day floor as step 2.
+- **When:** only once it is 07:00 or later in the group's timezone, so nobody gets one in the middle of the night; a later run picks up the rest. Archived groups get none: their rows are marked without an email, since a timer there can't be stopped.
+- **Link:** `<APP_URL>/groups/<groupId>/transactions/<transactionId>`.
 
 ### Step 4: summary emails
 
@@ -130,7 +135,7 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | `PATCH /schedules/{id}` | Update. Delete future occurrences that are still `scheduled`/`due` and not `overridden` (date ≥ local today), reset `generatedThrough` to yesterday, expand again |
 | `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it |
 | `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end |
-| `POST /schedules/preview` | Return the next N dates for an unsaved rule, including skipped holidays and why, for the form preview |
+| `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
 
 Changes to occurrences themselves (edit, void, post) go through the `ledger` function. Editing an occurrence sets `overridden = true`.
 

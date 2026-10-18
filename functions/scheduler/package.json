@@ -4,9 +4,12 @@
   "type": "module",
   "scripts": {
     "build": "node ../../scripts/build-functions.mjs scheduler",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run"
   },
   "dependencies": {
-    "@ledgerly/server": "*"
+    "@ledgerly/core": "*",
+    "@ledgerly/server": "*",
+    "node-appwrite": "^30.0.1"
   }
 }
