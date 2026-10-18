@@ -4,7 +4,6 @@ import {
   endScheduleBodySchema,
   previewScheduleBodySchema,
   rruleSchema,
-  type ScheduleInput,
   scheduleInputSchema,
 } from './scheduler'
 
@@ -24,7 +23,7 @@ const shiftSchedule = {
   skipPublicHolidays: true,
   autoPost: true,
   horizonDays: 56,
-} satisfies ScheduleInput
+} satisfies z.input<typeof scheduleInputSchema>
 
 const rentSchedule = {
   id: '66f1c2a0b3d4e5f60719',
@@ -41,7 +40,7 @@ const rentSchedule = {
   startsOn: '2026-11-01',
   skipPublicHolidays: false,
   autoPost: false,
-} satisfies ScheduleInput
+} satisfies z.input<typeof scheduleInputSchema>
 
 describe('scheduleInputSchema', () => {
   it.each([shiftSchedule, rentSchedule])('accepts %j', (schedule) => {
@@ -84,6 +83,11 @@ describe('scheduleInputSchema', () => {
     ).toEqual([])
   })
 
+  it("leaves each occurrence's dueOn and billing period to the scheduler", () => {
+    const template = { ...rentSchedule.template, split: { mode: 'days' } }
+    expect(paths(scheduleInputSchema, { ...rentSchedule, template })).toEqual([])
+  })
+
   it('rejects template fields that come from the schedule itself', () => {
     expect(
       paths(scheduleInputSchema, {
@@ -107,6 +111,11 @@ describe('scheduleInputSchema', () => {
     expect(paths(scheduleInputSchema, { ...shiftSchedule, exdates: ['24 Dec'] })).toEqual([
       'exdates.0',
     ])
+    const days = Array.from({ length: 367 }, (_, index) => `2027-${index < 200 ? '01' : '02'}-01`)
+    expect(paths(scheduleInputSchema, { ...shiftSchedule, exdates: days.slice(0, 366) })).toEqual(
+      [],
+    )
+    expect(paths(scheduleInputSchema, { ...shiftSchedule, exdates: days })).toEqual(['exdates'])
     expect(paths(scheduleInputSchema, { ...shiftSchedule, horizonDays: 7 })).toEqual([])
     expect(paths(scheduleInputSchema, { ...shiftSchedule, horizonDays: 120 })).toEqual([])
     expect(paths(scheduleInputSchema, { ...shiftSchedule, horizonDays: 6 })).toEqual([
@@ -136,6 +145,9 @@ describe('rruleSchema', () => {
     'FREQ=MONTHLY;BYMONTHDAY=-1',
     'FREQ=DAILY;COUNT=10',
     'FREQ=YEARLY;BYMONTH=7;BYMONTHDAY=1;UNTIL=20301231',
+    'FREQ=MONTHLY;BYDAY=-1FR',
+    'FREQ=MONTHLY;BYDAY=+2MO,TU;BYSETPOS=1;WKST=MO',
+    'FREQ=YEARLY;BYYEARDAY=-366;BYWEEKNO=53;UNTIL=20301231T000000Z',
     'BYDAY=TH;FREQ=WEEKLY',
   ])('accepts %s', (rule) => {
     expect(rruleSchema.parse(rule)).toBe(rule)
@@ -153,6 +165,23 @@ describe('rruleSchema', () => {
     ['FREQ=WEEKLY;', 'Expected KEY=VALUE parts separated by semicolons'],
     ['freq=weekly', 'Expected KEY=VALUE parts separated by semicolons'],
     ['FREQ=WEEKLY;BYDAY=', 'Expected KEY=VALUE parts separated by semicolons'],
+    ['FREQ=WEEKLY;BYDAY=XX', 'BYDAY has an invalid value'],
+    ['FREQ=WEEKLY;BYDAY=TH,', 'BYDAY has an invalid value'],
+    ['FREQ=MONTHLY;BYDAY=54MO', 'BYDAY has an invalid value'],
+    ['FREQ=MONTHLY;BYDAY=0MO', 'BYDAY has an invalid value'],
+    ['FREQ=WEEKLY;INTERVAL=0', 'INTERVAL has an invalid value'],
+    ['FREQ=WEEKLY;INTERVAL=-1', 'INTERVAL has an invalid value'],
+    ['FREQ=DAILY;COUNT=ten', 'COUNT has an invalid value'],
+    ['FREQ=MONTHLY;BYMONTHDAY=32', 'BYMONTHDAY has an invalid value'],
+    ['FREQ=MONTHLY;BYMONTHDAY=0', 'BYMONTHDAY has an invalid value'],
+    ['FREQ=YEARLY;BYMONTH=-1', 'BYMONTH has an invalid value'],
+    ['FREQ=YEARLY;BYMONTH=13', 'BYMONTH has an invalid value'],
+    ['FREQ=YEARLY;BYYEARDAY=367', 'BYYEARDAY has an invalid value'],
+    ['FREQ=YEARLY;BYWEEKNO=54', 'BYWEEKNO has an invalid value'],
+    ['FREQ=YEARLY;BYSETPOS=1000', 'BYSETPOS has an invalid value'],
+    ['FREQ=WEEKLY;WKST=XX', 'WKST has an invalid value'],
+    ['FREQ=DAILY;UNTIL=2030-12-31', 'UNTIL has an invalid value'],
+    ['FREQ=DAILY;COUNT=5;UNTIL=20301231', 'Use COUNT or UNTIL, not both'],
     ['', 'Expected KEY=VALUE parts separated by semicolons'],
   ])('rejects %j', (rule, message) => {
     expect(() => rruleSchema.parse(rule)).toThrow(message)

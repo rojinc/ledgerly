@@ -6,8 +6,8 @@ import {
   postTransactionBodySchema,
   startTimerBodySchema,
   stopTimerBodySchema,
-  type TransactionInput,
   transactionInputSchema,
+  transactionTemplateSchema,
   voidTransactionBodySchema,
 } from './ledger'
 
@@ -25,7 +25,7 @@ const expense = {
   split: { mode: 'equal', personIds: ['alice', 'bob', 'cara'] },
   receiptFileIds: ['file1'],
   note: 'Q3',
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 const itemised = {
   ...base,
@@ -45,7 +45,7 @@ const itemised = {
       split: { mode: 'exact', amounts: [{ personId: 'alice', cents: -100 }] },
     },
   ],
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 const shift = {
   ...base,
@@ -53,7 +53,7 @@ const shift = {
   kind: 'shift',
   description: 'Thursday shift',
   shift: { minutes: 300, rateCents: 2500, breakMinutes: 30, startTime: '09:00', endTime: '14:30' },
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 const bill = {
   ...base,
@@ -61,7 +61,7 @@ const bill = {
   totalCents: 9000,
   bill: { status: 'due', dueOn: '2026-11-14', periodStart: '2026-07-01', periodEnd: '2026-09-30' },
   split: { mode: 'days' },
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 const payment = {
   ...base,
@@ -69,7 +69,7 @@ const payment = {
   description: 'Settle up',
   totalCents: 3000,
   payment: { fromPersonId: 'bob', toPersonId: 'alice' },
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 const loan = {
   ...base,
@@ -77,14 +77,14 @@ const loan = {
   description: 'Lend Sam',
   totalCents: 5000,
   split: { mode: 'equal', personIds: ['sam'] },
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 const income = {
   ...base,
   kind: 'income',
   description: 'Salary',
   totalCents: 100_000,
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 const adjustment = {
   ...base,
@@ -98,13 +98,13 @@ const adjustment = {
     ],
     reason: 'October bill was entered twice',
   },
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 const refund = {
   ...expense,
   totalCents: -2000,
   payers: [{ personId: 'alice', cents: -2000 }],
-} satisfies TransactionInput
+} satisfies z.input<typeof transactionInputSchema>
 
 describe('transactionInputSchema', () => {
   it.each([
@@ -170,6 +170,13 @@ describe('transactionInputSchema', () => {
     )
     expect(paths(transactionInputSchema, { ...payment, split: loan.split })).toEqual(['split'])
     expect(paths(transactionInputSchema, { ...loan, items: itemised.items })).toEqual(['items'])
+    const payers = [{ personId: 'alice', cents: 500 }]
+    expect(paths(transactionInputSchema, { ...shift, payers })).toEqual(['payers'])
+    expect(paths(transactionInputSchema, { ...payment, payers })).toEqual(['payers'])
+    expect(paths(transactionInputSchema, { ...income, payers })).toEqual(['payers'])
+    expect(paths(transactionInputSchema, { ...adjustment, payers })).toEqual(['payers'])
+    expect(paths(transactionInputSchema, { ...loan, payers })).toEqual([])
+    expect(paths(transactionInputSchema, { ...shift, totalCents: 12_500 })).toEqual(['totalCents'])
     expect(() => transactionInputSchema.parse({ ...payment, split: loan.split })).toThrow(
       'Not allowed for a payment',
     )
@@ -213,25 +220,17 @@ describe('transactionInputSchema', () => {
     )
   })
 
-  it('counts the people in payments and adjustments too', () => {
-    const shares = Array.from({ length: 15 }, (_, index) => ({
-      personId: `p${index}`,
-      givenCents: 0,
-      receivedCents: 0,
-    }))
-    expect(
-      paths(transactionInputSchema, {
-        ...adjustment,
-        payers: [{ personId: 'alice', cents: 500 }],
-        adjustment: { ...adjustment.adjustment, shares },
-      }),
-    ).toEqual([''])
-    expect(
-      paths(transactionInputSchema, {
-        ...payment,
-        payers: Array.from({ length: 14 }, (_, index) => ({ personId: `p${index}`, cents: 0 })),
-      }),
-    ).toEqual([''])
+  it('counts the people named in items too', () => {
+    const item = (first: number) => ({
+      name: 'Share',
+      amountCents: 100,
+      split: {
+        mode: 'equal',
+        personIds: Array.from({ length: 8 }, (_, index) => `p${first + index}`),
+      },
+    })
+    expect(paths(transactionInputSchema, { ...itemised, items: [item(0), item(7)] })).toEqual([])
+    expect(paths(transactionInputSchema, { ...itemised, items: [item(0), item(8)] })).toEqual([''])
   })
 
   it('allows 1 to 30 items', () => {
@@ -239,6 +238,25 @@ describe('transactionInputSchema', () => {
     expect(paths(transactionInputSchema, { ...itemised, items: items.slice(0, 30) })).toEqual([])
     expect(paths(transactionInputSchema, { ...itemised, items })).toEqual(['items'])
     expect(paths(transactionInputSchema, { ...itemised, items: [] })).toEqual(['items'])
+  })
+
+  it('caps the sum of the items like a typed total', () => {
+    const [item] = itemised.items
+    const huge = { ...item, amountCents: MAX_AMOUNT_CENTS }
+    expect(
+      paths(transactionInputSchema, { ...itemised, items: [huge, { ...huge, amountCents: -1 }] }),
+    ).toEqual([])
+    expect(paths(transactionInputSchema, { ...itemised, items: [huge, huge] })).toEqual(['items'])
+    expect(() => transactionInputSchema.parse({ ...itemised, items: [huge, huge] })).toThrow(
+      `The total must be at most ${MAX_AMOUNT_CENTS} cents in size`,
+    )
+    // One clear issue for a bad item, not a second one for the sum.
+    expect(
+      paths(transactionInputSchema, {
+        ...itemised,
+        items: [huge, { ...huge, amountCents: MAX_AMOUNT_CENTS + 1 }],
+      }),
+    ).toEqual(['items.1.amountCents'])
   })
 
   it('names each payer once', () => {
@@ -263,6 +281,46 @@ describe('transactionInputSchema', () => {
       'shift.startTime',
     ])
     expect(paths(transactionInputSchema, withShift({ endTime: '9:00' }))).toEqual(['shift.endTime'])
+  })
+
+  it("caps the shift's computed amount like a typed total", () => {
+    const withShift = (part: object) => ({ ...shift, shift: { ...shift.shift, ...part } })
+    // 1440 minutes at 416,666,666 cents an hour is 9,999,999,984 cents.
+    expect(
+      paths(transactionInputSchema, withShift({ minutes: 1440, rateCents: 416_666_666 })),
+    ).toEqual([])
+    expect(
+      paths(transactionInputSchema, withShift({ minutes: 1440, rateCents: 416_666_667 })),
+    ).toEqual(['shift'])
+    expect(() =>
+      transactionInputSchema.parse(withShift({ minutes: 1440, rateCents: MAX_AMOUNT_CENTS })),
+    ).toThrow('The total must be at most')
+  })
+
+  it('needs dueOn on a due bill and the period for a days split', () => {
+    const withBill = (part: object) => ({ ...bill, bill: { ...bill.bill, ...part } })
+    expect(paths(transactionInputSchema, withBill({ dueOn: undefined }))).toEqual(['bill.dueOn'])
+    expect(paths(transactionInputSchema, withBill({ status: 'paid', dueOn: undefined }))).toEqual(
+      [],
+    )
+    expect(paths(transactionInputSchema, withBill({ periodEnd: undefined }))).toEqual(['bill'])
+    expect(paths(transactionInputSchema, withBill({ periodStart: undefined }))).toEqual(['bill'])
+    const daysItem = { name: 'Power', amountCents: 9000, split: { mode: 'days' } }
+    const noPeriod = { status: 'due', dueOn: '2026-11-14' }
+    expect(
+      paths(transactionInputSchema, {
+        ...bill,
+        bill: noPeriod,
+        split: undefined,
+        items: [daysItem],
+      }),
+    ).toEqual(['bill'])
+    expect(paths(transactionInputSchema, { ...bill, bill: noPeriod, split: loan.split })).toEqual(
+      [],
+    )
+    expect(() => transactionInputSchema.parse(withBill({ dueOn: undefined }))).toThrow(
+      'A due bill needs dueOn',
+    )
   })
 
   it('checks the bill part', () => {
@@ -302,10 +360,30 @@ describe('transactionInputSchema', () => {
     expect(paths(transactionInputSchema, { ...expense, note: 'x'.repeat(1001) })).toEqual(['note'])
   })
 
-  it('rejects receipt file IDs that are not IDs', () => {
+  it('allows up to 10 receipt file IDs', () => {
     expect(paths(transactionInputSchema, { ...expense, receiptFileIds: ['../x'] })).toEqual([
       'receiptFileIds.0',
     ])
+    const files = Array.from({ length: 11 }, (_, index) => `file${index}`)
+    expect(
+      paths(transactionInputSchema, { ...expense, receiptFileIds: files.slice(0, 10) }),
+    ).toEqual([])
+    expect(paths(transactionInputSchema, { ...expense, receiptFileIds: files })).toEqual([
+      'receiptFileIds',
+    ])
+  })
+})
+
+describe('transactionTemplateSchema', () => {
+  it('accepts the parts of a transaction a schedule repeats', () => {
+    expect(paths(transactionTemplateSchema, { shift: shift.shift, category: 'work' })).toEqual([])
+    expect(paths(transactionTemplateSchema, {})).toEqual([])
+  })
+
+  it('rejects the fields that live on the schedule', () => {
+    expect(paths(transactionTemplateSchema, { kind: 'shift', shift: shift.shift })).toEqual([''])
+    expect(paths(transactionTemplateSchema, { date: '2026-10-29' })).toEqual([''])
+    expect(paths(transactionTemplateSchema, { totalCents: 1.5 })).toEqual(['totalCents'])
   })
 })
 

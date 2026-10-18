@@ -89,24 +89,37 @@ describe('updateProfileBodySchema', () => {
 })
 
 describe('createInviteBodySchema', () => {
-  it('needs a group, a member and a channel', () => {
+  const invite = { groupId: 'house1', memberId: 'm1' }
+
+  it('needs a group, a member and exactly one address', () => {
+    expect(paths(createInviteBodySchema, { ...invite, email: 'cara@example.com' })).toEqual([])
+    expect(paths(createInviteBodySchema, { ...invite, phone: '0412 345 678' })).toEqual([])
+    expect(paths(createInviteBodySchema, invite)).toEqual(['email'])
     expect(
-      paths(createInviteBodySchema, { groupId: 'house1', memberId: 'm1', channel: 'email' }),
-    ).toEqual([])
-    expect(
-      paths(createInviteBodySchema, { groupId: 'house1', memberId: 'm1', channel: 'fax' }),
-    ).toEqual(['channel'])
-    expect(paths(createInviteBodySchema, { groupId: 'house1', channel: 'sms' })).toEqual([
-      'memberId',
-    ])
+      paths(createInviteBodySchema, {
+        ...invite,
+        email: 'cara@example.com',
+        phone: '0412 345 678',
+      }),
+    ).toEqual(['email'])
+    expect(() => createInviteBodySchema.parse(invite)).toThrow('Give exactly one of email or phone')
+  })
+
+  it('rejects a bad address, a missing member or the old channel field', () => {
+    expect(paths(createInviteBodySchema, { ...invite, email: 'cara' })).toEqual(['email'])
+    expect(paths(createInviteBodySchema, { groupId: 'house1', email: 'cara@example.com' })).toEqual(
+      ['memberId'],
+    )
+    const withChannel = { ...invite, email: 'cara@example.com', channel: 'email' }
+    expect(paths(createInviteBodySchema, withChannel)).toEqual([''])
   })
 })
 
 describe('acceptInviteBodySchema', () => {
-  it('needs a 32-byte base64url token', () => {
-    const token = 'Ab9_-'.repeat(8).concat('xyz')
-    expect(paths(acceptInviteBodySchema, { token })).toEqual([])
-    expect(paths(acceptInviteBodySchema, { token: token.slice(1) })).toEqual(['token'])
-    expect(paths(acceptInviteBodySchema, { token: `${token.slice(1)}=` })).toEqual(['token'])
+  it('takes any token text, leaving unknown tokens to the function (INVITE_INVALID)', () => {
+    expect(paths(acceptInviteBodySchema, { token: 'Ab9_-'.repeat(8).concat('xyz') })).toEqual([])
+    expect(paths(acceptInviteBodySchema, { token: 'not-a-real-token' })).toEqual([])
+    expect(paths(acceptInviteBodySchema, { token: 'x'.repeat(129) })).toEqual(['token'])
+    expect(paths(acceptInviteBodySchema, {})).toEqual(['token'])
   })
 })

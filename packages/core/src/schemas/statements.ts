@@ -1,7 +1,5 @@
 import { z } from 'zod'
-import { TRANSACTION_KINDS } from '../constants/domain'
 import {
-  categorySchema,
   centsSchema,
   checkDateOrder,
   currencySchema,
@@ -22,7 +20,10 @@ const shareAmountsSchema = z.strictObject({
   receivedCents: centsSchema,
 })
 
-/** `statements.snapshotJson`: a historical record, never rewritten. */
+/**
+ * `statements.snapshotJson`: a historical record, never rewritten. `kind` and
+ * `category` stay plain strings so old snapshots still parse if those lists change.
+ */
 export const statementSnapshotSchema = z.strictObject({
   version: z.literal(1),
   group: z.strictObject({
@@ -53,9 +54,9 @@ export const statementSnapshotSchema = z.strictObject({
     z.strictObject({
       transactionId: idSchema,
       date: localDateSchema,
-      kind: z.enum(TRANSACTION_KINDS),
+      kind: z.string(),
       description: z.string(),
-      category: categorySchema.optional(),
+      category: z.string().optional(),
       totalCents: centsSchema,
       shift: z.strictObject({ minutes: z.int(), rateCents: z.int() }).optional(),
       shares: z.array(shareAmountsSchema),

@@ -1,28 +1,14 @@
 import { z } from 'zod'
 import { CATEGORIES } from '../constants/categories'
 import { MAX_AMOUNT_CENTS, MAX_PEOPLE_PER_TRANSACTION } from '../constants/limits'
+import { compareDates, isLocalDate, type LocalDate } from '../dates/local-date'
 
 // Building blocks shared by the route schemas (functions-api.md#shared-types).
 
 /** An Appwrite ID: up to 36 of `a-z A-Z 0-9 . - _`, not starting with a special character. */
 export const idSchema = z.string().regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,35}$/, 'Not an ID')
 
-const LOCAL_DATE = /^\d{4}-\d{2}-\d{2}$/
-
-// An impossible date like 02-30 rolls over to 03-02 and no longer matches. Counted
-// in UTC so the machine's timezone never matters (D-005).
-// simple: swap for isLocalDate from dates/local-date.ts once #6 merges.
-function isLocalDate(text: string): boolean {
-  if (!LOCAL_DATE.test(text)) return false
-  const [year, month, day] = text.split('-').map(Number) as [number, number, number]
-  const date = new Date(0)
-  date.setUTCFullYear(year, month - 1, day)
-  return (
-    date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day
-  )
-}
-
-/** A calendar date as `YYYY-MM-DD` in the group's timezone. */
+/** A calendar date as `YYYY-MM-DD` in the group's timezone; parses to a `LocalDate`. */
 export const localDateSchema = z.string().refine(isLocalDate, 'Expected a calendar date YYYY-MM-DD')
 
 export const categorySchema = z.enum(CATEGORIES)
@@ -48,7 +34,12 @@ export const emailSchema = z.string().trim().pipe(z.email().max(254))
 /** As typed; `normalizeIdentity()` parses it into E.164. */
 export const phoneSchema = text(1, 32).regex(/^\+?[\d\s().-]+$/, 'Not a phone number')
 
+// IANA names start each part with a capital: `UTC`, `Etc/GMT+10`. Intl also takes
+// offsets like `+10:00` and lower-case names, which we don't want stored.
+const TIME_ZONE_NAME = /^[A-Z][\w+-]*(\/[A-Z][\w+-]*)*$/
+
 function isTimeZone(value: string): boolean {
+  if (!TIME_ZONE_NAME.test(value)) return false
   try {
     new Intl.DateTimeFormat('en', { timeZone: value })
     return true
@@ -86,14 +77,14 @@ export function peopleList<T extends z.ZodType>(
     })
 }
 
-/** Adds an issue at `path` unless `from` is on or before `to` (LocalDate text sorts by date). */
+/** Adds an issue at `path` unless `from` is on or before `to`. */
 export function checkDateOrder(
-  from: string | undefined,
-  to: string | undefined,
+  from: LocalDate | undefined,
+  to: LocalDate | undefined,
   path: string,
   ctx: z.RefinementCtx,
 ): void {
-  if (from !== undefined && to !== undefined && from > to) {
+  if (from !== undefined && to !== undefined && compareDates(from, to) > 0) {
     ctx.addIssue({ code: 'custom', message: 'Must not be before the start date', path: [path] })
   }
 }

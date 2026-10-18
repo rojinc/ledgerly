@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import {
   addMemberBodySchema,
-  type CreateGroupBody,
   createGroupBodySchema,
   type GroupSettings,
   groupSettingsSchema,
+  statementCycleSchema,
   updateGroupBodySchema,
   updateMemberBodySchema,
 } from './groups'
@@ -72,7 +72,7 @@ describe('createGroupBodySchema', () => {
     statementCycle: 'monthly',
     settings: employerSettings,
     counterpart: { displayName: 'Acme', email: 'accounts@example.com', phone: '02 9999 0000' },
-  } satisfies CreateGroupBody
+  } satisfies z.input<typeof createGroupBodySchema>
 
   const house = {
     id: 'house1',
@@ -80,14 +80,14 @@ describe('createGroupBodySchema', () => {
     name: 'Elm Street',
     statementCycle: 'fortnightly',
     cycleAnchor: '2026-10-05',
-  } satisfies CreateGroupBody
+  } satisfies z.input<typeof createGroupBodySchema>
 
   const pair = {
     id: 'pair1',
     type: 'pair',
     name: 'Sam',
     counterpart: { displayName: 'Sam' },
-  } satisfies CreateGroupBody
+  } satisfies z.input<typeof createGroupBodySchema>
 
   it.each([employer, house, pair])('accepts %j', (group) => {
     expect(createGroupBodySchema.parse(group)).toEqual(group)
@@ -122,6 +122,21 @@ describe('createGroupBodySchema', () => {
     expect(paths(createGroupBodySchema, { ...house, settings: houseSettings })).toEqual([])
   })
 
+  it('needs an anchor for weekly and fortnightly cycles', () => {
+    expect(paths(createGroupBodySchema, { ...house, cycleAnchor: undefined })).toEqual([
+      'cycleAnchor',
+    ])
+    expect(
+      paths(createGroupBodySchema, { ...house, statementCycle: 'weekly', cycleAnchor: undefined }),
+    ).toEqual(['cycleAnchor'])
+    expect(
+      paths(createGroupBodySchema, { ...house, statementCycle: 'none', cycleAnchor: undefined }),
+    ).toEqual([])
+    expect(() => createGroupBodySchema.parse({ ...house, cycleAnchor: undefined })).toThrow(
+      'A fortnightly cycle needs cycleAnchor',
+    )
+  })
+
   it('checks each field', () => {
     expect(paths(createGroupBodySchema, { ...house, name: '' })).toEqual(['name'])
     expect(paths(createGroupBodySchema, { ...house, currency: 'aud' })).toEqual(['currency'])
@@ -136,6 +151,13 @@ describe('createGroupBodySchema', () => {
     expect(
       paths(createGroupBodySchema, { ...pair, counterpart: { displayName: 'Sam', email: 'sam' } }),
     ).toEqual(['counterpart.email'])
+  })
+})
+
+describe('statementCycleSchema', () => {
+  it('accepts the cycles in the data model', () => {
+    expect(statementCycleSchema.options).toEqual(['none', 'weekly', 'fortnightly', 'monthly'])
+    expect(statementCycleSchema.safeParse('daily').success).toBe(false)
   })
 })
 
@@ -160,7 +182,6 @@ describe('addMemberBodySchema', () => {
         displayName: 'Cara',
         email: 'cara@example.com',
         phone: '0412 345 678',
-        userId: 'user1',
         role: 'member',
         joinedOn: '2026-08-01',
       }),
@@ -168,6 +189,8 @@ describe('addMemberBodySchema', () => {
     expect(paths(addMemberBodySchema, {})).toEqual(['displayName'])
     expect(paths(addMemberBodySchema, { displayName: 'x'.repeat(101) })).toEqual(['displayName'])
     expect(paths(addMemberBodySchema, { displayName: 'Cara', role: 'owner' })).toEqual(['role'])
+    // D-016: members are always added as placeholders, never linked to a user here.
+    expect(paths(addMemberBodySchema, { displayName: 'Cara', userId: 'user1' })).toEqual([''])
   })
 })
 

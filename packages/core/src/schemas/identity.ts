@@ -58,18 +58,25 @@ export const updateProfileBodySchema = z.strictObject({
 
 export type UpdateProfileBody = z.infer<typeof updateProfileBodySchema>
 
-/** `POST /invites` */
-export const createInviteBodySchema = z.strictObject({
-  groupId: idSchema,
-  memberId: idSchema,
-  channel: z.enum(['email', 'sms']),
-})
+/** `POST /invites`: sent only to the address the caller typed. */
+export const createInviteBodySchema = z
+  .strictObject({
+    groupId: idSchema,
+    memberId: idSchema,
+    email: emailSchema.optional(),
+    phone: phoneSchema.optional(),
+  })
+  .refine((invite) => (invite.email === undefined) !== (invite.phone === undefined), {
+    message: 'Give exactly one of email or phone',
+    path: ['email'],
+  })
 
 export type CreateInviteBody = z.infer<typeof createInviteBodySchema>
 
-/** `POST /invites/accept`. The token is 32 random bytes as base64url. */
-export const acceptInviteBodySchema = z.strictObject({
-  token: z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'Not an invite token'),
-})
+/**
+ * `POST /invites/accept`. A malformed token is just an unknown one, so the
+ * function answers INVITE_INVALID rather than this schema failing.
+ */
+export const acceptInviteBodySchema = z.strictObject({ token: z.string().max(128) })
 
 export type AcceptInviteBody = z.infer<typeof acceptInviteBodySchema>

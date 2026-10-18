@@ -5,6 +5,8 @@ import {
   categorySchema,
   centsSchema,
   currencySchema,
+  descriptionSchema,
+  displayNameSchema,
   emailSchema,
   emptyBodySchema,
   idSchema,
@@ -82,6 +84,16 @@ describe('text', () => {
   })
 })
 
+describe('descriptionSchema and displayNameSchema', () => {
+  it('fit their columns', () => {
+    expect(accepts(descriptionSchema, 'x'.repeat(200))).toBe(true)
+    expect(accepts(descriptionSchema, 'x'.repeat(201))).toBe(false)
+    expect(accepts(displayNameSchema, 'x'.repeat(100))).toBe(true)
+    expect(accepts(displayNameSchema, 'x'.repeat(101))).toBe(false)
+    expect(accepts(displayNameSchema, ' ')).toBe(false)
+  })
+})
+
 describe('emailSchema', () => {
   it('accepts an email and trims it, keeping its case', () => {
     expect(emailSchema.parse(' Sam@Example.com ')).toBe('Sam@Example.com')
@@ -108,8 +120,9 @@ describe('timezoneSchema', () => {
     expect(accepts(timezoneSchema, timeZone)).toBe(true),
   )
 
-  it.each(['Mars/Base', '', 'Australia/Sydney '])('rejects %j', (timeZone) =>
-    expect(accepts(timezoneSchema, timeZone)).toBe(false),
+  it.each(['Mars/Base', '', 'Australia/Sydney ', '+10:00', 'australia/sydney', 'Australia/sydney'])(
+    'rejects %j',
+    (timeZone) => expect(accepts(timezoneSchema, timeZone)).toBe(false),
   )
 })
 

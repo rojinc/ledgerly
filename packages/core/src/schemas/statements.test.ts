@@ -4,7 +4,6 @@ import {
   finalizeStatementBodySchema,
   previewStatementBodySchema,
   reissueStatementBodySchema,
-  type StatementSnapshot,
   statementSnapshotSchema,
   voidStatementBodySchema,
 } from './statements'
@@ -60,7 +59,7 @@ const invoice = {
   transfers: [],
   invoice: { balanceDueCents: 22_500, paymentTermsDays: 14, dueOn: '2026-11-15' },
   generatedAt: '2026-11-01T19:00:00.000Z',
-} satisfies StatementSnapshot
+} satisfies z.input<typeof statementSnapshotSchema>
 
 const divide = {
   ...invoice,
@@ -69,7 +68,7 @@ const divide = {
   recipient: undefined,
   invoice: undefined,
   transfers: [{ fromPersonId: 'acme-person', toPersonId: 'sam', cents: 22_500 }],
-} satisfies StatementSnapshot
+} satisfies z.input<typeof statementSnapshotSchema>
 
 describe('statementSnapshotSchema', () => {
   it('accepts an invoice and a divide', () => {
@@ -101,6 +100,15 @@ describe('statementSnapshotSchema', () => {
     expect(
       paths(statementSnapshotSchema, { ...invoice, lines: [{ ...line, totalCents: big }] }),
     ).toEqual(['lines.0.totalCents'])
+  })
+
+  it('keeps kind and category as plain text, so old snapshots always parse', () => {
+    const [line] = invoice.lines
+    const old = { ...line, kind: 'retired-kind', category: 'retired-category' }
+    expect(paths(statementSnapshotSchema, { ...invoice, lines: [old] })).toEqual([])
+    expect(paths(statementSnapshotSchema, { ...invoice, lines: [{ ...line, kind: 3 }] })).toEqual([
+      'lines.0.kind',
+    ])
   })
 
   it('rejects transfers of zero and instants that are not UTC', () => {

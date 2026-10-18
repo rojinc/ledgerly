@@ -76,6 +76,15 @@ export const createGroupBodySchema = z
         : 'Only employer and pair groups have a counterpart'
       ctx.addIssue({ code: 'custom', message, path: ['counterpart'] })
     }
+    // periodFor() counts weekly and fortnightly periods from the anchor.
+    const counted = group.statementCycle === 'weekly' || group.statementCycle === 'fortnightly'
+    if (counted && group.cycleAnchor === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `A ${group.statementCycle} cycle needs cycleAnchor`,
+        path: ['cycleAnchor'],
+      })
+    }
     if (group.settings && group.settings.type !== group.type) {
       ctx.addIssue({
         code: 'custom',
@@ -87,7 +96,10 @@ export const createGroupBodySchema = z
 
 export type CreateGroupBody = z.infer<typeof createGroupBodySchema>
 
-/** `PATCH /groups/{id}`. The function checks that `settings.type` matches the group. */
+/**
+ * `PATCH /groups/{id}`. The function checks `settings.type` and the cycle anchor
+ * against the stored group.
+ */
 export const updateGroupBodySchema = z.strictObject({
   ...groupFields,
   name: groupFields.name.optional(),
@@ -100,7 +112,6 @@ export const addMemberBodySchema = z.strictObject({
   displayName: displayNameSchema,
   email: emailSchema.optional(),
   phone: phoneSchema.optional(),
-  userId: idSchema.optional(),
   role: z.enum(ROLES).optional(),
   joinedOn: localDateSchema.optional(),
 })

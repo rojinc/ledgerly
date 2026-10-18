@@ -1,6 +1,11 @@
 import { z } from 'zod'
 import { TRANSACTION_KINDS, type TransactionKind } from '../constants/domain'
-import { MAX_ITEMS_PER_TRANSACTION, MAX_PEOPLE_PER_TRANSACTION } from '../constants/limits'
+import {
+  MAX_AMOUNT_CENTS,
+  MAX_ITEMS_PER_TRANSACTION,
+  MAX_PEOPLE_PER_TRANSACTION,
+} from '../constants/limits'
+import { shiftAmountCents } from '../money/shift-amount'
 import {
   categorySchema,
   centsSchema,
@@ -20,6 +25,8 @@ import { splitPersonIds, splitSpecSchema } from './split'
 
 // A shift is one day's work, which also keeps minutes × rateCents a safe integer.
 const MAX_SHIFT_MINUTES = 24 * 60
+// ledger checks and resets each attached file within one 30-second execution.
+const MAX_RECEIPTS = 10
 const minutesSchema = z.int().min(0).max(MAX_SHIFT_MINUTES)
 const timeSchema = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Expected HH:mm')
 
@@ -33,13 +40,40 @@ export const itemInputSchema = z.strictObject({
 
 export type ItemInput = z.infer<typeof itemInputSchema>
 
-const shiftSchema = z.strictObject({
-  minutes: minutesSchema,
-  rateCents: rateCentsSchema,
-  breakMinutes: minutesSchema.optional(),
-  startTime: timeSchema.optional(),
-  endTime: timeSchema.optional(),
-})
+// ledger.md#allocation-and-rounding: computed totals are capped like typed ones.
+// Checked only once the parts are valid, so a bad part gets one clear issue.
+const totalCap = {
+  message: `The total must be at most ${MAX_AMOUNT_CENTS} cents in size`,
+  when: (payload: z.core.ParsePayload) => payload.issues.length === 0,
+}
+
+function shiftAmountFits(shift: { minutes: number; rateCents: number }): boolean {
+  try {
+    shiftAmountCents(shift.minutes, shift.rateCents)
+    return true
+  } catch {
+    return false
+  }
+}
+
+const shiftSchema = z
+  .strictObject({
+    minutes: minutesSchema,
+    rateCents: rateCentsSchema,
+    breakMinutes: minutesSchema.optional(),
+    startTime: timeSchema.optional(),
+    endTime: timeSchema.optional(),
+  })
+  .refine(shiftAmountFits, totalCap)
+
+const itemsSchema = z
+  .array(itemInputSchema)
+  .min(1)
+  .max(MAX_ITEMS_PER_TRANSACTION)
+  .refine(
+    (items) => Math.abs(items.reduce((sum, item) => sum + item.amountCents, 0)) <= MAX_AMOUNT_CENTS,
+    totalCap,
+  )
 
 const billSchema = z
   .strictObject({
@@ -75,12 +109,12 @@ const transactionFields = {
     (payer) => payer.personId,
   ).optional(),
   split: splitSpecSchema.optional(),
-  items: z.array(itemInputSchema).min(1).max(MAX_ITEMS_PER_TRANSACTION).optional(),
+  items: itemsSchema.optional(),
   shift: shiftSchema.optional(),
   bill: billSchema.optional(),
   payment: paymentSchema.optional(),
   adjustment: adjustmentSchema.optional(),
-  receiptFileIds: z.array(idSchema).optional(),
+  receiptFileIds: z.array(idSchema).max(MAX_RECEIPTS).optional(),
   note: text(0, 1000).optional(),
 }
 
@@ -88,16 +122,27 @@ export const transactionTemplateSchema = z.strictObject(transactionFields)
 
 export type TransactionTemplate = z.infer<typeof transactionTemplateSchema>
 
-type Part = 'shift' | 'bill' | 'payment' | 'adjustment' | 'split' | 'items'
+type Part =
+  | 'shift'
+  | 'bill'
+  | 'payment'
+  | 'adjustment'
+  | 'payers'
+  | 'split'
+  | 'items'
+  | 'totalCents'
 
-// The kinds each part of the input belongs to.
+// The kinds each part of the input belongs to (ledger.md#transaction-kinds).
 const PART_KINDS: Record<Part, readonly TransactionKind[]> = {
   shift: ['shift'],
   bill: ['bill'],
   payment: ['payment'],
   adjustment: ['adjustment'],
+  payers: ['expense', 'bill', 'loan'],
   split: ['expense', 'bill', 'loan'],
   items: ['expense', 'bill'],
+  // A shift's total is minutes × rate, never sent.
+  totalCents: ['expense', 'bill', 'payment', 'loan', 'income', 'adjustment'],
 }
 
 // These kinds also need the part named after them.
@@ -133,7 +178,7 @@ export function checkKindRules(
   }
   const ownPart = OWN_PARTS.find((part) => part === kind)
   if (ownPart && input[ownPart] === undefined) issue(`Required for a ${kind}`, ownPart)
-  // The total of a shift is minutes × rate; with items it is their sum.
+  // With items, the total is their sum.
   if (kind !== 'shift' && input.totalCents === undefined && input.items === undefined) {
     issue('Required unless the transaction has items', 'totalCents')
   }
@@ -151,6 +196,26 @@ export function checkKindRules(
   }
 }
 
+// Checked on one-off transactions only: a schedule sets each occurrence's dueOn,
+// and its template can't hold one billing period for every occurrence.
+function checkOneOffBill({ bill, split, items }: TransactionTemplate, ctx: z.RefinementCtx): void {
+  if (!bill) return
+  // scheduling.md: reminders and autopay look at dueOn.
+  if (bill.status === 'due' && bill.dueOn === undefined) {
+    ctx.addIssue({ code: 'custom', message: 'A due bill needs dueOn', path: ['bill', 'dueOn'] })
+  }
+  // ledger.md#days-present: days are counted within the billing period.
+  const splits = [split, ...(items ?? []).map((item) => item.split)]
+  const byDays = splits.some((spec) => spec?.mode === 'days')
+  if (byDays && (bill.periodStart === undefined || bill.periodEnd === undefined)) {
+    ctx.addIssue({
+      code: 'custom',
+      message: 'A days split needs periodStart and periodEnd',
+      path: ['bill'],
+    })
+  }
+}
+
 /** `POST /transactions`, and `PATCH /transactions/{id}` with the same `id`. */
 export const transactionInputSchema = z
   .strictObject({
@@ -161,7 +226,10 @@ export const transactionInputSchema = z
     description: descriptionSchema,
     ...transactionFields,
   })
-  .superRefine((input, ctx) => checkKindRules(input.kind, input, ctx))
+  .superRefine((input, ctx) => {
+    checkKindRules(input.kind, input, ctx)
+    checkOneOffBill(input, ctx)
+  })
 
 export type TransactionInput = z.infer<typeof transactionInputSchema>
 
