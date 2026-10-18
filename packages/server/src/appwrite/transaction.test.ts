@@ -200,6 +200,65 @@ describe('withTransaction', () => {
     expect(db.rows('shares')).toMatchObject([{ givenCents: 100 }, { $id: 's2' }])
   })
 
+  it('cannot undo a commit for writes that come after it, which is why the lint rules matter', async () => {
+    const db = slowStaging(seeded())
+    const errors: unknown[] = []
+    await withTransaction(db, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't1',
+        data: { description: 'Rent (Oct)' },
+      })
+      // biome-ignore lint/nursery/noMisusedPromises: the mistake this test is about
+      ;['s1', 's2'].forEach(async (rowId) => {
+        try {
+          await later(20) // longer than the commit takes
+          await tx.write({ action: 'delete', tableId: 'shares', rowId })
+        } catch (error) {
+          errors.push(error)
+        }
+      })
+    })
+    await later(40)
+    // The awaited write is committed; the late deletes were refused, not staged.
+    expect(db.rows('transactions')[0]).toMatchObject({ description: 'Rent (Oct)' })
+    expect(db.rows('shares')).toHaveLength(2)
+    expect(errors).toHaveLength(2)
+  })
+
+  it('does not crash the process when nobody awaits a late write', async () => {
+    const db = slowStaging(seeded())
+    await expect(
+      withTransaction(db, async (tx) => {
+        void tx.write({ action: 'update', tableId: 'shares', rowId: 's1', data: { givenCents: 1 } })
+        // Vitest fails the run on an unhandled rejection.
+        setTimeout(() => {
+          void tx.write({ action: 'delete', tableId: 'shares', rowId: 's2' })
+        }, 1)
+      }),
+    ).rejects.toThrow('tx.write was called after the transaction ended')
+    await later(10)
+  })
+
+  it('sends no more writes after a staging fails', async () => {
+    const db = seeded()
+    const createOperations = vi.spyOn(db, 'createOperations')
+    createOperations.mockRejectedValueOnce(new Error('network'))
+    await expect(
+      withTransaction(db, async (tx) => {
+        await tx
+          .write({ action: 'delete', tableId: 'shares', rowId: 's1' })
+          .catch(() => 'ignored on purpose')
+        await expect(
+          tx.write({ action: 'delete', tableId: 'shares', rowId: 's2' }),
+        ).rejects.toThrow('network')
+      }),
+    ).rejects.toThrow('network')
+    expect(createOperations).toHaveBeenCalledTimes(1)
+    expect(db.rows('shares')).toHaveLength(2)
+  })
+
   it('fails with 409 when a staged row changes before the commit, and applies nothing', async () => {
     const db = seeded()
     const edit = withTransaction(db, async (tx) => {

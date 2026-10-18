@@ -67,9 +67,17 @@ export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): 
     write(...writes) {
       if (ended) {
         late ??= new Error('tx.write was called after the transaction ended; await every write')
-        return Promise.reject(late)
+        const refused = Promise.reject(late)
+        // Handled here as well, so a write nobody awaits doesn't crash the process with an
+        // unhandled rejection. A caller that awaits it still gets the error.
+        refused.catch(() => {})
+        return refused
       }
-      const staging = stagings.then(() => stage(writes))
+      // After a failed staging the transaction will roll back, so send nothing more.
+      const staging = stagings.then(() => {
+        if (failed) throw failed.error
+        return stage(writes)
+      })
       stagings = staging.then(
         () => undefined,
         (error: unknown) => {
