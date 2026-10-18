@@ -62,7 +62,7 @@ Members who haven't joined (`placeholder`) keep their role but have no access, a
 
 Every function route that changes data starts with the same steps (helper `requireMember()` in `packages/server`):
 
-1. Read the caller's user ID from the `x-appwrite-user-id` header. If it is missing, return `UNAUTHENTICATED`.
+1. Verify the caller: call Appwrite's `account.get()` with the JWT from the `x-appwrite-user-jwt` header (a node-appwrite client with `setJWT`). The returned user's `$id` is the caller. If the JWT is missing, or Appwrite rejects it, return `UNAUTHENTICATED`. Never trust `x-appwrite-user-id` (see [Function execute permissions](#function-execute-permissions)).
 2. Load the caller's person (`persons.userId = caller`).
 3. Load their `members` row for the target group. If it is missing or `status = placeholder`, return `NOT_A_MEMBER`.
 4. Check the role against the table above. If it fails, return `FORBIDDEN`.
@@ -83,3 +83,7 @@ Scheduled jobs run with the server key and no caller. They write as the system a
 | --- | --- |
 | `ledger`, `groups`, `identity` | `users` (any signed-in user; the function checks the rest) |
 | `scheduler`, `statements` | `users` for their HTTP routes; cron runs need no execute permission |
+
+No function gets `any` or a custom domain, so only signed-in users can reach the HTTP routes.
+
+**Why functions verify the JWT.** Appwrite refuses execution headers that start with `x-appwrite` only when they are lower-case. On `ledgerly-dev` (2026-10-18), a client sent `X-Appwrite-User-Id` and `X-Appwrite-User-Jwt` with made-up values in an execution's `headers`, and the function received them. For an anonymous caller `x-appwrite-user-id` was the forged value. For a signed-in caller it was `"<forged>, <real>"`. A JWT only passes `account.get()` if Appwrite issued it, so it can't be forged.
