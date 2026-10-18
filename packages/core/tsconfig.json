@@ -1,0 +1,8 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // ES2023 adds Intl formatting of exact decimal strings (money/format.ts).
+    "lib": ["ES2023"]
+  },
+  "include": ["src"]
+}

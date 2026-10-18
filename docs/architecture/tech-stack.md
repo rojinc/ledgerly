@@ -52,7 +52,7 @@ Appwrite Messaging can only message project users, not addresses like an employe
 | Package manager | **npm workspaces** (ships with Node, nothing extra to install) |
 | Node | 24 LTS locally (`.nvmrc`). Functions use the newest Node runtime offered by Appwrite Cloud. |
 | Lint and format | **Biome** (one tool instead of ESLint + Prettier) |
-| Unit tests | **Vitest** |
+| Unit tests | **Vitest**, with `@vitest/coverage-v8` for the 100% coverage check in `packages/core` |
 | End-to-end tests | Playwright (from M2) |
 | Function bundling | esbuild, one bundle per function |
 | CI/CD | GitHub Actions |
