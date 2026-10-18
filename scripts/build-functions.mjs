@@ -40,10 +40,11 @@ for (const name of functions) {
   console.log(`built functions/${name}/dist/main.js (${version})`)
 }
 
-// The commit the bundle was built from, so /health shows what is deployed.
+// The commit the bundle was built from, so /health shows what is deployed; `-dirty` when the
+// working tree had uncommitted changes.
 function gitVersion() {
   try {
-    return execFileSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: root }).toString().trim()
+    return execFileSync('git', ['describe', '--always', '--dirty'], { cwd: root }).toString().trim()
   } catch {
     return 'local'
   }

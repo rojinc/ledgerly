@@ -50,7 +50,11 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 | `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*` |
 | `statements` | HTTP + cron `15 * * * *` | `users` | 300 s | `rows.*`, `files.*` (PDFs) |
 
-Every function runs on the newest Node runtime on Appwrite Cloud, from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, so a deployment runs no install step. The key scopes are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`); give a function a new scope only when a route needs it. `GET /health`, the only route that runs without a signed-in caller, returns `{ fn, version }` on every function, where `version` is the commit the bundle was built from.
+Every function runs on `node-22`, the newest Node LTS runtime that Appwrite Cloud offers (Cloud has `node-22` and `node-25`, and Node 25 no longer gets security fixes). Move to a newer runtime only when it is an LTS release that Cloud offers. Each runs from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, and the deployment uploads only `dist/` and `package.json` (`ignore: ["*", "!dist/", "!package.json"]`; the CLI doesn't read `.gitignore`).
+
+- **`commands` stays empty.** The uploaded `package.json` names `@ledgerly/*` packages, which aren't on public npm, so an `npm install` could pull a stranger's package of the same name. The bundle already holds every dependency.
+- **Key scopes** are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`). Give a function only the scopes a documented route needs; a change to them gets the `security` label.
+- `GET /health`, the only route that runs without a signed-in caller, returns `{ fn, version }` on every function, where `version` is the commit the bundle was built from (`-dirty` when built with uncommitted changes).
 
 Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, later `SMS_*` and `SENTRY_DSN`.
 
