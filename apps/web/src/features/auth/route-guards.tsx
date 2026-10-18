@@ -8,7 +8,15 @@ import { useBootstrap } from './use-bootstrap'
 import { useCurrentUser } from './use-current-user'
 
 /** Shows loading, or a retryable error, until the query has data. */
-function UserGate({ query, children }: { query: UseQueryResult; children: ReactNode }) {
+function UserGate({
+  query,
+  failure = 'We couldn’t reach Ledgerly. Check your connection and try again.',
+  children,
+}: {
+  query: UseQueryResult
+  failure?: string
+  children: ReactNode
+}) {
   if (query.isPending) {
     return (
       <p role="status" className="p-6 text-center text-muted-foreground">
@@ -19,9 +27,7 @@ function UserGate({ query, children }: { query: UseQueryResult; children: ReactN
   if (query.isError) {
     return (
       <main className="mx-auto flex max-w-sm flex-col gap-4 px-4 py-10">
-        <Alert variant="destructive">
-          We couldn’t reach Ledgerly. Check your connection and try again.
-        </Alert>
+        <Alert variant="destructive">{failure}</Alert>
         <Button onClick={() => query.refetch()} disabled={query.isFetching}>
           Try again
         </Button>
@@ -41,7 +47,7 @@ export function RequireAuth() {
   return (
     <UserGate query={query}>
       {query.data ? (
-        <Bootstrapped />
+        <Bootstrapped userId={query.data.$id} />
       ) : (
         <Navigate to="/login" replace state={{ from: pathname + search + hash }} />
       )}
@@ -49,10 +55,10 @@ export function RequireAuth() {
   )
 }
 
-function Bootstrapped() {
-  const bootstrap = useBootstrap()
+function Bootstrapped({ userId }: { userId: string }) {
+  const bootstrap = useBootstrap(userId)
   return (
-    <UserGate query={bootstrap}>
+    <UserGate query={bootstrap} failure="We couldn’t set up your account. Try again in a moment.">
       <LinkedGroupsNotice count={bootstrap.data?.linkedGroupIds.length ?? 0} />
       <Outlet />
     </UserGate>

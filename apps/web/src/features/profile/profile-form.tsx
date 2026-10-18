@@ -32,8 +32,9 @@ const SUMMARY_OPTIONS = [
 ] as const
 
 function timeZones(current: string): string[] {
-  // Some browsers leave UTC out of this list.
-  const zones = Intl.supportedValuesOf('timeZone')
+  // Some browsers leave UTC out of this list, and older ones don't have it at all.
+  const zones =
+    typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []
   return zones.includes(current) ? zones : [current, ...zones]
 }
 
@@ -54,7 +55,7 @@ export function ProfileForm({ profile, displayName, onSave }: Props) {
       summaryFrequency: profile.summaryFrequency,
     },
   })
-  const { errors, isSubmitting, isSubmitSuccessful } = form.formState
+  const { errors, isDirty, isSubmitting, isSubmitSuccessful } = form.formState
 
   return (
     <form
@@ -125,7 +126,7 @@ export function ProfileForm({ profile, displayName, onSave }: Props) {
       <Button type="submit" disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : 'Save'}
       </Button>
-      {isSubmitSuccessful && !errors.root && <Alert>Saved.</Alert>}
+      {isSubmitSuccessful && !isDirty && !errors.root && <Alert>Saved.</Alert>}
     </form>
   )
 }

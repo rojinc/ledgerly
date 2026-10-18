@@ -18,6 +18,7 @@ export function useProfile(userId: string) {
 export function usePerson(personId: string) {
   return useQuery({
     queryKey: queryKeys.person(personId),
+    enabled: personId !== '',
     queryFn: () =>
       tablesDB.getRow<Persons>({ databaseId: DATABASE_ID, tableId: 'persons', rowId: personId }),
   })

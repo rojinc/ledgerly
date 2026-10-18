@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
 import { account } from '../../lib/appwrite'
 import { RedirectIfSignedIn, RequireAuth } from './route-guards'
+import { bootstrapBody } from './use-bootstrap'
 
 vi.mock('../../lib/appwrite', () => ({ account: { get: vi.fn() } }))
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
@@ -32,7 +33,9 @@ function renderAt(path: string) {
     ],
     { initialEntries: [path] },
   )
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, retryDelay: 0 } },
+  })
   render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
@@ -85,12 +88,23 @@ describe('route guards', () => {
     expect(screen.queryByText(/We found/)).toBeNull()
   })
 
+  it('sends the user to /login when bootstrap finds the session has ended', async () => {
+    getUser.mockResolvedValue({ $id: 'u1' } as never)
+    call.mockResolvedValue({ ok: false, error: { code: 'UNAUTHENTICATED', message: 'Log in' } })
+    renderAt('/secret')
+    expect(await screen.findByText('Login page')).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
   it('shows a retryable error when bootstrap fails', async () => {
     getUser.mockResolvedValue({ $id: 'u1' } as never)
-    call.mockResolvedValueOnce({ ok: false, error: { code: 'INTERNAL', message: 'Boom' } })
-    call.mockResolvedValueOnce(bootstrapped(['g1']))
+    // Three retries, then the error.
+    call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Boom' } })
     renderAt('/secret')
-    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText(/couldn’t set up your account/)).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(4)
+    call.mockResolvedValue(bootstrapped(['g1']))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByText('Secret page')).toBeTruthy()
     expect(screen.getByText('We found 1 group you were added to.')).toBeTruthy()
   })
@@ -99,5 +113,16 @@ describe('route guards', () => {
     getUser.mockResolvedValue({ $id: 'u1' } as never)
     renderAt('/login')
     expect(await screen.findByText('Home page')).toBeTruthy()
+  })
+})
+
+describe('bootstrapBody', () => {
+  afterEach(() => vi.restoreAllMocks())
+
+  it('falls back to UTC when the browser reports a zone the schema rejects', () => {
+    vi.spyOn(Intl.DateTimeFormat.prototype, 'resolvedOptions').mockReturnValue({
+      timeZone: 'Etc/Unknown',
+    } as Intl.ResolvedDateTimeFormatOptions)
+    expect(bootstrapBody()).toEqual({ timezone: 'UTC' })
   })
 })

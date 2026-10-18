@@ -58,6 +58,27 @@ describe('ProfileForm', () => {
     expect(onSave).not.toHaveBeenCalled()
   })
 
+  it('hides "Saved." once the form is edited again', async () => {
+    render(<ProfileForm profile={profile} displayName="Sam Lee" onSave={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Saved.')).toBeTruthy()
+    type('Name', 'Sam')
+    await waitFor(() => expect(screen.queryByText('Saved.')).toBeNull())
+  })
+
+  it('still works where Intl.supportedValuesOf is missing', () => {
+    const original = Intl.supportedValuesOf
+    Object.defineProperty(Intl, 'supportedValuesOf', { value: undefined, configurable: true })
+    try {
+      render(<ProfileForm profile={profile} displayName="Sam Lee" onSave={vi.fn()} />)
+      expect((screen.getByLabelText('Time zone') as HTMLSelectElement).value).toBe(
+        'Australia/Sydney',
+      )
+    } finally {
+      Object.defineProperty(Intl, 'supportedValuesOf', { value: original, configurable: true })
+    }
+  })
+
   it('shows the function error', async () => {
     const onSave = vi.fn().mockRejectedValue(new Error('Please log in again.'))
     render(<ProfileForm profile={profile} displayName="Sam Lee" onSave={onSave} />)

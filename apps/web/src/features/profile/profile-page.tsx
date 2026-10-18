@@ -1,14 +1,13 @@
-import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { BusinessForm } from './business-form'
 import { ProfileForm } from './profile-form'
 import { usePerson, useProfile, useUpdateProfile } from './use-profile'
 
 export function ProfilePage() {
-  // RequireAuth renders this page only once both have loaded.
+  // RequireAuth renders this page only for a signed-in, bootstrapped user.
   const userId = useCurrentUser().data?.$id ?? ''
-  const personId = useBootstrap().data?.personId ?? ''
   const profile = useProfile(userId)
+  const personId = profile.data?.personId ?? ''
   const person = usePerson(personId)
   const update = useUpdateProfile(userId, personId)
 

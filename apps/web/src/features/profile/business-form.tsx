@@ -76,7 +76,7 @@ export function BusinessForm({ profile, onSave }: Props) {
     resolver: schemaResolver(updateProfileBodySchema, toBusinessBody),
     defaultValues: toValues(profile),
   })
-  const { errors, isSubmitting, isSubmitSuccessful } = form.formState
+  const { errors, isDirty, isSubmitting, isSubmitSuccessful } = form.formState
   const business = errors.business
 
   return (
@@ -197,7 +197,7 @@ export function BusinessForm({ profile, onSave }: Props) {
       <Button type="submit" disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : 'Save invoice details'}
       </Button>
-      {isSubmitSuccessful && !errors.root && <Alert>Saved.</Alert>}
+      {isSubmitSuccessful && !isDirty && !errors.root && <Alert>Saved.</Alert>}
     </form>
   )
 }
