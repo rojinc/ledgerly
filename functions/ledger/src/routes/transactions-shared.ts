@@ -109,9 +109,9 @@ export function requireCreatorOrAdmin(membership: Membership, row: Transactions)
   }
 }
 
-/** The transaction, or NOT_FOUND. */
 const NO_SUCH_TRANSACTION = 'This transaction does not exist.'
 
+/** The transaction, or NOT_FOUND. */
 export async function getTransaction(db: Db, id: string): Promise<Transactions> {
   const row = await findTransaction(db, id)
   if (!row) throw new AppError('NOT_FOUND', NO_SUCH_TRANSACTION)

@@ -28,7 +28,10 @@ export async function addToTeam(teams: TeamsApi, teamId: string, userId: string)
   await doneIfExists(teams.createMembership({ teamId, userId, roles: NO_ROLES }))
 }
 
-/** Removes the user from the team; a membership or team that is already gone counts as done. */
+/**
+ * Removes the user from the team; a membership or team that is already gone counts as done.
+ * Deletes only a membership whose user ID matches, not only through the query filter.
+ */
 export async function removeFromTeam(
   teams: TeamsApi,
   teamId: string,
@@ -39,7 +42,7 @@ export async function removeFromTeam(
       teamId,
       queries: [Query.equal('userId', userId), Query.limit(1)],
     })
-    for (const membership of memberships) {
+    for (const membership of memberships.filter((found) => found.userId === userId)) {
       await teams.deleteMembership({ teamId, membershipId: membership.$id })
     }
   } catch (error) {

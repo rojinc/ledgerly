@@ -215,6 +215,20 @@ describe('POST /transactions/{id}/post', () => {
     expect([posted.body.error?.code, voided.body.error?.code]).toEqual([code, code])
     expect(rows.transactions(db)[0]?.status).toBe('due')
   })
+
+  it('answers an outsider posting or voiding exactly as for a missing ID (#121)', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', dueBill)
+    for (const [path, body] of [
+      ['post', {}],
+      ['void', { reason: 'Wrong' }],
+    ] as const) {
+      const outsider = await call(db, 'POST', `/transactions/b1/${path}`, body, 'u-dan')
+      const missing = await call(db, 'POST', `/transactions/nope/${path}`, body, 'u-dan')
+      expect(outsider.status).toBe(404)
+      expect(outsider).toEqual(missing)
+    }
+  })
 })
 
 describe('someone who left on their own (#117)', () => {

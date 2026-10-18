@@ -41,6 +41,15 @@ describe('removeFromTeam', () => {
     expect(teams.members('g1')?.map((membership) => membership.userId)).toEqual(['u2'])
   })
 
+  it("deletes only a membership with that user ID, not only through the query's filter (#121)", async () => {
+    const teams = new FakeTeams({ g1: ['u1', 'u2'] })
+    const other = teams.members('g1')?.find((membership) => membership.userId === 'u2')
+    vi.spyOn(teams, 'listMemberships').mockResolvedValue({ memberships: [other as never] })
+    const deleteMembership = vi.spyOn(teams, 'deleteMembership')
+    await removeFromTeam(teams, 'g1', 'u1')
+    expect(deleteMembership).not.toHaveBeenCalled()
+  })
+
   it('counts a membership or team that is already gone as done', async () => {
     const teams = new FakeTeams({ g1: ['u2'] })
     await removeFromTeam(teams, 'g1', 'u1')

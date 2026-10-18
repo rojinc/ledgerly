@@ -1,4 +1,4 @@
-import type { Members } from '@ledgerly/core/generated/rows'
+import type { Activity, Members } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -44,6 +44,7 @@ export async function leaveGroup(
   if (member.status === 'left') {
     // Their own leave already committed (its member.left row says so): only the team step is
     // left, even if a share landed on them since. Someone who moved out still settles up first.
+    // permissions.md#leaving-a-group: leaving on your own is final for that row.
     if (!(await leftOnTheirOwn(db, groupId, person.$id, member.$createdAt)))
       await requireSettled(db, groupId, person.$id)
   } else {
@@ -93,28 +94,31 @@ export async function leaveGroup(
   return {}
 }
 
-// Only a member.left row written since this member row was created counts: an older one is
-// from an earlier membership, before an admin deleted and re-added them. A left row never turns
-// active again, so it can't have been moved out after its own leave.
+// Leaving on your own is final for that row (permissions.md#leaving-a-group): the retry skips
+// the balance check only when the newest member.left or member.joined row for this person,
+// since this member row was created, is member.left. A later member.joined (they came back,
+// say through a merge) means a fresh membership that has to settle up first. Uses
+// idx_group_at (groupId, at).
 async function leftOnTheirOwn(
   db: Db,
   groupId: string,
   personId: string,
   memberCreatedAt: string,
 ): Promise<boolean> {
-  const { rows } = await db.listRows({
+  const { rows } = await db.listRows<Activity>({
     databaseId: DATABASE_ID,
     tableId: TABLES.activity,
     queries: [
       Query.equal('groupId', groupId),
-      Query.equal('action', 'member.left'),
+      Query.equal('action', ['member.left', 'member.joined']),
       Query.equal('actorPersonId', personId),
       Query.greaterThanEqual('$createdAt', memberCreatedAt),
+      Query.orderDesc('at'),
       Query.limit(1),
     ],
     total: false,
   })
-  return rows.length > 0
+  return rows[0]?.action === 'member.left'
 }
 
 async function requireSettled(db: Db, groupId: string, personId: string): Promise<void> {

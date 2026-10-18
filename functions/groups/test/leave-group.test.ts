@@ -198,6 +198,52 @@ describe('POST /groups/{id}/leave', () => {
     expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
   })
 
+  it('needs a balance of 0 when they came back after their own leave (#121)', async () => {
+    // p2 left on their own, came back on this row (a member.joined since), then moved out owing.
+    const at = (time: string) => ({ $createdAt: time, at: time })
+    const activity = (id: string, action: string, time: string) => ({
+      $id: id,
+      ...at(time),
+      groupId: 'g1',
+      actorPersonId: 'p2',
+      action,
+      transactionId: null,
+      summary: 'Member m2',
+      changesJson: null,
+    })
+    const services = houseFixture({
+      m2: {
+        status: 'left',
+        role: 'viewer',
+        leftOn: '2026-10-10',
+        $createdAt: '2026-09-01T00:00:00.000Z',
+      },
+      shares: [share('s1', 'g1', 'p2', 0, 400)],
+      activity: [
+        activity('a1', 'member.left', '2026-09-10T00:00:00.000Z'),
+        activity('a2', 'member.joined', '2026-09-20T00:00:00.000Z'),
+      ],
+    })
+    expect(await leave(services, 'u2')).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+
+  it("can't be made a member again after leaving on their own (#121)", async () => {
+    // Leaving on your own is final for that row: an admin can't make them a member again, so
+    // the interrupted leave can still finish.
+    const services = houseFixture()
+    vi.spyOn(services.teams, 'deleteMembership').mockRejectedValueOnce(
+      new AppwriteException('Connection lost', 503),
+    )
+    expect((await leave(services, 'u2')).status).toBe(500)
+    expect(
+      await failure(services, 'PATCH', '/groups/g1/members/m2', { role: 'member' }, 'u1'),
+    ).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', role: 'viewer' })
+    expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+    expect(teamUsers(services, 'g1')).toEqual(['u1'])
+  })
+
   it('still needs a balance of 0 from someone who moved out', async () => {
     const services = houseFixture({
       m2: { status: 'left', role: 'viewer', leftOn: '2026-10-10' },
