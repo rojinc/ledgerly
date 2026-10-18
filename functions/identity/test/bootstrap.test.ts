@@ -254,8 +254,8 @@ describe('POST /bootstrap', () => {
     })
     const interrupted = await call(services, 'POST', '/bootstrap', BODY)
     expect(interrupted.status).toBe(500)
-    // The team add was done and the account is set up; the join was not.
-    expect(services.teams.members('g1')?.map((membership) => membership.userId)).toContain('u1')
+    // The account is set up; the join was not, so its team add was taken back.
+    expect(services.teams.members('g1')?.map((membership) => membership.userId)).not.toContain('u1')
     expect(services.db.rows('profiles')).toHaveLength(1)
     expect(services.db.rows('members').find((row) => row.$id === 'm1')?.status).toBe('placeholder')
     failing.mockRestore()
