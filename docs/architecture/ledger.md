@@ -21,8 +21,8 @@ These must hold for every posted transaction, always. `packages/core` exports `a
 
 1. **I-1 Balanced:** Σ `givenCents` = Σ `receivedCents` = `totalCents`. So the nets in a transaction always add up to 0.
 2. **I-2 Integers:** every amount is an integer number of cents. No floats are ever stored.
-3. **I-3 Members only:** every share's person has a `members` row in the transaction's group, whatever its status. Placeholders and people who have left count. Join and leave dates don't limit who can be in a transaction: a bill paid after someone moved out, a settle-up from a former housemate and a back-dated entry are all valid. The dates only decide `days` weights ([Days present](#days-present)).
-4. **I-4 One sign:** for a normal transaction every amount is ≥ 0. For a refund (`totalCents` < 0) every amount is ≤ 0. Signs are never mixed within one transaction, except in `adjustment`.
+3. **I-3 Members only:** every share's person has a `members` row in the transaction's group, whatever its status. Placeholders and people who have left count. Join and leave dates don't limit who can be in a transaction: a bill paid after someone moved out, a settle-up from a former housemate and a back-dated entry are all valid. The dates only decide `days` weights ([Days present](#days-present)) and who a house's [default split](#default-split) includes.
+4. **I-4 One sign:** for a normal transaction every amount is ≥ 0. For a refund (`totalCents` < 0) every amount is ≤ 0. Signs are never mixed within one transaction, except in `adjustment`. Only `expense`, `bill` and `adjustment` can have a negative total.
 5. **I-5 One share per person:** at most one share per person per transaction.
 6. **I-6 Only posted counts:** only `posted` transactions have shares. `scheduled`, `running`, `due` and `void` transactions have none.
 7. **I-7 Locked is final:** a transaction with a `statementId` pointing at a final statement is never changed or voided.
@@ -33,7 +33,7 @@ These must hold for every posted transaction, always. `packages/core` exports `a
 | --- | --- | --- | --- | --- |
 | `shift` | employer | worker: amount | employer: amount | amount = `round(minutes × rateCents / 60)`. The worker is the group owner. |
 | `expense` | all | payers | split (or items) | Purchases, groceries, employer-related spending |
-| `bill` | house, personal, pair | payers | split (default `days` in a house) | Has a billing period and due date. `due` until paid. |
+| `bill` | house, personal, pair | payers | split ([default](#default-split) `days` in a house) | Has a billing period and due date. `due` until paid. |
 | `payment` | all except personal | `fromPersonId`: total | `toPersonId`: total | Money moving between members: settle-ups, employer paying you, loan repayments |
 | `loan` | pair, house | lender: total | borrower(s): split | An expense with a different label in the UI |
 | `income` | personal | you: total | you: total | Recorded for reports; net 0 |
@@ -97,9 +97,20 @@ type SplitSpec =
   | { mode: 'days';    personIds?: string[] }                                  // bills only; default: everyone present in the period
 ```
 
+### Default split
+
+When an expense, bill or loan names no split and has no items:
+
+- an **employer** group has no default: the request must pick a [preset](#employer-presets),
+- a **bill in a house** with a billing period uses the group's `defaultBillSplit`: `days`, or, if the group set `equal`, an equal split between the members with at least one day in the period (the same people `days` would pick),
+- otherwise it is split equally. In a house that means everyone present on the date (`joinedOn` ≤ date ≤ `leftOn`); in a personal or pair group it means every member, because there `joinedOn` is only the day someone was added and back-dated entries are normal,
+- a **loan** leaves out the payers, so it goes to the borrowers.
+
+Default splits, and `days` splits without `personIds`, list members by `personId`, so leftover cents go in that order. If that leaves nobody, the request fails with `VALIDATION_FAILED`.
+
 ### Days present
 
-For a bill with period `[periodStart, periodEnd]`, each member's weight is the number of days in that period between their `joinedOn` and `leftOn` (inclusive). Members with 0 days are left out. If everyone has 0 days, the request fails with `VALIDATION_FAILED`.
+For a bill with period `[periodStart, periodEnd]`, each member's weight is the number of days in that period between their `joinedOn` and `leftOn` (inclusive). Members with 0 days are left out. If everyone has 0 days, or the period is longer than 10,000 days (the weight limit), the request fails with `VALIDATION_FAILED`.
 
 Example: period 1 Jul–30 Sep (92 days). Alice and Bob were there all along (92 each); Cara moved in 1 Aug (61). Weights are 92 : 92 : 61.
 
@@ -122,7 +133,7 @@ Other rounding rules:
 
 ## Payers
 
-`payers: { personId, cents }[]` says who gave money and must sum to the total. The default is the caller paying everything. Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill).
+`payers: { personId, cents }[]` says who gave money and must sum to the total. The default is the caller paying everything. Several payers are allowed (Alice paid $50 and Bob $40 of a $90 bill). Only expenses, bills and loans have payers; giving payers for any other kind fails.
 
 ## Items (itemised receipts)
 
@@ -134,13 +145,15 @@ Other rounding rules:
 
 ## Building shares
 
-`buildShares(input, context) → Share[]` in `packages/core` is the only code that turns a transaction into shares. The `context` holds the group type, owner and members with join/leave dates. The function is pure: same input, same output.
+`buildShares(input, context) → { totalCents, shares }` in `packages/core/src/ledger` is the only code that turns a transaction into its total and shares. The total comes from the input: `minutes × rate` for a shift, the sum of items, the sum of an adjustment's given amounts, or `totalCents`. With items or an adjustment, a `totalCents` in the input must match; a shift can't carry one ([Validation](functions-api.md#validation)). Outside adjustments, a total of 0 gives no shares. The `context` holds the group type, owner, caller (the default payer), members with join/leave dates and, for houses, `defaultBillSplit`. The function is pure: same input, same output, with shares sorted by `personId`.
 
 Rules:
 
 - Shares are **rebuilt completely** on every write. In one database transaction the function deletes the old share rows and creates the new ones. Never patch a single share.
 - Each share copies `groupId`, `date`, `kind` and `category` from its transaction so the main queries need one index. Because shares are always rebuilt, these copies can't drift. ([D-007](decisions.md))
 - A person whose given and received are both 0 (for example 1 cent split three ways) gets no share row.
+
+Rule-breaking input fails with `VALIDATION_FAILED`: payers or exact amounts that don't add up, a discount that pushes someone below 0, a kind the group type doesn't allow, a person who isn't a member, a total over `MAX_AMOUNT_CENTS`, a negative total on a kind that can't be a refund, or more than 15 people. A broken group (an employer group without exactly one employer) and a failed `assertShareInvariants()`, which runs afterwards as a last guard, are bugs and fail with `INVARIANT_VIOLATION`.
 
 ## Balances
 
