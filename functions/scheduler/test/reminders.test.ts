@@ -240,10 +240,11 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 't1')).toBeNull()
   })
 
-  it('sends nothing in archived groups', async () => {
+  it('sends nothing in archived groups, and marks the row so it isn’t read again', async () => {
     const services = seeded([transaction('t1', { groupId: 'old' })])
-    expect((await runCron(services)).reminders.sent).toBe(0)
-    expect(remindedAt(services, 't1')).toBeNull()
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 1, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
+    expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
   })
 
   it('looks each recipient up once per run', async () => {
@@ -262,18 +263,82 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
   })
 
-  it('tries again next run when the email fails, and stops on anything else', async () => {
+  it('tries again next run when the email fails', async () => {
     const services = seeded([transaction('t1')])
     services.sendEmail.mockRejectedValueOnce(new EmailError('Resend answered 500', 'unknown', 500))
     expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 1 })
     expect(remindedAt(services, 't1')).toBeNull()
-
-    services.sendEmail.mockRejectedValueOnce(new TypeError('boom'))
-    expect(await failure(services, 'POST', '/', { userId: null, scheduled: true })).toEqual({
-      status: 500,
-      code: 'INTERNAL',
-    })
+    services.sendEmail.mockRejectedValueOnce(
+      new EmailError('Resend answered 429', 'rate_limit_exceeded', 429),
+    )
+    expect((await runCron(services)).reminders.failed).toBe(1)
+    expect(remindedAt(services, 't1')).toBeNull()
     expect((await runCron(services)).reminders.sent).toBe(1)
+  })
+
+  it('marks an email Resend will never take, so it isn’t tried every hour', async () => {
+    const services = seeded([transaction('t1'), transaction('t2', { date: '2026-10-17' })])
+    services.sendEmail
+      .mockRejectedValueOnce(new EmailError('Resend answered 422', 'validation_error', 422))
+      .mockRejectedValueOnce(
+        new EmailError('Resend answered 409', 'invalid_idempotent_request', 409),
+      )
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 2 })
+    expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
+    expect(remindedAt(services, 't2')).toBe(NOW.toISOString())
+  })
+
+  it('counts any other failure and carries on with the next row', async () => {
+    const services = seeded([transaction('t1'), transaction('t2', { date: '2026-10-17' })])
+    services.sendEmail.mockRejectedValueOnce(new TypeError('boom'))
+    expect((await runCron(services)).reminders).toEqual({ sent: 1, skipped: 0, failed: 1 })
+    expect(remindedAt(services, 't1')).toBeNull()
+    expect(remindedAt(services, 't2')).toBe(NOW.toISOString())
+  })
+
+  it('sends nothing about a shift posted after the page was read', async () => {
+    const services = seeded([transaction('t1')])
+    const list = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const page = await list(params)
+      if (params.tableId === 'transactions' && page.rows.length > 0) {
+        // Posted and locked by a final statement before the reminder is staged.
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { status: 'posted', statementId: 'st1' },
+          }),
+        )
+      }
+      return page
+    })
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
+    // A locked transaction is never changed (I-7).
+    expect(remindedAt(services, 't1')).toBeNull()
+  })
+
+  it('sends nothing when another run reminded it first', async () => {
+    const services = seeded([transaction('t1')])
+    const list = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const page = await list(params)
+      if (params.tableId === 'transactions' && page.rows.length > 0) {
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { remindedAt: '2026-10-18T19:59:00.000Z' },
+          }),
+        )
+      }
+      return page
+    })
+    expect((await runCron(services)).reminders.sent).toBe(0)
+    expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
   it('counts it sent when the row changed or went away after the email', async () => {
@@ -371,18 +436,54 @@ describe('step 3: timer still running', () => {
     expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
-  it('fails the run when Appwrite can’t say whether the account exists', async () => {
+  it('counts it failed when Appwrite can’t say whether the account exists', async () => {
     const services = seeded([
       transaction('t1', { status: 'running', startedAt: started(13), createdBy: 'pAlex' }),
     ])
     vi.spyOn(services.users, 'get').mockRejectedValue(
       new AppwriteException('Server error', 500, 'general_server_error'),
     )
-    expect(await failure(services, 'POST', '/', { userId: null, scheduled: true })).toEqual({
-      status: 500,
-      code: 'INTERNAL',
-    })
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 1 })
     expect(remindedAt(services, 't1')).toBeNull()
+  })
+
+  it('sends nothing about a timer stopped after the page was read', async () => {
+    const services = seeded([
+      transaction('t1', { status: 'running', startedAt: started(13), createdBy: 'pAlex' }),
+    ])
+    const list = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const page = await list(params)
+      if (params.tableId === 'transactions' && page.rows.length > 0) {
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { status: 'posted' },
+          }),
+        )
+      }
+      return page
+    })
+    expect((await runCron(services)).reminders.sent).toBe(0)
+    expect(services.sendEmail).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing to someone who has left the group', async () => {
+    const services = seeded([
+      transaction('t1', { status: 'running', startedAt: started(13), createdBy: 'pAlex' }),
+    ])
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'members',
+        rowId: 'acme-pAlex',
+        data: { status: 'left' },
+      }),
+    )
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 1, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
   it('stops a person without an account before looking for one', async () => {
@@ -420,14 +521,23 @@ describe('step 3: batches', () => {
   })
 
   it('moves past rows it can’t send yet instead of reading them again', async () => {
-    // 100 shifts of today come first and stay unreminded; the one after them still goes out.
+    // 150 shifts of today in a UTC group match the query but stay unreminded; the one after
+    // them still goes out. A stuck page would hit the limit of pages below first.
     const services = seeded([
-      ...Array.from({ length: 100 }, (_, index) =>
-        transaction(`a${`${index}`.padStart(3, '0')}`, { date: '2026-10-19' }),
+      ...Array.from({ length: 150 }, (_, index) =>
+        transaction(`a${`${index}`.padStart(3, '0')}`, { groupId: 'utc', date: '2026-10-18' }),
       ),
       transaction('z'),
     ])
+    let pages = 0
+    const list = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      if (params.tableId === 'transactions') pages += 1
+      return list(params)
+    })
+    services.outOfTime = () => pages > 10
     expect((await runCron(services)).reminders.sent).toBe(1)
     expect(remindedAt(services, 'z')).toBe(NOW.toISOString())
+    expect(remindedAt(services, 'a000')).toBeNull()
   })
 })

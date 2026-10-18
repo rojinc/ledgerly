@@ -1,5 +1,6 @@
 import type { Groups, Members, Persons } from '@ledgerly/core/generated/rows'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
+import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import type { Email } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
@@ -19,10 +20,14 @@ export type Fakes = Services & {
   sendEmail: ReturnType<typeof vi.fn<(email: Email) => Promise<unknown>>>
 }
 
-/** Accounts by user ID; any other user ID is a deleted account (404). */
+/** Accounts by user ID; any other user ID is a deleted account (404). Teams by team ID. */
 export function fakes(
   seed: Seed = {},
-  options: { accounts?: Record<string, Partial<AccountUser>>; now?: Date } = {},
+  options: {
+    accounts?: Record<string, Partial<AccountUser>>
+    now?: Date
+    teams?: Record<string, string[]>
+  } = {},
 ): Fakes {
   const accounts = options.accounts ?? {
     u1: { email: 'sam@example.com', emailVerification: true },
@@ -30,6 +35,7 @@ export function fakes(
   }
   return {
     db: new FakeDb(seed),
+    teams: new FakeTeams(options.teams),
     users: {
       get: async ({ userId }) => {
         const account = accounts[userId]

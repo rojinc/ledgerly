@@ -27,22 +27,22 @@ const LAST_DATE = '9999-12-31' as LocalDate
  * dates it skips on the way, for the form preview.
  */
 export async function previewSchedule(
-  { db, now }: Services,
+  { db, teams, now }: Services,
   userId: string | null,
   body: unknown,
 ): Promise<SchedulePreview> {
   const { count = DEFAULT_COUNT, ...schedule } = parseBody(previewScheduleBodySchema, body)
-  const { group } = await requireMember(db, userId, schedule.groupId)
+  const { group } = await requireMember(db, teams, userId, schedule.groupId)
   const today = localToday(group.timezone, now)
   const isHoliday = schedule.skipPublicHolidays ? publicHolidayChecker(group.region) : null
   const exdates = new Set(schedule.exdates)
   const preview: SchedulePreview = { dates: [], skipped: [] }
   let from = compareDates(schedule.startsOn, today) < 0 ? today : schedule.startsOn
-  while (preview.dates.length < count) {
-    // A window long enough for the dates still missing if none were skipped; every skip
-    // makes it look further.
-    const missing = count - preview.dates.length
-    const to = addDays(from, Math.min(MAX_GAP_DAYS * missing, daysBetween(from, LAST_DATE)))
+  // rrule counts from startsOn each time, so the window doubles to keep the rounds few.
+  for (let round = 1; preview.dates.length < count; round *= 2) {
+    // Long enough for the dates still missing if none were skipped, then longer each round.
+    const days = MAX_GAP_DAYS * (count - preview.dates.length) * round
+    const to = addDays(from, Math.min(days, daysBetween(from, LAST_DATE)))
     // Every date the rule hits, so the skipped ones can be listed with their reason.
     const hits = expandSchedule(
       { ...schedule, exdates: null, skipPublicHolidays: false },

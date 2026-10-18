@@ -32,10 +32,11 @@ const MS_PER_HOUR = 3_600_000
 /**
  * Step 3 (scheduling.md#step-3-reminders): "shift to confirm" to the group owner and "timer
  * still running" to whoever started it. Bill reminders come with #33. Each reminder goes out
- * once: it is sent with an idempotency key, then `remindedAt` is set.
+ * once (see `remind`).
  */
 export async function sendReminders(services: Services): Promise<ReminderCounts> {
   const { db, now } = services
+  const link = linkTo(services.appUrl)
   const counts: ReminderCounts = { sent: 0, skipped: 0, failed: 0 }
   // Read once per run. Groups are never deleted; schedules can be.
   const groups = memo((rowId) =>
@@ -58,20 +59,23 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
     Query.isNull('remindedAt'),
   ])
   for await (const shift of shifts) {
-    const group = await groups(shift.groupId)
-    if (!isAwake(group, now) || compareDates(shift.date as LocalDate, today(group, now)) >= 0) {
-      continue
-    }
-    // Step 2 posts the shifts of schedules that auto-post.
-    const schedule = shift.scheduleId ? await schedules(shift.scheduleId) : undefined
-    if (schedule?.autoPost) continue
-    const content = shiftToConfirmEmail({
-      groupName: group.name,
-      date: shift.date as LocalDate,
-      url: link(services, shift),
+    await counted(counts, async () => {
+      const group = await groups(shift.groupId)
+      if (group.archivedAt) return remind(services, shift, undefined, counts)
+      if (!isAwake(group, now) || compareDates(shift.date as LocalDate, today(group, now)) >= 0) {
+        return
+      }
+      // Step 2 posts the shifts of schedules that auto-post.
+      const schedule = shift.scheduleId ? await schedules(shift.scheduleId) : undefined
+      if (schedule?.autoPost) return
+      const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
+      const content = shiftToConfirmEmail({
+        groupName: group.name,
+        date: shift.date as LocalDate,
+        url: link(shift),
+      })
+      await remind(services, shift, to ? { to, content } : undefined, counts)
     })
-    const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
-    await remind(services, shift, to, content, counts)
   }
 
   // idx_status_date, on its status alone: there are few running timers.
@@ -81,69 +85,121 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
     Query.isNull('remindedAt'),
   ])
   for await (const timer of timers) {
-    const group = await groups(timer.groupId)
-    if (!isAwake(group, now)) continue
-    const content = timerRunningEmail({
-      groupName: group.name,
-      startedAt: timer.startedAt as string,
-      timeZone: group.timezone,
-      url: link(services, timer),
+    await counted(counts, async () => {
+      const group = await groups(timer.groupId)
+      if (group.archivedAt) return remind(services, timer, undefined, counts)
+      if (!isAwake(group, now)) return
+      const to = await recipients(`${group.$id}/${timer.createdBy}`)
+      const content = timerRunningEmail({
+        groupName: group.name,
+        startedAt: timer.startedAt as string,
+        timeZone: group.timezone,
+        url: link(timer),
+      })
+      await remind(services, timer, to ? { to, content } : undefined, counts)
     })
-    await remind(
-      services,
-      timer,
-      await recipients(`${group.$id}/${timer.createdBy}`),
-      content,
-      counts,
-    )
   }
   return counts
+}
+
+// A row that keeps failing mustn't hold up the rows after it: it counts as failed, and the
+// next run tries it again.
+async function counted(counts: ReminderCounts, work: () => Promise<void>): Promise<void> {
+  try {
+    await work()
+  } catch {
+    counts.failed += 1
+  }
 }
 
 function today(group: Groups, now: Date): LocalDate {
   return localToday(group.timezone, now)
 }
 
-// Archived groups get no reminders, and nobody gets one before 07:00 in the group's timezone.
+// Nobody gets a reminder before 07:00 in the group's timezone.
 function isAwake(group: Groups, now: Date): boolean {
-  if (group.archivedAt) return false
   return now.toISOString() >= localTimeToUtc(today(group, now), FIRST_HOUR, group.timezone)
 }
 
-function link({ appUrl }: Services, row: Transactions): string {
+// Checked before any row, so a missing APP_URL fails the run instead of every row.
+function linkTo(appUrl: string): (row: Transactions) => string {
   if (!/^https?:\/\//.test(appUrl)) {
     throw new Error('APP_URL is not set. Add it as an Appwrite project variable.')
   }
-  return `${appUrl.replace(/\/+$/, '')}/groups/${row.groupId}/transactions/${row.$id}`
+  const base = appUrl.replace(/\/+$/, '')
+  return (row) => `${base}/groups/${row.groupId}/transactions/${row.$id}`
 }
 
+class Changed extends Error {}
+
+/**
+ * Sends the reminder for `seen` and sets its `remindedAt`, guarded as conventions.md#functions
+ * says: `remindedAt` is staged first, then the stored row is checked, and the email goes out
+ * before the commit. A row that changed before staging (posted, stopped, locked, reminded by
+ * another run) gets nothing; one that changes after it fails the commit, and the next run
+ * looks at it again. With no email (an archived group, or nobody to send to), `remindedAt` is
+ * still set, so the row isn't read every hour.
+ */
 async function remind(
-  services: Services,
-  row: Transactions,
-  to: string | undefined,
-  content: EmailContent,
+  { db, now, sendEmail }: Services,
+  seen: Transactions,
+  email: { to: string; content: EmailContent } | undefined,
   counts: ReminderCounts,
 ): Promise<void> {
-  if (to) {
-    try {
-      // Resend sends one email per key within 24 hours, so if setting remindedAt below
-      // fails, the next run's retry isn't delivered twice.
-      await services.sendEmail({ to, ...content, idempotencyKey: `reminder-${row.$id}` })
-    } catch (error) {
-      if (!(error instanceof EmailError)) throw error
-      // remindedAt stays empty, so the next run tries again.
-      counts.failed += 1
-      return
-    }
+  let outcome: keyof ReminderCounts | undefined
+  try {
+    await withTransaction(db, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: TABLES.transactions,
+        rowId: seen.$id,
+        data: { remindedAt: now.toISOString() },
+      })
+      // The stored row, not this transaction's view, which already has the new remindedAt.
+      const stored = await getOrUndefined<Transactions>(db, TABLES.transactions, seen.$id)
+      if (!stillDue(seen, stored)) throw new Changed()
+      if (!email) {
+        outcome = 'skipped'
+        return
+      }
+      try {
+        // Resend delivers one email per key within 24 hours, so the next run's retry after a
+        // failed commit isn't delivered twice.
+        await sendEmail({ to: email.to, ...email.content, idempotencyKey: `reminder-${seen.$id}` })
+        outcome = 'sent'
+      } catch (error) {
+        // An email Resend will never take is marked too, so it isn't tried every hour.
+        if (!(error instanceof EmailError && NEVER_SENT.has(error.type))) throw error
+        outcome = 'failed'
+      }
+    })
+  } catch (error) {
+    if (error instanceof Changed) return
+    // The row changed or went away after staging: the next run looks at it again.
+    const lost = error instanceof AppwriteException && (error.code === 404 || error.code === 409)
+    if (!lost || outcome === undefined) throw error
   }
-  // Also with nobody to send to, so the row isn't read again every hour.
-  await markReminded(services.db, row.$id, services.now)
-  if (to) counts.sent += 1
-  else counts.skipped += 1
+  if (outcome) counts[outcome] += 1
 }
 
-// Only to a joined member with an account and a verified email (permissions.md#roles:
-// placeholders get no reminders).
+// Resend's errors for an email it will never send as asked: a bad address, or the same key
+// with different content (the group was renamed after a send whose mark failed).
+const NEVER_SENT: ReadonlySet<string> = new Set(['validation_error', 'invalid_idempotent_request'])
+
+// It still needs the reminder the page read it for.
+function stillDue(seen: Transactions, stored: Transactions | undefined): boolean {
+  return (
+    stored !== undefined &&
+    stored.status === seen.status &&
+    stored.statementId === null &&
+    stored.remindedAt === null &&
+    stored.date === seen.date &&
+    stored.startedAt === seen.startedAt
+  )
+}
+
+// Only to an active member with an account and a verified email (permissions.md#roles:
+// placeholders get no reminders, and someone who left can't open the link).
 async function verifiedEmail(
   { db, users }: Services,
   groupId: string,
@@ -156,7 +212,7 @@ async function verifiedEmail(
     queries: [Query.equal('groupId', groupId), Query.equal('personId', personId), Query.limit(1)],
     total: false,
   })
-  if (!rows[0] || rows[0].status === 'placeholder') return undefined
+  if (rows[0]?.status !== 'active') return undefined
   const person = await getOrUndefined<Persons>(db, TABLES.persons, personId)
   if (!person?.userId) return undefined
   try {
@@ -165,24 +221,6 @@ async function verifiedEmail(
   } catch (error) {
     // The account was deleted.
     if (error instanceof AppwriteException && error.code === 404) return undefined
-    throw error
-  }
-}
-
-async function markReminded(db: Db, rowId: string, now: Date): Promise<void> {
-  try {
-    await withTransaction(db, (tx) =>
-      tx.write({
-        action: 'update',
-        tableId: TABLES.transactions,
-        rowId,
-        data: { remindedAt: now.toISOString() },
-      }),
-    )
-  } catch (error) {
-    // Deleted or changed meanwhile: the next run looks at it again, and the idempotency key
-    // keeps a resent reminder from being delivered twice.
-    if (error instanceof AppwriteException && (error.code === 404 || error.code === 409)) return
     throw error
   }
 }
@@ -219,7 +257,7 @@ async function* pages<R extends Transactions>(
   }
 }
 
-async function getOrUndefined<R extends Persons | Schedules>(
+async function getOrUndefined<R extends Persons | Schedules | Transactions>(
   db: Db,
   tableId: string,
   rowId: string,

@@ -153,6 +153,47 @@ describe('POST /schedules/preview', () => {
     expect((await preview({ ...thursdays, count: 1 }, 'u2')).dates).toEqual(['2026-10-22'])
   })
 
+  it('lets a member who moved out preview, but not one who left on their own', async () => {
+    const body = { ...thursdays, count: 1 }
+    const left = { members: [member('acme', 'pSam', { status: 'left', role: 'viewer' })] }
+    const movedOut = fakes(
+      { persons: [person('pSam', 'u1')], groups: [group('acme', 'pSam')], ...left },
+      { teams: { acme: ['u1'] } },
+    )
+    expect(
+      (await ok<SchedulePreview>(movedOut, 'POST', '/schedules/preview', { body })).dates,
+    ).toEqual(['2026-10-22'])
+    const gone = fakes({
+      persons: [person('pSam', 'u1')],
+      groups: [group('acme', 'pSam')],
+      ...left,
+    })
+    expect(await failure(gone, 'POST', '/schedules/preview', { body })).toEqual({
+      status: 403,
+      code: 'NOT_A_MEMBER',
+    })
+  })
+
+  it('looks decades ahead past many exdates without slowing down', async () => {
+    // 366 monthly exdates from January 2027: the first date left is July 2057.
+    const exdates = Array.from({ length: 366 }, (_, index) => {
+      const year = 2027 + Math.floor(index / 12)
+      return `${year}-${`${(index % 12) + 1}`.padStart(2, '0')}-01`
+    })
+    const started = performance.now()
+    const { dates, skipped } = await preview({
+      ...thursdays,
+      rrule: 'FREQ=MONTHLY;BYMONTHDAY=1',
+      startsOn: '2027-01-01',
+      skipPublicHolidays: false,
+      exdates,
+      count: 1,
+    })
+    expect(dates).toEqual(['2057-07-01'])
+    expect(skipped).toHaveLength(366)
+    expect(performance.now() - started).toBeLessThan(2000)
+  })
+
   it('refuses non-members, archived groups and invalid bodies', async () => {
     const services = seeded()
     const send = (body: object, userId: string | null = 'u1') =>

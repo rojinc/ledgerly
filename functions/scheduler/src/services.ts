@@ -1,9 +1,10 @@
 import { clientFromRequest, type Db } from '@ledgerly/server/appwrite/client'
+import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { type Email, sendEmail } from '@ledgerly/server/email/send-email'
 import type { RouteContext } from '@ledgerly/server/http/create-handler'
-import { type Models, Users } from 'node-appwrite'
+import { type Models, Teams, Users } from 'node-appwrite'
 
-// One cron run stops starting new batches after this, well inside the function's 900 s
+// One cron run stops taking new rows after this, well inside the function's 900 s
 // timeout; the next hourly run picks up the rest (scheduling.md#the-scheduler-job).
 const RUN_BUDGET_MS = 12 * 60_000
 
@@ -18,6 +19,8 @@ export interface UsersApi {
 /** What the routes and jobs work with, so tests can pass FakeDb, fakes and a fixed clock. */
 export type Services = {
   db: Db
+  /** For requireMember, which asks it only about a `left` member. */
+  teams: Pick<TeamsApi, 'listMemberships'>
   users: UsersApi
   sendEmail: (email: Email) => Promise<unknown>
   now: Date
@@ -30,9 +33,11 @@ export type Services = {
 /** The real services for one request, with the per-execution API key. */
 export function servicesFromRequest(ctx: Pick<RouteContext, 'db' | 'headers'>): Services {
   const stopAt = performance.now() + RUN_BUDGET_MS
+  const client = clientFromRequest(ctx.headers)
   return {
     db: ctx.db,
-    users: new Users(clientFromRequest(ctx.headers)),
+    teams: new Teams(client),
+    users: new Users(client),
     sendEmail,
     now: new Date(),
     appUrl: process.env.APP_URL ?? '',
