@@ -231,6 +231,15 @@ describe('NewEmployerPage', () => {
     expect(call).not.toHaveBeenCalled()
   })
 
+  it('keeps the form when a background refetch of the profile fails', () => {
+    profileHook.mockReturnValue({ data: { currency: 'AUD' }, isError: true } as ReturnType<
+      typeof useProfile
+    >)
+    renderAt('/groups/new-employer')
+    expect(screen.getByLabelText('Employer name')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('shows the function error and retries with the same id', async () => {
     call.mockResolvedValueOnce({
       ok: false,
@@ -341,11 +350,37 @@ describe('EmployerSettingsPage', () => {
     expect(screen.queryByRole('textbox')).toBeNull()
   })
 
-  it('falls back to the defaults when the stored settings are not readable', () => {
-    mockGroup({ ...employer, settingsJson: '{oops' })
+  it.each([
+    ['not JSON', '{oops'],
+    ['not employer settings', JSON.stringify({ type: 'house', defaultBillSplit: 'equal' })],
+  ])('shows an error and no form when the stored settings are %s', (_, settingsJson) => {
+    mockGroup({ ...employer, settingsJson })
     renderAt('/groups/g1/settings')
-    expect(input(/Default hourly rate/).value).toBe('0.00')
-    expect(input('Payment terms (days)').value).toBe('14')
+    expect(screen.getByRole('alert').textContent).toMatch(/couldn’t read this group’s settings/)
+    expect(screen.queryByLabelText(/Default hourly rate/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+
+  it('keeps the form when a background refetch of the group or member fails', () => {
+    groupHook.mockReturnValue({ data: employer, isError: true } as ReturnType<typeof useGroup>)
+    memberHook.mockReturnValue({
+      data: { role: 'admin' } as Members,
+      isError: true,
+    } as ReturnType<typeof useMyMember>)
+    renderAt('/groups/g1/settings')
+    expect(input('Group name').value).toBe('Acme Cafe')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('reloads the group and role when a save is refused because they changed', async () => {
+    mockGroup(employer)
+    call.mockResolvedValue({ ok: false, error: { code: 'ARCHIVED', message: 'Archived.' } })
+    const { queryClient } = renderAt('/groups/g1/settings')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Archived.')
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g1'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member', 'g1', 'p1'] })
   })
 
   it('says when it is loading or the group could not be loaded', () => {

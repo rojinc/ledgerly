@@ -53,7 +53,7 @@ export function NewEmployerPage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-semibold">New employer</h1>
-      {profile.isError ? (
+      {profile.isError && !profile.data ? (
         <p role="alert" className="text-destructive">
           We couldn’t load your profile. Reload the page to try again.
         </p>

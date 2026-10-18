@@ -19,8 +19,13 @@ function parseSettings(json: string) {
   }
 }
 
-function formValues(group: Groups): EmployerValues {
-  return toEmployerValues({ ...group, settings: parseSettings(group.settingsJson) }, group.currency)
+// Undefined when the stored settings can't be read: the form would show defaults, and a save
+// would then overwrite the stored rate and billing emails with them.
+function formValues(group: Groups): EmployerValues | undefined {
+  const settings = parseSettings(group.settingsJson)
+  return settings?.type === 'employer'
+    ? toEmployerValues({ ...group, settings }, group.currency)
+    : undefined
 }
 
 function Message({ children, alert = false }: { children: string; alert?: boolean }) {
@@ -44,14 +49,26 @@ export function EmployerSettingsPage() {
 
   async function save(body: UpdateGroupBody): Promise<EmployerValues> {
     const result = await callFunction<Groups>('groups', 'PATCH', `/groups/${groupId}`, body)
-    if (!result.ok) throw new Error(result.error.message)
+    if (!result.ok) {
+      // The group or the caller's role changed: reload them, so the page shows what's true now.
+      if (['FORBIDDEN', 'ARCHIVED', 'NOT_A_MEMBER'].includes(result.error.code)) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.group(groupId) })
+        await queryClient.invalidateQueries({ queryKey: queryKeys.myMember(groupId, personId) })
+      }
+      throw new Error(result.error.message)
+    }
     queryClient.setQueryData(queryKeys.group(groupId), result.data)
     await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
-    return formValues(result.data)
+    const values = formValues(result.data)
+    if (!values) throw new Error('Saved, but the settings couldn’t be read back. Reload the page.')
+    return values
   }
 
   let content: ReactNode
-  if (group.isError || member.isError) {
+  const values = group.data && formValues(group.data)
+  // Errors only when there's nothing to show: a failed background refetch keeps the page, and
+  // a half-filled form with it.
+  if ((group.isError && !group.data) || (member.isError && member.data === undefined)) {
     content = <Message alert>We couldn’t load this group. Reload the page to try again.</Message>
   } else if (!group.data || member.data === undefined) {
     content = <Message>Loading…</Message>
@@ -59,6 +76,12 @@ export function EmployerSettingsPage() {
     content = <Message>Only employer groups have settings here.</Message>
   } else if (group.data.archivedAt) {
     content = <Message>This group is archived.</Message>
+  } else if (!values) {
+    content = (
+      <Message alert>
+        We couldn’t read this group’s settings, so they can’t be changed here.
+      </Message>
+    )
   } else {
     const isAdmin = member.data?.role === 'admin'
     content = (
@@ -67,7 +90,7 @@ export function EmployerSettingsPage() {
         <EmployerForm
           mode="settings"
           currency={group.data.currency}
-          defaultValues={formValues(group.data)}
+          defaultValues={values}
           readOnly={!isAdmin}
           onSave={save}
         />

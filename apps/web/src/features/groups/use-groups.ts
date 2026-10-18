@@ -74,6 +74,7 @@ export function useMyMember(groupId: string, personId: string) {
   })
 }
 
+// Hand-copied from the ledger function's response until #113 moves response types to core.
 export type Balances = {
   people: { personId: string; netCents: number }[]
   transfers: { fromPersonId: string; toPersonId: string; cents: number }[]
@@ -92,5 +93,7 @@ export function useBalances(groupId: string) {
       return result.data
     },
     retry: false,
+    // Not on every focus: one function execution per group row.
+    staleTime: 60_000,
   })
 }

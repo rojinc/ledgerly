@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, render, screen, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
@@ -31,6 +31,7 @@ function renderPage() {
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
+  return queryClient
 }
 
 afterEach(() => {
@@ -114,5 +115,22 @@ describe('GroupsPage', () => {
     listTeams.mockRejectedValue(new Error('offline'))
     renderPage()
     expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy()
+  })
+
+  it('keeps the list when a background refetch fails', async () => {
+    listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g2' }] } as never)
+    listRows.mockResolvedValue({ total: 1, rows: [group('g2', 'employer', 'Acme')] } as never)
+    call.mockResolvedValue({ ok: false, error: { code: 'NOT_FOUND', message: 'No route' } })
+    const queryClient = renderPage()
+    expect(await screen.findByText('Acme')).toBeTruthy()
+    listTeams.mockRejectedValue(new Error('offline'))
+    await queryClient.invalidateQueries({ queryKey: ['groups', 'u1'] })
+    expect(queryClient.getQueryState(['groups', 'u1'])?.status).toBe('error')
+    // Let React render the failed refetch before looking.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)))
+    expect(screen.getByText('Acme')).toBeTruthy()
+    expect(screen.queryByText(/couldn’t load your groups/)).toBeNull()
+    // The dash has text a screen reader reads out.
+    expect(screen.getByText('Balance not available yet').className).toContain('sr-only')
   })
 })

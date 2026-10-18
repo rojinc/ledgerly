@@ -26,10 +26,12 @@ export function GroupsPage() {
           New employer
         </Link>
       </div>
-      {groups.isPending ? (
-        <p role="status" className="text-muted-foreground">
-          Loading…
-        </p>
+      {groups.data ? (
+        <ul className="divide-y divide-border rounded-md border border-border">
+          {groups.data.map((group) => (
+            <GroupRow key={group.$id} group={group} />
+          ))}
+        </ul>
       ) : groups.isError ? (
         <div className="flex flex-col items-start gap-3">
           <p role="alert" className="text-destructive">
@@ -40,11 +42,9 @@ export function GroupsPage() {
           </Button>
         </div>
       ) : (
-        <ul className="divide-y divide-border rounded-md border border-border">
-          {groups.data.map((group) => (
-            <GroupRow key={group.$id} group={group} />
-          ))}
-        </ul>
+        <p role="status" className="text-muted-foreground">
+          Loading…
+        </p>
       )}
     </div>
   )
@@ -79,12 +79,14 @@ function Balance({ group }: { group: Groups }) {
   const userId = useCurrentUser().data?.$id ?? ''
   const personId = useBootstrap(userId).data?.personId ?? ''
   const balances = useBalances(group.$id)
-  if (balances.isPending) return <span className="text-sm text-muted-foreground">…</span>
-  if (balances.isError) {
-    return (
+  if (!balances.data) {
+    return balances.isError ? (
       <span className="text-sm text-muted-foreground" title="Balance not available yet">
-        —
+        <span aria-hidden="true">—</span>
+        <span className="sr-only">Balance not available yet</span>
       </span>
+    ) : (
+      <span className="text-sm text-muted-foreground">…</span>
     )
   }
   const net = balances.data.people.find((person) => person.personId === personId)?.netCents ?? 0
