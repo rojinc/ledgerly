@@ -44,7 +44,7 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 
 | Function | Trigger | Execute | Timeout | Key scopes |
 | --- | --- | --- | --- | --- |
-| `ledger` | HTTP | `users` | 15 s | `rows.*`, `files.*` (receipt permissions) |
+| `ledger` | HTTP | `users` | 15 s | `rows.*`, `files.*` (receipt permissions), `teams.read` (whether a `left` member is still in the team, #117) |
 | `groups` | HTTP | `users` | 15 s | `rows.*`, `teams.*` |
 | `identity` | HTTP | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
 | `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*`, `users.read` (reminder emails) |

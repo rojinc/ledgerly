@@ -18,13 +18,13 @@ import {
  * returns it unchanged, so a retry is safe. Returns the group as stored.
  */
 export async function archiveGroup(
-  { db, now }: Services,
+  { db, teams, now }: Services,
   userId: string,
   groupId: string,
   body: unknown,
 ): Promise<Groups> {
   parseBody(emptyBodySchema, body ?? {})
-  const { person, group } = await requireMember(db, userId, groupId, {
+  const { person, group } = await requireMember(db, teams, userId, groupId, {
     roles: ['admin'],
     allowArchived: true,
   })

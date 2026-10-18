@@ -1,11 +1,13 @@
 import type { Activity, Items, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
+import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { createHandler, type Route } from '@ledgerly/server/http/create-handler'
 import { createTransaction } from '../src/routes/transactions-create'
 import { postTransaction } from '../src/routes/transactions-post'
 import type { TransactionView } from '../src/routes/transactions-shared'
 import { updateTransaction } from '../src/routes/transactions-update'
 import { voidTransaction } from '../src/routes/transactions-void'
+import { setTeamsForTests } from '../src/teams'
 
 // "Today" in every test: 2026-10-18 in Sydney.
 export const NOW = new Date('2026-10-18T01:00:00.000Z')
@@ -99,6 +101,25 @@ export function expense(extra: Record<string, unknown> = {}): Record<string, unk
   }
 }
 
+const quitters = new WeakMap<FakeDb, Set<string>>()
+
+/** `userId` left a group on their own: their row stays `left`, but they're out of its team. */
+export function leftOnTheirOwn(db: FakeDb, userId: string): void {
+  quitters.set(db, new Set([...(quitters.get(db) ?? []), userId]))
+}
+
+// Team ID = group ID: every joined member's user, including people who moved out.
+function teamsOf(db: FakeDb): FakeTeams {
+  const users = new Map(db.rows('persons').map((row) => [row.$id, row.userId as string | null]))
+  const teams: Record<string, string[]> = {}
+  for (const row of db.rows('members')) {
+    const userId = users.get(row.personId as string)
+    if (!userId || row.status === 'placeholder' || quitters.get(db)?.has(userId)) continue
+    teams[row.groupId as string] = [...(teams[row.groupId as string] ?? []), userId]
+  }
+  return new FakeTeams(teams)
+}
+
 export type Response = {
   status: number
   body: { ok: boolean; data?: TransactionView; error?: { code: string; message: string } }
@@ -112,6 +133,7 @@ export async function call(
   body: unknown,
   user: string | null = 'u-alice',
 ): Promise<Response> {
+  setTeamsForTests(teamsOf(db))
   const handler = createHandler(
     routes,
     () => db,
