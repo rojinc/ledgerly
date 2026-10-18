@@ -11,9 +11,12 @@
   },
   "dependencies": {
     "@ledgerly/core": "*",
-    "node-appwrite": "^30.0.1"
+    "node-appwrite": "^30.0.1",
+    "pdfmake": "^0.3.11"
   },
   "devDependencies": {
-    "@types/node": "^24.19.2"
+    "@types/node": "^24.19.2",
+    "@types/pdfmake": "^0.3.3",
+    "unpdf": "^1.8.1"
   }
 }
