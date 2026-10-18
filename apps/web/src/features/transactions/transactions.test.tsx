@@ -81,6 +81,13 @@ function mockRows(history: Transactions[] = [], shares: object[] = []) {
   }) as never)
 }
 
+/** listRows' parameters, call by call. */
+function listCalls() {
+  return listRows.mock.calls.map(
+    ([params]) => params as unknown as { tableId: string; queries: string[] },
+  )
+}
+
 function renderAt(path: string) {
   const router = createMemoryRouter([transactionRoutes, { path: '*', element: null }], {
     initialEntries: [path],
@@ -251,10 +258,8 @@ describe('HistoryPage', () => {
     const list = await screen.findByRole('region', { name: 'Transactions' })
     expect(within(list).getAllByRole('link')).toHaveLength(25)
     expect(within(list).getAllByRole('link')[0]?.getAttribute('href')).toBe('/transactions/t00')
-    const first = listRows.mock.calls.find(
-      ([p]) => (p as { tableId: string }).tableId === 'transactions',
-    )
-    expect((first?.[0] as { queries: string[] } | undefined)?.queries).toEqual(
+    const first = listCalls().find((params) => params.tableId === 'transactions')
+    expect(first?.queries).toEqual(
       expect.arrayContaining([
         Query.equal('groupId', 'g1'),
         Query.orderDesc('date'),
@@ -265,8 +270,7 @@ describe('HistoryPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
     expect(await within(list).findByRole('link', { name: /^Older/ })).toBeTruthy()
     await waitFor(() => expect(within(list).getAllByRole('link')).toHaveLength(26))
-    const last = listRows.mock.calls.at(-1)?.[0] as { queries: string[] }
-    expect(last.queries).toContain(Query.cursorAfter('t24'))
+    expect(listCalls().at(-1)?.queries).toContain(Query.cursorAfter('t24'))
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
 
@@ -279,8 +283,7 @@ describe('HistoryPage', () => {
     fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-10-01' } })
     fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-31' } })
     await waitFor(() => {
-      const last = listRows.mock.calls.at(-1)?.[0] as { tableId: string; queries: string[] }
-      expect(last.queries).toEqual(
+      expect(listCalls().at(-1)?.queries).toEqual(
         expect.arrayContaining([
           Query.equal('kind', 'payment'),
           Query.equal('category', 'work'),
