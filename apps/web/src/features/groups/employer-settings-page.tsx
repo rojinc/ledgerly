@@ -1,7 +1,7 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema, type UpdateGroupBody } from '@ledgerly/core/schemas/groups'
 import { useQueryClient } from '@tanstack/react-query'
-import { type ReactNode, useRef } from 'react'
+import { type ReactNode, useEffect, useRef } from 'react'
 import { useParams } from 'react-router'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
@@ -48,6 +48,12 @@ export function EmployerSettingsPage() {
   const member = useMyMember(groupId, personId)
   const queryClient = useQueryClient()
   const heading = useRef<HTMLHeadingElement>(null)
+  // When the group turns archived under the page (another tab, or a save refused with ARCHIVED
+  // that reloads it), the form or dialog that had focus is gone: focus goes to the heading.
+  const archivedAt = group.data?.archivedAt
+  useEffect(() => {
+    if (archivedAt && document.activeElement === document.body) heading.current?.focus()
+  }, [archivedAt])
 
   async function save(body: UpdateGroupBody): Promise<EmployerValues> {
     const result = await callFunction<Groups>('groups', 'PATCH', `/groups/${groupId}`, body)
@@ -103,7 +109,7 @@ export function EmployerSettingsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+      <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold break-words outline-none">
         {group.data?.name ?? 'Employer settings'}
       </h1>
       {content}

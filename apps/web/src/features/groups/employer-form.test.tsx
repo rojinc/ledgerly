@@ -1,8 +1,9 @@
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useSyncExternalStore } from 'react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
 import { useProfile } from '../profile/use-profile'
 import { ArchiveGroup } from './archive-group'
@@ -74,6 +75,30 @@ function renderAt(path: string) {
     </QueryClientProvider>,
   )
   return { router, queryClient }
+}
+
+/**
+ * useGroup as a live query: `refetch(group)` changes what it returns and re-renders whoever
+ * reads it, as a real refetch would.
+ */
+function liveGroup(group: Groups) {
+  let current = { data: group, isError: false }
+  const listeners = new Set<() => void>()
+  groupHook.mockImplementation(
+    () =>
+      useSyncExternalStore(
+        (listener) => {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        () => current,
+      ) as ReturnType<typeof useGroup>,
+  )
+  return (next: Groups) =>
+    act(() => {
+      current = { data: next, isError: false }
+      for (const listener of listeners) listener()
+    })
 }
 
 function type(label: string | RegExp, value: string) {
@@ -430,6 +455,32 @@ describe('toEmployerValues', () => {
 })
 
 describe('archiving a group (#37)', () => {
+  // jsdom has no showModal: open and close the native dialog by its attribute.
+  beforeAll(() => {
+    HTMLDialogElement.prototype.showModal = function () {
+      this.setAttribute('open', '')
+    }
+    HTMLDialogElement.prototype.close = function () {
+      this.removeAttribute('open')
+    }
+  })
+  const esc = (dialog: HTMLElement) => fireEvent(dialog, new Event('cancel', { cancelable: true }))
+
+  it('moves focus to the heading when a save is refused with ARCHIVED and the group reloads', async () => {
+    mockGroup(employer)
+    const refetch = liveGroup(employer)
+    call.mockResolvedValue({ ok: false, error: { code: 'ARCHIVED', message: 'Group is archived' } })
+    renderAt('/groups/g1/settings')
+    const save = screen.getByRole('button', { name: 'Save' })
+    save.focus()
+    fireEvent.click(save)
+    expect((await screen.findByRole('alert')).textContent).toMatch(/^This group has been archived/)
+    // The reload it asked for comes back archived: the form, and the focused button, are gone.
+    refetch({ ...employer, archivedAt: '2026-10-19T00:00:00.000Z' })
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+  })
+
   it('is offered to admins only', () => {
     mockGroup(employer, 'member')
     renderAt('/groups/g1/settings')
@@ -450,26 +501,22 @@ describe('archiving a group (#37)', () => {
     expect(screen.queryByRole('button', { name: 'Archive group' })).toBeNull()
   })
 
-  it('explains what archiving does, keeps focus inside, and gives it back on Esc', () => {
+  it('explains what archiving does in a native modal, and gives focus back on Esc', () => {
     mockGroup(employer)
     renderAt('/groups/g1/settings')
     const trigger = screen.getByRole('button', { name: 'Archive group' })
     fireEvent.click(trigger)
     const dialog = screen.getByRole('alertdialog', { name: 'Archive Acme Cafe?' })
+    // A native <dialog> shown with showModal(): the page behind is inert, so no click can move
+    // focus out of it (the browser does the trap).
+    expect(dialog.tagName).toBe('DIALOG')
+    expect(dialog.hasAttribute('open')).toBe(true)
     expect(dialog.textContent).toContain('read-only')
     expect(dialog.textContent).toContain('schedules, reminders and statements stop')
     expect(dialog.textContent).toContain('history stays')
     expect(dialog.textContent).toContain('can’t be undone')
-    const cancel = screen.getByRole('button', { name: 'Cancel' })
-    const confirm = within(dialog).getByRole('button', { name: 'Archive group' })
-    expect(document.activeElement).toBe(cancel)
-    // Tab wraps around inside the dialog.
-    confirm.focus()
-    fireEvent.keyDown(dialog, { key: 'Tab' })
-    expect(document.activeElement).toBe(cancel)
-    fireEvent.keyDown(dialog, { key: 'Tab', shiftKey: true })
-    expect(document.activeElement).toBe(confirm)
-    fireEvent.keyDown(dialog, { key: 'Escape' })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+    esc(dialog)
     expect(screen.queryByRole('alertdialog')).toBeNull()
     expect(document.activeElement).toBe(trigger)
     expect(call).not.toHaveBeenCalled()
@@ -508,17 +555,18 @@ describe('archiving a group (#37)', () => {
     expect(within(dialog).getByRole('button', { name: 'Archive group' })).toBeTruthy()
   })
 
-  it('closes and reloads the group, keeping focus on the page, when it was archived meanwhile', async () => {
+  it('moves focus to the heading when a refetch finds the group archived under the dialog', () => {
     mockGroup(employer)
-    call.mockResolvedValue({ ok: false, error: { code: 'ARCHIVED', message: 'Group is archived' } })
-    const { queryClient } = renderAt('/groups/g1/settings')
-    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const refetch = liveGroup(employer)
+    renderAt('/groups/g1/settings')
     fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
-    const dialog = screen.getByRole('alertdialog')
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Archive group' }))
-    // The page shows the archived notice once the group reloads: focus mustn't drop to <body>.
-    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g1'] })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+    // Archived in another tab: the next refetch has archivedAt, and the dialog goes with the form.
+    refetch({ ...employer, archivedAt: '2026-10-19T00:00:00.000Z' })
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(
+      screen.getByText('This group is archived. You can see its history but not change it.'),
+    ).toBeTruthy()
     expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
   })
 
@@ -534,7 +582,7 @@ describe('archiving a group (#37)', () => {
     const busy = await within(dialog).findByRole('button', { name: 'Archiving…' })
     expect(busy.getAttribute('aria-disabled')).toBe('true')
     expect(document.activeElement).toBe(busy)
-    fireEvent.keyDown(dialog, { key: 'Escape' })
+    esc(dialog)
     fireEvent.click(busy)
     expect(screen.getByRole('alertdialog')).toBeTruthy()
     expect(call).toHaveBeenCalledTimes(1)
