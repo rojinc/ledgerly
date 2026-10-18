@@ -160,6 +160,12 @@ describe('createHandler', () => {
     expect(forged.status).toBe(401)
     const person = await call(cron, { method: 'POST', headers: { 'x-appwrite-trigger': 'http' } })
     expect(person.body).toEqual({ ok: true, data: { userId: 'tester', scheduled: false } })
+    // With a JWT it's a person, even if the trigger header says schedule.
+    const posing = await call(cron, {
+      method: 'POST',
+      headers: { 'x-appwrite-trigger': 'schedule' },
+    })
+    expect(posing.body).toEqual({ ok: true, data: { userId: 'tester', scheduled: false } })
   })
 
   it('runs a public route without a caller', async () => {
@@ -171,7 +177,11 @@ describe('createHandler', () => {
   it('keeps the caller headers away from routes', async () => {
     const result = await call(make([route('GET', '/h', async ({ headers }) => headers)]), {
       path: '/h',
-      headers: { 'x-appwrite-user-id': 'victim', 'x-appwrite-key': 'k' },
+      headers: {
+        'x-appwrite-user-id': 'victim',
+        'x-appwrite-trigger': 'http',
+        'x-appwrite-key': 'k',
+      },
     })
     expect(result.body).toEqual({ ok: true, data: { 'x-appwrite-key': 'k' } })
   })

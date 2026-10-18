@@ -26,7 +26,7 @@ export type RouteContext<Params = Record<string, string>> = {
   params: Params
   /** The parsed JSON body, or undefined when there is none. Validate it with the route's schema. */
   body: unknown
-  /** Lower-cased request headers, without the caller headers, which only `userId` may use. */
+  /** Lower-cased request headers, without the caller and trigger headers (use `userId` and `scheduled`). */
   headers: Record<string, string>
   /** Created on first use, so routes that don't touch the database don't need a key. */
   db: Db
@@ -83,8 +83,10 @@ export function createHandler(
     const {
       'x-appwrite-user-jwt': jwt,
       'x-appwrite-user-id': _forgeable,
+      'x-appwrite-trigger': trigger,
       ...routeHeaders
     } = headers
+    const hasJwt = typeof jwt === 'string' && jwt !== ''
     let routeName: string | null = null
     let status = 200
     let code: ErrorCode | undefined
@@ -96,9 +98,10 @@ export function createHandler(
       routeName = `${method} ${match.route.path}`
       // permissions.md#function-side-checks, step 1: a person proves who they are with a JWT;
       // only an exact `schedule` trigger or a public route runs without one.
-      const scheduled = headers['x-appwrite-trigger'] === 'schedule'
+      // A person's request is never a scheduled run, whatever its trigger header says.
+      const scheduled = trigger === 'schedule' && !hasJwt
       let userId: string | null = null
-      if (typeof jwt === 'string' && jwt !== '') {
+      if (hasJwt) {
         userId = await callerOrUnauthenticated(verifyCaller, jwt)
       } else if (!scheduled && !match.route.public) {
         throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
