@@ -177,6 +177,12 @@ describe('transactionInputSchema', () => {
     expect(paths(transactionInputSchema, { ...adjustment, payers })).toEqual(['payers'])
     expect(paths(transactionInputSchema, { ...loan, payers })).toEqual([])
     expect(paths(transactionInputSchema, { ...shift, totalCents: 12_500 })).toEqual(['totalCents'])
+    expect(() => transactionInputSchema.parse({ ...expense, shift: shift.shift })).toThrow(
+      'Not allowed for an expense',
+    )
+    expect(() => transactionInputSchema.parse({ ...adjustment, adjustment: undefined })).toThrow(
+      'Required for an adjustment',
+    )
     expect(() => transactionInputSchema.parse({ ...payment, split: loan.split })).toThrow(
       'Not allowed for a payment',
     )
@@ -295,6 +301,11 @@ describe('transactionInputSchema', () => {
     expect(() =>
       transactionInputSchema.parse(withShift({ minutes: 1440, rateCents: MAX_AMOUNT_CENTS })),
     ).toThrow('The total must be at most')
+  })
+
+  it('reports a bill part on another kind once, as not allowed', () => {
+    const dueWithoutDate = { status: 'due' }
+    expect(paths(transactionInputSchema, { ...expense, bill: dueWithoutDate })).toEqual(['bill'])
   })
 
   it('needs dueOn on a due bill and the period for a days split', () => {

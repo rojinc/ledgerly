@@ -31,7 +31,7 @@ export const displayNameSchema = text(1, 100)
 
 export const emailSchema = z.string().trim().pipe(z.email().max(254))
 
-/** As typed; `normalizeIdentity()` parses it into E.164. */
+/** As typed; `normalizePhone()` (identity/normalize.ts) parses it into E.164. */
 export const phoneSchema = text(1, 32).regex(/^\+?[\d\s().-]+$/, 'Not a phone number')
 
 // IANA names start each part with a capital: `UTC`, `Etc/GMT+10`. Intl also takes

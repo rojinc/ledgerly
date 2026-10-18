@@ -148,6 +148,7 @@ describe('rruleSchema', () => {
     'FREQ=MONTHLY;BYDAY=-1FR',
     'FREQ=MONTHLY;BYDAY=+2MO,TU;BYSETPOS=1;WKST=MO',
     'FREQ=YEARLY;BYYEARDAY=-366;BYWEEKNO=53;UNTIL=20301231T000000Z',
+    'FREQ=YEARLY;BYMONTH=2;UNTIL=20280229',
     'BYDAY=TH;FREQ=WEEKLY',
   ])('accepts %s', (rule) => {
     expect(rruleSchema.parse(rule)).toBe(rule)
@@ -181,6 +182,8 @@ describe('rruleSchema', () => {
     ['FREQ=YEARLY;BYSETPOS=1000', 'BYSETPOS has an invalid value'],
     ['FREQ=WEEKLY;WKST=XX', 'WKST has an invalid value'],
     ['FREQ=DAILY;UNTIL=2030-12-31', 'UNTIL has an invalid value'],
+    ['FREQ=DAILY;UNTIL=20261340', 'UNTIL has an invalid value'],
+    ['FREQ=DAILY;UNTIL=20270229T000000Z', 'UNTIL has an invalid value'],
     ['FREQ=DAILY;COUNT=5;UNTIL=20301231', 'Use COUNT or UNTIL, not both'],
     ['', 'Expected KEY=VALUE parts separated by semicolons'],
   ])('rejects %j', (rule, message) => {
