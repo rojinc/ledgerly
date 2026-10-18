@@ -24,10 +24,12 @@ Every email or phone number goes through `normalizeEmail()` or `normalizePhone()
 `identity POST /bootstrap` runs on every login and is idempotent:
 
 1. If a profile already exists for this user, skip to step 3, so an interrupted claim always gets finished.
-2. Otherwise, in one database transaction:
+2. Otherwise, create the personal group's team and add the user to it ("already exists" counts as done). Like every team membership, it has no team role, never `owner`, so the user can't manage the team from the client. Then, in one database transaction:
    - Find or create the user's **person**. If one of the user's verified emails or phones matches an identity row that points at a placeholder, reuse that person (see Claim). Placeholder identity rows are never `verified` themselves, so match on the key, not the flag. Set the person's `userId` and `claimedAt` (now).
-   - Create the **profile** (row ID = user ID) with defaults: timezone from the browser, region and currency from the timezone.
-   - Create the **personal group**, its team, and an `admin` membership.
+   - Create the **profile** (row ID = user ID) with defaults: timezone from the browser, region and currency from the timezone. An Australian time zone gives its state (`Australia/Perth` → `AU-WA`); any other gives `AU-NSW`. The currency is `AUD`. The user can change all of them in their profile.
+   - Create the **personal group** and the user's `admin` member row.
+
+   The team comes first so that no saved row names a team that doesn't exist. An interrupted bootstrap can leave a team with no group row, which grants nothing.
 3. Run **Claim** for any verified identities.
 
 ## Adding someone to a group

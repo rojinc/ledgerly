@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, or hasn't joined it (`placeholder`) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, finalizing a draft that isn't the oldest |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
@@ -169,6 +169,10 @@ Archiving is permanent in v1; there is no unarchive route. A `personal` group ca
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
+
+`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole.
+
+`linkedGroupIds` (`/bootstrap`, `/claim`) lists only the groups joined in that call, so after a retry it leaves out groups an earlier, interrupted call already joined.
 
 `/groups/pending` and `/join` are how someone who already had an account when they were added joins a group ([Joining a group](identity-and-invites.md#joining-a-group)). Both act only on the caller's own person:
 
