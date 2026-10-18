@@ -18,6 +18,9 @@ const startTimer = (db: Db, body: unknown = start()) =>
   call(db, 'POST', '/timer/start', body, 'u-sam')
 const stopTimer = (db: Db, body: Record<string, unknown> = {}) =>
   call(db, 'POST', '/timer/stop', { transactionId: 'tm1', ...body }, 'u-sam')
+// The groups, with the employer group changed.
+const jobWith = (changes: Record<string, unknown>) =>
+  GROUPS.map((group) => (group.$id === 'job' ? { ...group, ...changes } : group))
 const shiftOf = (db: Db) => JSON.parse(rows.transactions(db)[0]?.inputJson ?? '{}').shift
 
 // A second employer group, where Sam works for Bolt.
@@ -69,8 +72,7 @@ describe('POST /timer/start', () => {
   it('dates the shift in the group’s time zone', async () => {
     // 23:30 on 17 October in Perth is already 18 October in UTC+11 Sydney.
     vi.setSystemTime(new Date('2026-10-17T15:30:00.000Z'))
-    const groups = [GROUPS[0], { ...GROUPS[1], timezone: 'Australia/Perth' }]
-    const db = seed({ groups })
+    const db = seed({ groups: jobWith({ timezone: 'Australia/Perth' }) })
     await startTimer(db)
     expect(rows.transactions(db)[0]?.date).toBe('2026-10-17')
     expect(shiftOf(db).startTime).toBe('23:30')
@@ -163,7 +165,7 @@ describe('POST /timer/start', () => {
   })
 
   it('refuses an archived group and a bad body', async () => {
-    const groups = [GROUPS[0], { ...GROUPS[1], archivedAt: '2026-10-01T00:00:00.000Z' }]
+    const groups = jobWith({ archivedAt: '2026-10-01T00:00:00.000Z' })
     expect((await startTimer(seed({ groups }))).body.error?.code).toBe('ARCHIVED')
     const db = seed()
     expect((await startTimer(db, start({ minutes: 5 }))).body.error?.code).toBe('VALIDATION_FAILED')

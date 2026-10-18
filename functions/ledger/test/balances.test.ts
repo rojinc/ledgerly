@@ -11,7 +11,7 @@ afterEach(() => vi.useRealTimers())
 
 type Db = ReturnType<typeof seed>
 
-const balances = (db: Db, groupId = 'house', user = 'u-alice') =>
+const balances = (db: Db, groupId = 'house', user: string | null = 'u-alice') =>
   call<Balances>(db, 'GET', `/groups/${groupId}/balances`, undefined, user)
 
 /** Another request's transaction, committed at once. */
@@ -200,7 +200,9 @@ describe('GET /groups/{groupId}/balances', () => {
   })
 
   it('is for every member, viewers and archived groups included', async () => {
-    const groups = [{ ...GROUPS[0], archivedAt: '2026-10-01T00:00:00.000Z' }, GROUPS[1]]
+    const groups = GROUPS.map((group) =>
+      group.$id === 'house' ? { ...group, archivedAt: '2026-10-01T00:00:00.000Z' } : group,
+    )
     const db = seed({ groups })
     expect((await balances(db, 'house', 'u-cara')).status).toBe(200)
     expect((await balances(db, 'house', 'u-lee')).status).toBe(200)
