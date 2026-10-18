@@ -3,7 +3,7 @@ import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { ID, Permission, Role } from 'node-appwrite'
-import { getRowOrNull } from './rows'
+import { getRowOrNull, isAppwriteError, tryAgain } from './rows'
 import type { Services } from './services'
 
 /**
@@ -46,7 +46,8 @@ export async function joinGroup(
     return true
   } catch (error) {
     const current = await getRowOrNull<Members>(db, TABLES.members, member.$id)
-    if (isPendingFor(current, personId)) throw error
+    // Still pending: a commit conflict means another change to the row won; claim again.
+    if (isPendingFor(current, personId)) throw isAppwriteError(error, 409) ? tryAgain() : error
     // An admin removed the row meanwhile: take back the team membership from step 1, so a
     // removed person keeps no access.
     if (!current) await removeFromTeam(teams, member.groupId, userId)

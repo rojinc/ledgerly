@@ -5,6 +5,7 @@ import {
   AFTER,
   account,
   BEFORE,
+  beforeCommit,
   beforeStaging,
   call,
   type Fakes,
@@ -214,6 +215,24 @@ describe('POST /claim', () => {
     })
     expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(2)
     expect(services.db.rows('identities')).toHaveLength(1)
+  })
+
+  it('says CONFLICT, try again, when the row changes after its join is staged, and a retry joins', async () => {
+    const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+    beforeCommit(services.db, () =>
+      updateRow(services.db, 'members', 'm1', { displayName: 'Sam L' }),
+    )
+    expect(await failure(services, 'POST', '/claim')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(statusOf(services, 'm1')).toBe('placeholder')
+    expect(services.db.rows('activity')).toEqual([])
+    expect(await claimed(services)).toEqual(['g1'])
+    expect(services.db.rows('activity')).toEqual([
+      expect.objectContaining({ summary: 'Sam L joined' }),
+    ])
   })
 
   it('takes back the team membership when an admin removed the row meanwhile', async () => {
