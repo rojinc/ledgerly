@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   beforeCommit,
+  beforeStaging,
+  createRow,
   type Fakes,
   failure,
   fakes,
@@ -135,10 +137,10 @@ describe('POST /groups/{id}/leave', () => {
   })
 
   it('finishes an interrupted leave: already left, still in the team', async () => {
-    // Even with a balance: the row is left already, so only the team step remains.
+    // The row is left already, so only the team step remains.
     const services = houseFixture({
       m2: { status: 'left', role: 'viewer', leftOn: '2026-10-10' },
-      shares: [share('s1', 'g1', 'p2', 0, 200)],
+      shares: [share('s1', 'g1', 'p2', 200, 200)],
     })
     expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
     expect(teamUsers(services, 'g1')).toEqual(['u1'])
@@ -146,6 +148,70 @@ describe('POST /groups/{id}/leave', () => {
     expect(services.db.rows('activity')).toEqual([])
     // And again, with nothing left to do.
     expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+  })
+
+  it('still needs a balance of 0 to finish an interrupted leave', async () => {
+    const services = houseFixture({
+      m2: { status: 'left', role: 'viewer', leftOn: '2026-10-10' },
+      shares: [share('s1', 'g1', 'p2', 0, 200)],
+    })
+    expect(await leave(services, 'u2')).toMatchObject({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: "Settle up first: your balance in this group isn't 0.",
+    })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+
+  it('leaves no earlier than the day they joined', async () => {
+    const services = houseFixture({ m2: { joinedOn: '2026-11-05' } })
+    await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')
+    expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', leftOn: '2026-11-05' })
+  })
+
+  it('finishes an interrupted leave in an archived group', async () => {
+    const services = fakes(
+      {
+        persons: [person(1), person(2)],
+        groups: [group('g1', 'house', { archivedAt: '2026-10-01T00:00:00.000Z' })],
+        members: [
+          member('m1', 'g1', 'p1', 'admin', 'active'),
+          member('m2', 'g1', 'p2', 'viewer', 'left', { leftOn: '2026-10-10' }),
+        ],
+      },
+      { g1: ['u1', 'u2'] },
+    )
+    expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+    expect(teamUsers(services, 'g1')).toEqual(['u1'])
+    // Someone who hasn't left can't start leaving an archived group.
+    expect(await leave(services, 'u1')).toMatchObject({ status: 409, code: 'ARCHIVED' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1'])
+  })
+
+  it('counts a share committed after the first read', async () => {
+    const services = houseFixture()
+    beforeStaging(services.db, 1, () =>
+      createRow(services.db, 'shares', share('s1', 'g1', 'p2', 0, 300)),
+    )
+    expect(await leave(services, 'u2')).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(memberRow(services, 'm2')).toMatchObject({ status: 'active', role: 'member' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+
+  it('answers CONFLICT when the other admin is demoted before it is staged', async () => {
+    const services = houseFixture({ m2: { role: 'admin' } })
+    // Staging 1 is the caller's row, 2 the other admin's.
+    beforeStaging(services.db, 2, () => updateRow(services.db, 'members', 'm2', { role: 'member' }))
+    expect(await leave(services, 'u1')).toMatchObject({ code: 'CONFLICT', message: TRY_AGAIN })
+    expect(memberRow(services, 'm1')).toMatchObject({ status: 'active', role: 'admin' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+
+  it('answers CONFLICT when the other admin leaves before the commit', async () => {
+    const services = houseFixture({ m2: { role: 'admin' } })
+    beforeCommit(services.db, () => updateRow(services.db, 'members', 'm2', { status: 'left' }))
+    expect(await leave(services, 'u1')).toMatchObject({ code: 'CONFLICT', message: TRY_AGAIN })
+    expect(memberRow(services, 'm1')).toMatchObject({ status: 'active', role: 'admin' })
   })
 
   it("won't leave a personal group", async () => {

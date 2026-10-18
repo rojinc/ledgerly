@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   beforeCommit,
+  beforeStaging,
+  createRow,
   type Fakes,
   failure,
   fakes,
@@ -101,6 +103,44 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     await updateRow(services.db, 'members', 'm2', { role: 'admin' })
     expect(await remove(services, 'm1')).toEqual({})
     expect(teamUsers(services)).toEqual(['u2'])
+  })
+
+  it('refuses someone whose first share was committed after the first read', async () => {
+    const services = house()
+    beforeStaging(services.db, 1, () =>
+      createRow(services.db, 'shares', share('s1', 'g1', 'p2', 0, 0)),
+    )
+    expect(await removeFails(services, 'm2')).toMatchObject({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: "Members with transactions can't be removed. Set leftOn instead.",
+    })
+    expect(memberIds(services)).toContain('m2')
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('answers CONFLICT when the member joined after the first read', async () => {
+    const services = house()
+    beforeStaging(services.db, 1, () =>
+      updateRow(services.db, 'members', 'm3', { status: 'active' }),
+    )
+    expect(await removeFails(services, 'm3')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(memberIds(services)).toContain('m3')
+  })
+
+  it('answers CONFLICT when the other admin is demoted at the same time', async () => {
+    const services = house()
+    await updateRow(services.db, 'members', 'm2', { role: 'admin' })
+    beforeCommit(services.db, () => updateRow(services.db, 'members', 'm1', { role: 'member' }))
+    expect(await removeFails(services, 'm2')).toMatchObject({
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(memberIds(services)).toContain('m2')
   })
 
   it('refuses anyone but an admin', async () => {

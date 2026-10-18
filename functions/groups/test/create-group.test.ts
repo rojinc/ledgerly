@@ -1,8 +1,10 @@
+import type { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import type { CreateGroupResult } from '../src/routes/create-group'
 import {
   beforeCommit,
+  createRow,
   failure,
   fakes,
   group,
@@ -13,6 +15,7 @@ import {
   profile,
   TODAY,
   TRY_AGAIN,
+  updateRow,
 } from './harness'
 
 const HOUSE = { id: 'g1', type: 'house', name: 'Flat' }
@@ -28,6 +31,10 @@ const TEAM = ['read("team:g1")']
 // User u1 (person p1) has set up their account.
 function setUp(teams: Record<string, string[]> = {}) {
   return fakes({ persons: [person(1)], profiles: [profile(1)] }, teams)
+}
+
+function teamUsers(services: ReturnType<typeof setUp>) {
+  return services.teams.members('g1')?.map((membership) => membership.userId)
 }
 
 function identity(id: string, key: string, personId: string) {
@@ -182,6 +189,17 @@ describe('POST /groups', () => {
     })
   })
 
+  it('ignores a future anchor for a monthly cycle', async () => {
+    const services = setUp()
+    const { group: created } = await ok<CreateGroupResult>(services, 'POST', '/groups', {
+      ...HOUSE,
+      statementCycle: 'monthly',
+      cycleAnchor: '2026-12-15',
+    })
+    // October's statement: 06:00 on 1 November in Sydney.
+    expect(created).toMatchObject({ nextCloseAt: '2026-10-31T19:00:00.000Z' })
+  })
+
   it('returns the stored group when repeated, creating nothing new', async () => {
     const services = setUp()
     const first = await ok<CreateGroupResult>(services, 'POST', '/groups', EMPLOYER)
@@ -191,6 +209,56 @@ describe('POST /groups', () => {
     expect(second).toEqual(first)
     expect(tables.map((table) => services.db.rows(table))).toEqual(before)
     expect(services.teams.members('g1')).toHaveLength(1)
+  })
+
+  it('returns the stored group for a repeat that spells out the defaults', async () => {
+    const services = setUp()
+    const first = await ok<CreateGroupResult>(services, 'POST', '/groups', HOUSE)
+    const second = await ok<CreateGroupResult>(services, 'POST', '/groups', {
+      ...HOUSE,
+      currency: 'AUD',
+      timezone: 'Australia/Sydney',
+      region: 'AU-NSW',
+      statementCycle: 'none',
+      settings: { type: 'house', autoFinalize: false, defaultBillSplit: 'days' },
+    })
+    expect(second).toEqual(first)
+    // The counterpart isn't compared: resolving it again could find someone else.
+    await ok(services, 'POST', '/groups', { ...EMPLOYER, id: 'g2' })
+    const employer = { ...EMPLOYER, id: 'g2', counterpart: { displayName: 'Other' } }
+    expect(await ok(services, 'POST', '/groups', employer)).toMatchObject({ group: { $id: 'g2' } })
+  })
+
+  it.each([
+    ['another name', { name: 'Other' }],
+    ['another currency', { currency: 'NZD' }],
+    ['another time zone', { timezone: 'Pacific/Auckland' }],
+    ['another region', { region: 'AU-VIC' }],
+    ['another cycle', { statementCycle: 'monthly' }],
+    ['an anchor', { cycleAnchor: '2026-11-02', statementCycle: 'weekly' }],
+    [
+      'other settings',
+      { settings: { type: 'house', autoFinalize: true, defaultBillSplit: 'days' } },
+    ],
+  ])('refuses a repeat with %s', async (_, change) => {
+    const services = setUp()
+    await ok(services, 'POST', '/groups', HOUSE)
+    expect(await failure(services, 'POST', '/groups', { ...HOUSE, ...change })).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: 'That ID is taken.',
+    })
+    expect(services.db.rows('groups')[0]).toMatchObject({ name: 'Flat', currency: 'AUD' })
+  })
+
+  it('refuses a repeat after the creator left the group', async () => {
+    const services = setUp()
+    const { members } = await ok<CreateGroupResult>(services, 'POST', '/groups', HOUSE)
+    await updateRow(services.db, 'members', members[0]?.$id ?? '', { status: 'left' })
+    expect(await failure(services, 'POST', '/groups', HOUSE)).toMatchObject({
+      code: 'CONFLICT',
+      message: 'That ID is taken.',
+    })
   })
 
   it("refuses an ID that is someone else's group", async () => {
@@ -248,6 +316,49 @@ describe('POST /groups', () => {
     })
   })
 
+  it('leaves the team when someone else joined it at the same time', async () => {
+    const services = setUp()
+    // Another user's create of g1 added them between this one's claim and its own add.
+    const fakeTeams: FakeTeams = services.teams
+    const add = fakeTeams.createMembership.bind(fakeTeams)
+    vi.spyOn(services.teams, 'createMembership').mockImplementationOnce(async (params) => {
+      await add({ teamId: 'g1', userId: 'u2', roles: [] })
+      return add(params)
+    })
+    expect(await failure(services, 'POST', '/groups', HOUSE)).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: 'That ID is taken.',
+    })
+    expect(teamUsers(services)).toEqual(['u2'])
+    expect(services.db.rows('groups')).toEqual([])
+  })
+
+  it("leaves the team when another user's group commits first", async () => {
+    const services = setUp()
+    beforeCommit(services.db, () =>
+      createRow(services.db, 'groups', group('g1', 'house', { ownerPersonId: 'p2' })),
+    )
+    expect(await failure(services, 'POST', '/groups', HOUSE)).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: 'That ID is taken.',
+    })
+    expect(teamUsers(services)).toEqual([])
+    expect(services.db.rows('groups')).toEqual([expect.objectContaining({ ownerPersonId: 'p2' })])
+  })
+
+  it('leaves the team when the transaction fails', async () => {
+    const services = setUp()
+    vi.spyOn(services.db, 'createOperations').mockRejectedValueOnce(new Error('Appwrite is down'))
+    expect(await failure(services, 'POST', '/groups', HOUSE)).toMatchObject({
+      status: 500,
+      code: 'INTERNAL',
+    })
+    expect(teamUsers(services)).toEqual([])
+    expect(services.db.rows('groups')).toEqual([])
+  })
+
   it.each([
     ['an unknown region', { ...HOUSE, region: 'AU-NWS' }],
     ['a missing counterpart', { id: 'g1', type: 'pair', name: 'Us' }],
@@ -264,6 +375,7 @@ describe('POST /groups', () => {
       code: 'VALIDATION_FAILED',
     })
     expect(services.db.rows('groups')).toEqual([])
+    expect(services.teams.teamIds()).toEqual([])
   })
 
   it('refuses the creator as their own counterpart', async () => {
@@ -277,6 +389,7 @@ describe('POST /groups', () => {
       message: "You can't be your own counterpart.",
     })
     expect(services.db.rows('groups')).toEqual([])
+    expect(services.teams.teamIds()).toEqual([])
   })
 
   it('needs a set-up account', async () => {

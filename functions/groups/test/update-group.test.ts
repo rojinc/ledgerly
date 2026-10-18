@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
   beforeCommit,
+  beforeStaging,
+  createRow,
   failure,
   fakes,
   group,
@@ -111,6 +113,30 @@ describe('PATCH /groups/{id}', () => {
       code: 'VALIDATION_FAILED',
     })
     expect(services.db.rows('groups')[0]?.currency).toBe('AUD')
+  })
+
+  it('sees a first transaction committed after the first read', async () => {
+    const services = setUp()
+    beforeStaging(services.db, 1, () =>
+      createRow(services.db, 'transactions', {
+        $id: 't1',
+        groupId: 'g1',
+        kind: 'expense',
+        status: 'posted',
+        date: '2026-10-19',
+        description: 'Rent',
+        totalCents: 100,
+        inputJson: '{}',
+        createdBy: 'p1',
+        updatedBy: 'p1',
+      }),
+    )
+    expect(await failure(services, 'PATCH', '/groups/g1', { currency: 'NZD' })).toMatchObject({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+    })
+    expect(services.db.rows('groups')[0]?.currency).toBe('AUD')
+    expect(services.db.rows('activity')).toEqual([])
   })
 
   it.each([

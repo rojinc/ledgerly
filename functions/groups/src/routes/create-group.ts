@@ -1,17 +1,27 @@
 import type { Groups, Members, Persons, Profiles } from '@ledgerly/core/generated/rows'
-import { createGroupBodySchema, type GroupSettings } from '@ledgerly/core/schemas/groups'
+import {
+  type CreateGroupBody,
+  createGroupBodySchema,
+  type GroupSettings,
+  groupSettingsSchema,
+} from '@ledgerly/core/schemas/groups'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { addToTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
+import { addToTeam, removeFromTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { type PersonInput, resolvePerson } from '@ledgerly/server/identity/resolve-person'
+import {
+  type PersonInput,
+  type ResolvedPerson,
+  resolvePerson,
+} from '@ledgerly/server/identity/resolve-person'
 import { ID, Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
   activityWrite,
   checkRegion,
   conflictAsTryAgain,
+  findFirst,
   getRowOrNull,
   invalid,
   isAppwriteError,
@@ -43,10 +53,21 @@ export async function createGroup(
   const creator = profile && (await getRowOrNull<Persons>(db, TABLES.persons, profile.personId))
   if (!profile || !creator) throw new AppError('NOT_FOUND', 'Set up your account first.')
 
-  // functions-api.md#idempotency: the client chose the ID, so a retry finds the group.
+  // functions-api.md#idempotency: the client chose the ID, so a retry finds the group. It is
+  // the caller's only while they own it, are still in it, and asked for the same group.
   const existing = await getRowOrNull<Groups>(db, TABLES.groups, input.id)
   if (existing) {
-    if (existing.ownerPersonId !== creator.$id) throw new AppError('CONFLICT', ID_TAKEN)
+    const own = await findFirst<Members>(db, TABLES.members, [
+      Query.equal('groupId', existing.$id),
+      Query.equal('personId', creator.$id),
+    ])
+    if (
+      existing.ownerPersonId !== creator.$id ||
+      own?.status !== 'active' ||
+      !sameGroup(input, existing)
+    ) {
+      throw new AppError('CONFLICT', ID_TAKEN)
+    }
     return { group: existing, members: await membersOf(db, existing.$id) }
   }
 
@@ -57,96 +78,121 @@ export async function createGroup(
   const cycleAnchor = input.cycleAnchor ?? null
   const joinedOn = today({ timezone }, now)
   const permissions = teamRead(input.id)
+  // The schema requires a counterpart exactly for employer and pair groups.
+  const counterpartInput = input.type === 'house' ? undefined : input.counterpart
+  const counterpartRole = input.type === 'house' ? undefined : COUNTERPART_ROLE[input.type]
+  // Validated before the team exists, so a refusal leaves no team behind. The transaction
+  // resolves again, to stage what it finds then.
+  if (counterpartInput) await resolveCounterpart(db, counterpartInput, region, creator.$id)
 
   // Team ID = group ID (D-004). The team and the creator's membership come before the
   // transaction, so no committed row names a missing team; a team left by a failed attempt
   // grants nothing without the group row. Nobody else is ever added here (D-016).
   await claimTeam(teams, input.id, input.name, userId)
   await addToTeam(teams, input.id, userId)
+  // Another user creating the same ID at the same time can claim the team too: whoever finds
+  // someone else in it backs out.
+  const { memberships } = await teams.listMemberships({ teamId: input.id })
+  if (memberships.length !== 1 || !holdsOnly(memberships, userId)) {
+    await leaveTeam(teams, input.id, userId)
+    throw new AppError('CONFLICT', ID_TAKEN)
+  }
 
-  await conflictAsTryAgain(() =>
-    withTransaction(db, async (tx) => {
-      const writes: Write[] = [
-        {
-          action: 'create',
-          tableId: TABLES.groups,
-          rowId: input.id,
-          data: {
-            type: input.type,
-            name: input.name,
-            ownerPersonId: creator.$id,
-            currency: input.currency ?? profile.currency,
-            timezone,
+  try {
+    await conflictAsTryAgain(() =>
+      withTransaction(db, async (tx) => {
+        const writes: Write[] = [
+          {
+            action: 'create',
+            tableId: TABLES.groups,
+            rowId: input.id,
+            data: {
+              type: input.type,
+              name: input.name,
+              ownerPersonId: creator.$id,
+              currency: input.currency ?? profile.currency,
+              timezone,
+              region,
+              statementCycle,
+              cycleAnchor,
+              nextCloseAt: nextCloseAtFor(statementCycle, cycleAnchor, timezone, now),
+              settingsJson: JSON.stringify(input.settings ?? defaultSettings(input.type)),
+              archivedAt: null,
+            },
+            permissions,
+          },
+          {
+            action: 'create',
+            tableId: TABLES.members,
+            rowId: ID.unique(),
+            data: {
+              groupId: input.id,
+              personId: creator.$id,
+              displayName: creator.displayName,
+              role: 'admin',
+              status: 'active',
+              joinedOn,
+            },
+            permissions,
+          },
+        ]
+        if (counterpartInput) {
+          const counterpart = await resolveCounterpart(
+            db,
+            counterpartInput,
             region,
-            statementCycle,
-            cycleAnchor,
-            nextCloseAt: nextCloseAtFor(statementCycle, cycleAnchor, timezone, now),
-            settingsJson: JSON.stringify(input.settings ?? defaultSettings(input.type)),
-            archivedAt: null,
-          },
-          permissions,
-        },
-        {
-          action: 'create',
-          tableId: TABLES.members,
-          rowId: ID.unique(),
-          data: {
-            groupId: input.id,
-            personId: creator.$id,
-            displayName: creator.displayName,
-            role: 'admin',
-            status: 'active',
-            joinedOn,
-          },
-          permissions,
-        },
-      ]
-      // The schema requires a counterpart exactly for employer and pair groups.
-      if (input.counterpart && input.type !== 'house') {
-        const counterpart = await resolveCounterpart(db, input.counterpart, region, tx.id)
-        if (counterpart.personId === creator.$id) {
-          throw invalid("You can't be your own counterpart.")
+            creator.$id,
+            tx.id,
+          )
+          writes.push(...counterpart.writes, {
+            action: 'create',
+            tableId: TABLES.members,
+            rowId: ID.unique(),
+            data: {
+              groupId: input.id,
+              personId: counterpart.personId,
+              displayName: counterpartInput.displayName,
+              role: counterpartRole,
+              // Even a registered person: they join the group themselves (D-016).
+              status: 'placeholder',
+              joinedOn,
+            },
+            permissions,
+          })
         }
-        writes.push(...counterpart.writes, {
-          action: 'create',
-          tableId: TABLES.members,
-          rowId: ID.unique(),
-          data: {
-            groupId: input.id,
-            personId: counterpart.personId,
-            displayName: input.counterpart.displayName,
-            role: COUNTERPART_ROLE[input.type],
-            // Even a registered person: they join the group themselves (D-016).
-            status: 'placeholder',
-            joinedOn,
-          },
-          permissions,
-        })
-      }
-      writes.push(
-        activityWrite(
-          input.id,
-          creator.$id,
-          'group.created',
-          `${creator.displayName} created ${input.name}`,
-          now,
-        ),
-      )
-      if (input.counterpart && input.type !== 'house') {
-        // identity-and-invites.md#adding-someone-to-a-group, step 5: the counterpart is added too.
         writes.push(
           activityWrite(
             input.id,
             creator.$id,
-            'member.added',
-            `${input.counterpart.displayName} was added`,
+            'group.created',
+            `${creator.displayName} created ${input.name}`,
             now,
           ),
         )
-      }
-      await tx.write(...writes)
-    }),
-  )
+        if (counterpartInput) {
+          // identity-and-invites.md#adding-someone-to-a-group, step 5: the counterpart is added too.
+          writes.push(
+            activityWrite(
+              input.id,
+              creator.$id,
+              'member.added',
+              `${counterpartInput.displayName} was added`,
+              now,
+            ),
+          )
+        }
+        await tx.write(...writes)
+      }),
+    )
+  } catch (error) {
+    // The group isn't the caller's: it never committed, or another user's did. Out of the
+    // team, so a failed attempt never leaves the caller in someone else's group.
+    const stored = await getRowOrNull<Groups>(db, TABLES.groups, input.id)
+    if (stored?.ownerPersonId === creator.$id) throw error
+    await leaveTeam(teams, input.id, userId)
+    if (stored) throw new AppError('CONFLICT', ID_TAKEN)
+    throw error
+  }
   const group = await db.getRow<Groups>({
     databaseId: DATABASE_ID,
     tableId: TABLES.groups,
@@ -173,22 +219,58 @@ async function claimTeam(
     if (!isAppwriteError(error, 409)) throw error
   }
   const { memberships } = await teams.listMemberships({ teamId })
-  const taken = memberships.some((membership) => {
-    // TeamsApi's type leaves roles out, but Appwrite returns them. Missing roles fail closed.
-    const { roles } = membership as { roles?: string[] }
-    return membership.userId !== userId || roles === undefined || roles.includes('owner')
-  })
-  if (taken) throw new AppError('CONFLICT', ID_TAKEN)
+  if (!holdsOnly(memberships, userId)) throw new AppError('CONFLICT', ID_TAKEN)
 }
 
-// The counterpart's person; an invalid email or phone is the caller's mistake.
-async function resolveCounterpart(db: Db, input: PersonInput, region: string, txId: string) {
+/** Whether every membership is the caller's, with no team role. */
+function holdsOnly(memberships: Array<{ userId: string }>, userId: string): boolean {
+  return memberships.every((membership) => {
+    // TeamsApi's type leaves roles out, but Appwrite returns them. Missing roles fail closed.
+    const { roles } = membership as { roles?: string[] }
+    return membership.userId === userId && roles !== undefined && roles.length === 0
+  })
+}
+
+/** Takes the caller back out of the team, best effort: the caller's error matters more. */
+async function leaveTeam(teams: TeamsApi, teamId: string, userId: string): Promise<void> {
   try {
-    return await resolvePerson(db, input, region, txId)
+    await removeFromTeam(teams, teamId, userId)
+  } catch {
+    // Nothing more to do here; the team grants nothing without the group row.
+  }
+}
+
+/** Whether every field the body gave matches the stored group. The counterpart isn't compared. */
+function sameGroup(input: CreateGroupBody, group: Groups): boolean {
+  const { type, name, currency, timezone, region, statementCycle, cycleAnchor } = input
+  const given = { type, name, currency, timezone, region, statementCycle, cycleAnchor }
+  const columnsMatch = Object.entries(given).every(
+    ([key, value]) => value === undefined || value === group[key as keyof typeof given],
+  )
+  if (!columnsMatch || input.settings === undefined) return columnsMatch
+  // Both through the schema, so the keys are in the same order.
+  const stored = groupSettingsSchema.safeParse(JSON.parse(group.settingsJson))
+  return stored.success && JSON.stringify(stored.data) === JSON.stringify(input.settings)
+}
+
+// The counterpart's person; an invalid email or phone, or the creator's own, is the caller's
+// mistake.
+async function resolveCounterpart(
+  db: Db,
+  input: PersonInput,
+  region: string,
+  creatorId: string,
+  txId?: string,
+) {
+  let resolved: ResolvedPerson
+  try {
+    resolved = await resolvePerson(db, input, region, txId)
   } catch (error) {
     if (error instanceof RangeError) throw invalid('The email or phone number is not valid.')
     throw error
   }
+  if (resolved.personId === creatorId) throw invalid("You can't be your own counterpart.")
+  return resolved
 }
 
 function defaultSettings(type: 'house' | 'employer' | 'pair'): GroupSettings {

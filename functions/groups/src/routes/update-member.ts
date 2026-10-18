@@ -10,7 +10,7 @@ import {
   getMemberOf,
   getRowOrNull,
   invalid,
-  joinedAdmins,
+  keepAnotherAdmin,
   parseBody,
   tryAgain,
 } from '../shared'
@@ -44,6 +44,9 @@ export async function updateMember(
   if (next.leftOn !== null && next.leftOn < next.joinedOn) {
     throw invalid('leftOn must be on or after joinedOn.')
   }
+  if (stored.status === 'left' && changes.role !== undefined && changes.role !== 'viewer') {
+    throw invalid('A member who left can only be a viewer.')
+  }
   if (changes.leftOn !== undefined && stored.status === 'active') {
     next.status = 'left'
     next.role = 'viewer'
@@ -57,12 +60,6 @@ export async function updateMember(
     }
   }
   if (Object.keys(after).length === 0) return stored
-  if (isJoinedAdmin(stored) && !isJoinedAdmin(next)) {
-    const admins = await joinedAdmins(db, groupId)
-    if (!admins.some((admin) => admin.$id !== stored.$id)) {
-      throw invalid('The group needs at least one admin who has joined.')
-    }
-  }
 
   await conflictAsTryAgain(() =>
     withTransaction(db, async (tx) => {
@@ -70,7 +67,23 @@ export async function updateMember(
       // Stage, then check (conventions.md): from here on, any change to the row fails the
       // commit. Read the stored row, not this transaction's view, which has the new values.
       const current = await getRowOrNull<Members>(db, TABLES.members, memberId)
-      if (current?.groupId !== groupId || current.status !== stored.status) throw tryAgain()
+      // The admin check below goes by the stored role and status, so both must still hold.
+      if (
+        current?.groupId !== groupId ||
+        current.status !== stored.status ||
+        current.role !== stored.role
+      ) {
+        throw tryAgain()
+      }
+      if (isJoinedAdmin(stored) && !isJoinedAdmin(next)) {
+        await keepAnotherAdmin(
+          db,
+          tx,
+          groupId,
+          memberId,
+          'The group needs at least one admin who has joined.',
+        )
+      }
       await tx.write(
         activityWrite(
           groupId,

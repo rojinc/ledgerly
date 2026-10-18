@@ -216,3 +216,23 @@ export function updateRow(
     tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
   )
 }
+
+/**
+ * Runs `change` just before the request's `nth` staging call (1-based), so it lands after the
+ * request read the rows but before it staged that write.
+ */
+export function beforeStaging(db: FakeDb, nth: number, change: () => Promise<unknown>) {
+  const stage = db.createOperations.bind(db)
+  let calls = 0
+  return vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
+    calls += 1
+    if (calls === nth) await change()
+    return stage(params)
+  })
+}
+
+/** Commits one new row outside the request under test. */
+export function createRow(db: Db, tableId: 'shares' | 'transactions' | 'groups', row: Row) {
+  const { $id, ...data } = row
+  return withTransaction(db, (tx) => tx.write({ action: 'create', tableId, rowId: $id, data }))
+}

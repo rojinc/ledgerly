@@ -2,6 +2,7 @@ import type { Members } from '@ledgerly/core/generated/rows'
 import { describe, expect, it, vi } from 'vitest'
 import {
   beforeCommit,
+  beforeStaging,
   type Fakes,
   failure,
   fakes,
@@ -149,6 +150,48 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
     const services = house()
     await patch(services, 'm2', { role: 'admin' })
     expect(await patch(services, 'm1', { role: 'viewer' })).toMatchObject({ role: 'viewer' })
+  })
+
+  it('keeps someone who left a viewer', async () => {
+    const services = house([member('m5', 'g1', 'p9', 'viewer', 'left', { leftOn: '2026-09-30' })])
+    for (const role of ['member', 'admin']) {
+      expect(await patchFails(services, 'm5', { role })).toEqual({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+        message: 'A member who left can only be a viewer.',
+      })
+    }
+    expect(await patch(services, 'm5', { role: 'viewer', displayName: 'Sam' })).toMatchObject({
+      role: 'viewer',
+      displayName: 'Sam',
+    })
+  })
+
+  it.each([
+    ['demoted', { role: 'member' }],
+    ['moved out', { status: 'left', role: 'viewer' }],
+  ])('answers CONFLICT when the other admin is %s before it is staged', async (_, change) => {
+    const services = house()
+    await patch(services, 'm2', { role: 'admin' })
+    // Staging 1 is the target's row, 2 the other admin's.
+    beforeStaging(services.db, 2, () => updateRow(services.db, 'members', 'm2', change))
+    expect(await patchFails(services, 'm1', { role: 'member' })).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('members')[0]).toMatchObject({ role: 'admin', status: 'active' })
+  })
+
+  it('answers CONFLICT when the other admin is demoted before the commit', async () => {
+    const services = house()
+    await patch(services, 'm2', { role: 'admin' })
+    beforeCommit(services.db, () => updateRow(services.db, 'members', 'm2', { role: 'member' }))
+    expect(await patchFails(services, 'm1', { leftOn: '2026-10-19' })).toMatchObject({
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('members')[0]).toMatchObject({ role: 'admin', status: 'active' })
   })
 
   it('refuses anyone but an admin', async () => {

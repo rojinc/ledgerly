@@ -5,7 +5,7 @@ import type { Groups, Members, Persons, Shares } from '@ledgerly/core/generated/
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
-import type { Write } from '@ledgerly/server/appwrite/transaction'
+import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
 
@@ -115,8 +115,9 @@ export function today(group: Pick<Groups, 'timezone'>, now: Date): LocalDate {
 
 /**
  * groups.nextCloseAt (statements.md#periods): when the current period's statement is due. With
- * an anchor in the future, the first period is the one that contains the anchor, so nothing
- * closes before the first real period. Null when the group has no cycle.
+ * a weekly or fortnightly anchor in the future, the first period is the one that contains the
+ * anchor, so nothing closes before the first real period. Monthly periods ignore the anchor.
+ * Null when the group has no cycle.
  */
 export function nextCloseAtFor(
   cycle: PeriodCycle | 'none',
@@ -126,7 +127,7 @@ export function nextCloseAtFor(
 ): string | null {
   if (cycle === 'none') return null
   const todayHere = localToday(timeZone, now)
-  const from = anchor !== null && anchor > todayHere ? anchor : todayHere
+  const from = cycle !== 'monthly' && anchor !== null && anchor > todayHere ? anchor : todayHere
   return closeAtFor(periodFor(cycle, anchor, from).end, timeZone)
 }
 
@@ -209,4 +210,32 @@ export async function joinedAdmins(db: Db, groupId: string): Promise<Members[]> 
     total: false,
   })
   return rows
+}
+
+/**
+ * For a change that takes away a joined admin (leaving, demoting, moving out, removing): keeps
+ * another one. Call it inside the transaction, after staging the change itself. It stages a
+ * no-op on one other joined admin, then checks that row is still a joined admin, so a
+ * concurrent change to it fails this commit (stage, then check: conventions.md). With no other
+ * joined admin, VALIDATION_FAILED with `message`.
+ */
+export async function keepAnotherAdmin(
+  db: Db,
+  tx: Tx,
+  groupId: string,
+  excludeMemberId: string,
+  message: string,
+): Promise<void> {
+  const other = (await joinedAdmins(db, groupId)).find((admin) => admin.$id !== excludeMemberId)
+  if (!other) throw invalid(message)
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.members,
+    rowId: other.$id,
+    data: { role: 'admin' },
+  })
+  const current = await getRowOrNull<Members>(db, TABLES.members, other.$id)
+  if (current?.groupId !== groupId || current.role !== 'admin' || current.status !== 'active') {
+    throw tryAgain()
+  }
 }

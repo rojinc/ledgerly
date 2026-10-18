@@ -54,12 +54,6 @@ export async function updateGroup(
     throw invalid(`A ${cycle} cycle needs cycleAnchor.`)
   }
   if ('region' in after) checkRegion(columns.region as string)
-  if ('currency' in after) {
-    const transaction = await findFirst(db, TABLES.transactions, [Query.equal('groupId', groupId)])
-    if (transaction) {
-      throw invalid("The currency can't change after the group's first transaction.")
-    }
-  }
 
   const data: Record<string, unknown> = { ...after }
   if ('settings' in after) {
@@ -72,15 +66,21 @@ export async function updateGroup(
   }
   const changed = Object.keys(after)
   await conflictAsTryAgain(() =>
-    withTransaction(db, (tx) =>
-      tx.write(
-        {
-          action: 'update',
-          tableId: TABLES.groups,
-          rowId: groupId,
-          data,
-          permissions: teamRead(groupId),
-        },
+    withTransaction(db, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: TABLES.groups,
+        rowId: groupId,
+        data,
+        permissions: teamRead(groupId),
+      })
+      // Stage, then check (conventions.md): a first transaction committed before the group
+      // row was staged is seen here, and the refusal rolls the change back.
+      if ('currency' in after) {
+        const first = await findFirst(db, TABLES.transactions, [Query.equal('groupId', groupId)])
+        if (first) throw invalid("The currency can't change after the group's first transaction.")
+      }
+      await tx.write(
         activityWrite(
           groupId,
           person.$id,
@@ -89,8 +89,8 @@ export async function updateGroup(
           now,
           { before, after },
         ),
-      ),
-    ),
+      )
+    }),
   )
   return db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId })
 }
