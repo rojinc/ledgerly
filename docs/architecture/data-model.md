@@ -75,7 +75,7 @@ Row ID = the Appwrite user ID. One per user.
 | `currency` | varchar(3) | ISO 4217, default `AUD` |
 | `businessJson` | text? | `BusinessDetails` (below) |
 | `invoicePrefix` | varchar(16) | default `INV-` |
-| `lastInvoiceNumber` | integer | default 0. Only the `statements` function changes it, with an atomic increment. |
+| `lastInvoiceNumber` | integer | default 0. Only the `statements` function changes it, in the same transaction that numbers the invoice ([finalize step 2](statements.md#2-finalize-post-statementsidfinalize)). |
 | `summaryFrequency` | enum(none, weekly, fortnightly, monthly) | default `none` |
 | `nextSummaryAt` | datetime? | Set by `identity` when `summaryFrequency` or `timezone` changes (empty for `none`), then moved forward by the scheduler ([step 4](scheduling.md#step-4-summary-emails)) |
 
