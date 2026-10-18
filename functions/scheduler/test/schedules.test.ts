@@ -77,6 +77,25 @@ const rent = {
   autoPost: false,
 }
 
+// Every day for 120 days: 121 occurrences with 2 items each, so 5 transactions of writes.
+const groceries = {
+  id: 'groceriesElm00000001',
+  groupId: 'elm',
+  kind: 'expense',
+  description: 'Groceries',
+  template: {
+    items: [
+      { name: 'Milk', amountCents: 400, split: { mode: 'equal', personIds: ['pSam', 'pAlex'] } },
+      { name: 'Bread', amountCents: 600, split: { mode: 'equal', personIds: ['pSam'] } },
+    ],
+  },
+  rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU',
+  startsOn: '2026-10-19',
+  skipPublicHolidays: false,
+  autoPost: false,
+  horizonDays: 120,
+}
+
 function occurrences(services: Fakes, scheduleId = ID): Transactions[] {
   return services.db
     .rows('transactions')
@@ -88,6 +107,20 @@ function scheduleRow(services: Fakes, id = ID): Schedules | undefined {
   return services.db.rows('schedules').find((row) => row.$id === id) as unknown as
     | Schedules
     | undefined
+}
+
+function runCron(services: Fakes) {
+  return ok(services, 'POST', '/', { userId: null, scheduled: true })
+}
+
+// Fails the `count`th commit, as a timeout would.
+function failCommit(services: Fakes, count: number) {
+  const commit = services.db.updateTransaction.bind(services.db)
+  let commits = 0
+  return vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+    if (params.commit && ++commits === count) throw new Error('Timed out')
+    return commit(params)
+  })
 }
 
 function create(services: Fakes, body: object, userId = 'u1') {
@@ -184,27 +217,6 @@ describe('POST /schedules', () => {
 
   it('writes items, and splits a long expansion into transactions of at most 90 writes', async () => {
     const services = seeded()
-    const groceries = {
-      id: 'groceriesElm00000001',
-      groupId: 'elm',
-      kind: 'expense',
-      description: 'Groceries',
-      template: {
-        items: [
-          {
-            name: 'Milk',
-            amountCents: 400,
-            split: { mode: 'equal', personIds: ['pSam', 'pAlex'] },
-          },
-          { name: 'Bread', amountCents: 600, split: { mode: 'equal', personIds: ['pSam'] } },
-        ],
-      },
-      rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU',
-      startsOn: '2026-10-19',
-      skipPublicHolidays: false,
-      autoPost: false,
-      horizonDays: 120,
-    }
     const begin = vi.spyOn(services.db, 'createTransaction')
     const { created } = await create(services, groceries)
     // 19 October to 16 February.
@@ -259,6 +271,8 @@ describe('POST /schedules', () => {
     })
     expect(services.db.rows('schedules')).toEqual([])
     expect(services.db.rows('transactions')).toEqual([])
+    const none = { ...rent, template: { ...rent.template, receiptFileIds: [] } }
+    expect((await create(services, none)).created).toBe(2)
   })
 
   it('is for admins, and in a house for members too', async () => {
@@ -313,13 +327,45 @@ describe('POST /schedules', () => {
 
   it('makes a member’s removal fail if the schedule naming them commits first', async () => {
     const services = seeded()
+    // Starting after the horizon, so only the schedule's own write guards Alex.
+    const later = { ...rent, startsOn: '2027-06-01' }
     const removal = withTransaction(services.db, async (tx) => {
       await tx.write({ action: 'delete', tableId: 'members', rowId: 'elm-pAlex' })
-      await create(services, rent)
+      expect((await create(services, later)).created).toBe(0)
     })
     await expect(removal).rejects.toMatchObject({ code: 409 })
     expect(services.db.rows('members').some((row) => row.$id === 'elm-pAlex')).toBe(true)
-    expect(occurrences(services, rent.id).length).toBeGreaterThan(0)
+  })
+
+  it('leaves its occurrences for the next cron run if it stops partway', async () => {
+    const services = seeded()
+    // The schedule, the first batch, then a timeout.
+    const timeout = failCommit(services, 3)
+    expect(await failure(services, 'POST', '/schedules', { body: groceries })).toMatchObject({
+      status: 500,
+    })
+    timeout.mockRestore()
+    expect(occurrences(services, groceries.id).length).toBeLessThan(121)
+    await runCron(services)
+    expect(occurrences(services, groceries.id)).toHaveLength(121)
+  })
+
+  it('doesn’t create the schedule again after a delete lands during its expansion', async () => {
+    const services = seeded()
+    const commit = services.db.updateTransaction.bind(services.db)
+    let commits = 0
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      // After the schedule and the first batch, someone deletes it.
+      if (params.commit && ++commits === 3)
+        await ok(services, 'DELETE', `/schedules/${groceries.id}`)
+      return commit(params)
+    })
+    expect(await failure(services, 'POST', '/schedules', { body: groceries })).toEqual({
+      status: 404,
+      code: 'NOT_FOUND',
+    })
+    expect(services.db.rows('schedules')).toEqual([])
+    expect(services.db.rows('transactions')).toEqual([])
   })
 })
 
@@ -381,7 +427,14 @@ describe('PATCH /schedules/{id}', () => {
       status: 400,
       code: 'VALIDATION_FAILED',
     })
-    expect(await send({ ...thursdays, kind: 'expense', template: { totalCents: 100 } })).toEqual({
+    // Rent as an expense would be valid in Elm St, but its kind can't change.
+    await create(services, rent)
+    const expense = {
+      ...rent,
+      kind: 'expense',
+      template: { totalCents: 90_000, split: { mode: 'equal', personIds: ['pSam', 'pAlex'] } },
+    }
+    expect(await send(expense, `/schedules/${rent.id}`)).toEqual({
       status: 400,
       code: 'VALIDATION_FAILED',
     })
@@ -434,6 +487,43 @@ describe('races on schedule edits', () => {
   function patch(services: Fakes, body: { id: string; [key: string]: unknown }) {
     return ok<UpdatedSchedule>(services, 'PATCH', `/schedules/${body.id}`, { body })
   }
+
+  it('expands again from today even when a cron run moved on meanwhile', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // The edit made the schedule due; the cron runs before its old occurrences are deleted.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"action":"delete"'),
+      () => runCron(services),
+    )
+    await patch(services, { ...thursdays, description: 'Late shift' })
+    const future = occurrences(services).filter((row) => row.date >= '2026-10-19')
+    expect(future.map((row) => row.description)).toEqual(Array(8).fill('Late shift'))
+  })
+
+  it('leaves the new occurrences for the next cron run if the edit stops partway', async () => {
+    const services = seeded()
+    await create(services, groceries)
+    // A timeout once the old occurrences are deleted, when the first new one is staged.
+    const stage = services.db.createOperations.bind(services.db)
+    const timeout = vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+      if (JSON.stringify(params.operations).includes('"action":"create"')) {
+        throw new Error('Timed out')
+      }
+      return stage(params)
+    })
+    expect(
+      await failure(services, 'PATCH', `/schedules/${groceries.id}`, {
+        body: { ...groceries, description: 'Food' },
+      }),
+    ).toMatchObject({ status: 500 })
+    timeout.mockRestore()
+    await runCron(services)
+    const rows = occurrences(services, groceries.id)
+    expect(rows).toHaveLength(121)
+    expect(rows.every((row) => row.description === 'Food')).toBe(true)
+  })
 
   it('can’t name someone in an edit whose member row is deleted while it commits', async () => {
     const services = seeded()

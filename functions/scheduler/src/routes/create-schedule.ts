@@ -30,6 +30,8 @@ export async function createSchedule(
 ): Promise<ScheduleResult> {
   const { db, teams, now } = services
   const { id, groupId, ...input } = parseBody(scheduleInputSchema, body)
+  // Set once this request has created the row, so a rerun after a delete doesn't create it again.
+  let inserted = false
   return ledgerRoute(async () => {
     const membership = await requireMember(db, teams, userId, groupId, {
       roles: ['admin', 'member'],
@@ -43,6 +45,7 @@ export async function createSchedule(
     if (existing && !isRetry(existing, groupId, person, columns)) {
       throw new AppError('CONFLICT', 'A different schedule already has this id.')
     }
+    if (!existing && inserted) throw new AppError('NOT_FOUND', 'This schedule was deleted.')
     const ledger = await loadLedger(db, membership)
     if (!existing) {
       // Due at once, so a cron run finishes the expansion if this request can't.
@@ -65,6 +68,7 @@ export async function createSchedule(
           permissions: teamRead(groupId),
         })
       })
+      inserted = true
     }
     const schedule = await getSchedule(db, id)
     const created = await generateOccurrences(db, schedule, membership.group, ledger, now)

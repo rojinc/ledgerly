@@ -136,7 +136,7 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 
 | Route | What it does |
 | --- | --- |
-| `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then. A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
+| `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
 | `PATCH /schedules/{id}` | Update. Delete future occurrences that are still `scheduled`/`due` and not `overridden` (date ≥ local today), move `generatedThrough` back to yesterday if it is later, expand again. The group and kind can't change (`VALIDATION_FAILED`) |
 | `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it. It never checks the template, so a schedule can always be ended; a later `endsOn` than before carries on at the next run |
 | `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included, with their items |
@@ -144,9 +144,9 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 
 Changes to occurrences themselves (edit, void, post) go through the `ledger` function. Editing an occurrence sets `overridden = true`.
 
-Creating or editing a schedule guards the group row and the member row of everyone its template names, like a ledger write ([ledger.md#concurrency](ledger.md#concurrency)). A template can't commit just after a member's removal was checked, and a removal can't commit just after the template. Every write of these routes guards the group row too, so none lands after an archive. Deleting occurrences stages the deletes, then checks the stored rows: one edited, posted or voided meanwhile is kept. Schedule templates can't have receipts yet, like `POST /transactions`.
+Creating or editing a schedule guards the group row and the member row of everyone its template names, like a ledger write ([ledger.md#concurrency](ledger.md#concurrency)). A template can't commit just after a member's removal was checked, and a removal can't commit just after the template. Every database transaction of these routes that writes occurrences or a schedule's rule guards the group row too, so none lands after an archive. Deleting occurrences stages the deletes, then checks the stored rows. An edit or an end keeps an occurrence edited, posted or voided meanwhile. A delete removes edited and voided ones anyway; one posted meanwhile stops it with `VALIDATION_FAILED`, and the schedule should be ended instead. Schedule templates can't have receipts yet, like `POST /transactions`.
 
-Creating or editing a schedule sets its `nextRunAt` to now before expanding, so if the expansion stops partway (a timeout, say), the next cron run finishes it. Sending the same request again does too; an edit that stops before its old occurrences are all deleted needs that, or some are left beside the new ones.
+Creating or editing a schedule sets its `nextRunAt` to now before expanding, so if the expansion stops partway (a timeout, say), the next cron run finishes it. Sending the same request again does too. An edit that stops before its old occurrences are all deleted needs that: until then, those keep their old values (on a date the new rule also has, the old occurrence stands in for the new one).
 
 ## Timer shifts
 
