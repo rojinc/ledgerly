@@ -84,6 +84,17 @@ describe('nextSummaryAt', () => {
     ).toBe('2026-11-02T15:00:00.000Z')
   })
 
+  it('uses the local date where it differs from the UTC date', () => {
+    // Kiritimati is UTC+14: Monday 19 Oct 07:00 there is Sunday 18 Oct 17:00 UTC.
+    expect(nextSummaryAt('weekly', 'Pacific/Kiritimati', at('2026-10-18T09:00:00Z'))).toBe(
+      '2026-10-18T17:00:00.000Z',
+    )
+    // Pago Pago is UTC−11: Monday 19 Oct 07:00 there is Monday 18:00 UTC.
+    expect(nextSummaryAt('weekly', 'Pacific/Pago_Pago', at('2026-10-18T09:00:00Z'))).toBe(
+      '2026-10-19T18:00:00.000Z',
+    )
+  })
+
   it('rejects unknown time zones', () => {
     expect(() => nextSummaryAt('weekly', 'Mars/Base', at('2026-10-18T09:00:00Z'))).toThrow(
       RangeError,

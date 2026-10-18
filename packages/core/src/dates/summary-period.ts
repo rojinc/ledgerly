@@ -1,5 +1,5 @@
 import { addDays, type DateRange, endOfMonth, type LocalDate, weekdayOf } from './local-date'
-import { periodFor } from './periods'
+import { type PeriodCycle, periodFor } from './periods'
 import { localTimeToUtc, localToday } from './time-zone'
 
 export type SummaryFrequency = 'none' | 'weekly' | 'fortnightly' | 'monthly'
@@ -7,7 +7,7 @@ export type SummaryFrequency = 'none' | 'weekly' | 'fortnightly' | 'monthly'
 const SEND_HOUR = 7
 
 /** The first day on or after `date` that a summary can go out: a Monday, or the 1st. */
-function firstSendDay(frequency: Exclude<SummaryFrequency, 'none'>, date: LocalDate): LocalDate {
+function firstSendDay(frequency: PeriodCycle, date: LocalDate): LocalDate {
   if (frequency === 'monthly') return date.endsWith('-01') ? date : addDays(endOfMonth(date), 1)
   return addDays(date, (8 - weekdayOf(date)) % 7)
 }
@@ -38,12 +38,10 @@ export function nextSummaryAt(
 }
 
 /**
- * The days a summary sent on `sendDate` covers: the period that ended the day
- * before, counted back from `sendDate` (or the previous calendar month).
+ * The days a summary sent on `sendDate` covers: the 7 or 14 days before it,
+ * or for `monthly` the calendar month of the day before. `sendDate` is a send
+ * day from `nextSummaryAt` (a Monday or the 1st).
  */
-export function summaryPeriod(
-  frequency: Exclude<SummaryFrequency, 'none'>,
-  sendDate: LocalDate,
-): DateRange {
+export function summaryPeriod(frequency: PeriodCycle, sendDate: LocalDate): DateRange {
   return periodFor(frequency, sendDate, addDays(sendDate, -1))
 }
