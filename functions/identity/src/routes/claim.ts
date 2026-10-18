@@ -9,6 +9,7 @@ import { ID, Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
 import { parseBody } from '../parse-body'
 import {
+  conflictAsTryAgain,
   findIdentity,
   findPersonOfUser,
   getRowOrNull,
@@ -74,7 +75,7 @@ export async function claim(
     } catch (error) {
       if (!isAppwriteError(error, 409)) throw error
       // Another claim created the same key first (`key` is unique), so look again.
-      await claimIdentity(services, person.$id, identity)
+      await conflictAsTryAgain(() => claimIdentity(services, person.$id, identity))
     }
   }
   const linked: string[] = []

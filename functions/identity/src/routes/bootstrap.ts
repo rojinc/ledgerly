@@ -6,7 +6,6 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, ensureTeam } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { AppError } from '@ledgerly/server/http/app-error'
 import { profileDefaults } from '@ledgerly/server/identity/defaults'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { ID, Permission, Query, Role } from 'node-appwrite'
@@ -17,6 +16,7 @@ import {
   getRowOrNull,
   isAppwriteError,
   isPlaceholder,
+  tryAgain,
 } from '../rows'
 import type { AccountUser, Services } from '../services'
 import { claim, type VerifiedIdentity, verifiedIdentities } from './claim'
@@ -115,16 +115,15 @@ async function setUp(
         // Stage, then check (transaction.ts): the stored row, since this transaction's view
         // already has the new userId. Another user may have claimed the placeholder first.
         const stored = await getRowOrNull<Persons>(db, TABLES.persons, person.personId)
-        if (!stored || !(isPlaceholder(stored) || stored.userId === userId)) {
-          throw new AppError('CONFLICT', 'Your account changed while we set it up. Try again.')
-        }
+        if (!stored || !(isPlaceholder(stored) || stored.userId === userId)) throw tryAgain()
       }
     })
   } catch (error) {
-    // A bootstrap for the same user that ran at the same time created the profile first.
     if (!isAppwriteError(error, 409)) throw error
+    // A bootstrap for the same user that ran at the same time created the profile first: use
+    // it. Otherwise the placeholder changed after it was staged.
     const profile = await getRowOrNull<Profiles>(db, TABLES.profiles, userId)
-    if (!profile) throw error
+    if (!profile) throw tryAgain()
     return profile
   }
   return db.getRow<Profiles>({ databaseId: DATABASE_ID, tableId: TABLES.profiles, rowId: userId })

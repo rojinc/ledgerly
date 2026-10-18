@@ -5,7 +5,7 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { parseBody } from '../parse-body'
-import { getRowOrNull, SET_UP_FIRST } from '../rows'
+import { conflictAsTryAgain, getRowOrNull, SET_UP_FIRST } from '../rows'
 import type { Services } from '../services'
 
 /** `identity PATCH /profile`: changes only the fields given, and returns the profile row. */
@@ -39,6 +39,8 @@ export async function updateProfile(
       data: { displayName },
     })
   }
-  if (writes.length > 0) await withTransaction(db, (tx) => tx.write(...writes))
+  if (writes.length > 0) {
+    await conflictAsTryAgain(() => withTransaction(db, (tx) => tx.write(...writes)))
+  }
   return db.getRow<Profiles>({ databaseId: DATABASE_ID, tableId: TABLES.profiles, rowId: userId })
 }

@@ -9,7 +9,7 @@ Keeping authority in one place (`members.role`) means there is one source of tru
 
 ## Teams
 
-- Team ID = group row ID. Created by the `groups` function with the server API key when the group is created.
+- Team ID = group row ID. Created with the server API key when the group is created: by the `identity` function for the personal group, at bootstrap, and by the `groups` function for every other group.
 - A person is a team member only if they have a user account (`persons.userId`) **and** have joined the group. Placeholders, including registered people who haven't joined yet, are in `members` but not in the team ([D-016](decisions.md)).
 - Team memberships are created, changed and deleted **only by functions**, with the server key. Clients never call the Teams API to change membership.
 - After a group is created, only the `identity` function adds people to its team: when a claim links a placeholder to a new account, or when a registered person joins a group they were added to ([identity](identity-and-invites.md#joining-a-group)).

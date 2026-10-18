@@ -1,12 +1,28 @@
 import type { Identities, Persons } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
+import { AppError } from '@ledgerly/server/http/app-error'
 import { AppwriteException, type Models, Query } from 'node-appwrite'
 
 export const SET_UP_FIRST = 'Set up your account first.'
 
+/** A write clashed with another request's; the app can simply send it again. */
+export function tryAgain(): AppError {
+  return new AppError('CONFLICT', 'Something else changed this at the same time. Try again.')
+}
+
 export function isAppwriteError(error: unknown, code: number): boolean {
   return error instanceof AppwriteException && error.code === code
+}
+
+/** Runs `write`, turning a commit conflict (Appwrite's 409) into CONFLICT rather than INTERNAL. */
+export async function conflictAsTryAgain<T>(write: () => Promise<T>): Promise<T> {
+  try {
+    return await write()
+  } catch (error) {
+    if (isAppwriteError(error, 409)) throw tryAgain()
+    throw error
+  }
 }
 
 /** The row as stored, or null when there is none. */

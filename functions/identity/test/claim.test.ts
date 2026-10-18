@@ -1,4 +1,5 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AFTER,
@@ -12,6 +13,7 @@ import {
   NOW,
   ok,
   placeholderRow,
+  TRY_AGAIN,
   updateRow,
 } from './harness'
 
@@ -193,6 +195,25 @@ describe('POST /claim', () => {
       expect.objectContaining({ $id: 'iEmail' }),
       expect.objectContaining({ $id: 'iRace', verified: true, verifiedAt: NOW.toISOString() }),
     ])
+  })
+
+  it('says CONFLICT, try again, when an identity write still conflicts after looking again', async () => {
+    const services = claimFixture([])
+    services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
+    const commit = services.db.updateTransaction.bind(services.db)
+    const commits = vi
+      .spyOn(services.db, 'updateTransaction')
+      .mockImplementation(async (params) => {
+        if (params.commit) throw new AppwriteException('Conflict', 409, 'transaction_conflict')
+        return commit(params)
+      })
+    expect(await failure(services, 'POST', '/claim')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(2)
+    expect(services.db.rows('identities')).toHaveLength(1)
   })
 
   it('takes back the team membership when an admin removed the row meanwhile', async () => {

@@ -5,13 +5,16 @@ import {
   AFTER,
   account,
   BEFORE,
+  beforeCommit,
   beforeStaging,
   call,
+  type Fakes,
   failure,
   fakes,
   NOW,
   ok,
   placeholderRow,
+  TRY_AGAIN,
   updateRow,
 } from './harness'
 
@@ -282,20 +285,35 @@ describe('POST /bootstrap', () => {
     expect(services.teams.teamIds()).toHaveLength(2)
   })
 
-  it('stops with CONFLICT when another user claims the placeholder first', async () => {
-    const services = addedBeforeSignUp()
-    beforeStaging(
-      services.db,
-      (operations) => operations.includes('"tableId":"profiles"'),
-      () => updateRow(services.db, 'persons', 'pSam', { userId: 'uOther' }),
-    )
-    expect(await failure(services, 'POST', '/bootstrap', BODY)).toMatchObject({
-      status: 409,
-      code: 'CONFLICT',
-    })
-    expect(services.db.rows('profiles')).toEqual([])
-    expect(services.db.rows('persons')[0]?.userId).toBe('uOther')
-  })
+  it.each([
+    [
+      'before its writes are staged',
+      (services: Fakes, claimFirst: () => Promise<unknown>) =>
+        beforeStaging(
+          services.db,
+          (operations) => operations.includes('"tableId":"profiles"'),
+          claimFirst,
+        ),
+    ],
+    [
+      'after its writes are staged',
+      (services: Fakes, claimFirst: () => Promise<unknown>) =>
+        beforeCommit(services.db, claimFirst),
+    ],
+  ])(
+    'says CONFLICT, try again, when another user claims the placeholder first, %s',
+    async (_, race) => {
+      const services = addedBeforeSignUp()
+      race(services, () => updateRow(services.db, 'persons', 'pSam', { userId: 'uOther' }))
+      expect(await failure(services, 'POST', '/bootstrap', BODY)).toEqual({
+        status: 409,
+        code: 'CONFLICT',
+        message: TRY_AGAIN,
+      })
+      expect(services.db.rows('profiles')).toEqual([])
+      expect(services.db.rows('persons')[0]?.userId).toBe('uOther')
+    },
+  )
 
   it.each([
     ['no body', undefined],

@@ -11,6 +11,7 @@ import type { AccountUser, Services } from '../src/services'
 export const NOW = new Date('2026-10-18T20:00:00.000Z')
 export const BEFORE = '2026-10-01T00:00:00.000Z'
 export const AFTER = '2026-10-19T00:00:00.000Z'
+export const TRY_AGAIN = 'Something else changed this at the same time. Try again.'
 
 type Seed = ConstructorParameters<typeof FakeDb>[0]
 
@@ -127,8 +128,29 @@ export function beforeStaging(
   })
 }
 
+/**
+ * Runs `change` just before the first commit, after the request staged its writes, so the
+ * commit fails with Appwrite's 409 as it would on a real conflict.
+ */
+export function beforeCommit(db: FakeDb, change: () => Promise<unknown>) {
+  const commit = db.updateTransaction.bind(db)
+  let done = false
+  return vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
+    if (!done && params.commit) {
+      done = true
+      await change()
+    }
+    return commit(params)
+  })
+}
+
 /** Commits one row update outside the request under test. */
-export function updateRow(db: Db, tableId: 'members' | 'persons', rowId: string, data: object) {
+export function updateRow(
+  db: Db,
+  tableId: 'members' | 'persons' | 'profiles',
+  rowId: string,
+  data: object,
+) {
   return withTransaction(db, (tx) =>
     tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
   )

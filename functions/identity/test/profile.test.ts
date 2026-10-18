@@ -1,7 +1,7 @@
 import { nextSummaryAt } from '@ledgerly/core/dates/summary-period'
 import type { Profiles } from '@ledgerly/core/generated/rows'
 import { describe, expect, it } from 'vitest'
-import { failure, fakes, NOW, ok } from './harness'
+import { beforeCommit, failure, fakes, NOW, ok, TRY_AGAIN, updateRow } from './harness'
 
 // NOW is Monday 19 October, 07:00 in Sydney, so the next weekly summary is a week later.
 const NEXT_WEEKLY_SYDNEY = '2026-10-25T20:00:00.000Z'
@@ -95,6 +95,17 @@ describe('PATCH /profile', () => {
     const profile = await patch(services, { timezone: 'Australia/Perth' })
     expect(profile.nextSummaryAt).toBe(nextSummaryAt('weekly', 'Australia/Perth', NOW))
     expect(profile.nextSummaryAt).toBe('2026-10-18T23:00:00.000Z') // 07:00 today in Perth
+  })
+
+  it('says CONFLICT, try again, when another change commits first', async () => {
+    const services = withProfile()
+    beforeCommit(services.db, () => updateRow(services.db, 'profiles', 'u1', { region: 'AU-QLD' }))
+    expect(await failure(services, 'PATCH', '/profile', { region: 'AU-VIC' })).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('profiles')[0]?.region).toBe('AU-QLD')
   })
 
   it('writes nothing for an empty body', async () => {
