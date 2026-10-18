@@ -41,7 +41,7 @@ ledgerly/
 │   │       ├── settle/        balances, suggestTransfers
 │   │       ├── recurrence/    expandSchedule, holidays
 │   │       ├── statements/    buildStatementSnapshot, checks
-│   │       ├── identity/      normalizeIdentity
+│   │       ├── identity/      normalizeEmail, normalizePhone, identityKey
 │   │       ├── schemas/       zod schemas = the API contract
 │   │       ├── constants/     kinds, statuses, categories, limits
 │   │       └── generated/     row types from `appwrite types` (never edit by hand)
