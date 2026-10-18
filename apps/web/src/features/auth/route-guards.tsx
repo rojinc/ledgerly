@@ -24,8 +24,9 @@ function UserGate({
       </p>
     )
   }
-  // A failed background refetch keeps the data it had, so the app stays up.
-  if (query.isError && query.data === undefined) {
+  // A failed background refetch keeps the data it had, so the app stays up. A cached `null`
+  // user (signed out) is no answer to keep: after signing in it is out of date.
+  if (query.isError && query.data == null) {
     return (
       <main className="mx-auto flex max-w-sm flex-col gap-4 px-4 py-10">
         <Alert variant="destructive">{failure}</Alert>

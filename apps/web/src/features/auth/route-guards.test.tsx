@@ -109,15 +109,17 @@ describe('route guards', () => {
     expect(screen.getByText('We found 1 group you were added to.')).toBeTruthy()
   })
 
-  it('retries a CONFLICT but not a VALIDATION_FAILED', async () => {
+  it('retries a CONFLICT', async () => {
     getUser.mockResolvedValue({ $id: 'u1' } as never)
     call.mockResolvedValueOnce({ ok: false, error: { code: 'CONFLICT', message: 'Again' } })
     call.mockResolvedValueOnce(bootstrapped())
     renderAt('/secret')
     expect(await screen.findByText('Secret page')).toBeTruthy()
     expect(call).toHaveBeenCalledTimes(2)
-    cleanup()
-    call.mockReset()
+  })
+
+  it('does not retry a VALIDATION_FAILED', async () => {
+    getUser.mockResolvedValue({ $id: 'u1' } as never)
     call.mockResolvedValue({ ok: false, error: { code: 'VALIDATION_FAILED', message: 'Bad' } })
     renderAt('/secret')
     expect(await screen.findByText(/couldn’t set up your account/)).toBeTruthy()
@@ -132,11 +134,23 @@ describe('route guards', () => {
     // As after verifying an email, which re-runs bootstrap.
     call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Boom' } })
     await queryClient.invalidateQueries({ queryKey: ['bootstrap', 'u1'] })
-    await waitFor(() =>
-      expect(queryClient.getQueryState(['bootstrap', 'u1'])?.status).toBe('error'),
-    )
-    expect(screen.getByText('Secret page')).toBeTruthy()
-    expect(screen.queryByText(/couldn’t set up your account/)).toBeNull()
+    await waitFor(() => {
+      expect(queryClient.getQueryState(['bootstrap', 'u1'])?.status).toBe('error')
+      expect(screen.getByText('Secret page')).toBeTruthy()
+      expect(screen.queryByText(/couldn’t set up your account/)).toBeNull()
+    })
+  })
+
+  it('shows the error, not the login form, when the user refetch after signing in fails', async () => {
+    getUser.mockRejectedValueOnce(new AppwriteException('No session', 401))
+    const { router, queryClient } = renderAt('/login')
+    expect(await screen.findByText('Login page')).toBeTruthy()
+    // Signed in, but Appwrite can't be reached when the app asks who it is.
+    getUser.mockRejectedValue(new TypeError('Failed to fetch'))
+    await queryClient.invalidateQueries({ queryKey: ['currentUser'] })
+    await router.navigate('/secret')
+    expect(await screen.findByText(/couldn’t reach Ledgerly/)).toBeTruthy()
+    expect(router.state.location.pathname).toBe('/secret')
   })
 
   it('sends a signed-in user away from /login', async () => {
