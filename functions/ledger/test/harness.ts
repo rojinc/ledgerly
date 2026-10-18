@@ -2,6 +2,9 @@ import type { Activity, Items, Shares, Transactions } from '@ledgerly/core/gener
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { createHandler, type Route } from '@ledgerly/server/http/create-handler'
+import { groupBalances } from '../src/routes/balances'
+import { startTimer } from '../src/routes/timer-start'
+import { stopTimer } from '../src/routes/timer-stop'
 import { createTransaction } from '../src/routes/transactions-create'
 import { postTransaction } from '../src/routes/transactions-post'
 import type { TransactionView } from '../src/routes/transactions-shared'
@@ -12,7 +15,15 @@ import { setTeamsForTests } from '../src/teams'
 // "Today" in every test: 2026-10-18 in Sydney.
 export const NOW = new Date('2026-10-18T01:00:00.000Z')
 
-const routes: Route[] = [createTransaction, updateTransaction, postTransaction, voidTransaction]
+const routes: Route[] = [
+  createTransaction,
+  updateTransaction,
+  postTransaction,
+  voidTransaction,
+  startTimer,
+  stopTimer,
+  groupBalances,
+]
 
 export const member = (
   $id: string,
@@ -51,6 +62,17 @@ export const GROUPS = [
     }),
     archivedAt: null,
   },
+  {
+    $id: 'sam-own',
+    type: 'personal',
+    name: 'Personal',
+    ownerPersonId: 'sam',
+    currency: 'AUD',
+    timezone: 'Australia/Sydney',
+    region: 'AU-NSW',
+    settingsJson: JSON.stringify({ type: 'personal' }),
+    archivedAt: null,
+  },
 ]
 
 export const MEMBERS = [
@@ -62,12 +84,13 @@ export const MEMBERS = [
   member('m-lee', 'house', 'lee', 'viewer', 'left'),
   member('m-sam', 'job', 'sam', 'admin'),
   member('m-acme', 'job', 'acme', 'member', 'placeholder'),
+  member('m-sam-own', 'sam-own', 'sam', 'admin'),
 ]
 
 /**
- * Two groups: a house (`house`) with Alice (admin), Bob (member), Cara (viewer) and Pat
- * (placeholder), and an employer group (`job`) where Sam works for Acme. Dan has an account
- * but is in neither.
+ * Three groups: a house (`house`) with Alice (admin), Bob (member), Cara (viewer) and Pat
+ * (placeholder), an employer group (`job`) where Sam works for Acme, and Sam's personal group
+ * (`sam-own`). Dan has an account but is in none.
  */
 export function seed(extra: Record<string, Record<string, unknown>[]> = {}): FakeDb {
   return new FakeDb({
@@ -120,26 +143,30 @@ function teamsOf(db: FakeDb): FakeTeams {
   return new FakeTeams(teams)
 }
 
-export type Response = {
+export type Response<T = TransactionView> = {
   status: number
-  body: { ok: boolean; data?: TransactionView; error?: { code: string; message: string } }
+  body: {
+    ok: boolean
+    data?: T
+    error?: { code: string; message: string; details?: unknown }
+  }
 }
 
 /** Calls the ledger function as `user` (a userId), with a valid JWT for them. */
-export async function call(
+export async function call<T = TransactionView>(
   db: FakeDb,
   method: string,
   path: string,
   body: unknown,
   user: string | null = 'u-alice',
-): Promise<Response> {
+): Promise<Response<T>> {
   setTeamsForTests(teamsOf(db))
   const handler = createHandler(
     routes,
     () => db,
     async (jwt) => jwt.slice('jwt-'.length),
   )
-  let response: Response | undefined
+  let response: Response<T> | undefined
   await handler({
     req: {
       method,
@@ -147,11 +174,13 @@ export async function call(
       headers: user ? { 'x-appwrite-user-jwt': `jwt-${user}` } : {},
       bodyText: body === undefined ? '' : JSON.stringify(body),
     },
-    res: { json: (data: Response['body'], status: number) => (response = { status, body: data }) },
+    res: {
+      json: (data: Response<T>['body'], status: number) => (response = { status, body: data }),
+    },
     log: () => {},
     error: () => {},
   })
-  return response as Response
+  return response as Response<T>
 }
 
 export const rows = {

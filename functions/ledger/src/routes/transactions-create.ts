@@ -29,7 +29,7 @@ import {
 
 export const createTransactionSchema = transactionInputSchema
 
-const OCCURRENCE_ID = /_\d{8}$/
+export const OCCURRENCE_ID = /_\d{8}$/
 
 /**
  * `POST /transactions` (functions-api.md#ledger): writes the transaction, its shares, items

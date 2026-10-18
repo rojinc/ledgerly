@@ -127,7 +127,7 @@ All money writes.
 | `PATCH /transactions/{id}` | `TransactionInput` (same `id`) | `TransactionView` | creator or admin; not locked |
 | `POST /transactions/{id}/post` | `{ date?, payers?, shift?: { minutes?, rateCents?, breakMinutes? } }` | `TransactionView` | creator or admin; status `scheduled` or `due` |
 | `POST /transactions/{id}/void` | `{ reason: string }` | `TransactionView` | creator or admin; not locked |
-| `POST /timer/start` | `{ id, groupId, rateCents?, description? }` | `TransactionView` | admin (employer group) |
+| `POST /timer/start` | `{ id, groupId, rateCents?, description? }` | `TransactionView` | the group's owner (employer group) |
 | `POST /timer/stop` | `{ transactionId, breakMinutes? }` | `TransactionView` | the person who started it |
 | `GET /groups/{groupId}/balances` | none | `{ people: { personId, netCents }[], transfers: { fromPersonId, toPersonId, cents }[] }` | any member |
 
@@ -139,6 +139,10 @@ What every write does, in **one TablesDB transaction**:
 4. Commit. On conflict, retry once from step 1.
 
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
+
+- `people` has one entry per person with shares in the group, sorted by `personId`. Anyone else is at 0.
+- It reads the shares a page at a time, then the group row again. Every write of shares writes a fresh `rev` to the group row ([concurrency](ledger.md#concurrency)). So if `rev` changed, or a page's cursor row was deleted, a write committed during the read, and it reads again. After 3 reads like that, it gives `CONFLICT`.
+- A whole read whose shares don't add up to 0 gives `INVARIANT_VIOLATION`.
 
 A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
 
