@@ -50,7 +50,7 @@ Appwrite Messaging can only message project users, not addresses like an employe
 | Need | Choice |
 | --- | --- |
 | Package manager | **npm workspaces** (ships with Node, nothing extra to install) |
-| Node | 24 LTS locally (`.nvmrc`). Functions run on `node-22`, the newest LTS runtime Appwrite Cloud offers ([function settings](../engineering/environments-and-deploys.md#function-settings)). |
+| Node | 24 LTS (`.nvmrc`), locally, in CI and in functions (`node-24`, [function settings](../engineering/environments-and-deploys.md#function-settings)). |
 | Lint and format | **Biome** (one tool instead of ESLint + Prettier) |
 | Unit tests | **Vitest**, with `@vitest/coverage-v8` for the 100% coverage check in `packages/core`, and `unpdf` to read the text of rendered PDFs |
 | End-to-end tests | Playwright (from M2) |

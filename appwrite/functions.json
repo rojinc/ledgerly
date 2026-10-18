@@ -2,7 +2,7 @@
   {
     "$id": "ledger",
     "name": "ledger",
-    "runtime": "node-22",
+    "runtime": "node-24",
     "path": "../functions/ledger",
     "entrypoint": "dist/main.js",
     "commands": "",
@@ -18,7 +18,7 @@
   {
     "$id": "groups",
     "name": "groups",
-    "runtime": "node-22",
+    "runtime": "node-24",
     "path": "../functions/groups",
     "entrypoint": "dist/main.js",
     "commands": "",
@@ -34,7 +34,7 @@
   {
     "$id": "identity",
     "name": "identity",
-    "runtime": "node-22",
+    "runtime": "node-24",
     "path": "../functions/identity",
     "entrypoint": "dist/main.js",
     "commands": "",
@@ -50,7 +50,7 @@
   {
     "$id": "scheduler",
     "name": "scheduler",
-    "runtime": "node-22",
+    "runtime": "node-24",
     "path": "../functions/scheduler",
     "entrypoint": "dist/main.js",
     "commands": "",
@@ -66,7 +66,7 @@
   {
     "$id": "statements",
     "name": "statements",
-    "runtime": "node-22",
+    "runtime": "node-24",
     "path": "../functions/statements",
     "entrypoint": "dist/main.js",
     "commands": "",
