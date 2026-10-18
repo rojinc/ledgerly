@@ -157,7 +157,7 @@ async function numberInvoice(db: Db, group: Groups, statement: Statements): Prom
 }
 
 /**
- * Steps 3 to 5, then the dates: the snapshot of what's being locked, the locks, and the check
+ * Steps 3 to 6: the snapshot of what's being locked, the locks, and the check
  * against a fresh sum of every locked share. If the check fails, everything is unlocked and
  * the statement goes back to `draft`. Then the snapshot is stored with `issuedOn` and `dueOn`,
  * before anything is rendered, so a run on another day prints the same dates.
@@ -229,7 +229,7 @@ export async function unlock(db: Db, statementId: string): Promise<void> {
   )
 }
 
-/** Step 6: the PDF, uploaded with the statement's ID as its file ID, readable by the team. */
+/** Step 7: the PDF, uploaded with the statement's ID as its file ID, readable by the team. */
 async function renderPdf({ db, files }: Services, statement: Statements): Promise<Statements> {
   const snapshot = snapshotOf(statement)
   const displayNumber = statement.displayNumber ?? ''
@@ -241,7 +241,7 @@ async function renderPdf({ db, files }: Services, statement: Statements): Promis
   return updateStatement(db, statement, { pdfFileId: statement.$id })
 }
 
-/** Step 7. */
+/** Step 8. */
 async function markFinal(
   { db, now }: Services,
   statement: Statements,

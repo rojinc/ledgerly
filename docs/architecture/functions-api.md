@@ -220,7 +220,7 @@ Details: [Scheduling](scheduling.md).
 
 ## statements
 
-Cron: `15 * * * *`. HTTP routes:
+Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |

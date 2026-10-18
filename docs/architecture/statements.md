@@ -40,14 +40,14 @@ Dates before the anchor fall into earlier periods of the same length, counted ba
 
 ### 1. Draft (statements job, hourly at :15)
 
-For each group where `nextCloseAt <= now` and that isn't archived, in **one database transaction**:
+Appwrite runs the job as `POST /` on the `statements` function; nobody else can call it. For each group where `nextCloseAt <= now` and that isn't archived, in **one database transaction**:
 
 - create a `draft` statement for the period, with a computed snapshot,
 - move `groups.nextCloseAt` to the next period's close.
 
-If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period.
+The period is the one that ended the day before the stored `nextCloseAt`, so a cycle or time zone change made after it ended can't skip it. If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period. A group that fails is logged (IDs only) and tried again on the next run. Until house divides are built ([#46](https://github.com/rojinc/ledgerly/issues/46)), the job drafts invoices only.
 
-Then email the group admins: "Your October invoice for Acme is ready to review". If the group setting `autoFinalize` is on, finalize straight away.
+Then email the group admins at their verified addresses: "Your October invoice for Acme is ready to review", linking to `/groups/<groupId>/statements/<statementId>` in the web app. A failed email doesn't undo the draft. If the group setting `autoFinalize` is on, finalize straight away, without sending.
 
 Drafts are **not** locked. Users can keep adding and fixing transactions. `POST /statements/{id}/refresh` (called whenever the draft is opened) recalculates the snapshot.
 
@@ -56,24 +56,25 @@ Drafts are **not** locked. Users can keep adding and fixing transactions. `POST 
 Admin only. Each step checks whether it has already been done, so an interrupted finalize can be called again safely.
 
 1. Set status `finalizing`, and stage a write to the group row in the same database transaction ([ledger concurrency](ledger.md#concurrency)). While any statement in a group is `finalizing`, the `ledger` function refuses writes to that group's transactions dated on or before the period end (`LOCKED`).
-2. **Invoices only:** if `number` is empty, atomically increment the issuer's `profiles.lastInvoiceNumber` and store the result in `number`. Store `displayNumber` = prefix + number padded to 4 digits (`INV-0010`). A crash between these two writes can leave a gap in numbering; that is acceptable and logged.
+2. **Invoices only:** if `number` is empty, increment the issuer's `profiles.lastInvoiceNumber` and store the result in `number`, with `displayNumber` = prefix + number padded to 4 digits (`INV-0010`), in **one** database transaction. The profile row is staged before it's checked, so two finalizes for one worker can't take the same number, and no number is lost.
 3. Recalculate the snapshot from: posted transactions with `statementId` empty and `date <= periodEnd`, plus any already locked to this statement (from an interrupted run).
 4. Lock: set `statementId` on those transactions, in batches of at most 90 operations per database transaction.
 5. **Check:** each person's closing equals their opening plus the sum of their nets over the lines; the closings add up to 0; and the snapshot's balances equal a fresh sum of all locked shares in the group. If any check fails, unlock this statement's transactions (in batches), set it back to `draft` and log an error. Never send a wrong invoice. Going back to `draft` matters: a statement left `finalizing` would block the group's writes for that period forever. The number from step 2 stays on the draft and is reused next time.
-6. Render the PDF with `pdfmake`, upload it to the `statements` bucket and set `pdfFileId`.
-7. Set status `final`, `issuedOn` = local today, `dueOn` = issuedOn + payment terms (invoices), and `finalizedBy`.
-8. If `send` was requested, email it and set `sentAt`.
+6. Store the snapshot with `issuedOn` = local today and `dueOn` = issuedOn + payment terms (invoices; also `invoice.dueOn` in the snapshot). This happens before anything is rendered, so an interrupted finalize that runs again on another day prints the same dates.
+7. Render the PDF with `pdfmake`, upload it to the `statements` bucket with the statement's ID as its file ID (so a rerun finds it) and set `pdfFileId`.
+8. Set status `final` and `finalizedBy` (empty when the job auto-finalizes).
+9. If `send` was requested, email it and set `sentAt`.
 
 ### 3. Send and resend (`POST /statements/{id}/send`)
 
-- **Invoice:** sent to the group's `recipients` with the PDF attached. The worker gets a copy, and reply-to is the worker's email.
-- **Divide:** sent to every active member who has an account.
+- **Invoice:** sent to the group's `recipients` as they are now, with the PDF attached. Reply-to is the worker's verified email, and the worker gets a copy as a separate email. Each send has its own idempotency keys, so a retried request isn't delivered twice but a resend is. A failed send leaves `sentAt` as it was.
+- **Divide:** sent to every active member who has an account (with [#46](https://github.com/rojinc/ledgerly/issues/46)).
 
 ### 4. Void (`POST /statements/{id}/void`)
 
-Admin only, and only for the **latest** final statement in the group, so openings never break. It unlocks its transactions in batches and sets status `void`. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
+Admin only, and only for the **latest** final statement in the group, so openings never break. It sets status `void` first, then unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
 
-To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`.
+To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`. While that draft is unfinished, asking again returns it.
 
 ## Snapshot
 
