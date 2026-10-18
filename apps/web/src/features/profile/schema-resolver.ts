@@ -6,7 +6,8 @@ function message(issue: z.core.$ZodIssue): string {
   if (issue.code === 'too_big' && issue.origin === 'string') {
     return `At most ${issue.maximum} characters`
   }
-  return issue.message
+  // `Expected 6–6 digits` from core's digits() reads better as `Expected 6 digits`.
+  return issue.message.replace(/(\d+)–\1 /, '$1 ')
 }
 
 /**

@@ -107,7 +107,7 @@ describe('BusinessForm', () => {
     render(<BusinessForm profile={profile} onSave={onSave} />)
     type('BSB', '06200')
     fireEvent.click(screen.getByRole('button', { name: 'Save invoice details' }))
-    expect(await screen.findByText('Expected 6–6 digits')).toBeTruthy()
+    expect(await screen.findByText('Expected 6 digits')).toBeTruthy()
     expect(screen.getByText('Required').id).toBe('accountName-error')
     expect(screen.getByText('Expected 1–12 digits').id).toBe('accountNumber-error')
     expect(onSave).not.toHaveBeenCalled()
