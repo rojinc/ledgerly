@@ -70,12 +70,21 @@ A claim with no activity (commits, comments or a PR) for **48 hours** may be rel
 - Follow [conventions](../engineering/conventions.md) and [testing](../engineering/testing.md).
 - Push early, and open a **draft PR** once you have something, so others can see your direction.
 
+**Sub-agents.** If your tool can start sub-agents, use them. One agent still owns each claim, branch and PR. Good uses:
+
+- research or a scratch probe (for example checking how a library behaves) while you write code
+- splitting your change into independent parts, each in its own worktree, which you then combine on your branch
+- the self-review in step 4
+
+Sub-agents never claim issues, push, post on GitHub (comments, labels or PRs), merge or touch Appwrite. The owning agent posts anything they found that others need, such as review findings. Give a sub-agent the issue's Scope and only what its job needs, never secrets, `.env` values or real personal data. You answer for everything it writes.
+
 ### 4. Finish
 
 1. Rebase on `main`. Lint, typecheck, test and build must all pass locally.
 2. Update the docs if behaviour, the contract or a rule changed.
-3. Mark the PR ready using the template, with `Closes #<issue>`. Labels: `status:in-review` on the issue; `area:*`, `type:*` and `agent:*` on the PR.
-4. Ask for review: comment `Ready for review` on the PR. If you can message other Claude Code sessions, also send the PR link to the lead agent's session; the lead also checks open PRs regularly. For other agents' PRs, the lead's own review counts as the review by a different agent.
+3. **Self-review.** If you can start sub-agents, give a fresh one only the PR diff, the issue and these docs (not your reasoning). Ask it for blocking and optional findings, plus a [security pass](../architecture/security-and-privacy.md#security-review-rule) on `security` PRs. Fix the blocking ones, and say what it found under **How I tested it**. It cuts review rounds, but it isn't the [review](#5-review), except on the lead's own PRs.
+4. Mark the PR ready using the template, with `Closes #<issue>`. Labels: `status:in-review` on the issue; `area:*`, `type:*` and `agent:*` on the PR.
+5. Ask for review: comment `Ready for review` on the PR. If you can message other Claude Code sessions, also send the PR link to the lead agent's session; the lead also checks open PRs regularly. For other agents' PRs, the lead's own review counts as the review by a different agent.
 
 ### 5. Review
 
@@ -88,11 +97,11 @@ A reviewing agent checks, and comments with findings:
 - Are the docs updated?
 - Is it as simple as it could be? Look for code to delete.
 
-The reviewer **comments only**. Findings are marked **blocking** or **optional**. A blocking finding closes only when it is fixed or the reviewer agrees it doesn't apply. If the lead overrules one, the lead writes why on the PR.
+Any agent may review another agent's PR, and agents should when they are idle or the lead asks. Read the PR's existing comments first, so you don't repeat them. Before you start, comment `Reviewing`, and skip a PR another agent is already reviewing unless the lead asks. The reviewer **comments only**. Findings are marked **blocking** or **optional**. A blocking finding closes only when it is fixed or the reviewer agrees it doesn't apply. If the lead overrules one, the lead writes why on the PR. The author resolves a thread once it's fixed or the reviewer agrees; the lead resolves the ones it overrules.
 
 The lead agent merges (squash) when all of these hold:
 
-- a different agent has reviewed it and no blocking finding is open. For the lead's own PRs, the reviewer is a fresh agent (another agent's session, or a sub-agent) that gets only the PR, the issue and these docs, not the lead's reasoning,
+- a different agent has reviewed it and no blocking finding is open. A sub-agent the author started doesn't count, except on the lead's own PRs: there the reviewer can be a fresh agent (another agent's session, or a sub-agent set up like the self-review in step 4) that gets only the PR, the issue and these docs, not the lead's reasoning. The lead posts that reviewer's findings on the PR,
 - CI is green on the latest commit. Until CI exists (#2), the lead runs lint, typecheck, test and build on the PR branch before merging,
 - the acceptance criteria are met and the PR stays inside Scope,
 - for `security` PRs, the review included a [security pass](../architecture/security-and-privacy.md#security-review-rule).
