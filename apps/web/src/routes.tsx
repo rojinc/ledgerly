@@ -10,6 +10,7 @@ import { groupRoutes } from './features/groups/routes'
 import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
 import { transactionRoutes } from './features/transactions/routes'
+import { shiftRoutes } from './features/shifts/routes'
 
 export const routes: RouteObject[] = [
   {
@@ -33,6 +34,7 @@ export const routes: RouteObject[] = [
           { path: 'calendar', element: <CalendarPage /> },
           transactionRoutes,
           peopleRoutes,
+          shiftRoutes,
         ],
       },
     ],
