@@ -29,6 +29,8 @@ The UI only offers these. The API accepts any `RRULE` with `FREQ` = `DAILY`, `WE
 
 **Timezone rule:** expand in *floating* dates. Turn `YYYY-MM-DD` into `Date.UTC(y, m - 1, d)`, run `rrule` in UTC, and turn the results back into `YYYY-MM-DD`. Never let the server's or browser's timezone touch a local date. This is the classic bug that moves Thursday to Wednesday.
 
+`INTERVAL` counts from the week (or month) of `startsOn`: "every other Tuesday" starting on a Wednesday first falls 13 days later. `COUNT` counts dates before `exdates` and holidays are taken out, as RFC 5545 does.
+
 Skip a date when:
 
 - it is before `startsOn` or after `endsOn`,
@@ -39,8 +41,9 @@ Skip a date when:
 
 - Use `date-holidays`: region `AU-NSW` becomes `new Holidays('AU', 'NSW')`.
 - Count only holidays of type `public`. Ignore `bank`, `school`, `observance` and so on.
+- Count only whole days: a holiday lasting several days counts each day, and one starting after midnight (Christmas Eve evening, a half day) doesn't count.
 - Compare local dates: core's `publicHolidayChecker(region)` matches the `YYYY-MM-DD` part of each holiday's local date string, so no timezone or midnight edge case is involved.
-- An unknown region (a country or state the library doesn't have) throws, rather than silently skipping nothing. The `groups` function checks a region with it before saving.
+- An unknown region (a country or state the library doesn't have) throws, rather than silently skipping nothing.
 - Users can still add a shift on a holiday by hand, or skip any other day with `exdates`.
 
 ## Idempotency

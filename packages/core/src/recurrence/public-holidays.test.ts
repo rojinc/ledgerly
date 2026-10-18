@@ -15,6 +15,25 @@ describe('publicHolidayChecker', () => {
     expect(nsw(d('2027-01-01'))).toBe(true) // another year
   })
 
+  it('counts every day of a holiday lasting several days', () => {
+    const korea = publicHolidayChecker('KR')
+    // 설날 (Seollal) lasts 17–19 February 2026.
+    expect([16, 17, 18, 19, 20].map((day) => korea(d(`2026-02-${day}`)))).toEqual([
+      false,
+      true,
+      true,
+      true,
+      false,
+    ])
+  })
+
+  it('doesn’t count a holiday that starts after midnight', () => {
+    // QLD's Christmas Eve holiday starts at 18:00; Christmas Day is whole.
+    const qld = publicHolidayChecker('AU-QLD')
+    expect(qld(d('2026-12-24'))).toBe(false)
+    expect(qld(d('2026-12-25'))).toBe(true)
+  })
+
   it('uses the state’s own holidays', () => {
     // Labour Day is the first Monday in October in NSW, but March in Victoria.
     expect(publicHolidayChecker('AU-VIC')(d('2026-10-05'))).toBe(false)
@@ -28,5 +47,7 @@ describe('publicHolidayChecker', () => {
     expect(() => publicHolidayChecker('XX')).toThrow(RangeError)
     expect(() => publicHolidayChecker('AU-ZZZ')).toThrow(RangeError)
     expect(() => publicHolidayChecker('SG-01')).toThrow(RangeError) // Singapore has no states
+    expect(() => publicHolidayChecker('constructor')).toThrow(RangeError)
+    expect(() => publicHolidayChecker('AU-toString')).toThrow(RangeError)
   })
 })

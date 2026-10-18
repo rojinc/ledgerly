@@ -6,7 +6,7 @@ export type ScheduleDates = {
   rrule: string
   startsOn: LocalDate
   endsOn?: LocalDate | null
-  exdates?: readonly LocalDate[]
+  exdates?: readonly LocalDate[] | null
   skipPublicHolidays: boolean
 }
 
@@ -19,7 +19,9 @@ const fromFloating = (date: Date) => date.toISOString().slice(0, 10) as LocalDat
  * The dates a schedule falls on from `from` to `to`, both included: its RRULE
  * counted from `startsOn`, without `exdates`, anything outside
  * `startsOn`–`endsOn` and, when `skipPublicHolidays` is on, days `isHoliday`
- * names. The search never goes past `to`, so an impossible rule gives [].
+ * names. rrule searches until it finds a date after `to`, so a rule that
+ * rarely or never matches can be slow; #86 limits the schema to the rule
+ * shapes scheduling.md lists for that reason.
  */
 export function expandSchedule(
   schedule: ScheduleDates,
@@ -34,7 +36,7 @@ export function expandSchedule(
     ...RRule.parseString(schedule.rrule),
     dtstart: toFloating(schedule.startsOn),
   })
-  const skipped = new Set(schedule.exdates)
+  const skipped = new Set(schedule.exdates ?? [])
   return rule
     .between(toFloating(start), toFloating(end), true)
     .map(fromFloating)

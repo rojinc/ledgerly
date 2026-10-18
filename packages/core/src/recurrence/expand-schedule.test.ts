@@ -73,6 +73,16 @@ describe('expandSchedule', () => {
     ).toEqual([])
   })
 
+  it('starts a fortnightly rule in the week of startsOn, even mid-week', () => {
+    // Every other Tuesday from Wednesday 7 Oct: that week's Tuesday has passed,
+    // so the first one is two weeks on.
+    const rule = schedule('FREQ=WEEKLY;INTERVAL=2;BYDAY=TU', {
+      startsOn: d('2026-10-07'),
+      exdates: null,
+    })
+    expect(expandSchedule(rule, ...october, never)).toEqual(['2026-10-20'])
+  })
+
   it('follows COUNT and UNTIL, counted from startsOn', () => {
     const start = { startsOn: d('2026-10-01') }
     expect(
@@ -83,7 +93,7 @@ describe('expandSchedule', () => {
     )
   })
 
-  it('gives nothing for a rule that can never happen', () => {
+  it('gives nothing for a rule that never matches in the window', () => {
     const feb30 = schedule('FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30', { startsOn: d('2026-01-01') })
     expect(expandSchedule(feb30, d('2026-01-01'), d('2030-12-31'), never)).toEqual([])
   })
