@@ -27,6 +27,17 @@ describe('publicHolidayChecker', () => {
     ])
   })
 
+  it('doesn’t count a holiday’s trailing half day', () => {
+    // Ramazan Bayramı 2026 runs from the evening of 19 March to noon on 23 March.
+    const turkey = publicHolidayChecker('TR')
+    expect([20, 21, 22, 23].map((day) => turkey(d(`2026-03-${day}`)))).toEqual([
+      true,
+      true,
+      true,
+      false,
+    ])
+  })
+
   it('doesn’t count a holiday that starts after midnight', () => {
     // QLD's Christmas Eve holiday starts at 18:00; Christmas Day is whole.
     const qld = publicHolidayChecker('AU-QLD')

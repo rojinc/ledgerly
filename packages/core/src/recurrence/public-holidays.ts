@@ -14,8 +14,12 @@ function publicDays(holidays: Holidays, year: number): LocalDate[] {
     .filter((holiday) => holiday.type === 'public' && holiday.date.slice(11, 19) === '00:00:00')
     .flatMap((holiday) => {
       const first = holiday.date.slice(0, 10) as LocalDate
-      const length = Math.round((holiday.end.getTime() - holiday.start.getTime()) / MS_PER_DAY)
-      return Array.from({ length: Math.max(1, length) }, (_, i) => addDays(first, i))
+      // Whole days only: a trailing half day (Turkey's 3.75-day Bayram) doesn't
+      // count. The extra 2 hours absorbs days a DST change made shorter.
+      const span = (holiday.end.getTime() - holiday.start.getTime()) / MS_PER_DAY
+      return Array.from({ length: Math.max(1, Math.floor(span + 1 / 12)) }, (_, i) =>
+        addDays(first, i),
+      )
     })
 }
 

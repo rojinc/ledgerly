@@ -29,7 +29,7 @@ The UI only offers these. The API accepts any `RRULE` with `FREQ` = `DAILY`, `WE
 
 **Timezone rule:** expand in *floating* dates. Turn `YYYY-MM-DD` into `Date.UTC(y, m - 1, d)`, run `rrule` in UTC, and turn the results back into `YYYY-MM-DD`. Never let the server's or browser's timezone touch a local date. This is the classic bug that moves Thursday to Wednesday.
 
-`INTERVAL` counts from the week (or month) of `startsOn`: "every other Tuesday" starting on a Wednesday first falls 13 days later. `COUNT` counts dates before `exdates` and holidays are taken out, as RFC 5545 does.
+`INTERVAL` counts from the week (weeks start on Monday) or month of `startsOn`: "every other Tuesday" starting on a Wednesday first falls 13 days later. `COUNT` counts dates before `exdates` and holidays are taken out, as RFC 5545 does.
 
 Skip a date when:
 
