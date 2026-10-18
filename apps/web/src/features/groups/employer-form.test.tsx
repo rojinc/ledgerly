@@ -455,13 +455,20 @@ describe('toEmployerValues', () => {
 })
 
 describe('archiving a group (#37)', () => {
-  // jsdom has no showModal: open and close the native dialog by its attribute.
+  // jsdom has no showModal: open and close the native dialog by its attribute, and make the
+  // page behind an open modal inert, as browsers do, so focus() outside it does nothing.
   beforeAll(() => {
     HTMLDialogElement.prototype.showModal = function () {
       this.setAttribute('open', '')
     }
     HTMLDialogElement.prototype.close = function () {
       this.removeAttribute('open')
+    }
+    const focus = HTMLElement.prototype.focus
+    HTMLElement.prototype.focus = function (options) {
+      const modal = document.querySelector('dialog[open]')
+      if (modal && !modal.contains(this)) return
+      focus.call(this, options)
     }
   })
   const esc = (dialog: HTMLElement) => fireEvent(dialog, new Event('cancel', { cancelable: true }))
@@ -479,6 +486,37 @@ describe('archiving a group (#37)', () => {
     refetch({ ...employer, archivedAt: '2026-10-19T00:00:00.000Z' })
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
     expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+  })
+
+  it('reopens if the browser closes it while archiving, and closes as Cancel otherwise', async () => {
+    mockGroup(employer)
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/groups/g1/settings')
+    const trigger = screen.getByRole('button', { name: 'Archive group' })
+    fireEvent.click(trigger)
+    let dialog = screen.getByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Archive group' }))
+    await within(dialog).findByRole('button', { name: 'Archiving…' })
+    // A second Esc with no click between can't be cancelled: the browser closes it.
+    dialog.removeAttribute('open')
+    fireEvent(dialog, new Event('close'))
+    expect(dialog.hasAttribute('open')).toBe(true)
+    cleanup()
+    // Not archiving: the same native close counts as Cancel, and focus goes back.
+    mockGroup(employer)
+    renderAt('/groups/g1/settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
+    dialog = screen.getByRole('alertdialog')
+    dialog.removeAttribute('open')
+    fireEvent(dialog, new Event('close'))
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Archive group' }))
+  })
+
+  it('leaves focus alone when the group was already archived when the page opened', () => {
+    mockGroup({ ...employer, archivedAt: '2026-10-01T00:00:00.000Z' })
+    renderAt('/groups/g1/settings')
+    expect(document.activeElement).toBe(document.body)
   })
 
   it('is offered to admins only', () => {

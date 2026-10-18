@@ -50,9 +50,16 @@ export function EmployerSettingsPage() {
   const heading = useRef<HTMLHeadingElement>(null)
   // When the group turns archived under the page (another tab, or a save refused with ARCHIVED
   // that reloads it), the form or dialog that had focus is gone: focus goes to the heading.
+  // Only a change while the page is open counts, not a group that was already archived when it
+  // loaded.
   const archivedAt = group.data?.archivedAt
+  const wasOpen = useRef(false)
   useEffect(() => {
-    if (archivedAt && document.activeElement === document.body) heading.current?.focus()
+    if (archivedAt === undefined) return
+    if (archivedAt && wasOpen.current && document.activeElement === document.body) {
+      heading.current?.focus()
+    }
+    wasOpen.current = archivedAt === null
   }, [archivedAt])
 
   async function save(body: UpdateGroupBody): Promise<EmployerValues> {

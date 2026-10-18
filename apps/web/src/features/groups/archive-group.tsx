@@ -1,6 +1,7 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useId, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { callFunction, type Err } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
 import { Button } from '../../ui/button'
@@ -38,8 +39,9 @@ export function ArchiveGroup({ group, onArchived }: { group: Groups; onArchived:
     },
     onSuccess: async (archived) => {
       queryClient.setQueryData(queryKeys.group(group.$id), archived)
-      // The button that opened the dialog is gone now: focus goes where the page says.
-      setOpen(false)
+      // The button that opened the dialog is gone now: focus goes where the page says. The
+      // modal must be gone first, as the page behind it is inert until then.
+      flushSync(() => setOpen(false))
       onArchived()
       await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
     },
@@ -48,7 +50,8 @@ export function ArchiveGroup({ group, onArchived }: { group: Groups; onArchived:
   if (group.type === 'personal' || group.archivedAt) return null
 
   function close() {
-    setOpen(false)
+    // Unmount the modal first: while it's open the page is inert, and focus() does nothing.
+    flushSync(() => setOpen(false))
     archive.reset()
     trigger.current?.focus()
   }
@@ -115,6 +118,14 @@ function ConfirmArchive({
       onCancel={(event) => {
         event.preventDefault()
         if (!pending) onCancel()
+      }}
+      // The browser can still close it itself: a second Esc without a click in between can't be
+      // cancelled. Reopen while archiving, so the answer has somewhere to show; else it's a Cancel.
+      onClose={() => {
+        const element = dialog.current
+        if (!element || element.open) return
+        if (pending) element.showModal()
+        else onCancel()
       }}
       className="m-auto w-[calc(100%-2rem)] max-w-md rounded-md border border-border bg-background p-4 text-foreground backdrop:bg-black/50"
     >
