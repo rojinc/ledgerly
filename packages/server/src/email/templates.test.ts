@@ -75,6 +75,11 @@ describe('statementReadyEmail', () => {
       '2026-10-31',
       'Your 1 July 2025 – 31 October 2026 invoice for Acme is ready to review',
     ],
+    [
+      '2024-01-01',
+      '2026-12-31',
+      'Your 1 January 2024 – 31 December 2026 invoice for Acme is ready to review',
+    ],
   ])('names the period %s to %s', (start, end, subject) => {
     expect(ready('invoice', start, end).subject).toBe(subject)
   })

@@ -207,8 +207,8 @@ function periodLabel(start: LocalDate, end: LocalDate): string {
 
 /** `periodLabel` with its year, given once: `October 2026`, `28 December 2026 – 3 January 2027`. */
 function periodLabelWithYear(start: LocalDate, end: LocalDate): string {
-  const label = periodLabel(start, end)
-  return dateParts(start).year === dateParts(end).year ? `${label} ${dateParts(end).year}` : label
+  const year = end.slice(0, 4)
+  return start.slice(0, 4) === year ? `${periodLabel(start, end)} ${year}` : periodLabel(start, end)
 }
 
 /** `8:02 am` on the wall clock in `timeZone`. */
