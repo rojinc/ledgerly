@@ -44,7 +44,7 @@ export async function leaveGroup(
   if (member.status === 'left') {
     // Their own leave already committed (its member.left row says so): only the team step is
     // left, even if a share landed on them since. Someone who moved out still settles up first.
-    if (!(await leftOnTheirOwn(db, groupId, person.$id)))
+    if (!(await leftOnTheirOwn(db, groupId, person.$id, member.$createdAt)))
       await requireSettled(db, groupId, person.$id)
   } else {
     const joinedOn = member.joinedOn
@@ -93,7 +93,15 @@ export async function leaveGroup(
   return {}
 }
 
-async function leftOnTheirOwn(db: Db, groupId: string, personId: string): Promise<boolean> {
+// Only a member.left row written since this member row was created counts: an older one is
+// from an earlier membership, before an admin deleted and re-added them. A left row never turns
+// active again, so it can't have been moved out after its own leave.
+async function leftOnTheirOwn(
+  db: Db,
+  groupId: string,
+  personId: string,
+  memberCreatedAt: string,
+): Promise<boolean> {
   const { rows } = await db.listRows({
     databaseId: DATABASE_ID,
     tableId: TABLES.activity,
@@ -101,6 +109,7 @@ async function leftOnTheirOwn(db: Db, groupId: string, personId: string): Promis
       Query.equal('groupId', groupId),
       Query.equal('action', 'member.left'),
       Query.equal('actorPersonId', personId),
+      Query.greaterThanEqual('$createdAt', memberCreatedAt),
       Query.limit(1),
     ],
     total: false,
