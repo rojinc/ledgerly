@@ -1,7 +1,6 @@
 import { stopTimerBodySchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
 import type { ServicesFor } from '../services'
@@ -21,6 +20,7 @@ import {
   plan,
   readView,
   replaceRows,
+  requireMemberOf,
   requireNotFinalizing,
   requireUnlocked,
   shareColumns,
@@ -45,15 +45,9 @@ export const stopTimer = (services: ServicesFor) =>
     ledgerRoute(async () => {
       const stop = parseBody(stopTimerBodySchema, body)
       const found = await getTransaction(db, stop.transactionId)
-      const membership = await requireMember(
-        db,
-        services({ headers }).teams,
-        userId,
-        found.groupId,
-        {
-          roles: ['admin', 'member'],
-        },
-      )
+      const membership = await requireMemberOf(db, services({ headers }).teams, userId, found, {
+        roles: ['admin', 'member'],
+      })
       const person = membership.person.$id
       if (found.startedAt === null || !['running', 'posted'].includes(found.status)) {
         invalid('Only a running timer can be stopped.')

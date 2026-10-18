@@ -376,8 +376,11 @@ describe('POST /timer/stop', () => {
     later(60)
     const acme = await call(db, 'POST', '/timer/stop', { transactionId: 'tm1' }, 'u-acme')
     expect(acme.body.error?.code).toBe('FORBIDDEN')
+    // NOT_FOUND, exactly as for a missing ID, so outsiders can't probe IDs (#129).
     const dan = await call(db, 'POST', '/timer/stop', { transactionId: 'tm1' }, 'u-dan')
-    expect(dan.body.error?.code).toBe('NOT_A_MEMBER')
+    const missing = await call(db, 'POST', '/timer/stop', { transactionId: 'nope' }, 'u-dan')
+    expect(dan.status).toBe(404)
+    expect(dan).toEqual(missing)
     expect(rows.transactions(db)[0]?.status).toBe('running')
   })
 
