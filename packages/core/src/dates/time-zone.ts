@@ -28,23 +28,27 @@ export function localToday(timeZone: string, now: Date): LocalDate {
 }
 
 /**
- * When a period's statement is drafted: 06:00 local time on the day after
- * `periodEnd`, as a UTC ISO instant (statements.md#periods). Worked out from
- * the zone's UTC offsets only, so the machine's timezone never matters.
+ * `hour`:00 on the wall clock in `timeZone` on `date`, as a UTC ISO instant.
+ * Worked out from the zone's UTC offsets only, so the machine's timezone
+ * never matters.
  */
-export function closeAtFor(periodEnd: LocalDate, timeZone: string): string {
+export function localTimeToUtc(date: LocalDate, hour: number, timeZone: string): string {
   assertTimeZone(timeZone)
-  const [year, month, day] = addDays(periodEnd, 1).split('-').map(Number) as [
-    number,
-    number,
-    number,
-  ]
+  const [year, month, day] = date.split('-').map(Number) as [number, number, number]
   const wall = new Date(0)
   wall.setUTCFullYear(year, month - 1, day)
-  wall.setUTCHours(6)
-  // 06:00 on the wall clock, read as if it were UTC; subtract the zone's offset
-  // at that moment. Asking twice lands on the right side of a DST change.
+  wall.setUTCHours(hour)
+  // The wall-clock time read as if it were UTC; subtract the zone's offset at
+  // that moment. Asking twice lands on the right side of a DST change.
   const offsetAt = (time: number) => tzOffset(timeZone, new Date(time)) * MS_PER_MINUTE
   const guess = wall.getTime() - offsetAt(wall.getTime())
   return new Date(wall.getTime() - offsetAt(guess)).toISOString()
+}
+
+/**
+ * When a period's statement is drafted: 06:00 local time on the day after
+ * `periodEnd`, as a UTC ISO instant (statements.md#periods).
+ */
+export function closeAtFor(periodEnd: LocalDate, timeZone: string): string {
+  return localTimeToUtc(addDays(periodEnd, 1), 6, timeZone)
 }
