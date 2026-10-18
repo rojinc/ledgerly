@@ -1,6 +1,5 @@
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
-import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { type ReactNode, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { Button } from '../../ui/button'
@@ -24,10 +23,12 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 }
 
 // The stored input's note, or nothing if it can't be read.
+// Only the note is read: a full template parse fails on stored inputs it doesn't model, such as
+// a bill's.
 function noteOf(inputJson: string): string | undefined {
   try {
-    const stored = transactionTemplateSchema.safeParse(JSON.parse(inputJson))
-    return stored.success ? stored.data.note : undefined
+    const note = (JSON.parse(inputJson) as { note?: unknown } | null)?.note
+    return typeof note === 'string' && note !== '' ? note : undefined
   } catch {
     return undefined
   }

@@ -14,7 +14,7 @@ import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroups, useMyMember } from '../groups/use-groups'
 import { type EmployerPeople, ENTRY_TYPES, type EntryValues, toEntryBody } from './presets'
-import { employerPeople, useCreateTransaction, useMembers } from './use-transactions'
+import { employerPeople, LedgerError, useCreateTransaction, useMembers } from './use-transactions'
 
 // The body's fields, as the form names them.
 const ERROR_FIELD: Record<string, keyof EntryValues> = {
@@ -151,7 +151,13 @@ function EntryForm({ group, people }: { group: Groups; people: EmployerPeople })
           const view = await create.mutateAsync(body)
           navigate(`/transactions/${view.transaction.$id}`, { replace: true })
         } catch (error) {
-          form.setError('root', { message: (error as Error).message })
+          // The same ID again, with different content: an earlier try may have been saved
+          // although its answer was lost. Say so, rather than inviting a duplicate.
+          const message =
+            error instanceof LedgerError && error.code === 'CONFLICT'
+              ? 'This may already have been saved from your last try. Check History before adding it again.'
+              : (error as Error).message
+          form.setError('root', { message })
         }
       })}
     >

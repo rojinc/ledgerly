@@ -1,4 +1,5 @@
 import { CATEGORIES } from '@ledgerly/core/constants/categories'
+import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import type { ReactNode } from 'react'
@@ -60,8 +61,9 @@ export function HistoryPage() {
   const filters: HistoryFilters = {
     ...(kind ? { kind } : {}),
     ...(category ? { category } : {}),
-    ...(params.get('from') ? { from: params.get('from') as string } : {}),
-    ...(params.get('to') ? { to: params.get('to') as string } : {}),
+    // A hand-edited link with a date that isn't one is ignored too.
+    ...(isLocalDate(params.get('from')) ? { from: params.get('from') as string } : {}),
+    ...(isLocalDate(params.get('to')) ? { to: params.get('to') as string } : {}),
   }
   function setParam(name: string, value: string) {
     const next = new URLSearchParams(params)

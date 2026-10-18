@@ -3,7 +3,7 @@ import type { Groups, Members, Shares, Transactions } from '@ledgerly/core/gener
 import type { TransactionInput, VoidTransactionBody } from '@ledgerly/core/schemas/ledger'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Query } from 'appwrite'
-import { callFunction, type Method } from '../../lib/api'
+import { callFunction, type ErrorCode, type Method } from '../../lib/api'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { writeErrorMessage } from '../groups/archive-group'
@@ -29,8 +29,18 @@ export const transactionKeys = {
 /** Calls the ledger function; a refusal throws its message in plain words (#37). */
 export async function ledger<T>(method: Method, path: string, body?: unknown): Promise<T> {
   const result = await callFunction<T>('ledger', method, path, body)
-  if (!result.ok) throw new Error(writeErrorMessage(result.error))
+  if (!result.ok) throw new LedgerError(result.error.code, writeErrorMessage(result.error))
   return result.data
+}
+
+/** A ledger refusal, keeping its code so a page can say more than the message. */
+export class LedgerError extends Error {
+  constructor(
+    readonly code: ErrorCode,
+    message: string,
+  ) {
+    super(message)
+  }
 }
 
 /** Every member row of a group, readable by its team, by name. */

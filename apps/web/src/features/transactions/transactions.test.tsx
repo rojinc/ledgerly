@@ -208,6 +208,29 @@ describe('NewTransactionPage', () => {
     expect(second).toBe(first)
   })
 
+  it('warns of a possible duplicate when a retry with changed content gets CONFLICT', async () => {
+    mockGroups(acme)
+    mockRows()
+    // The first try was saved, but its answer was lost; the retry, changed, conflicts.
+    call.mockResolvedValueOnce({ ok: false, error: { code: 'INTERNAL', message: 'Try again.' } })
+    call.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'A different transaction already has this ID.' },
+    })
+    renderAt('/transactions/new?groupId=g1')
+    fireEvent.change(await screen.findByLabelText('Amount (AUD)'), { target: { value: '40' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Supplies' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Try again.')
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '45' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toBe(
+        'This may already have been saved from your last try. Check History before adding it again.',
+      ),
+    )
+  })
+
   it('shows ARCHIVED from an old tab in plain words', async () => {
     mockGroups(acme)
     mockRows()
@@ -264,6 +287,17 @@ describe('HistoryPage', () => {
     renderAt('/transactions?groupId=g1')
     expect(await screen.findByText('Loading…')).toBeTruthy()
     expect(screen.queryByText('All square')).toBeNull()
+  })
+
+  it('ignores dates in a hand-edited link that aren’t dates', async () => {
+    mockGroups(acme)
+    mockRows()
+    renderAt('/transactions?groupId=g1&from=2026-02-30&to=yesterday')
+    await screen.findByRole('region', { name: 'Transactions' })
+    const queries = listCalls().find((params) => params.tableId === 'transactions')?.queries ?? []
+    expect(
+      queries.some((q) => q.includes('"date"') && /greaterThanEqual|lessThanEqual/.test(q)),
+    ).toBe(false)
   })
 
   it('ignores an unknown kind or category in a hand-edited link', async () => {
@@ -402,6 +436,23 @@ describe('TransactionPage', () => {
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['balances', 'g1'] }))
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['history', 'g1'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] })
+  })
+
+  it('shows the note of a stored input the template schema doesn’t model, such as a bill’s', async () => {
+    mockGroups(acme)
+    mockRows([], shares)
+    getRow.mockResolvedValue(
+      row('t1', {
+        kind: 'bill',
+        inputJson: JSON.stringify({
+          bill: { status: 'due', dueOn: '2026-11-01' },
+          extra: 1,
+          note: 'Pay by Friday',
+        }),
+      }) as never,
+    )
+    renderAt('/transactions/t1')
+    expect(await screen.findByText('Pay by Friday')).toBeTruthy()
   })
 
   it('says “received” for the person a payment went to', async () => {
