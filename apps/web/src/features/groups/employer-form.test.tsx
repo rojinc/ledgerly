@@ -508,7 +508,7 @@ describe('archiving a group (#37)', () => {
     expect(within(dialog).getByRole('button', { name: 'Archive group' })).toBeTruthy()
   })
 
-  it('says it plainly, and reloads the group, when it was archived meanwhile', async () => {
+  it('closes and reloads the group, keeping focus on the page, when it was archived meanwhile', async () => {
     mockGroup(employer)
     call.mockResolvedValue({ ok: false, error: { code: 'ARCHIVED', message: 'Group is archived' } })
     const { queryClient } = renderAt('/groups/g1/settings')
@@ -516,9 +516,27 @@ describe('archiving a group (#37)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
     const dialog = screen.getByRole('alertdialog')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Archive group' }))
-    expect((await within(dialog).findByRole('alert')).textContent).toMatch(
-      /^This group has been archived, so it can’t be changed any more/,
-    )
+    // The page shows the archived notice once the group reloads: focus mustn't drop to <body>.
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g1'] })
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+  })
+
+  it('keeps focus in the dialog while archiving, and ignores Esc until it answers', async () => {
+    mockGroup(employer)
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/groups/g1/settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Archive group' }))
+    const dialog = screen.getByRole('alertdialog')
+    const confirm = within(dialog).getByRole('button', { name: 'Archive group' })
+    confirm.focus()
+    fireEvent.click(confirm)
+    const busy = await within(dialog).findByRole('button', { name: 'Archiving…' })
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    expect(document.activeElement).toBe(busy)
+    fireEvent.keyDown(dialog, { key: 'Escape' })
+    fireEvent.click(busy)
+    expect(screen.getByRole('alertdialog')).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(1)
   })
 })

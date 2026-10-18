@@ -28,20 +28,19 @@ export function ArchiveGroup({ group, onArchived }: { group: Groups; onArchived:
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
   const trigger = useRef<HTMLButtonElement>(null)
+  const headingId = useId()
   const archive = useMutation({
     mutationFn: async () => {
       const result = await callFunction<Groups>('groups', 'POST', `/groups/${group.$id}/archive`)
-      if (!result.ok) {
-        // Archived meanwhile, say in another tab: show it as it is now.
-        if (result.error.code === 'ARCHIVED') {
-          void queryClient.invalidateQueries({ queryKey: queryKeys.group(group.$id) })
-        }
-        throw new Error(writeErrorMessage(result.error))
-      }
+      // Archived meanwhile, say in another tab: the outcome the user asked for. Reload the group,
+      // and the page then shows the archived notice.
+      if (!result.ok && result.error.code === 'ARCHIVED') return null
+      if (!result.ok) throw new Error(writeErrorMessage(result.error))
       return result.data
     },
     onSuccess: async (archived) => {
-      queryClient.setQueryData(queryKeys.group(group.$id), archived)
+      if (archived) queryClient.setQueryData(queryKeys.group(group.$id), archived)
+      else void queryClient.invalidateQueries({ queryKey: queryKeys.group(group.$id) })
       // The button that opened the dialog is gone now: focus goes where the page says.
       setOpen(false)
       onArchived()
@@ -59,10 +58,10 @@ export function ArchiveGroup({ group, onArchived }: { group: Groups; onArchived:
 
   return (
     <section
-      aria-labelledby="archive-heading"
+      aria-labelledby={headingId}
       className="flex flex-col items-start gap-2 border-t border-border pt-4"
     >
-      <h2 id="archive-heading" className="font-medium">
+      <h2 id={headingId} className="font-medium">
         Archive group
       </h2>
       <p className="text-sm text-muted-foreground">Stop using this group but keep its history.</p>
@@ -148,10 +147,16 @@ function ConfirmArchive({
           </p>
         )}
         <div className="flex flex-wrap justify-end gap-3">
-          <Button ref={cancel} variant="outline" onClick={onCancel} disabled={pending}>
+          {/* aria-disabled, not disabled: a disabled button loses focus, which leaves the dialog. */}
+          <Button
+            ref={cancel}
+            variant="outline"
+            aria-disabled={pending}
+            onClick={() => !pending && onCancel()}
+          >
             Cancel
           </Button>
-          <Button onClick={onConfirm} disabled={pending}>
+          <Button aria-disabled={pending} onClick={() => !pending && onConfirm()}>
             {pending ? 'Archiving…' : 'Archive group'}
           </Button>
         </div>
