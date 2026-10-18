@@ -1,0 +1,1189 @@
+[
+  {
+    "$id": "persons",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "persons",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "userId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "displayName",
+        "type": "varchar",
+        "size": 100,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "mergedInto",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "deletedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_userId",
+        "type": "key",
+        "columns": ["userId"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_mergedInto",
+        "type": "key",
+        "columns": ["mergedInto"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "identities",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "identities",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "key",
+        "type": "varchar",
+        "size": 330,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "type",
+        "type": "string",
+        "format": "enum",
+        "elements": ["email", "phone"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "personId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "verified",
+        "type": "boolean",
+        "required": false,
+        "array": false,
+        "default": false
+      },
+      {
+        "key": "verifiedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "uniq_key",
+        "type": "unique",
+        "columns": ["key"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_personId",
+        "type": "key",
+        "columns": ["personId"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "profiles",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "profiles",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "personId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "timezone",
+        "type": "varchar",
+        "size": 64,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "region",
+        "type": "varchar",
+        "size": 16,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "currency",
+        "type": "varchar",
+        "size": 3,
+        "required": false,
+        "array": false,
+        "default": "AUD"
+      },
+      {
+        "key": "businessJson",
+        "type": "text",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "invoicePrefix",
+        "type": "varchar",
+        "size": 16,
+        "required": false,
+        "array": false,
+        "default": "INV-"
+      },
+      {
+        "key": "lastInvoiceNumber",
+        "type": "integer",
+        "required": false,
+        "array": false,
+        "default": 0
+      },
+      {
+        "key": "summaryFrequency",
+        "type": "string",
+        "format": "enum",
+        "elements": ["none", "weekly", "fortnightly", "monthly"],
+        "required": false,
+        "array": false,
+        "default": "none"
+      },
+      {
+        "key": "nextSummaryAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_nextSummaryAt",
+        "type": "key",
+        "columns": ["nextSummaryAt"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "groups",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "groups",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "type",
+        "type": "string",
+        "format": "enum",
+        "elements": ["personal", "house", "employer", "pair"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "name",
+        "type": "varchar",
+        "size": 100,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "ownerPersonId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "currency",
+        "type": "varchar",
+        "size": 3,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "timezone",
+        "type": "varchar",
+        "size": 64,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "region",
+        "type": "varchar",
+        "size": 16,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "statementCycle",
+        "type": "string",
+        "format": "enum",
+        "elements": ["none", "weekly", "fortnightly", "monthly"],
+        "required": false,
+        "array": false,
+        "default": "none"
+      },
+      {
+        "key": "cycleAnchor",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "nextCloseAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "settingsJson",
+        "type": "text",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "archivedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_nextCloseAt",
+        "type": "key",
+        "columns": ["nextCloseAt"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "members",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "members",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "personId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "displayName",
+        "type": "varchar",
+        "size": 100,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "role",
+        "type": "string",
+        "format": "enum",
+        "elements": ["admin", "member", "viewer"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "status",
+        "type": "string",
+        "format": "enum",
+        "elements": ["placeholder", "active", "left"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "joinedOn",
+        "type": "varchar",
+        "size": 10,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "leftOn",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "uniq_group_person",
+        "type": "unique",
+        "columns": ["groupId", "personId"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_person_status",
+        "type": "key",
+        "columns": ["personId", "status"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_groupId",
+        "type": "key",
+        "columns": ["groupId"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "transactions",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "transactions",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "kind",
+        "type": "string",
+        "format": "enum",
+        "elements": ["shift", "expense", "bill", "payment", "loan", "income", "adjustment"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "status",
+        "type": "string",
+        "format": "enum",
+        "elements": ["scheduled", "running", "due", "posted", "void"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "date",
+        "type": "varchar",
+        "size": 10,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "description",
+        "type": "varchar",
+        "size": 200,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "category",
+        "type": "varchar",
+        "size": 32,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "totalCents",
+        "type": "integer",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "inputJson",
+        "type": "text",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "dueOn",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "scheduleId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "overridden",
+        "type": "boolean",
+        "required": false,
+        "array": false,
+        "default": false
+      },
+      {
+        "key": "statementId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "receiptFileIds",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": true,
+        "default": null
+      },
+      {
+        "key": "startedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "remindedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "voidReason",
+        "type": "varchar",
+        "size": 200,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "createdBy",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "updatedBy",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_group_date",
+        "type": "key",
+        "columns": ["groupId", "date"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_group_status_date",
+        "type": "key",
+        "columns": ["groupId", "status", "date"],
+        "orders": ["ASC", "ASC", "ASC"]
+      },
+      {
+        "key": "idx_group_statement_date",
+        "type": "key",
+        "columns": ["groupId", "statementId", "date"],
+        "orders": ["ASC", "ASC", "ASC"]
+      },
+      {
+        "key": "idx_schedule_date",
+        "type": "key",
+        "columns": ["scheduleId", "date"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_statementId",
+        "type": "key",
+        "columns": ["statementId"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_status_date",
+        "type": "key",
+        "columns": ["status", "date"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_status_dueOn",
+        "type": "key",
+        "columns": ["status", "dueOn"],
+        "orders": ["ASC", "ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "shares",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "shares",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "transactionId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "personId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "givenCents",
+        "type": "integer",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "receivedCents",
+        "type": "integer",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "date",
+        "type": "varchar",
+        "size": 10,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "kind",
+        "type": "varchar",
+        "size": 16,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "category",
+        "type": "varchar",
+        "size": 32,
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_transactionId",
+        "type": "key",
+        "columns": ["transactionId"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_group_person_date",
+        "type": "key",
+        "columns": ["groupId", "personId", "date"],
+        "orders": ["ASC", "ASC", "ASC"]
+      },
+      {
+        "key": "idx_person_date",
+        "type": "key",
+        "columns": ["personId", "date"],
+        "orders": ["ASC", "ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "items",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "items",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "transactionId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "position",
+        "type": "integer",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "name",
+        "type": "varchar",
+        "size": 120,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "quantity",
+        "type": "double",
+        "required": false,
+        "array": false,
+        "default": 1
+      },
+      {
+        "key": "amountCents",
+        "type": "integer",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "category",
+        "type": "varchar",
+        "size": 32,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "splitJson",
+        "type": "text",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_transaction_position",
+        "type": "key",
+        "columns": ["transactionId", "position"],
+        "orders": ["ASC", "ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "schedules",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "schedules",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "kind",
+        "type": "string",
+        "format": "enum",
+        "elements": ["shift", "bill", "expense", "income"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "description",
+        "type": "varchar",
+        "size": 200,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "templateJson",
+        "type": "text",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "rrule",
+        "type": "varchar",
+        "size": 255,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "startsOn",
+        "type": "varchar",
+        "size": 10,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "endsOn",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "exdates",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": true,
+        "default": null
+      },
+      {
+        "key": "skipPublicHolidays",
+        "type": "boolean",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "autoPost",
+        "type": "boolean",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "horizonDays",
+        "type": "integer",
+        "required": false,
+        "array": false,
+        "default": 56
+      },
+      {
+        "key": "generatedThrough",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "nextRunAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "createdBy",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_nextRunAt",
+        "type": "key",
+        "columns": ["nextRunAt"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_groupId",
+        "type": "key",
+        "columns": ["groupId"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "statements",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "statements",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "type",
+        "type": "string",
+        "format": "enum",
+        "elements": ["invoice", "divide"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "periodStart",
+        "type": "varchar",
+        "size": 10,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "periodEnd",
+        "type": "varchar",
+        "size": 10,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "status",
+        "type": "string",
+        "format": "enum",
+        "elements": ["draft", "finalizing", "final", "void"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "number",
+        "type": "integer",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "displayNumber",
+        "type": "varchar",
+        "size": 32,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "issuedOn",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "dueOn",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "snapshotJson",
+        "type": "mediumtext",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "pdfFileId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "sentAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "finalizedBy",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_group_period",
+        "type": "key",
+        "columns": ["groupId", "periodStart"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_status",
+        "type": "key",
+        "columns": ["status"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "activity",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "activity",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "actorPersonId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "action",
+        "type": "varchar",
+        "size": 48,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "transactionId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "summary",
+        "type": "varchar",
+        "size": 255,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "changesJson",
+        "type": "text",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "at",
+        "type": "datetime",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_group_at",
+        "type": "key",
+        "columns": ["groupId", "at"],
+        "orders": ["ASC", "ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "invites",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "invites",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "memberId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "identityKey",
+        "type": "varchar",
+        "size": 330,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "tokenHash",
+        "type": "varchar",
+        "size": 64,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "channel",
+        "type": "string",
+        "format": "enum",
+        "elements": ["email", "sms"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "invitedBy",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "sentAt",
+        "type": "datetime",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "expiresAt",
+        "type": "datetime",
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "acceptedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "uniq_tokenHash",
+        "type": "unique",
+        "columns": ["tokenHash"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_invitedBy_sentAt",
+        "type": "key",
+        "columns": ["invitedBy", "sentAt"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_identity_sentAt",
+        "type": "key",
+        "columns": ["identityKey", "sentAt"],
+        "orders": ["ASC", "ASC"]
+      }
+    ]
+  }
+]

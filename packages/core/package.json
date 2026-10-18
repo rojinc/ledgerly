@@ -8,10 +8,11 @@
   "scripts": {
     "typecheck": "tsc --noEmit -p .",
     "test": "vitest run",
-    "coverage": "vitest run --coverage --coverage.include=src/** --coverage.exclude=src/constants/** --coverage.thresholds.100"
+    "coverage": "vitest run --coverage --coverage.include=src/** --coverage.exclude=src/constants/** --coverage.exclude=src/generated/** --coverage.thresholds.100"
   },
   "devDependencies": {
-    "@vitest/coverage-v8": "^5.0.5"
+    "@vitest/coverage-v8": "^5.0.5",
+    "appwrite": "^29.0.0"
   },
   "dependencies": {
     "@date-fns/tz": "^1.5.0"
