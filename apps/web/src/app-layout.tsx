@@ -19,9 +19,13 @@ export function AppLayout() {
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="border-b border-border">
-        <div className="mx-auto flex max-w-3xl items-center gap-4 px-4 py-2">
+        {/* On a phone the tabs get their own row, and scroll if they still don't fit. */}
+        <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-x-4 gap-y-1 px-4 py-2">
           <span className="font-semibold">Ledgerly</span>
-          <nav aria-label="Main" className="flex flex-1 gap-1">
+          <nav
+            aria-label="Main"
+            className="order-last -mx-1 flex w-full gap-1 overflow-x-auto px-1 sm:order-none sm:mx-0 sm:w-auto sm:flex-1 sm:px-0"
+          >
             {NAV.map((item) => (
               <NavLink
                 key={item.to}
@@ -30,7 +34,7 @@ export function AppLayout() {
                 end={item.to === '/'}
                 className={({ isActive }) =>
                   cn(
-                    'rounded-md px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    'shrink-0 rounded-md px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring',
                     isActive ? 'bg-muted font-medium' : 'text-muted-foreground hover:bg-muted',
                   )
                 }
@@ -42,6 +46,7 @@ export function AppLayout() {
           <Button
             variant="ghost"
             size="sm"
+            className="ml-auto sm:ml-0"
             disabled={logOut.isPending}
             onClick={() => logOut.mutate()}
           >
