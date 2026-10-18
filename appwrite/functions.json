@@ -77,6 +77,6 @@
     "timeout": 300,
     "enabled": true,
     "logging": true,
-    "scopes": ["rows.read", "rows.write", "files.read", "files.write"]
+    "scopes": ["rows.read", "rows.write", "files.read", "files.write", "teams.read"]
   }
 ]
