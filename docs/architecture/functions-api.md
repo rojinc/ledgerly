@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |

@@ -5,7 +5,6 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { randomId } from '@ledgerly/server/identity/random-id'
 import { Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
@@ -41,19 +40,19 @@ export async function archiveGroup(
         action: 'update',
         tableId: TABLES.groups,
         rowId: groupId,
-        // The statements cron selects groups by nextCloseAt, so an archived group leaves it. The
-        // fresh `rev` is the group guard every ledger write also stages (ledger.md#concurrency).
-        data: { archivedAt: now.toISOString(), nextCloseAt: null, rev: randomId() },
+        // The statements cron selects groups by nextCloseAt, so an archived group leaves it.
+        data: { archivedAt: now.toISOString(), nextCloseAt: null },
       })
       // Stage, then check (conventions.md): an archive committed since the first read would
       // get a second group.archived. The retry returns the stored group instead.
       const current = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
       if (current?.archivedAt) throw tryAgain()
       // A timer in an archived group can't be stopped (scheduling.md#timer-shifts). A start
-      // also guards the group row, so one that commits after this read fails this commit, and
-      // one that commits after this archive fails its own and then finds the group archived.
+      // guards the group row too (ledger.md#concurrency), and `archivedAt` is a real change to
+      // it: a start that commits after this read fails this commit, one staged before this
+      // commits fails its own, and one staged after sees `archivedAt`. Its rerun gets ARCHIVED.
       if (await hasRunningTimer(db, groupId)) {
-        throw new AppError('CONFLICT', 'A timer is running in this group. Stop it first.')
+        throw new AppError('CONFLICT', 'A timer is running in this group. Stop or void it first.')
       }
       await tx.write(
         activityWrite(groupId, person.$id, 'group.archived', `${group.name} archived`, now),

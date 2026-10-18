@@ -17,7 +17,7 @@ import {
 } from './harness'
 
 const CLOSE_AT = '2026-10-31T13:00:00.000Z'
-const TIMER_RUNNING = 'A timer is running in this group. Stop it first.'
+const TIMER_RUNNING = 'A timer is running in this group. Stop or void it first.'
 
 /** p1's employer group g2, with Acme as the placeholder employer, and `shifts` in it. */
 function employerFixture(shifts: ReturnType<typeof shift>[] = []) {
