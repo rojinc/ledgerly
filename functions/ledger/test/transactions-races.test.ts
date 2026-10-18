@@ -107,6 +107,45 @@ describe('a request that read the row before another one committed', () => {
     expect(rows.shares(db)).toEqual([])
   })
 
+  it('a due bill naming a member removed before the commit runs again, though it has no shares', async () => {
+    const db = seed()
+    beforeCommit(db, () => commitNow(db, [removeCara]))
+    const response = await call(db, 'POST', '/transactions', {
+      id: 'b1',
+      groupId: 'house',
+      kind: 'bill',
+      date: '2026-10-20',
+      description: 'Electricity',
+      totalCents: 12000,
+      split: { mode: 'equal', personIds: ['alice', 'bob', 'cara'] },
+      bill: { status: 'due', dueOn: '2026-10-25' },
+    })
+    // Posting it later would give a share to someone with no member row (I-3).
+    expect(response.body.error?.code).toBe('VALIDATION_FAILED')
+    expect(rows.transactions(db)).toEqual([])
+  })
+
+  it('someone named with nothing to pay or get is guarded too', async () => {
+    const db = seed()
+    beforeCommit(db, () => commitNow(db, [removeCara]))
+    const response = await call(
+      db,
+      'POST',
+      '/transactions',
+      expense({
+        split: {
+          mode: 'exact',
+          amounts: [
+            { personId: 'bob', cents: 9000 },
+            { personId: 'cara', cents: 0 },
+          ],
+        },
+      }),
+    )
+    expect(response.body.error?.code).toBe('VALIDATION_FAILED')
+    expect(rows.transactions(db)).toEqual([])
+  })
+
   it('a currency change between the check and the commit makes the write run again', async () => {
     const db = seed()
     beforeCommit(db, () =>

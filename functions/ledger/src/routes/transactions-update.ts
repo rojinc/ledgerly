@@ -104,7 +104,7 @@ export const updateTransaction = route(
             throw new Unchanged()
           }
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
-          await guardGroupAndMembers(tx, db, membership.group, ledger, planned.shares)
+          await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
           await tx.write(
             { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
             ...replaceRows(TABLES.shares, oldShares, shareData, permissions),

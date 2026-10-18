@@ -72,7 +72,7 @@ export const createTransaction = route('POST', '/transactions', ({ userId, body,
     const row = { $id: input.id, ...columns }
     const permissions = teamRead(input.groupId)
     await withTransaction(db, async (tx) => {
-      await guardGroupAndMembers(tx, db, membership.group, ledger, planned.shares)
+      await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
       await tx.write(
         {
           action: 'create',

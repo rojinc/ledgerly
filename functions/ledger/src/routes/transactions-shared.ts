@@ -17,6 +17,7 @@ import { formatMoney } from '@ledgerly/core/money/format'
 import { localDateSchema } from '@ledgerly/core/schemas/common'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import {
+  everyPersonId,
   type TransactionInput,
   type TransactionTemplate,
   transactionTemplateSchema,
@@ -196,7 +197,7 @@ export async function loadLedger(db: Db, membership: Membership): Promise<Ledger
 }
 
 /**
- * Guards the group row and the member row of everyone in `shares` (ledger.md#concurrency):
+ * Guards the group row and the member row of everyone in `people` (ledger.md#concurrency):
  * stages a write of a column that never changes to each, then reads them in the transaction.
  * A member row removed meanwhile (I-3), an archive or a currency change reruns the route; one
  * that commits after this makes the commit fail with 409, which reruns it too.
@@ -206,18 +207,18 @@ export async function guardGroupAndMembers(
   db: Db,
   group: Groups,
   ledger: Ledger,
-  shares: readonly Share[],
+  people: readonly string[],
 ): Promise<void> {
-  const memberRows = shares.map((share) => ledger.memberRows.get(share.personId))
+  const memberRows = people.map((personId) => ledger.memberRows.get(personId))
   if (memberRows.some((rowId) => rowId === undefined)) throw new Raced()
   try {
     await tx.write(
       { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { type: group.type } },
-      ...shares.map((share, index) => ({
+      ...people.map((personId, index) => ({
         action: 'update' as const,
         tableId: TABLES.members,
         rowId: memberRows[index] as string,
-        data: { personId: share.personId },
+        data: { personId },
       })),
     )
     const read = { databaseId: DATABASE_ID, transactionId: tx.id }
@@ -242,6 +243,9 @@ export type Plan = {
   status: TransactionStatus
   totalCents: number
   shares: Share[]
+  // Everyone the transaction names or would give a share, even while it has none: posting a
+  // due bill later needs them all to still be members (I-3).
+  people: string[]
   items: ItemData[]
   inputJson: string
   dueOn: string | null
@@ -293,6 +297,7 @@ export function plan(
     status,
     totalCents: built.totalCents,
     shares,
+    people: [...new Set([...everyPersonId(input), ...built.shares.map((share) => share.personId)])],
     items: (input.items ?? []).map((item, position) => ({
       position,
       name: item.name,
