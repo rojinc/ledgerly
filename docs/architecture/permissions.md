@@ -68,7 +68,7 @@ Every function route that changes data starts with the same steps (helper `requi
 4. Check the role against the table above. If it fails, return `FORBIDDEN`.
 5. If the group is archived, return `ARCHIVED`.
 
-The exceptions are routes for people who aren't joined members yet: `GET /groups/pending` and `POST /groups/{id}/join` (they need the caller's own `placeholder` member row instead), and the identity routes.
+Routes that don't act as a joined member of an existing group skip these steps: `groups POST /groups`, `identity GET /groups/pending` and `POST /groups/{id}/join` (which need the caller's own member row instead), and the other identity routes except `POST /invites`, which checks the role as in step 4.
 
 Scheduled jobs run with the server key and no caller. They write as the system and record `actorPersonId = null` in `activity`.
 

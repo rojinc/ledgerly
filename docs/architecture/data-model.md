@@ -77,7 +77,7 @@ Row ID = the Appwrite user ID. One per user.
 | `invoicePrefix` | varchar(16) | default `INV-` |
 | `lastInvoiceNumber` | integer | default 0. Only the `statements` function changes it, with an atomic increment. |
 | `summaryFrequency` | enum(none, weekly, fortnightly, monthly) | default `none` |
-| `nextSummaryAt` | datetime? | Set by `identity` when `summaryFrequency` changes (empty for `none`), then moved forward by the scheduler |
+| `nextSummaryAt` | datetime? | Set by `identity` when `summaryFrequency` or `timezone` changes (empty for `none`), then moved forward by the scheduler ([step 4](scheduling.md#step-4-summary-emails)) |
 
 Indexes: `idx_nextSummaryAt (nextSummaryAt)`.
 Permissions: `read("user:<userId>")`. Writes go through `identity PATCH /profile`, except `lastInvoiceNumber` (`statements`) and `nextSummaryAt` (also `scheduler`).

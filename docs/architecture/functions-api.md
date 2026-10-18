@@ -84,7 +84,7 @@ type TransactionInput = {
     startTime?: string          // 'HH:mm', for display
     endTime?: string
   }
-  bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate }
+  bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate } // dueOn required when status is 'due'; schedule templates leave it out
   payment?: { fromPersonId: string; toPersonId: string }
   adjustment?: { shares: { personId: string; givenCents: number; receivedCents: number }[]; reason: string }
   receiptFileIds?: string[]
@@ -136,15 +136,10 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn? }` | `member` | admin |
 | `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares. Also removes any team membership. |
 | `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin |
-| `GET /groups/pending` | none | `{ groups: { id, type, name }[] }` | the user: groups where their person is a `placeholder` member |
-| `POST /groups/{id}/join` | none | `{ group, member }` | the user, if their person is a `placeholder` member of the group |
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
 Archiving is permanent in v1; there is no unarchive route. A `personal` group can't be archived (`VALIDATION_FAILED`).
-
-`/groups/pending` and `/join` are how someone who already had an account when they were added joins ([Joining a group](identity-and-invites.md#joining-a-group)). They don't use `requireMember()`, because the caller isn't a joined member yet. `/join` sets the member `active` and adds the caller to the group's team; without a `placeholder` member row for the caller's person it returns `NOT_A_MEMBER`, and for an archived group `ARCHIVED`. Archived groups aren't listed as pending.
-
 ## identity
 
 | Route | Body | Returns | Who |
@@ -154,6 +149,13 @@ Archiving is permanent in v1; there is no unarchive route. A `personal` group ca
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | see [permissions](permissions.md) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
+| `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt }[] }` | the user |
+| `POST /groups/{id}/join` | none | `{ group, member }` | the user |
+
+`/groups/pending` and `/join` are how someone who already had an account when they were added joins a group ([Joining a group](identity-and-invites.md#joining-a-group)). Both act only on the caller's own person:
+
+- `/groups/pending` lists the groups where that person is a `placeholder` member (`members.idx_person_status`), archived ones included.
+- `/join` reads the caller's member row in that group first, so someone who isn't in the group learns nothing about it; with no row it returns `NOT_A_MEMBER`. It then runs the steps in [Joining a group](identity-and-invites.md#joining-a-group): team first, then `active` (or `left` if `leftOn` is set) with a `member.joined` row. If the row is already `active` or `left`, it returns `{ group, member }` unchanged and doesn't touch the team, so a retry is safe. Joining writes no ledger data, so it works on archived groups, the same as claim and invites.
 
 Details: [People, identity and invites](identity-and-invites.md).
 

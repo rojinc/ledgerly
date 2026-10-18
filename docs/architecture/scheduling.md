@@ -80,13 +80,13 @@ Occurrences are written in batches of at most 90 operations per database transac
 - **Other `scheduled` kinds** (expense, income): post when `date <= localToday` and `autoPost` is set.
 - Edited (`overridden`) occurrences auto-post too, with the edited values. Voided ones never do.
 
-Query with `idx_status_date` for dates from 7 days ago up to the UTC date plus one day (some timezones are ahead), then check each group's local date before posting. The 7-day floor matters: shifts waiting for manual confirmation stay `scheduled` for as long as the user ignores them, and without a floor every run would re-read all of them. An auto-post occurrence missed by more than 7 days (a long outage) waits for the user.
+Query with `idx_status_date` (autopay bills: `idx_status_dueOn`) for dates from 7 days ago up to the UTC date plus one day (some timezones are ahead), then check each group's local date before posting. Skip transactions in archived groups; they stay as they are. The 7-day floor matters: shifts waiting for manual confirmation stay `scheduled` for as long as the user ignores them, and without a floor every run would re-read all of them. An auto-post occurrence missed by more than 7 days (a long outage) waits for the user.
 
 ### Step 3: reminders
 
 | Reminder | Condition | Sent to |
 | --- | --- | --- |
-| Bill due soon | status `due`, `dueOn` within 2 days, `remindedAt` empty | group admins (personal: the owner) |
+| Bill due soon | status `due`, `dueOn` within 2 days, `remindedAt` empty | joined admins with an account (personal: the owner) |
 | Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost`, `remindedAt` empty | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
@@ -94,15 +94,21 @@ Set `remindedAt` in the same write that queues the email, so each reminder goes 
 
 ### Step 4: summary emails
 
-Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a summary goes out at most once), then send the summary for the period that just ended ([ledger reports](ledger.md#reports)). All times are 07:00 in the profile's timezone:
+Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a summary goes out at most once), then send the summary for the period that just ended ([ledger reports](ledger.md#reports)). Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local:
 
 | Frequency | Sent | Covers |
 | --- | --- | --- |
 | `weekly` | every Monday | the previous Monday to Sunday |
-| `fortnightly` | every second Monday, counting from the first Monday after the setting changed | the 14 days before |
+| `fortnightly` | every 14 days, starting on the first Monday 07:00 after the frequency was set | the 14 days before (Monday to the Sunday before the send) |
 | `monthly` | the 1st of each month | the previous calendar month |
 
-`none` clears `nextSummaryAt`. Changing the frequency (`PATCH /profile`) sets `nextSummaryAt` to the next send time by the same rule. Core's `nextSummaryAt()` and `summaryPeriod()` implement the table, so both places agree. The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
+- When `summaryFrequency` changes to a different value, or `timezone` changes, `identity PATCH /profile` sets `nextSummaryAt` to the first send time strictly after now. `none` clears it.
+- After a send, the scheduler sets it to the next send time strictly after now: by the table for `weekly` and `monthly`; for `fortnightly`, the old send date plus 14 days, repeated until it is in the future. So a late run skips a missed summary but keeps the cycle.
+- The summary covers `summaryPeriod(frequency, D)`, where D is the old `nextSummaryAt`'s local date, so a late run still reports the right period.
+- Send times are worked out as local dates, then 07:00 on that date is converted to UTC (as `closeAtFor` does). Never add hours, or DST would move the send time.
+- Core's `nextSummaryAt(frequency, timeZone, now, previous?)` and `summaryPeriod(frequency, D)` implement this, so `identity` and the scheduler agree.
+
+The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
 
 ## Schedule routes
 

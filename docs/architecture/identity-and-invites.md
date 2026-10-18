@@ -75,7 +75,7 @@ A member joins a group only through the person's own action ([D-016](decisions.m
 
 - **Claim:** verifying an email or phone joins every group they were added to while they had no account.
 - **Accepting an invite** joins that invite's group.
-- **Joining from the app:** someone who already had an account when they were added sees the group as pending and joins it themselves. The routes are `groups GET /groups/pending` and `POST /groups/{id}/join` ([Functions API](functions-api.md#groups)); they ship with pair groups in M2.
+- **Joining from the app:** someone who already had an account when they were added sees the group as pending and joins it themselves. The routes are `identity GET /groups/pending` and `identity POST /groups/{id}/join` ([Functions API](functions-api.md#identity)); they ship with pair groups in M2 ([#34](https://github.com/rojinc/ledgerly/issues/34)).
 
 Joining, done by the `identity` function, in this order so a retry can always finish it:
 
@@ -84,7 +84,7 @@ Joining, done by the `identity` function, in this order so a retry can always fi
 
 All three ways write the same row, so the group can't tell which one happened.
 
-Until they join, the person doesn't see the group and gets no notifications from it (an invite or an invoice sent to them on purpose is different). Records can still name them, exactly as for any placeholder. Before they join, the group can't tell whether they have an account. After they join, it may be able to (a merge changes their person ID); that's fine, because they chose to join.
+Until they join, the person doesn't see the group's data (only its name and type, in their pending list) and gets no notifications from it (an invite or an invoice sent to them on purpose is different). Records can still name them, exactly as for any placeholder. Before they join, the group can't tell whether they have an account. After they join, it may be able to (a merge changes their person ID); that's fine, because they chose to join.
 
 ## Merging two persons
 
