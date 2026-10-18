@@ -110,7 +110,7 @@ Each route parses its body with its schema from `packages/core/src/schemas/` bef
 - **Bills** (one-off transactions, not schedule templates): a `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`.
 - **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it.
 - **Lists:** at most 10 `receiptFileIds` (the ledger function checks each file) and 366 `exdates`.
-- **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365.
+- **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365. `region` must be a country or state the public holiday library knows (`publicHolidayChecker`), checked by the function on create and `PATCH`.
 - **Business details:** `abn` (11), `bsb` (6) and `accountNumber` (up to 12) are stored as digits only. Spaces and dashes are dropped.
 - **Schedules:** `rrule` is one of the shapes in [Rules the UI builds](scheduling.md#rules-the-ui-builds): weekly on plain `BYDAY` codes with an optional `INTERVAL` of 1–4, or monthly on a `BYMONTHDAY` of 1–28 or `-1`, either with an optional `COUNT` (1–500) or `UNTIL=YYYYMMDD`, not both. `UNTIL` is not before `startsOn`, and an unknown rule part gets the fixed message "Unsupported rule part". `startsOn`, `endsOn` and `exdates` are on or after 2000-01-01. The preview `count` is 1–100.
 - **Invites:** `POST /invites/accept` takes any token text up to 128 characters. A malformed token is just an unknown one, so it returns `INVITE_INVALID`.
@@ -156,7 +156,9 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
-Archiving is permanent in v1; there is no unarchive route. A `personal` group can't be archived (`VALIDATION_FAILED`).
+When `POST /groups` leaves them out, `currency`, `timezone` and `region` come from the creator's profile, and `settings` takes its defaults ([data model](data-model.md#groups)). In a house, a member who isn't an admin can add people only with the default role.
+
+Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseAt`, so no more statements are drafted. A `personal` group can't be archived (`VALIDATION_FAILED`).
 
 ## identity
 
