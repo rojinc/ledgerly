@@ -3,9 +3,11 @@ import type { ReactNode } from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
+import { LinkedGroupsNotice } from './linked-groups-notice'
+import { useBootstrap } from './use-bootstrap'
 import { useCurrentUser } from './use-current-user'
 
-/** Shows loading or a retryable error while we don't know who is signed in. */
+/** Shows loading, or a retryable error, until the query has data. */
 function UserGate({ query, children }: { query: UseQueryResult; children: ReactNode }) {
   if (query.isPending) {
     return (
@@ -29,17 +31,30 @@ function UserGate({ query, children }: { query: UseQueryResult; children: ReactN
   return children
 }
 
-/** Renders child routes only for a signed-in user; everyone else goes to /login. */
+/**
+ * Renders child routes only for a signed-in user whose person and profile exist
+ * (`identity /bootstrap`); everyone else goes to /login.
+ */
 export function RequireAuth() {
   const query = useCurrentUser()
   const { pathname, search, hash } = useLocation()
   return (
     <UserGate query={query}>
       {query.data ? (
-        <Outlet />
+        <Bootstrapped />
       ) : (
         <Navigate to="/login" replace state={{ from: pathname + search + hash }} />
       )}
+    </UserGate>
+  )
+}
+
+function Bootstrapped() {
+  const bootstrap = useBootstrap()
+  return (
+    <UserGate query={bootstrap}>
+      <LinkedGroupsNotice count={bootstrap.data?.linkedGroupIds.length ?? 0} />
+      <Outlet />
     </UserGate>
   )
 }

@@ -1,0 +1,40 @@
+import { useBootstrap } from '../auth/use-bootstrap'
+import { useCurrentUser } from '../auth/use-current-user'
+import { BusinessForm } from './business-form'
+import { ProfileForm } from './profile-form'
+import { usePerson, useProfile, useUpdateProfile } from './use-profile'
+
+export function ProfilePage() {
+  // RequireAuth renders this page only once both have loaded.
+  const userId = useCurrentUser().data?.$id ?? ''
+  const personId = useBootstrap().data?.personId ?? ''
+  const profile = useProfile(userId)
+  const person = usePerson(personId)
+  const update = useUpdateProfile(userId, personId)
+
+  if (profile.isError || person.isError) {
+    return (
+      <p role="alert" className="text-destructive">
+        We couldn’t load your profile. Reload the page to try again.
+      </p>
+    )
+  }
+  if (!profile.data || !person.data) {
+    return (
+      <p role="status" className="text-muted-foreground">
+        Loading…
+      </p>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-10">
+      <h1 className="text-2xl font-semibold">Profile</h1>
+      <ProfileForm
+        profile={profile.data}
+        displayName={person.data.displayName}
+        onSave={update.mutateAsync}
+      />
+      <BusinessForm profile={profile.data} onSave={update.mutateAsync} />
+    </div>
+  )
+}

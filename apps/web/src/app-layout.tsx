@@ -7,7 +7,10 @@ import { Alert } from './ui/alert'
 import { Button } from './ui/button'
 
 // Only screens that exist. Each feature adds its own entry when it lands.
-const NAV = [{ to: '/', label: 'Home' }]
+const NAV = [
+  { to: '/', label: 'Home' },
+  { to: '/profile', label: 'Profile' },
+]
 
 export function AppLayout() {
   const logOut = useLogOut()
