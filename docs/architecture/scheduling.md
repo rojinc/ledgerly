@@ -136,7 +136,7 @@ Changes to occurrences themselves (edit, void, post) go through the `ledger` fun
 
 ## Timer shifts
 
-- `ledger POST /timer/start` creates a `shift` with status `running`, `startedAt = now`, `date = localToday`, the local start time as `startTime`, 0 minutes, and the body's rate, else the group's default rate. The description defaults to "Shift". It has no shares until it stops ([I-6](ledger.md#invariants)). Like other ledger writes, it's `LOCKED` while a statement covering today is finalizing.
+- `ledger POST /timer/start` (only the group's owner, the worker a shift pays) creates a `shift` with status `running`, `startedAt = now`, `date = localToday`, the local start time as `startTime`, 0 minutes, and the body's rate, else the group's default rate. The description defaults to "Shift". It has no shares until it stops ([I-6](ledger.md#invariants)). Like other ledger writes, it's `LOCKED` while a statement covering today is finalizing.
 - `ledger POST /timer/stop` sets the end time (`endTime`), works out minutes (the whole minutes since `startedAt`, minus break minutes) and posts. The shift keeps the date it started on, even past midnight.
   - A break longer than the time the timer ran is `VALIDATION_FAILED`.
   - So are more than 1440 paid minutes. A timer left running that long is voided and added by hand.

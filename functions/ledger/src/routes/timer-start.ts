@@ -49,6 +49,10 @@ export const startTimer = route('POST', '/timer/start', ({ userId, body, db, hea
     const { group } = membership
     const settings = groupSettingsSchema.parse(JSON.parse(group.settingsJson))
     if (settings.type !== 'employer') invalid('Only an employer group has a timer.')
+    // A shift always pays the group's owner (ledger.md#transaction-kinds), so only they time it.
+    if (membership.person.$id !== group.ownerPersonId) {
+      throw new AppError('FORBIDDEN', 'Only the person this group pays can start its timer.')
+    }
     const now = new Date()
     const person = membership.person.$id
     const input: TransactionInput = {

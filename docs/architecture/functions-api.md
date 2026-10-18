@@ -127,7 +127,7 @@ All money writes.
 | `PATCH /transactions/{id}` | `TransactionInput` (same `id`) | `TransactionView` | creator or admin; not locked |
 | `POST /transactions/{id}/post` | `{ date?, payers?, shift?: { minutes?, rateCents?, breakMinutes? } }` | `TransactionView` | creator or admin; status `scheduled` or `due` |
 | `POST /transactions/{id}/void` | `{ reason: string }` | `TransactionView` | creator or admin; not locked |
-| `POST /timer/start` | `{ id, groupId, rateCents?, description? }` | `TransactionView` | admin (employer group) |
+| `POST /timer/start` | `{ id, groupId, rateCents?, description? }` | `TransactionView` | the group's owner (employer group) |
 | `POST /timer/stop` | `{ transactionId, breakMinutes? }` | `TransactionView` | the person who started it |
 | `GET /groups/{groupId}/balances` | none | `{ people: { personId, netCents }[], transfers: { fromPersonId, toPersonId, cents }[] }` | any member |
 

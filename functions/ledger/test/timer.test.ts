@@ -182,8 +182,8 @@ describe('POST /timer/start', () => {
     expect((await startTimer(db, start({ id: 'sh1' }))).body.error?.code).toBe('CONFLICT')
   })
 
-  it('refuses the same ID from another person', async () => {
-    // Acme has joined the group as an admin.
+  it('is only for the group’s owner, even against another admin', async () => {
+    // Acme has joined the group as an admin. A shift always pays Sam.
     const db = seed({
       members: [
         ...MEMBERS.filter((row) => row.$id !== 'm-acme'),
@@ -191,9 +191,13 @@ describe('POST /timer/start', () => {
       ],
     })
     await commitNow(db, [update('persons', 'acme', { userId: 'u-acme' })])
+    const acme = await call(db, 'POST', '/timer/start', start({ id: 'tm2' }), 'u-acme')
+    expect(acme.body.error?.code).toBe('FORBIDDEN')
+    expect(rows.transactions(db)).toEqual([])
+    // Nor can they retry Sam's start.
     await startTimer(db)
-    const response = await call(db, 'POST', '/timer/start', start(), 'u-acme')
-    expect(response.body.error?.code).toBe('CONFLICT')
+    const retry = await call(db, 'POST', '/timer/start', start(), 'u-acme')
+    expect(retry.body.error?.code).toBe('FORBIDDEN')
     expect(rows.transactions(db)).toHaveLength(1)
   })
 
