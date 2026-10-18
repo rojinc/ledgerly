@@ -5,6 +5,7 @@ import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tab
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
 
 // Small helpers shared by the statements routes. groups and identity have copies of the first
@@ -189,9 +190,12 @@ export async function latestFinal(db: Db, groupId: string): Promise<Statements |
   return rows[0]
 }
 
-/** A no-op write to the group row (`type` never changes), to serialize with other writes. */
+/**
+ * A guard write to the group row: a fresh `rev`, so it is a real change that fails, or is
+ * failed by, any other write to the group at the same moment (ledger.md#concurrency).
+ */
 export function groupGuard(group: Groups): Write {
-  return { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { type: group.type } }
+  return { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { rev: randomId() } }
 }
 
 /**

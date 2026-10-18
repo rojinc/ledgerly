@@ -103,7 +103,7 @@ async function requireOldestUnfinished(db: Db, statement: Statements): Promise<v
 }
 
 /**
- * Step 1: `finalizing`, and a write to the group row in the same transaction, so a ledger write
+ * Step 1: `finalizing`, and a guard write to the group row in the same transaction, so a ledger write
  * that checked for finalizing statements before this fails its commit (ledger.md#concurrency),
  * and so does a void or reissue in the group. Rule 5 is checked again after staging.
  */

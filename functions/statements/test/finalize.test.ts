@@ -7,6 +7,7 @@ import {
   job,
   NOW,
   ok,
+  op,
   payment,
   rowsOf,
   shift,
@@ -94,8 +95,28 @@ describe('POST /statements/{id}/finalize', () => {
         rowId: 'st1',
         data: { status: 'finalizing' },
       }),
-      expect.objectContaining({ tableId: 'groups', rowId: 'job', data: { type: 'employer' } }),
+      expect.objectContaining({
+        tableId: 'groups',
+        rowId: 'job',
+        data: { rev: expect.stringMatching(/^[a-z0-9]{20}$/) },
+      }),
     ])
+  })
+
+  it('fails a ledger write staged before it once finalizing commits (ledger.md#concurrency)', async () => {
+    const services = fakes(october())
+    // The ledger's group guard, staged by a write that checked for finalizing statements first.
+    const { $id } = await services.db.createTransaction()
+    await services.db.createOperations({
+      transactionId: $id,
+      operations: [op('groups', 'job', { rev: 'ledgerguard000000000' })],
+    })
+    await finalize(services)
+    await expect(
+      services.db.updateTransaction({ transactionId: $id, commit: true }),
+    ).rejects.toMatchObject({
+      code: 409,
+    })
   })
 
   it('gives the same result when finalized twice, numbering and uploading once', async () => {

@@ -55,7 +55,7 @@ Drafts are **not** locked. Users can keep adding and fixing transactions. `POST 
 
 Admin only. Each step checks whether it has already been done, so an interrupted finalize can be called again safely.
 
-1. Set status `finalizing`, and stage a write to the group row in the same database transaction ([ledger concurrency](ledger.md#concurrency)). Core rule 5 is checked again after staging. While any statement in a group is `finalizing`, the `ledger` function refuses writes to that group's transactions dated on or before the period end (`LOCKED`).
+1. Set status `finalizing`, with a guard write to the group row (a fresh `rev`) in the same database transaction ([ledger concurrency](ledger.md#concurrency)). Core rule 5 is checked again after staging. While any statement in a group is `finalizing`, the `ledger` function refuses writes to that group's transactions dated on or before the period end (`LOCKED`).
 2. **Invoices only:** if `number` is empty, increment the issuer's `profiles.lastInvoiceNumber` and store the result in `number`, with `displayNumber` = prefix + number padded to 4 digits (`INV-0010`), in **one** database transaction. The profile row is staged before it's checked, so two finalizes for one worker can't take the same number, and no number is lost.
 3. Recalculate the snapshot from: posted transactions with `statementId` empty and `date <= periodEnd`, plus any already locked to this statement (from an interrupted run).
 4. Lock: set `statementId` on those transactions, in batches of at most 90 operations per database transaction.
@@ -72,7 +72,7 @@ Admin only. Each step checks whether it has already been done, so an interrupted
 
 ### 4. Void (`POST /statements/{id}/void`)
 
-Admin only, and only for the **latest** final statement in the group, so openings never break. It stages `void` with a write to the group row, then checks the stored rows: still the latest final, and no statement of the group `finalizing` (`CONFLICT`). Then it unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
+Admin only, and only for the **latest** final statement in the group, so openings never break. It stages `void` with a guard write to the group row (a fresh `rev`), then checks the stored rows: still the latest final, and no statement of the group `finalizing` (`CONFLICT`). Then it unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
 
 To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`. The range must end after the latest final statement (`VALIDATION_FAILED` otherwise): a draft before it could never be finalized and would block every later one. While that draft is unfinished, asking again returns it.
 
