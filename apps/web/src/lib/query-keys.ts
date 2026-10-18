@@ -7,4 +7,6 @@ export const queryKeys = {
   group: (groupId: string) => ['group', groupId] as const,
   myMember: (groupId: string, personId: string) => ['member', groupId, personId] as const,
   balances: (groupId: string) => ['balances', groupId] as const,
+  calendar: (userId: string, start: string, end: string, groupIds: readonly string[]) =>
+    ['calendar', userId, start, end, ...groupIds] as const,
 }
