@@ -1,0 +1,209 @@
+import type { Groups } from '@ledgerly/core/generated/rows'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { createMemoryRouter, RouterProvider } from 'react-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { tablesDB } from '../../lib/appwrite'
+import { useGroups } from '../groups/use-groups'
+import { CalendarPage, groupColour } from './calendar-page'
+
+vi.mock('../../lib/appwrite', () => ({ DATABASE_ID: 'main', tablesDB: { listRows: vi.fn() } }))
+vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
+vi.mock('../profile/use-profile', () => ({
+  useProfile: () => ({ data: { timezone: 'Australia/Sydney' } }),
+}))
+vi.mock('../groups/use-groups', () => ({ useGroups: vi.fn() }))
+
+const listRows = vi.mocked(tablesDB.listRows)
+const groupsHook = vi.mocked(useGroups)
+
+const GROUPS = [
+  { $id: 'g1', name: 'Acme Cafe', currency: 'AUD' },
+  { $id: 'g2', name: 'Personal', currency: 'AUD' },
+] as Groups[]
+
+const ITEMS = [
+  {
+    $id: 't1',
+    groupId: 'g1',
+    kind: 'shift',
+    status: 'scheduled',
+    date: '2026-10-08',
+    description: 'Shift',
+    totalCents: 12500,
+  },
+  {
+    $id: 't2',
+    groupId: 'g1',
+    kind: 'shift',
+    status: 'posted',
+    date: '2026-10-01',
+    description: 'Morning shift',
+    totalCents: 10000,
+  },
+  {
+    $id: 't3',
+    groupId: 'g2',
+    kind: 'bill',
+    status: 'due',
+    date: '2026-10-08',
+    description: 'Rent',
+    totalCents: 50000,
+  },
+  {
+    $id: 't4',
+    groupId: 'g2',
+    kind: 'expense',
+    status: 'void',
+    date: '2026-10-08',
+    description: 'Taxi',
+    totalCents: 2050,
+  },
+]
+
+function renderAt(path: string) {
+  const router = createMemoryRouter([{ path: '/calendar', element: <CalendarPage /> }], {
+    initialEntries: [path],
+  })
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  )
+  return router
+}
+
+// The queries of the nth listRows call, parsed.
+function queriesOf(call = 0): unknown[] {
+  const params = listRows.mock.calls[call]?.[0] as { queries?: string[] } | undefined
+  return (params?.queries ?? []).map((query) => JSON.parse(query))
+}
+
+function day(name: RegExp) {
+  return screen.getByRole('button', { name })
+}
+
+beforeEach(() => {
+  // 07:00 on Sunday 18 October 2026 in Sydney, still the 17th in UTC.
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-10-17T20:00:00.000Z'))
+  groupsHook.mockReturnValue({ data: GROUPS, isError: false } as ReturnType<typeof useGroups>)
+  listRows.mockResolvedValue({ total: ITEMS.length, rows: ITEMS } as never)
+})
+
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+  listRows.mockReset()
+})
+
+describe('CalendarPage', () => {
+  it("opens on this month in the profile's time zone, Monday first, with today marked", async () => {
+    renderAt('/calendar')
+    expect(screen.getByRole('heading', { name: /October 2026/ })).toBeTruthy()
+    // The 18th in Sydney, though it's still the 17th in UTC.
+    expect(
+      await screen.findByRole('button', {
+        name: /^Sunday, October 18, 0 items|^Sunday 18 October, 0 items/,
+      }),
+    ).toBeTruthy()
+    const buttons = screen.getAllByRole('button', { name: /items?$/ })
+    expect(buttons).toHaveLength(35)
+    expect(buttons[0]?.getAttribute('aria-label')).toMatch(/Monday.*(September 28|28 September)/)
+    expect(buttons.at(-1)?.getAttribute('aria-label')).toMatch(/Sunday.*(November 1|1 November)/)
+    expect(within(day(/(October 18|18 October)/)).getByText('18').className).toContain('bg-primary')
+  })
+
+  it("loads the visible weeks across the user's groups on idx_group_date", async () => {
+    renderAt('/calendar?month=2026-10')
+    await screen.findByText('Morning shift')
+    expect(listRows).toHaveBeenCalledTimes(1)
+    expect(listRows.mock.calls[0]?.[0]).toMatchObject({
+      databaseId: 'main',
+      tableId: 'transactions',
+    })
+    expect(queriesOf()).toEqual(
+      expect.arrayContaining([
+        { method: 'equal', attribute: 'groupId', values: ['g1', 'g2'] },
+        { method: 'greaterThanEqual', attribute: 'date', values: ['2026-09-28'] },
+        { method: 'lessThanEqual', attribute: 'date', values: ['2026-11-01'] },
+        { method: 'limit', values: [100] },
+      ]),
+    )
+  })
+
+  it('draws scheduled and due dashed, posted solid and void struck through, with group names in a legend', async () => {
+    renderAt('/calendar?month=2026-10')
+    await screen.findByText('Morning shift')
+    const thursday = within(day(/(October 8|8 October), 3 items/))
+    expect(thursday.getByText('Shift').className).toContain('border-dashed')
+    expect(thursday.getByText('Rent').className).toContain('border-dashed')
+    expect(thursday.getByText('Taxi').className).toMatch(/line-through/)
+    const first = within(day(/(October 1|1 October), 1 item$/))
+    expect(first.getByText('Morning shift').className).toContain('border-solid')
+    expect(thursday.getByText('Shift').getAttribute('style')).toContain('border-color')
+    const legend = within(screen.getByRole('list', { name: 'Groups' }))
+    expect(legend.getByText('Acme Cafe')).toBeTruthy()
+    expect(legend.getByText('Personal')).toBeTruthy()
+  })
+
+  it("lists a day's items with group, status and amount, linking to each transaction", async () => {
+    const router = renderAt('/calendar?month=2026-10')
+    fireEvent.click(await screen.findByRole('button', { name: /(October 8|8 October), 3 items/ }))
+    expect(router.state.location.search).toBe('?month=2026-10&day=2026-10-08')
+    const list = within(screen.getByRole('region', { name: /Thursday.*2026/ }))
+    const links = list.getAllByRole('link')
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/transactions/t1',
+      '/transactions/t3',
+      '/transactions/t4',
+    ])
+    expect(links[0]?.textContent).toMatch(/Shift.*Acme Cafe · Scheduled.*125\.00/)
+    expect(links[1]?.textContent).toMatch(/Rent.*Personal · Due.*500\.00/)
+    expect(links[2]?.textContent).toMatch(/Taxi.*Personal · Void.*20\.50/)
+    fireEvent.click(day(/(October 2|2 October), 0 items/))
+    expect(screen.getByText('Nothing on this day.')).toBeTruthy()
+  })
+
+  it('moves between months and back to today', async () => {
+    const router = renderAt('/calendar?month=2026-12')
+    await screen.findByRole('heading', { name: /December 2026/ })
+    fireEvent.click(screen.getByRole('button', { name: 'Next month' }))
+    expect(await screen.findByRole('heading', { name: /January 2027/ })).toBeTruthy()
+    expect(router.state.location.search).toBe('?month=2027-01')
+    fireEvent.click(screen.getByRole('button', { name: 'Previous month' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Previous month' }))
+    expect(await screen.findByRole('heading', { name: /November 2026/ })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Today' }))
+    expect(router.state.location.search).toBe('?month=2026-10&day=2026-10-18')
+    expect(await screen.findByRole('region', { name: /Sunday.*2026/ })).toBeTruthy()
+  })
+
+  it('shows more than three items as "+n more" and pages past 100 rows', async () => {
+    const many = Array.from({ length: 101 }, (_, index) => ({
+      ...ITEMS[1],
+      $id: `t${index}`,
+      date: '2026-10-05',
+    }))
+    listRows.mockResolvedValueOnce({ total: 101, rows: many.slice(0, 100) } as never)
+    listRows.mockResolvedValueOnce({ total: 101, rows: many.slice(100) } as never)
+    renderAt('/calendar?month=2026-10')
+    expect(await screen.findByText('+98 more')).toBeTruthy()
+    expect(listRows).toHaveBeenCalledTimes(2)
+    expect(queriesOf(1)).toContainEqual({ method: 'cursorAfter', values: ['t99'] })
+  })
+
+  it('offers a retry when the transactions fail to load', async () => {
+    listRows.mockRejectedValueOnce(new Error('offline'))
+    renderAt('/calendar?month=2026-10')
+    expect((await screen.findByRole('alert')).textContent).toBe('We couldn’t load your calendar.')
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Morning shift')).toBeTruthy()
+  })
+
+  it('gives each group the same colour every time', () => {
+    expect(groupColour('g1')).toBe(groupColour('g1'))
+    expect(groupColour('g1')).toMatch(/^#[0-9a-f]{6}$/)
+  })
+})

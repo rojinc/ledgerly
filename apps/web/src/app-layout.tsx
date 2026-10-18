@@ -9,6 +9,7 @@ import { Button } from './ui/button'
 // Only screens that exist. Each feature adds its own entry when it lands.
 const NAV = [
   { to: '/', label: 'Home' },
+  { to: '/calendar', label: 'Calendar' },
   { to: '/groups', label: 'Groups' },
   { to: '/profile', label: 'Profile' },
 ]
