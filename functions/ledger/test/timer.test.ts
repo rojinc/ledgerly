@@ -182,6 +182,21 @@ describe('POST /timer/start', () => {
     expect((await startTimer(db, start({ id: 'sh1' }))).body.error?.code).toBe('CONFLICT')
   })
 
+  it('refuses the same ID from another person', async () => {
+    // Acme has joined the group as an admin.
+    const db = seed({
+      members: [
+        ...MEMBERS.filter((row) => row.$id !== 'm-acme'),
+        member('m-acme', 'job', 'acme', 'admin'),
+      ],
+    })
+    await commitNow(db, [update('persons', 'acme', { userId: 'u-acme' })])
+    await startTimer(db)
+    const response = await call(db, 'POST', '/timer/start', start(), 'u-acme')
+    expect(response.body.error?.code).toBe('CONFLICT')
+    expect(rows.transactions(db)).toHaveLength(1)
+  })
+
   it('refuses a retry with the same ID in another group', async () => {
     const db = seed(secondJob)
     await startTimer(db)
@@ -397,6 +412,103 @@ describe('POST /timer/stop', () => {
     expect(response.body.error?.code).toBe('VALIDATION_FAILED')
     expect(rows.transactions(db)[0]?.status).toBe('void')
     expect(rows.shares(db)).toEqual([])
+  })
+})
+
+/** Commits `operations` just before this request commits, as a request that got in first. */
+function beforeCommit(db: Db, operations: object[]) {
+  const commit = db.updateTransaction.bind(db)
+  vi.spyOn(db, 'updateTransaction').mockImplementationOnce(async (params) => {
+    if (params.commit) await commitNow(db, operations)
+    return commit(params)
+  })
+}
+
+const archive = update('groups', 'job', { archivedAt: '2026-10-18T02:00:00.000Z' })
+// A finalize's step 1: the statement and a guard write to the group row.
+const startsFinalizing = [
+  update('statements', 'st1', { status: 'finalizing' }),
+  update('groups', 'job', { rev: 'finalize' }),
+]
+
+describe('the guards, with a write that commits first', () => {
+  it('a stop runs again and is LOCKED when a finalize starts just before it commits', async () => {
+    const db = seed({ statements: [{ ...finalizing, status: 'draft' }] })
+    await startTimer(db)
+    later(60)
+    beforeCommit(db, startsFinalizing)
+    expect((await stopTimer(db)).body.error?.code).toBe('LOCKED')
+    expect(rows.transactions(db)[0]?.status).toBe('running')
+    expect(rows.shares(db)).toEqual([])
+  })
+
+  it('a stop runs again and is ARCHIVED when an archive commits just before it', async () => {
+    const db = seed()
+    await startTimer(db)
+    later(60)
+    beforeCommit(db, [archive])
+    expect((await stopTimer(db)).body.error?.code).toBe('ARCHIVED')
+    expect(rows.transactions(db)[0]?.status).toBe('running')
+  })
+
+  it('a start runs again and is ARCHIVED when an archive commits just before it', async () => {
+    const db = seed()
+    beforeCommit(db, [archive])
+    expect((await startTimer(db)).body.error?.code).toBe('ARCHIVED')
+    expect(rows.transactions(db)).toEqual([])
+  })
+
+  it('a start checks for finalizing statements after its guards are staged', async () => {
+    const db = seed({ statements: [{ ...finalizing, status: 'draft' }] })
+    const stage = db.createOperations.bind(db)
+    vi.spyOn(db, 'createOperations').mockImplementationOnce(async (params) => {
+      await commitNow(db, startsFinalizing)
+      return stage(params)
+    })
+    expect((await startTimer(db)).body.error?.code).toBe('LOCKED')
+    expect(rows.transactions(db)).toEqual([])
+  })
+})
+
+describe('time', () => {
+  it('dates a start in the group’s time zone, not UTC', async () => {
+    // 01:00 on 19 October in Sydney is still 18 October in UTC.
+    vi.setSystemTime(new Date('2026-10-18T14:00:00.000Z'))
+    const db = seed()
+    await startTimer(db)
+    expect(rows.transactions(db)[0]?.date).toBe('2026-10-19')
+    expect(shiftOf(db).startTime).toBe('01:00')
+  })
+
+  it('counts real minutes across the night the clocks go forward', async () => {
+    // Sydney, 4 October 2026: 01:30 AEST to 03:30 AEDT is one hour.
+    vi.setSystemTime(new Date('2026-10-03T15:30:00.000Z'))
+    const db = seed()
+    await startTimer(db)
+    vi.setSystemTime(new Date('2026-10-03T16:30:00.000Z'))
+    await stopTimer(db)
+    expect(shiftOf(db)).toEqual({
+      minutes: 60,
+      rateCents: 2500,
+      startTime: '01:30',
+      endTime: '03:30',
+    })
+  })
+
+  it('refuses 1441 paid minutes', async () => {
+    const db = seed()
+    await startTimer(db)
+    later(1441)
+    expect((await stopTimer(db)).body.error?.code).toBe('VALIDATION_FAILED')
+    expect(rows.transactions(db)[0]?.status).toBe('running')
+  })
+
+  it('rounds the amount to the cent, half up', async () => {
+    const db = seed()
+    await startTimer(db)
+    later(7, 30)
+    // 7 whole minutes at $25.00 an hour is 291.67 cents.
+    expect((await stopTimer(db)).body.data?.transaction.totalCents).toBe(292)
   })
 })
 

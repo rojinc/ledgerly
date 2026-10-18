@@ -1,7 +1,7 @@
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Balances } from '../src/routes/balances'
-import { call, expense, GROUPS, NOW, seed } from './harness'
+import { call, expense, GROUPS, leftOnTheirOwn, NOW, seed } from './harness'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -135,6 +135,36 @@ describe('GET /groups/{groupId}/balances', () => {
       ],
       transfers: [{ fromPersonId: 'acme', toPersonId: 'sam', cents: 5000 }],
     })
+  })
+
+  it('lists someone whose shares cancel out at 0, with no transfer', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', expense())
+    const repaid = {
+      id: 'p1',
+      groupId: 'house',
+      kind: 'payment',
+      date: '2026-10-12',
+      description: 'Groceries back',
+      totalCents: 4500,
+      payment: { fromPersonId: 'bob', toPersonId: 'alice' },
+    }
+    await call(db, 'POST', '/transactions', repaid, 'u-bob')
+    expect((await balances(db)).body.data).toEqual({
+      people: [
+        { personId: 'alice', netCents: 0 },
+        { personId: 'bob', netCents: 0 },
+      ],
+      transfers: [],
+    })
+  })
+
+  it('is for someone who moved out, not someone who left on their own', async () => {
+    const db = seed()
+    // Lee moved out: a left viewer, still in the team.
+    expect((await balances(db, 'house', 'u-lee')).status).toBe(200)
+    leftOnTheirOwn(db, 'u-lee')
+    expect((await balances(db, 'house', 'u-lee')).body.error?.code).toBe('NOT_A_MEMBER')
   })
 
   it('is empty for a group with no shares', async () => {

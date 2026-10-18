@@ -7,6 +7,7 @@ import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
 import { AppwriteException, Query } from 'node-appwrite'
+import { teamsFor } from '../teams'
 import { listAll } from './transactions-shared'
 
 export type Balances = { people: Net[]; transfers: Transfer[] }
@@ -21,8 +22,10 @@ const READS = 3
 export const groupBalances = route(
   'GET',
   '/groups/:groupId/balances',
-  async ({ userId, params, db }): Promise<Balances> => {
-    let { group } = await requireMember(db, userId, params.groupId, { allowArchived: true })
+  async ({ userId, params, db, headers }): Promise<Balances> => {
+    let { group } = await requireMember(db, teamsFor(headers), userId, params.groupId, {
+      allowArchived: true,
+    })
     // The shares are read a page at a time. Every write of shares also writes a fresh `rev` to
     // the group row (ledger.md#concurrency), so the same `rev` before and after means no write
     // committed in between: the read is whole. Otherwise it is read again.

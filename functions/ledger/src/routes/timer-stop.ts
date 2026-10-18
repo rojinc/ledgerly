@@ -4,6 +4,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
+import { teamsFor } from '../teams'
 import { localTime } from './timer-start'
 import {
   activityWrite,
@@ -39,11 +40,11 @@ const MAX_SHIFT_MINUTES = 24 * 60
  * shift with the whole minutes since it started, less the break, and the end time. A retry of a
  * stop that went through, with the same break, gets the posted shift back.
  */
-export const stopTimer = route('POST', '/timer/stop', ({ userId, body, db }) =>
+export const stopTimer = route('POST', '/timer/stop', ({ userId, body, db, headers }) =>
   ledgerRoute(async () => {
     const stop = parseBody(stopTimerBodySchema, body)
     const found = await getTransaction(db, stop.transactionId)
-    const membership = await requireMember(db, userId, found.groupId, {
+    const membership = await requireMember(db, teamsFor(headers), userId, found.groupId, {
       roles: ['admin', 'member'],
     })
     const person = membership.person.$id
@@ -67,8 +68,10 @@ export const stopTimer = route('POST', '/timer/stop', ({ userId, body, db }) =>
           if ((stop.breakMinutes ?? 0) === (shift.breakMinutes ?? 0)) throw new Unchanged()
           invalid('This timer has already stopped.')
         }
-        const ran = Math.floor(
-          (now.getTime() - Date.parse(existing.startedAt as string)) / MS_PER_MINUTE,
+        // Never below 0, even if this server's clock is behind the one that started it.
+        const ran = Math.max(
+          0,
+          Math.floor((now.getTime() - Date.parse(existing.startedAt as string)) / MS_PER_MINUTE),
         )
         const breakMinutes = stop.breakMinutes ?? 0
         if (breakMinutes > ran) invalid('The break is longer than the timer ran.')

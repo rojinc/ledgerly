@@ -10,6 +10,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { Query } from 'node-appwrite'
+import { teamsFor } from '../teams'
 import { OCCURRENCE_ID } from './transactions-create'
 import {
   activityWrite,
@@ -38,11 +39,13 @@ const DESCRIPTION = 'Shift'
  * has no shares until it stops (I-6). A person has one running timer at a time: starting another
  * is a CONFLICT that names the running one. A retry with the same `id` gets the timer back.
  */
-export const startTimer = route('POST', '/timer/start', ({ userId, body, db }) =>
+export const startTimer = route('POST', '/timer/start', ({ userId, body, db, headers }) =>
   ledgerRoute(async () => {
     const start = parseBody(startTimerBodySchema, body)
     if (OCCURRENCE_ID.test(start.id)) invalid('This id is kept for schedule occurrences.')
-    const membership = await requireMember(db, userId, start.groupId, { roles: ['admin'] })
+    const membership = await requireMember(db, teamsFor(headers), userId, start.groupId, {
+      roles: ['admin'],
+    })
     const { group } = membership
     const settings = groupSettingsSchema.parse(JSON.parse(group.settingsJson))
     if (settings.type !== 'employer') invalid('Only an employer group has a timer.')
@@ -85,14 +88,12 @@ export const startTimer = route('POST', '/timer/start', ({ userId, body, db }) =
       // Every start by this person, in any group, also writes their personal group's row. So of
       // two starts at once one commit fails, and its rerun finds the other's timer below
       // (ledger.md#concurrency).
-      if (personal) {
-        await tx.write({
-          action: 'update',
-          tableId: TABLES.groups,
-          rowId: personal.$id,
-          data: { rev: randomId() },
-        })
-      }
+      await tx.write({
+        action: 'update',
+        tableId: TABLES.groups,
+        rowId: personal.$id,
+        data: { rev: randomId() },
+      })
       await requireNotFinalizing(db, group.$id, [input.date])
       const running = await findRunning(db, person)
       if (running) {
@@ -155,8 +156,12 @@ async function findRunning(db: Db, personId: string): Promise<Transactions | und
   return undefined
 }
 
-/** The person's personal group (`idx_owner_type`), which bootstrap makes for everyone who logs in. */
-async function findPersonalGroup(db: Db, personId: string): Promise<Groups | undefined> {
+/**
+ * The person's personal group (`idx_owner_type`). Bootstrap makes it with the person, in one
+ * transaction; without it the one-timer guard wouldn't hold, so a start fails rather than run
+ * unguarded.
+ */
+async function findPersonalGroup(db: Db, personId: string): Promise<Groups> {
   const { rows } = await db.listRows<Groups>({
     databaseId: DATABASE_ID,
     tableId: TABLES.groups,
@@ -167,7 +172,9 @@ async function findPersonalGroup(db: Db, personId: string): Promise<Groups | und
     ],
     total: false,
   })
-  return rows[0]
+  const [personal] = rows
+  if (!personal) throw new Error('Every person with an account has a personal group')
+  return personal
 }
 
 /** The wall-clock time `HH:mm` in `timeZone` at `at`: a shift's start and end times. */
