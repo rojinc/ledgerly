@@ -7,12 +7,20 @@ import { type AppwriteContext, createHandler, type Route, route } from './create
 
 type Request = Partial<AppwriteContext['req']>
 
+// Every request carries a valid JWT for user `tester` unless the test overrides the header.
 async function call(handler: ReturnType<typeof createHandler>, request: Request = {}) {
   const logs: string[] = []
   const errors: string[] = []
   let response: { body: unknown; status: number | undefined } | undefined
+  const { headers, ...rest } = request
   await handler({
-    req: { method: 'GET', path: '/', headers: {}, bodyText: '', ...request },
+    req: {
+      method: 'GET',
+      path: '/',
+      bodyText: '',
+      ...rest,
+      headers: { 'x-appwrite-user-jwt': 'jwt-tester', ...headers },
+    },
     res: {
       json: (body, status) => {
         response = { body, status }
@@ -42,9 +50,11 @@ describe('createHandler', () => {
     if (!jwt.startsWith('jwt-')) throw new AppwriteException('Invalid JWT', 401, 'user_jwt_invalid')
     return jwt.slice(4)
   })
+  const make = (routes: Route[], makeDb?: (headers: Record<string, string>) => Db) =>
+    createHandler(routes, makeDb, verify)
 
   it('routes by method and path, with :params, the JSON body and the caller', async () => {
-    const result = await call(createHandler([echo], undefined, verify), {
+    const result = await call(make([echo]), {
       method: 'POST',
       path: '/transactions/t1/post',
       headers: { 'x-appwrite-user-jwt': 'jwt-u1' },
@@ -63,7 +73,7 @@ describe('createHandler', () => {
       route('POST', '/groups/:id/archive', async ({ params }) => `archive ${params.id}`),
       route('POST', '/groups/:id/members', async ({ params }) => `members ${params.id}`),
     ]
-    const handler = createHandler(routes)
+    const handler = make(routes)
     const archive = await call(handler, { method: 'POST', path: '/groups/g1/archive' })
     const balances = await call(handler, { method: 'get', path: '/groups/g1/balances/' })
     expect(archive.body).toEqual({ ok: true, data: 'archive g1' })
@@ -72,7 +82,7 @@ describe('createHandler', () => {
 
   it('accepts any Appwrite ID as a param, and header names in any case', async () => {
     const id = 'sched_2026.10-18_abcdefghijklmnopqrs' // 36 chars: the longest Appwrite ID
-    const result = await call(createHandler([echo], undefined, verify), {
+    const result = await call(make([echo]), {
       method: 'POST',
       path: `/transactions/${id}/post`,
       headers: { 'X-Appwrite-User-Jwt': 'jwt-u2' },
@@ -81,7 +91,7 @@ describe('createHandler', () => {
   })
 
   it('prefers the route with more literal segments, whatever the order', async () => {
-    const handler = createHandler([
+    const handler = make([
       route('POST', '/statements/:id', async ({ params }) => `statement ${params.id}`),
       route('POST', '/statements/reissue', async () => 'reissue'),
     ])
@@ -101,14 +111,14 @@ describe('createHandler', () => {
     ['a param starting with a special character', 'POST', '/transactions/_t1/post'],
     ['a param longer than 36 characters', 'POST', `/transactions/${'a'.repeat(37)}/post`],
   ])('returns NOT_FOUND for %s', async (_, method, path) => {
-    const result = await call(createHandler([echo]), { method, path })
+    const result = await call(make([echo]), { method, path })
     expect(result.status).toBe(404)
     expect(result.body).toMatchObject({ ok: false, error: { code: 'NOT_FOUND' } })
     expect(JSON.parse(result.logs[0] ?? '')).toMatchObject({ route: null, status: 404 })
   })
 
   it('returns VALIDATION_FAILED when the body is not JSON', async () => {
-    const result = await call(createHandler([echo]), {
+    const result = await call(make([echo]), {
       method: 'POST',
       path: '/transactions/t1/post',
       bodyText: '{"date":',
@@ -120,19 +130,54 @@ describe('createHandler', () => {
     })
   })
 
-  it('never trusts x-appwrite-user-id: without a JWT the caller is signed out', async () => {
+  it('never trusts x-appwrite-user-id: without a JWT the request is refused', async () => {
     // A client can send X-Appwrite-User-Id in an execution's headers (permissions.md).
-    const result = await call(createHandler([echo], undefined, verify), {
+    const handler = vi.fn(async () => 'ran')
+    const result = await call(make([route('POST', '/x', handler)]), {
       method: 'POST',
-      path: '/transactions/t1/post',
-      headers: { 'x-appwrite-user-id': 'victim' },
+      path: '/x',
+      headers: { 'x-appwrite-user-jwt': '', 'x-appwrite-user-id': 'victim' },
     })
-    expect(result.body).toMatchObject({ data: { userId: null } })
-    expect(verify).not.toHaveBeenCalledWith('victim')
+    expect(result.status).toBe(401)
+    expect(result.body).toMatchObject({ ok: false, error: { code: 'UNAUTHENTICATED' } })
+    expect(handler).not.toHaveBeenCalled()
+  })
+
+  it('runs a scheduled job without a caller only when the trigger is exactly schedule', async () => {
+    const cron = make([
+      route('POST', '/', async ({ userId, scheduled }) => ({ userId, scheduled })),
+    ])
+    const scheduled = await call(cron, {
+      method: 'POST',
+      headers: { 'x-appwrite-user-jwt': '', 'x-appwrite-trigger': 'schedule' },
+    })
+    expect(scheduled.body).toEqual({ ok: true, data: { userId: null, scheduled: true } })
+    // A forged X-Appwrite-Trigger arrives merged with the real one.
+    const forged = await call(cron, {
+      method: 'POST',
+      headers: { 'x-appwrite-user-jwt': '', 'x-appwrite-trigger': 'schedule, http' },
+    })
+    expect(forged.status).toBe(401)
+    const person = await call(cron, { method: 'POST', headers: { 'x-appwrite-trigger': 'http' } })
+    expect(person.body).toEqual({ ok: true, data: { userId: 'tester', scheduled: false } })
+  })
+
+  it('runs a public route without a caller', async () => {
+    const health = make([route('GET', '/health', async ({ userId }) => userId, { public: true })])
+    const result = await call(health, { path: '/health', headers: { 'x-appwrite-user-jwt': '' } })
+    expect(result.body).toEqual({ ok: true, data: null })
+  })
+
+  it('keeps the caller headers away from routes', async () => {
+    const result = await call(make([route('GET', '/h', async ({ headers }) => headers)]), {
+      path: '/h',
+      headers: { 'x-appwrite-user-id': 'victim', 'x-appwrite-key': 'k' },
+    })
+    expect(result.body).toEqual({ ok: true, data: { 'x-appwrite-key': 'k' } })
   })
 
   it('takes the caller from the verified JWT, not a forged user ID', async () => {
-    const result = await call(createHandler([echo], undefined, verify), {
+    const result = await call(make([echo]), {
       method: 'POST',
       path: '/transactions/t1/post',
       headers: { 'x-appwrite-user-jwt': 'jwt-me', 'x-appwrite-user-id': 'victim, me' },
@@ -142,7 +187,7 @@ describe('createHandler', () => {
 
   it('returns UNAUTHENTICATED for a JWT Appwrite rejects, without running the route', async () => {
     const handler = vi.fn(async () => 'ran')
-    const result = await call(createHandler([route('GET', '/x', handler)], undefined, verify), {
+    const result = await call(make([route('GET', '/x', handler)]), {
       path: '/x',
       headers: { 'x-appwrite-user-jwt': 'forged.jwt.value' },
     })
@@ -166,7 +211,7 @@ describe('createHandler', () => {
   })
 
   it('verifies nothing for a path with no route', async () => {
-    const result = await call(createHandler([echo], undefined, verify), {
+    const result = await call(make([echo]), {
       path: '/nope',
       headers: { 'x-appwrite-user-jwt': 'jwt-u1' },
     })
@@ -175,7 +220,7 @@ describe('createHandler', () => {
   })
 
   it('turns an AppError into the envelope with its status and details', async () => {
-    const handler = createHandler([
+    const handler = make([
       route('POST', '/a', async () => {
         throw new AppError('VALIDATION_FAILED', 'Check the date', [{ path: ['date'] }])
       }),
@@ -199,7 +244,7 @@ describe('createHandler', () => {
   })
 
   it('hides unexpected errors behind INTERNAL and logs them with error()', async () => {
-    const handler = createHandler([
+    const handler = make([
       route('GET', '/boom', async () => {
         throw new TypeError('row.status is undefined')
       }),
@@ -221,7 +266,7 @@ describe('createHandler', () => {
   })
 
   it('logs only the name of a 5xx cause, never its message, which can quote input', async () => {
-    const handler = createHandler([
+    const handler = make([
       route('GET', '/profile', async () => JSON.parse('alice@example.com')),
       route('GET', '/row', async () => {
         throw new AppwriteException('Row bob@example.com not found', 404, 'row_not_found')
@@ -237,13 +282,13 @@ describe('createHandler', () => {
   })
 
   it('sends data: null when a route returns nothing', async () => {
-    const handler = createHandler([route('DELETE', '/x/:id', async () => undefined)])
+    const handler = make([route('DELETE', '/x/:id', async () => undefined)])
     const result = await call(handler, { method: 'DELETE', path: '/x/1' })
     expect(result.body).toEqual({ ok: true, data: null })
   })
 
   it('logs one line per request with the route pattern and no personal data', async () => {
-    const result = await call(createHandler([echo], undefined, verify), {
+    const result = await call(make([echo]), {
       method: 'POST',
       path: '/transactions/t1/post',
       headers: { 'x-appwrite-user-jwt': 'jwt-u1' },
@@ -263,7 +308,7 @@ describe('createHandler', () => {
   it('creates the database client once, only when a route uses it', async () => {
     const fake = new FakeDb()
     const makeDb = vi.fn((_headers: Record<string, string>): Db => fake)
-    const handler = createHandler(
+    const handler = make(
       [
         route('GET', '/health', async () => 'ok'),
         route('GET', '/twice', async (ctx) => {

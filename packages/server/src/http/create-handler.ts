@@ -16,14 +16,17 @@ export type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 
 export type RouteContext<Params = Record<string, string>> = {
   /**
-   * From the JWT in `x-appwrite-user-jwt`, verified with Appwrite; null without one (cron
-   * runs). Never `x-appwrite-user-id`, which a client can forge (permissions.md).
+   * From the JWT in `x-appwrite-user-jwt`, verified with Appwrite. Null only on a scheduled run
+   * or a public route; any other request without a JWT gets UNAUTHENTICATED before the route
+   * runs. Never `x-appwrite-user-id`, which a client can forge (permissions.md).
    */
   userId: string | null
+  /** True only when `x-appwrite-trigger` is exactly `schedule`: a cron run, never a person. */
+  scheduled: boolean
   params: Params
   /** The parsed JSON body, or undefined when there is none. Validate it with the route's schema. */
   body: unknown
-  /** Lower-cased request headers, for example to build other Appwrite services. */
+  /** Lower-cased request headers, without the caller headers, which only `userId` may use. */
   headers: Record<string, string>
   /** Created on first use, so routes that don't touch the database don't need a key. */
   db: Db
@@ -33,6 +36,8 @@ export type Route = {
   method: Method
   path: string
   handler: (ctx: RouteContext) => Promise<unknown>
+  /** Runs without a caller. Only `/health` is public. */
+  public: boolean
 }
 
 // '/transactions/:id/post' → { id: string }
@@ -47,14 +52,20 @@ export function route<P extends string>(
   method: Method,
   path: P,
   handler: (ctx: RouteContext<PathParams<P>>) => Promise<unknown>,
+  options: { public?: boolean } = {},
 ): Route {
   // Matching guarantees every :param in `path` is present.
-  return { method, path, handler: (ctx) => handler(ctx as RouteContext<PathParams<P>>) }
+  return {
+    method,
+    path,
+    handler: (ctx) => handler(ctx as RouteContext<PathParams<P>>),
+    public: options.public ?? false,
+  }
 }
 
 /**
  * The entry point of every function (functions-api.md#function-code-layout). Routes by method
- * and path, parses the JSON body, reads the caller, wraps the result in the response envelope
+ * and path, parses the JSON body, verifies the caller's JWT, wraps the result in the response envelope
  * and logs one line per request: `{ fn, route, status, ms, code?, cause? }`, with no personal
  * data.
  */
@@ -66,9 +77,14 @@ export function createHandler(
   return async ({ req, res, log, error }: AppwriteContext): Promise<unknown> => {
     const started = performance.now()
     const method = req.method.toUpperCase()
-    const headers = Object.fromEntries(
+    const headers: Record<string, string> = Object.fromEntries(
       Object.entries(req.headers).map(([name, value]) => [name.toLowerCase(), value]),
     )
+    const {
+      'x-appwrite-user-jwt': jwt,
+      'x-appwrite-user-id': _forgeable,
+      ...routeHeaders
+    } = headers
     let routeName: string | null = null
     let status = 200
     let code: ErrorCode | undefined
@@ -78,14 +94,22 @@ export function createHandler(
       const match = findRoute(routes, method, req.path)
       if (!match) throw new AppError('NOT_FOUND', `There is no ${method} ${req.path} route.`)
       routeName = `${method} ${match.route.path}`
-      const jwt = headers['x-appwrite-user-jwt']
-      const userId = jwt ? await callerOrUnauthenticated(verifyCaller, jwt) : null
+      // permissions.md#function-side-checks, step 1: a person proves who they are with a JWT;
+      // only an exact `schedule` trigger or a public route runs without one.
+      const scheduled = headers['x-appwrite-trigger'] === 'schedule'
+      let userId: string | null = null
+      if (typeof jwt === 'string' && jwt !== '') {
+        userId = await callerOrUnauthenticated(verifyCaller, jwt)
+      } else if (!scheduled && !match.route.public) {
+        throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
+      }
       let db: Db | undefined
       const data = await match.route.handler({
         userId,
+        scheduled,
         params: match.params,
         body: parseBody(req.bodyText),
-        headers,
+        headers: routeHeaders,
         get db() {
           db ??= makeDb(headers)
           return db
