@@ -1,3 +1,4 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Schedules } from '@ledgerly/core/generated/rows'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
@@ -39,7 +40,17 @@ export async function expandDueSchedules(services: Services): Promise<ExpandCoun
           return 0
         }
         const ledger = await loadGroupLedger(db, group, schedule.createdBy)
-        return generateOccurrences(db, schedule, group, ledger, now)
+        const after = schedule.generatedThrough as LocalDate | null
+        const { created } = await generateOccurrences(
+          db,
+          schedule,
+          group,
+          ledger,
+          now,
+          after,
+          services.outOfTime,
+        )
+        return created
       })
       counts.schedules += 1
     } catch {

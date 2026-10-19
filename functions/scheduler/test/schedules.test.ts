@@ -3,6 +3,7 @@ import type { Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
+import { scheduleEnd } from '../src/occurrences'
 import type { ScheduleResult } from '../src/routes/create-schedule'
 import type { EndedSchedule } from '../src/routes/end-schedule'
 import type { RunResult } from '../src/routes/run'
@@ -398,15 +399,17 @@ describe('PATCH /schedules/{id}', () => {
     await setRow(services, 'transactions', `${ID}_20261029`, { status: 'void', voidReason: 'Sick' })
     await setRow(services, 'transactions', `${ID}_20261105`, { status: 'posted' })
     const result = await patch(services, { ...thursdays, description: 'Late shift' })
-    // 12 Nov to 10 Dec: 5 removed and made again.
-    expect(result).toMatchObject({ removed: 5, created: 5 })
+    // 12 Nov to 10 Dec: updated in place, so none removed or created.
+    expect(result).toMatchObject({ removed: 0, created: 0 })
     const byDate = Object.fromEntries(occurrences(services).map((row) => [row.date, row]))
     // Before today: kept with the old description.
     expect(byDate['2026-10-15']?.description).toBe('Thursday shift')
     expect(byDate['2026-10-22']).toMatchObject({ description: 'Thursday shift', overridden: true })
     expect(byDate['2026-10-29']).toMatchObject({ status: 'void' })
     expect(byDate['2026-11-05']).toMatchObject({ status: 'posted' })
-    expect(byDate['2026-11-12']?.description).toBe('Late shift')
+    for (const date of ['2026-11-12', '2026-11-19', '2026-11-26', '2026-12-03', '2026-12-10']) {
+      expect(byDate[date]).toMatchObject({ description: 'Late shift', updatedBy: 'pSam' })
+    }
     expect(occurrences(services)).toHaveLength(11)
   })
 
@@ -427,6 +430,45 @@ describe('PATCH /schedules/{id}', () => {
       '2026-11-27',
       '2026-12-04',
       '2026-12-11',
+    ])
+  })
+
+  it('deletes what an earlier end leaves after it', async () => {
+    const services = await withThursdays()
+    const { created, removed } = await patch(services, { ...thursdays, endsOn: '2026-11-12' })
+    // 19 and 26 November, 3 and 10 December.
+    expect({ created, removed }).toEqual({ created: 0, removed: 4 })
+    expect(occurrences(services).at(-1)?.date).toBe('2026-11-12')
+    expect(scheduleRow(services)).toMatchObject({ generatedThrough: '2026-11-12', nextRunAt: null })
+  })
+
+  it('leaves the occurrences after a shorter horizon until the window reaches them', async () => {
+    const services = await withThursdays()
+    const { created, removed } = await patch(services, { ...thursdays, horizonDays: 14 })
+    expect({ created, removed }).toEqual({ created: 0, removed: 0 })
+    expect(occurrences(services)).toHaveLength(11)
+    expect(scheduleRow(services)?.generatedThrough).toBe('2026-11-02')
+  })
+
+  it('replaces the items of the occurrences it updates, and deletes those of ones it deletes', async () => {
+    const services = seeded()
+    const withItems = (name: string) => ({
+      ...rent,
+      template: {
+        bill: { status: 'due' },
+        items: [{ name, amountCents: 90_000, split: { mode: 'equal', personIds: ['pSam'] } }],
+      },
+    })
+    await create(services, withItems('Rent'))
+    await patch(services, withItems('Rent and water'))
+    expect(services.db.rows('items').map((item) => item.name)).toEqual([
+      'Rent and water',
+      'Rent and water',
+    ])
+    await patch(services, { ...withItems('Rent and water'), rrule: 'FREQ=MONTHLY;BYMONTHDAY=2' })
+    expect(services.db.rows('items').map((item) => item.transactionId)).toEqual([
+      `${rent.id}_20261102`,
+      `${rent.id}_20261202`,
     ])
   })
 
@@ -535,13 +577,14 @@ describe('races on schedule edits', () => {
     expect(future.map((row) => row.description)).toEqual(Array(8).fill('Late shift'))
   })
 
-  it('leaves the new occurrences for the next cron run if the edit stops partway', async () => {
+  it('leaves the rest of an edit to the next cron run if it stops before expanding', async () => {
     const services = seeded()
     await create(services, groceries)
-    // A timeout once the old occurrences are deleted, when the first new one is staged.
+    // A timeout once the rule is saved, when the first occurrence is updated.
     const stage = services.db.createOperations.bind(services.db)
     const timeout = vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
-      if (JSON.stringify(params.operations).includes('"action":"create"')) {
+      const operations = JSON.stringify(params.operations)
+      if (operations.includes('"tableId":"transactions"') && operations.includes('"update"')) {
         throw new Error('Timed out')
       }
       return stage(params)
@@ -570,8 +613,8 @@ describe('races on schedule edits', () => {
       ...rent,
       template: { ...rent.template, totalCents: 95_000 },
     })
-    // Only December: November's ID is taken, whatever its date.
-    expect(created).toBe(1)
+    // November's ID is taken, whatever its date; December is updated in place.
+    expect(created).toBe(0)
     expect(await runCron(services)).toMatchObject({
       expanded: { schedules: 0, created: 0, failed: 0 },
     })
@@ -594,8 +637,8 @@ describe('races on schedule edits', () => {
     expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 3, failed: 0 })
   })
 
-  it('leaves the old rule whole when an edit loses its races', async () => {
-    // Thursdays to Fridays; the deletes lose a race on both tries.
+  it('puts right an edit that loses its races, at the next cron run', async () => {
+    // Thursdays to Fridays; the expansion loses a race on both tries.
     const services = seeded()
     await create(services, thursdays)
     failCommit(services, [2, 4], lostRace)
@@ -605,29 +648,68 @@ describe('races on schedule edits', () => {
       }),
     ).toEqual({ status: 409, code: 'CONFLICT' })
     vi.restoreAllMocks()
-    expect(scheduleRow(services)?.rrule).toBe('FREQ=WEEKLY;BYDAY=TH')
+    expect(scheduleRow(services)?.rrule).toBe('FREQ=WEEKLY;BYDAY=FR')
     await runCron(services)
-    const days = new Set(occurrences(services).map((row) => weekdayOf(row.date as LocalDate)))
-    expect(days).toEqual(new Set([4]))
-    expect(occurrences(services)).toHaveLength(11)
+    // Before today the Thursdays stay; from today on, only Fridays.
+    const days = occurrences(services).map((row) => [row.date, weekdayOf(row.date as LocalDate)])
+    expect(days.filter(([date]) => (date as string) < '2026-10-19').map(([, day]) => day)).toEqual([
+      4, 4, 4,
+    ])
+    expect(
+      new Set(days.filter(([date]) => (date as string) >= '2026-10-19').map(([, day]) => day)),
+    ).toEqual(new Set([5]))
   })
 
-  it('makes again the old occurrences an edit deleted before it stopped', async () => {
+  it('puts right an edit that stopped partway, at the next cron run', async () => {
     const services = seeded()
     await create(services, groceries)
-    // The reset, one batch of deletes, then a timeout.
+    // Weekdays only: the rule, one batch of updates and deletes, then a timeout.
     const timeout = failCommit(services, 3)
     expect(
       await failure(services, 'PATCH', `/schedules/${groceries.id}`, {
-        body: { ...groceries, description: 'Food' },
+        body: { ...groceries, description: 'Food', rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR' },
       }),
     ).toMatchObject({ status: 500 })
     timeout.mockRestore()
-    expect(occurrences(services, groceries.id).length).toBeLessThan(121)
+    const before = occurrences(services, groceries.id)
+    expect(before.some((row) => row.description === 'Groceries')).toBe(true)
+    expect(before.some((row) => row.description === 'Food')).toBe(true)
     await runCron(services)
     const rows = occurrences(services, groceries.id)
-    expect(rows).toHaveLength(121)
-    expect(rows.every((row) => row.description === 'Groceries')).toBe(true)
+    // 19 October to 16 February: 17 weeks and a Monday and Tuesday.
+    expect(rows).toHaveLength(87)
+    expect(rows.every((row) => row.description === 'Food')).toBe(true)
+    expect(rows.every((row) => weekdayOf(row.date as LocalDate) <= 5)).toBe(true)
+  })
+
+  it('stops between batches once the run is out of time, and the next run carries on', async () => {
+    const services = seeded()
+    await create(services, { ...groceries, horizonDays: 7 })
+    // A longer horizon, due now: 113 more days to create, in several batches.
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'schedules',
+        rowId: groceries.id,
+        data: { horizonDays: 120, nextRunAt: '2026-10-18T20:00:00.000Z' },
+      }),
+    )
+    let late = false
+    services.outOfTime = () => late
+    const commit = services.db.updateTransaction.bind(services.db)
+    const spy = vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      const result = await commit(params)
+      if (params.commit) late = true
+      return result
+    })
+    const first = (await runCron(services)).expanded.created
+    expect(first).toBeGreaterThan(0)
+    expect(first).toBeLessThan(113)
+    expect(scheduleRow(services, groceries.id)?.nextRunAt).toBe('2026-10-18T20:00:00.000Z')
+    spy.mockRestore()
+    late = false
+    expect((await runCron(services)).expanded.created).toBe(113 - first)
+    expect(occurrences(services, groceries.id)).toHaveLength(121)
   })
 
   it('can’t name someone in an edit whose member row is deleted while it commits', async () => {
@@ -650,12 +732,13 @@ describe('races on schedule edits', () => {
     ).toEqual(['pSam'])
   })
 
-  it('keeps an occurrence edited just before its delete is staged', async () => {
+  it('keeps an occurrence edited just before the edit’s update of it is staged', async () => {
     const services = seeded()
     await create(services, thursdays)
     beforeStaging(
       services.db,
-      (operations) => operations.includes('"action":"delete"'),
+      (operations) =>
+        operations.includes('"tableId":"transactions"') && operations.includes('"update"'),
       () =>
         withTransaction(services.db, (tx) =>
           tx.write({
@@ -669,6 +752,75 @@ describe('races on schedule edits', () => {
     await patch(services, { ...thursdays, description: 'Late shift' })
     const edited = occurrences(services).find((row) => row.date === '2026-12-10')
     expect(edited).toMatchObject({ overridden: true, description: 'Long shift' })
+    const other = occurrences(services).find((row) => row.date === '2026-12-03')
+    expect(other?.description).toBe('Late shift')
+  })
+
+  it('deletes an item added to an occurrence it deletes just before staging, too', async () => {
+    const services = seeded()
+    const withItems = {
+      ...rent,
+      template: {
+        bill: { status: 'due' },
+        items: [
+          { name: 'Rent', amountCents: 90_000, split: { mode: 'equal', personIds: ['pSam'] } },
+        ],
+      },
+    }
+    await create(services, withItems)
+    beforeStaging(
+      services.db,
+      (operations) =>
+        operations.includes('"action":"delete"') && operations.includes('"tableId":"items"'),
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'create',
+            tableId: 'items',
+            rowId: 'waterItem00000000001',
+            data: {
+              transactionId: `${rent.id}_20261101`,
+              position: 1,
+              name: 'Water',
+              quantity: 1,
+              amountCents: 500,
+              category: null,
+              splitJson: '{"mode":"equal","personIds":["pSam"]}',
+            },
+          }),
+        ),
+    )
+    await patch(services, { ...withItems, rrule: 'FREQ=MONTHLY;BYMONTHDAY=2' })
+    expect(services.db.rows('items').map((item) => item.transactionId)).toEqual([
+      `${rent.id}_20261102`,
+      `${rent.id}_20261202`,
+    ])
+  })
+
+  it('can’t update occurrences to name someone whose member row is deleted meanwhile', async () => {
+    const services = seeded()
+    await create(services, {
+      ...rent,
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    })
+    // Alex goes just before the expansion's commit, once the edit's rule is saved.
+    const commit = services.db.updateTransaction.bind(services.db)
+    let commits = 0
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      if (params.commit && ++commits === 2) {
+        await withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'members', rowId: 'elm-pAlex' }),
+        )
+      }
+      return commit(params)
+    })
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: rent })).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+    })
+    const rows = occurrences(services, rent.id)
+    expect(rows).toHaveLength(2)
+    expect(rows.some((row) => String(row.inputJson).includes('pAlex'))).toBe(false)
   })
 
   it('expands with the rule an edit just saved, not the one it read', async () => {
@@ -731,6 +883,29 @@ describe('races on schedule edits', () => {
     })
     expect(run.expanded).toMatchObject({ created: 0, failed: 1 })
     expect(occurrences(services, rent.id)).toEqual([])
+  })
+})
+
+describe('rules with their own end', () => {
+  it.each([
+    ['COUNT=3', 'FREQ=WEEKLY;BYDAY=TH;COUNT=3', '2026-10-15'],
+    ['UNTIL', 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029', '2026-10-29'],
+  ])('finish with %s, once everything up to the end exists', async (_rule, rrule, last) => {
+    const services = seeded()
+    await create(services, { ...thursdays, rrule })
+    expect(occurrences(services).at(-1)?.date).toBe(last)
+    expect(scheduleRow(services)).toMatchObject({ generatedThrough: last, nextRunAt: null })
+  })
+
+  it.each([
+    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: null }, null],
+    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: '2026-11-05' }, '2026-11-05'],
+    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029', endsOn: null }, '2026-10-29'],
+    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029', endsOn: '2026-10-20' }, '2026-10-20'],
+    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2', endsOn: '2026-12-31' }, '2026-10-08'],
+    [{ rrule: 'FREQ=MONTHLY;BYMONTHDAY=31;COUNT=2', endsOn: null }, '2026-12-31'],
+  ])('scheduleEnd(%o) is %s', (rule, end) => {
+    expect(scheduleEnd({ ...rule, startsOn: '2026-10-01' })).toBe(end)
   })
 })
 

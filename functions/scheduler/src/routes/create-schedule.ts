@@ -71,7 +71,7 @@ export async function createSchedule(
       inserted = true
     }
     const schedule = await getSchedule(db, id)
-    const created = await generateOccurrences(db, schedule, membership.group, ledger, now)
+    const { created } = await generateOccurrences(db, schedule, membership.group, ledger, now)
     return { schedule: await getSchedule(db, id), created }
   })
 }

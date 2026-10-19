@@ -35,7 +35,7 @@ The UI only offers these, and the API accepts only these shapes, with the parts 
 
 **Timezone rule:** expand in *floating* dates. Turn `YYYY-MM-DD` into `Date.UTC(y, m - 1, d)`, run `rrule` in UTC, and turn the results back into `YYYY-MM-DD`. Never let the server's or browser's timezone touch a local date. This is the classic bug that moves Thursday to Wednesday.
 
-`INTERVAL` counts from the week (weeks start on Monday) or month of `startsOn`: "every other Tuesday" starting on a Wednesday first falls 13 days later. `COUNT` counts dates before `exdates` and holidays are taken out, as RFC 5545 does.
+`INTERVAL` counts from the week (weeks start on Monday) or month of `startsOn`: "every other Tuesday" starting on a Wednesday first falls 13 days later. `COUNT` counts dates before `exdates` and holidays are taken out, as RFC 5545 does. A rule's `UNTIL`, or its `COUNT`th date, ends the schedule as `endsOn` does: expansion stops there and clears `nextRunAt`.
 
 Skip a date when:
 
@@ -56,7 +56,7 @@ Skip a date when:
 
 The scheduler may run twice, overlap with itself or crash halfway. None of that may create duplicates.
 
-- **Deterministic occurrence IDs:** `<scheduleId>_<YYYYMMDD>`, e.g. `66f1c2…_20261029`. Schedule IDs are 20-character `ID.unique()` values, so this is 29 characters, inside Appwrite's 36 limit. Creating a row that already exists fails with a conflict (409), which the scheduler ignores. Expansion looks rows up by these IDs, not by date: an occurrence a person moved to another day (posted early, say) still holds its ID, so it isn't made again.
+- **Deterministic occurrence IDs:** `<scheduleId>_<YYYYMMDD>`, e.g. `66f1c2…_20261029`. Schedule IDs are 20-character `ID.unique()` values, so this is 29 characters, inside Appwrite's 36 limit. Expansion looks rows up by these IDs, not by date, and creates only the missing ones: an occurrence a person moved to another day (posted early, say) still holds its ID, so it isn't made again. One created meanwhile by another run fails the commit with a conflict (409), and the expansion runs again.
 - **Voided occurrences stay**, so they block re-creation. "I didn't go this Thursday" means void, never delete.
 - **Overridden occurrences** (`overridden = true`) are never deleted or changed by schedule edits.
 
@@ -71,22 +71,29 @@ Query `schedules` where `nextRunAt <= now` (`idx_nextRunAt`, in pages by `$id`).
 ```
 today       = localToday(group.timezone, now)
 from        = max(startsOn, generatedThrough + 1 day)
-to          = min(endsOn ?? ∞, today + horizonDays)
+end         = min(endsOn, the rule's UNTIL or COUNTth date), or none
+to          = min(end ?? ∞, today + horizonDays)
 for date in expandSchedule(schedule, from, to, holidays(group.region)):
-    create transaction id=<scheduleId>_<YYYYMMDD>
+    no row with id <scheduleId>_<YYYYMMDD> → create it
         kind, description, category, totalCents, inputJson from the template
         status = 'scheduled' (shift, expense, income) or 'due' (bill, with dueOn = date)
-        scheduleId, date, createdBy = schedule.createdBy; ignore 409
+        scheduleId, date, createdBy = schedule.createdBy
+    a changeable row that differs from the template → update it in place, items replaced
+for each changeable row dated from `from` on whose date the rule no longer has:
+    dated up to `to`, or after `end` → delete it with its items
 generatedThrough = to
-nextRunAt = next local 00:05 in group.timezone (as UTC), or empty once everything up to endsOn exists
+nextRunAt = next local 00:05 in group.timezone (as UTC), or empty once everything up to end exists
 ```
 
-Occurrences are written in batches of at most 90 operations per database transaction (a daily rule with a 120-day horizon is 120 rows), with each occurrence's items. An occurrence whose row already exists, voided or edited, is left as it is. Each batch is guarded ([ledger.md#concurrency](ledger.md#concurrency)):
-- it stages its progress (`generatedThrough`, and `nextRunAt` in the last batch) on the schedule row;
-- it checks the stored schedule is the one it read;
-- it guards the group row and the member row of everyone the template names.
+A **changeable** occurrence is still `scheduled` or `due` and not `overridden`. Voided, edited and posted ones are left as they are, and a changeable one dated after `to` but not after `end` waits until the window reaches it. So expansion brings the occurrences in line with the schedule as it is now, and an edit that stopped partway is put right by the next run.
 
-An edit, another run or a member removed meanwhile makes it run again with things as they are now. A schedule that still can't be expanded (a template a member change made invalid, say) keeps its `nextRunAt`, is counted as failed in the run's result, and is tried again next run. Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
+Occurrences are written in batches of at most 90 operations per database transaction (a daily rule with a 120-day horizon is 120 rows), with each occurrence's items, in date order. Each batch is guarded ([ledger.md#concurrency](ledger.md#concurrency)):
+- it stages its progress (`generatedThrough` up to the last date it reached, and `nextRunAt` in the last batch) on the schedule row;
+- it checks the stored schedule is the one it read;
+- it guards the group row and the member row of everyone the template names;
+- after staging, it checks the rows it updates or deletes are still changeable and have no item it didn't read.
+
+An edit, another run, a member removed or an occurrence changed meanwhile makes it run again with things as they are now. A cron run starts no new batch once its 12 minutes are up; the next run carries on from the progress saved. A schedule that still can't be expanded (a template a member change made invalid, say) keeps its `nextRunAt`, is counted as failed in the run's result, and is tried again next run. Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
 
 ### Step 2: auto-post
 
@@ -137,7 +144,7 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | Route | What it does |
 | --- | --- |
 | `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
-| `PATCH /schedules/{id}` | Update. Move `generatedThrough` back to yesterday if it is later, delete future occurrences that are still `scheduled`/`due` and not `overridden` (date ≥ local today), and only then save the new rule and template and expand again. The group and kind can't change (`VALIDATION_FAILED`) |
+| `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` moved back to yesterday if it is later, then expand again from local today: changeable occurrences are updated in place, deleted when the new rule no longer has their date, and created where missing. `created` and `removed` count the ones created and deleted; one updated in place counts as neither. The group and kind can't change (`VALIDATION_FAILED`) |
 | `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended; a later `endsOn` than before carries on at the next run |
 | `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items. One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
@@ -146,7 +153,7 @@ Changes to occurrences themselves (edit, void, post) go through the `ledger` fun
 
 Creating or editing a schedule guards the group row and the member row of everyone its template names, like a ledger write ([ledger.md#concurrency](ledger.md#concurrency)). A template can't commit just after a member's removal was checked, and a removal can't commit just after the template. Every database transaction of these routes that writes occurrences or a schedule's rule guards the group row too, so none lands after an archive. Deleting occurrences stages the deletes, then checks the stored rows. An edit or an end keeps an occurrence edited, posted or voided meanwhile. A delete removes edited and voided ones anyway; one posted meanwhile stops it with `VALIDATION_FAILED`, and the schedule should be ended instead. Schedule templates can't have receipts yet, like `POST /transactions`.
 
-Creating or editing a schedule sets its `nextRunAt` to now before expanding, so if the expansion stops partway (a timeout, say), the next cron run finishes it. An edit deletes the old rule's future occurrences before it saves the new rule, so one that stops before then (a timeout, or a race lost twice) leaves the old rule in place, and the next cron run makes again whatever it had deleted; sending it again applies it. Deleting occurrences also checks their items again after staging, so an item added meanwhile isn't left without its transaction.
+Creating or editing a schedule sets its `nextRunAt` to now in the same transaction that saves it, so if the expansion stops partway (a timeout, or a race lost twice), the next cron run finishes it, with the occurrences from where it stopped brought in line with the new rule. Deleting occurrences also checks their items again after staging, so an item added meanwhile isn't left without its transaction.
 
 ## Timer shifts
 
