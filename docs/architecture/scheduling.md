@@ -45,9 +45,11 @@ Skip a date when:
 
 ### Public holidays
 
-- Use `date-holidays`: region `AU-NSW` becomes `new Holidays('AU', 'NSW')`.
+- Use `date-holidays`, pinned exactly (`3.37.0`): region `AU-NSW` becomes `new Holidays('AU', 'NSW')`. Where a state's official list has a day the library doesn't, core adds it (`ADDED` in `public-holidays.ts`, each with its source). Today that's Saturday 25 December 2027 in SA and NT, which keep Christmas Day on the Saturday and add the Monday.
+- **Checked dates:** for the 8 Australian regions, `public-holidays.test.ts` pins every counted day from 2026 to 2030. 2026 and 2027 follow each government's list, and later years follow each state's Act. They were checked on 2026-10-19. A state can still declare an extra day; when one is found, it becomes a correction. Dates no official source settles yet are pinned as the library gives them and marked unverified: Victoria's AFL Grand Final Friday after 2026 (it follows the AFL's fixture), WA's King's Birthday after 2027 (proclaimed each year), and Tasmania's Saturday 25 December 2027 (WorkSafe's table and rule text disagree). Tasmania's Easter Sunday from 2027 is **unconfirmed and not counted**: an amending Act that's reported to add it is listed but couldn't be read ([#296](https://github.com/rojinc/ledgerly/issues/296)). WA's dates from 2028 may change with a Bill before its Parliament.
+- **Upgrading `date-holidays`** is a PR of its own that runs the pins again: a failing pin shows a date that moved before any schedule uses it. Check the corrections again then too.
 - Count only holidays of type `public`. Ignore `bank`, `school`, `observance` and so on.
-- Count only whole days: a holiday lasting several days counts each day, and one starting after midnight (Christmas Eve evening, a half day) doesn't count.
+- Count only whole days: a holiday lasting several days counts each day, and one starting after midnight (Christmas Eve evening, a half day) doesn't count. Only holidays for the whole state count, never a regional one: a show day in one town, or the local day a council outside Melbourne picks instead of Melbourne Cup Day. Melbourne Cup Day itself counts for all of Victoria.
 - Compare local dates: core's `publicHolidayChecker(region)` matches the `YYYY-MM-DD` part of each holiday's local date string, so no timezone or midnight edge case is involved.
 - An unknown region (a country or state the library doesn't have) throws, rather than silently skipping nothing.
 - Users can still add a shift on a holiday by hand, or skip any other day with `exdates`.
