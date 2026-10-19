@@ -343,7 +343,7 @@ describe('renderDividePdf', () => {
   it('prints Chinese, Japanese, Korean and emoji in their own fonts (#300)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const input = renamed(
-      { alice: '张三', bob: '山田太郎', cara: '김민준' },
+      { alice: '张三', bob: 'ヤマダ ハナコ', cara: '김민준' },
       '12 Smith St 🏠',
       'Power 😀',
     )
@@ -351,11 +351,11 @@ describe('renderDividePdf', () => {
     for (const expected of [
       '12 Smith St 🏠',
       '张三 $0.00 $270.00 $101.39 $168.61 is owed $168.61',
-      '山田太郎 -$3.00 $0.00 $101.39 -$104.39 owes $104.39',
+      'ヤマダ ハナコ -$3.00 $0.00 $101.39 -$104.39 owes $104.39',
       '김민준 $0.00 $0.00 $67.22 -$67.22 owes $67.22',
-      '山田太郎 pays 张三 $104.39',
+      'ヤマダ ハナコ pays 张三 $104.39',
       '김민준 pays Erin $3.00',
-      '10 Oct 2026 Power 😀 张三 $270.00 $101.39 山田太郎 $0.00 $101.39 김민준 $0.00 $67.22',
+      '10 Oct 2026 Power 😀 张三 $270.00 $101.39 ヤマダ ハナコ $0.00 $101.39 김민준 $0.00 $67.22',
     ]) {
       expect(text).toContain(expected)
     }

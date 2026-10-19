@@ -120,7 +120,9 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
 // pdfmake drops the part of a row it may not break that doesn't fit on one page, so rows are
 // kept whole only while every one surely fits: at most this many wrapped lines (about 700 pt of
 // a page), counting a line per 10 characters, which no name or description at 10 pt beats in
-// any of the PDF's fonts (Noto Sans CJK, the widest, fits about 20 a line).
+// any of the PDF's fonts (Noto Sans CJK, the widest, fits about 17 a line). Its lines are about
+// 24% taller, which the 15-person cap on a line's shares (MAX_PEOPLE_PER_TRANSACTION) leaves
+// room for.
 const MAX_ROW_LINES = 45
 const CHARS_PER_LINE = 10
 
