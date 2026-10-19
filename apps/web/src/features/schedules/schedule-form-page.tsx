@@ -1,3 +1,4 @@
+import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Schedules } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
@@ -17,8 +18,9 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { centsToText } from '../groups/employer-form'
 import { useGroups, useMyMember } from '../groups/use-groups'
+import { parseHours } from '../shifts/shift-values'
 import { WEEKDAY_LABEL, WEEKDAYS } from './rrule'
-import { fromSchedule, parseHours, type ScheduleValues, toScheduleInput } from './schedule-values'
+import { fromSchedule, type ScheduleValues, toScheduleInput } from './schedule-values'
 import { formatDate } from './schedules-page'
 import { usePreview, useSaveSchedule, useSchedule } from './use-schedules'
 
@@ -32,9 +34,16 @@ const ERROR_FIELD: Record<string, keyof ScheduleValues> = {
   'template.shift.rateCents': 'rate',
 }
 
-/** Schema errors on the fields the form shows, in plain words. */
+/** How far back a new schedule may start: its dates from then to yesterday are created too. */
+export const BACKDATE_DAYS = 31
+
+/**
+ * Schema errors on the fields the form shows, in plain words. `minStart`: the earliest start a
+ * new schedule may have (#137 review: a mistyped year would create years of past shifts).
+ */
 function scheduleResolver(
   toInput: (values: ScheduleValues) => ReturnType<typeof toScheduleInput>,
+  minStart: LocalDate | undefined,
 ): Resolver<ScheduleValues, unknown, ScheduleInput> {
   const resolve = schemaResolver<ScheduleValues, ScheduleInput>(scheduleInputSchema, toInput)
   return async (values, context, options) => {
@@ -46,8 +55,9 @@ function scheduleResolver(
     }
     const minutes = parseHours(values.hours)
     if (values.hours.trim() === '') add('hours', 'Required')
-    else if (Number.isNaN(minutes)) add('hours', 'Enter hours like 5, 7.5 or 7:30')
-    else if (minutes === 0 || minutes > 24 * 60) add('hours', 'Between a minute and 24 hours')
+    else if (minutes === undefined) add('hours', 'Enter hours like 5, 7.5 or 7:30')
+    else if (minutes === 0) add('hours', 'Enter more than 0 hours')
+    else if (minutes > 24 * 60) add('hours', 'At most 24 hours a shift')
     if (values.rate.trim() === '') add('rate', 'Required')
     else if (get(found, 'template.shift.rateCents')) add('rate', 'Enter an amount like 25.50')
     if (values.pattern === 'weekly' && values.days.length === 0)
@@ -60,13 +70,18 @@ function scheduleResolver(
       add('count', 'Enter a number from 1 to 500')
     }
     if (values.end === 'until' && values.until === '') add('until', 'Required')
-    // Any other rule error goes on the part of the form that's showing.
+    if (minStart && values.startsOn !== '' && values.startsOn < minStart) {
+      add('startsOn', `Pick a date from ${formatDate(minStart)} on`)
+    }
+    // The rule's own error, in plain words, only when the days, count or last date haven't
+    // said what's wrong already: an empty BYDAY isn't news after "Pick at least one day".
     const ruleError = get(found, 'rrule')?.message as string | undefined
-    if (ruleError) {
-      add(
-        values.end === 'until' ? 'until' : values.end === 'count' ? 'count' : 'startsOn',
-        ruleError,
-      )
+    if (ruleError && !errors.days && !errors.count && !errors.until) {
+      if (values.end === 'until' && /UNTIL/.test(ruleError)) {
+        add('until', 'Must be on or after the start date')
+      } else {
+        errors.root = { type: 'validate', message: 'Check how often it repeats and when it ends.' }
+      }
     }
     // A kept end date (this form doesn't show it) before a new start.
     if (get(found, 'endsOn')) add('startsOn', 'Must be on or before the schedule’s end date')
@@ -188,10 +203,20 @@ function ScheduleFormPage({
   } else if (group.archivedAt) {
     content = <Message>{ARCHIVED_NOTICE}</Message>
   } else if (
-    // functions-api.md#scheduler: an admin creates; the creator or an admin changes.
-    !(member.data?.role === 'admin' || (schedule && schedule.createdBy === personId))
+    // functions-api.md#scheduler: an admin creates; the creator or an admin changes. A viewer
+    // changes nothing, even one they made (permissions.md#roles).
+    !(
+      member.data?.role === 'admin' ||
+      (member.data?.role === 'member' && schedule && schedule.createdBy === personId)
+    )
   ) {
-    content = <Message>Only an admin can set up schedules in this group.</Message>
+    content = (
+      <Message>
+        {schedule
+          ? 'Only an admin, or the member who set it up, can change this schedule.'
+          : 'Only an admin can set up schedules in this group.'}
+      </Message>
+    )
   } else {
     const stored = schedule && fromSchedule(schedule, group.currency)
     content =
@@ -256,8 +281,11 @@ function ScheduleForm({
     : {}
   const toInput = (values: ScheduleValues) =>
     toScheduleInput(values, { id, groupId: group.$id }, group.currency, kept)
+  const [today] = useState(() => localToday(group.timezone, new Date()))
+  // A new schedule starts at most BACKDATE_DAYS ago; an edit keeps its start.
+  const minStart = schedule ? undefined : addDays(today, -BACKDATE_DAYS)
   const form = useForm<ScheduleValues, unknown, ScheduleInput>({
-    resolver: scheduleResolver(toInput),
+    resolver: scheduleResolver(toInput, minStart),
     defaultValues,
   })
   const { errors, isSubmitting } = form.formState
@@ -273,7 +301,8 @@ function ScheduleForm({
         onSubmit={form.handleSubmit(async (input) => {
           try {
             await save.mutateAsync(input)
-            navigate(`/schedules?groupId=${group.$id}`)
+            // The list's heading takes focus: this form, and its button, are gone.
+            navigate(`/schedules?groupId=${group.$id}`, { state: { saved: true } })
           } catch (error) {
             form.setError('root', { message: (error as Error).message })
           }
@@ -359,9 +388,10 @@ function ScheduleForm({
           label="Starts on"
           hint={
             values.pattern === 'weekly' && values.interval > 1
-              ? 'Every other week counts from this week.'
+              ? `Every ${values.interval === 2 ? 'other week' : `${values.interval} weeks`} counts from this week.`
               : undefined
           }
+          min={minStart}
           error={errors.startsOn}
           {...form.register('startsOn')}
         />
@@ -407,7 +437,7 @@ function ScheduleForm({
           Confirm each shift automatically once the day is over
         </label>
         <p className="text-sm text-muted-foreground">
-          {Number.isInteger(minutes) && minutes > 0
+          {minutes !== undefined && minutes > 0
             ? `Each shift: ${Math.floor(minutes / 60)} h ${minutes % 60} min`
             : ' '}
         </p>
@@ -415,7 +445,14 @@ function ScheduleForm({
           {isSubmitting ? 'Saving…' : schedule ? 'Save' : 'Create schedule'}
         </Button>
       </form>
-      <PreviewPanel body={{ ...preview, count: 10 }} currency={group.currency} />
+      <PreviewPanel
+        body={{ ...preview, count: 10 }}
+        currency={group.currency}
+        // Past dates are created too, from the start to yesterday.
+        backdatedFrom={
+          values.startsOn !== '' && values.startsOn < today ? values.startsOn : undefined
+        }
+      />
     </div>
   )
 }
@@ -424,9 +461,11 @@ function ScheduleForm({
 function PreviewPanel({
   body,
   currency,
+  backdatedFrom,
 }: {
   body: Parameters<typeof usePreview>[0]
   currency: string
+  backdatedFrom?: string
 }) {
   const preview = usePreview(body)
   const shift = body?.template.shift
@@ -462,7 +501,11 @@ function PreviewPanel({
               : 'Fill in the form to see the dates.'}
         </p>
       ) : preview.data.dates.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No dates: it never falls on a day it can.</p>
+        <p className="text-sm text-muted-foreground">
+          {/COUNT|UNTIL/.test(body?.rrule ?? '')
+            ? 'No more dates.'
+            : 'No dates: it never falls on a day it can.'}
+        </p>
       ) : (
         <ul className="flex flex-col gap-1 text-sm">
           {preview.data.dates.map((date) => (
@@ -484,6 +527,12 @@ function PreviewPanel({
             ))}
           </ul>
         </>
+      )}
+      {backdatedFrom && (
+        <p className="text-sm">
+          Dates from {formatDate(backdatedFrom)} to yesterday are created too. They wait for you to
+          confirm them.
+        </p>
       )}
       {preview.isError && preview.data && (
         <p role="alert" className="text-sm text-destructive">

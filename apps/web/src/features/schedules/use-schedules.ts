@@ -3,6 +3,7 @@ import {
   type endScheduleBodySchema,
   previewScheduleBodySchema,
   type ScheduleInput,
+  type SchedulePreview,
 } from '@ledgerly/core/schemas/scheduler'
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Query } from 'appwrite'
@@ -26,12 +27,6 @@ export const scheduleKeys = {
 
 /** The preview body as the form builds it; the hook checks it before sending. */
 type PreviewInput = z.input<typeof previewScheduleBodySchema>
-
-/** What `POST /schedules/preview` answers (functions-api.md#scheduler). */
-export type Preview = {
-  dates: string[]
-  skipped: { date: string; reason: 'exdate' | 'holiday' }[]
-}
 
 /** Calls the scheduler function; a refusal throws its message in plain words. */
 async function scheduler<T>(method: Method, path: string, body?: unknown): Promise<T> {
@@ -91,7 +86,7 @@ export function usePreview(body: PreviewInput | undefined) {
     // The last answer stays while the next loads, but never for an input that's no longer valid.
     placeholderData: valid ? keepPreviousData : undefined,
     retry: false,
-    queryFn: () => scheduler<Preview>('POST', '/schedules/preview', settled),
+    queryFn: () => scheduler<SchedulePreview>('POST', '/schedules/preview', settled),
   })
 }
 
@@ -117,10 +112,12 @@ export function useEndSchedule(id: string) {
   })
 }
 
-// A schedule's change adds or removes occurrences: the calendar and history are out of date.
+// A schedule's change adds or removes occurrences: the calendar, Today and history are out of
+// date.
 function refresh(queryClient: ReturnType<typeof useQueryClient>, schedule: Schedules) {
   queryClient.setQueryData(scheduleKeys.one(schedule.$id), schedule)
   void queryClient.invalidateQueries({ queryKey: scheduleKeys.list(schedule.groupId) })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
+  void queryClient.invalidateQueries({ queryKey: ['today'] })
   void queryClient.invalidateQueries({ queryKey: ['history', schedule.groupId] })
 }

@@ -1,7 +1,8 @@
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Schedules } from '@ledgerly/core/generated/rows'
-import { type ReactNode, useState } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -43,6 +44,15 @@ export function SchedulesPage() {
   const [params, setParams] = useSearchParams()
   const employers = groups.data?.filter((group) => group.type === 'employer')
   const group = employers?.find((g) => g.$id === params.get('groupId')) ?? employers?.[0]
+  // Back from saving a schedule: its form, and the button that sent it, are gone (#137 review).
+  const heading = useRef<HTMLHeadingElement>(null)
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (!(location.state as { saved?: boolean } | null)?.saved) return
+    heading.current?.focus()
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+  }, [location.state, location.pathname, location.search, navigate])
 
   let content: ReactNode
   if (!employers) {
@@ -86,7 +96,9 @@ export function SchedulesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold">Schedules</h1>
+      <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+        Schedules
+      </h1>
       {content}
     </div>
   )
@@ -97,8 +109,11 @@ function GroupSchedules({ group }: { group: Groups }) {
   const personId = useBootstrap(userId).data?.personId ?? ''
   const member = useMyMember(group.$id, personId)
   const schedules = useSchedules(group.$id)
-  const isAdmin = member.data?.role === 'admin'
+  const role = member.data?.role
+  const isAdmin = role === 'admin'
   const today = localToday(group.timezone, new Date())
+  // Focus lands here when a row's End goes away with its form.
+  const heading = useRef<HTMLHeadingElement>(null)
 
   if (!schedules.data) {
     return schedules.isError ? (
@@ -110,7 +125,7 @@ function GroupSchedules({ group }: { group: Groups }) {
   return (
     <section aria-labelledby="schedules-heading" className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="schedules-heading" className="font-medium">
+        <h2 id="schedules-heading" ref={heading} tabIndex={-1} className="font-medium outline-none">
           Shift schedules in {group.name}
         </h2>
         {isAdmin && !group.archivedAt && (
@@ -132,8 +147,13 @@ function GroupSchedules({ group }: { group: Groups }) {
               key={schedule.$id}
               schedule={schedule}
               today={today}
-              // The creator or an admin; nothing changes in an archived group.
-              mayChange={!group.archivedAt && (isAdmin || schedule.createdBy === personId)}
+              // An admin, or a member who set it up (never a viewer, permissions.md#roles);
+              // nothing changes in an archived group.
+              mayChange={
+                !group.archivedAt &&
+                (isAdmin || (role === 'member' && schedule.createdBy === personId))
+              }
+              onEnded={() => heading.current?.focus()}
             />
           ))}
         </ul>
@@ -142,19 +162,34 @@ function GroupSchedules({ group }: { group: Groups }) {
   )
 }
 
+/**
+ * Whether a schedule has ended by `today`: its end date, or its rule's own last date, has
+ * passed. Stored dates are plain YYYY-MM-DD strings, which sort as text. A rule that ends after
+ * a number of shifts can't be told from here.
+ */
+export function hasEnded(schedule: Pick<Schedules, 'endsOn' | 'rrule'>, today: string): boolean {
+  const repeat = fromRrule(schedule.rrule)
+  const until = repeat?.end === 'until' ? repeat.until : undefined
+  return (
+    (schedule.endsOn !== null && schedule.endsOn < today) || (until !== undefined && until < today)
+  )
+}
+
 function ScheduleRow({
   schedule,
   today,
   mayChange,
+  onEnded,
 }: {
   schedule: Schedules
   today: string
   mayChange: boolean
+  onEnded: () => void
 }) {
   const repeat = fromRrule(schedule.rrule)
-  // Stored dates are plain YYYY-MM-DD strings, which sort as text.
-  const ended = schedule.endsOn !== null && schedule.endsOn < today
+  const ended = hasEnded(schedule, today)
   const [ending, setEnding] = useState(false)
+  const trigger = useRef<HTMLButtonElement>(null)
   return (
     <li className="flex flex-col gap-2 px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -172,18 +207,34 @@ function ScheduleRow({
             )}
           </p>
           <p className="text-sm text-muted-foreground">
-            {repeat ? describeRepeat(repeat) : 'Custom rule'} · from {formatDate(schedule.startsOn)}
+            {repeat ? describeRepeat(repeat, formatDate) : 'Custom rule'} · from{' '}
+            {formatDate(schedule.startsOn)}
             {schedule.endsOn ? ` to ${formatDate(schedule.endsOn)}` : ''}
             {ended ? ' · Ended' : ''}
           </p>
         </div>
         {mayChange && !ended && !ending && (
-          <Button variant="outline" size="sm" onClick={() => setEnding(true)}>
+          <Button ref={trigger} variant="outline" size="sm" onClick={() => setEnding(true)}>
             End
           </Button>
         )}
       </div>
-      {ending && <EndSchedule schedule={schedule} today={today} onDone={() => setEnding(false)} />}
+      {ending && (
+        <EndSchedule
+          schedule={schedule}
+          today={today}
+          onCancel={() => {
+            flushSync(() => setEnding(false))
+            trigger.current?.focus()
+          }}
+          onEnded={() => {
+            flushSync(() => setEnding(false))
+            // Still running (a later end date): its End is back; ended: the list's heading.
+            if (trigger.current) trigger.current.focus()
+            else onEnded()
+          }}
+        />
+      )}
     </li>
   )
 }
@@ -192,22 +243,36 @@ function ScheduleRow({
 function EndSchedule({
   schedule,
   today,
-  onDone,
+  onCancel,
+  onEnded,
 }: {
   schedule: Schedules
   today: string
-  onDone: () => void
+  onCancel: () => void
+  onEnded: () => void
 }) {
   const end = useEndSchedule(schedule.$id)
   // Not before it starts.
   const [endsOn, setEndsOn] = useState(today < schedule.startsOn ? schedule.startsOn : today)
+  const [error, setError] = useState<string>()
+  const field = useRef<HTMLInputElement>(null)
+  useEffect(() => field.current?.focus(), [])
   return (
     <form
       noValidate
       className="flex flex-col gap-3"
       onSubmit={(event) => {
         event.preventDefault()
-        end.mutate({ endsOn }, { onSuccess: onDone })
+        if (end.isPending) return
+        // Checked here, in words, before the scheduler would refuse it.
+        const problem =
+          endsOn === ''
+            ? 'Required'
+            : endsOn < schedule.startsOn
+              ? `Pick a date on or after the start, ${formatDate(schedule.startsOn)}`
+              : undefined
+        setError(problem)
+        if (!problem) end.mutate({ endsOn }, { onSuccess: onEnded })
       }}
     >
       <TextField
@@ -215,9 +280,11 @@ function EndSchedule({
         type="date"
         label="Last date"
         hint="Shifts after this date that weren’t changed by hand are removed."
+        ref={field}
         value={endsOn}
         min={schedule.startsOn}
         onChange={(event) => setEndsOn(event.target.value)}
+        error={error ? { type: 'validate', message: error } : undefined}
       />
       {end.isError && (
         <p role="alert" className="text-sm text-destructive">
@@ -225,10 +292,16 @@ function EndSchedule({
         </p>
       )}
       <div className="flex gap-3">
-        <Button type="submit" size="sm" disabled={end.isPending || endsOn === ''}>
+        {/* aria-disabled, not disabled: a disabled button loses focus. */}
+        <Button type="submit" size="sm" aria-disabled={end.isPending}>
           {end.isPending ? 'Ending…' : 'End schedule'}
         </Button>
-        <Button variant="outline" size="sm" onClick={onDone} disabled={end.isPending}>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-disabled={end.isPending}
+          onClick={() => !end.isPending && onCancel()}
+        >
           Cancel
         </Button>
       </div>
