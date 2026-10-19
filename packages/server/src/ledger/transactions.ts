@@ -193,6 +193,8 @@ export async function requireNoOpenMerge(
     ...everyPersonId(stored),
     ...items.flatMap((item) => everyPersonId({ split: JSON.parse(item.splitJson) })),
   ])
+  // A shift names no one, and Appwrite refuses an `equal` with no values.
+  if (named.size === 0) return
   // At most 15 people a transaction, so one read.
   const { rows: merged } = await db.listRows<Persons>({
     databaseId: DATABASE_ID,
