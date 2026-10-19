@@ -142,8 +142,9 @@ describe('step 2: auto-post', () => {
   it('waits for step 1 to finish a schedule that is due', async () => {
     const services = seeded()
     await create(services, thursdays)
-    // An edit made it due again, and this run's step 1 fails on it.
-    await update(services, 'schedules', ID, { nextRunAt: '2026-10-18T19:00:00.000Z' })
+    // An edit made it due again, and the 00:05 run's step 1 fails on it (Sydney, 19 October).
+    services.now = new Date('2026-10-18T13:05:00.000Z')
+    await update(services, 'schedules', ID, { nextRunAt: '2026-10-18T13:00:00.000Z' })
     const commit = services.db.updateTransaction.bind(services.db)
     const timeout = vi.spyOn(services.db, 'updateTransaction')
     timeout.mockImplementationOnce(async (params) => {
@@ -154,6 +155,8 @@ describe('step 2: auto-post', () => {
     expect(first.expanded.failed).toBe(1)
     expect(first.posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
     timeout.mockRestore()
+    // The 01:05 run, long before any reminder.
+    services.now = new Date('2026-10-18T14:05:00.000Z')
     expect((await runCron(services)).posted.posted).toBe(1)
   })
 
@@ -389,6 +392,32 @@ describe('step 2: auto-post', () => {
       expect.objectContaining({ to: 'sam@example.com', idempotencyKey: `reminder-${ID}_20261015` }),
     )
     quiet.mockRestore()
+  })
+
+  it('never posts a shift the owner was reminded about, also once autoPost is turned on', async () => {
+    const services = seeded()
+    await create(services, { ...thursdays, autoPost: false })
+    // 07:00: the 15th is reminded (Sam has no email here, so it's only marked).
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 1, failed: 0 })
+    const { status } = await call(services, 'PATCH', `/schedules/${ID}`, {
+      body: { ...thursdays, autoPost: true },
+    })
+    expect(status).toBe(200)
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, `${ID}_20261015`).status).toBe('scheduled')
+  })
+
+  it('doesn’t post an occurrence reminded about just before its guard', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    const id = `${ID}_20261015`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'transactions', id, { remindedAt: NOW.toISOString() }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, id).status).toBe('scheduled')
   })
 
   it('can’t give a share to a member removed while the post commits', async () => {
