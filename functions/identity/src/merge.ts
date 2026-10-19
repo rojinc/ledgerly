@@ -193,7 +193,9 @@ async function moveMember(
           groupId: kept.groupId,
           actorPersonId: intoId,
           action: 'member.joined',
-          summary: `${kept.displayName} joined`,
+          // No name (data-model.md#activity): the app shows theirs from subjectPersonId.
+          subjectPersonId: intoId,
+          summary: 'joined',
           at: now.toISOString(),
         },
         permissions: [Permission.read(Role.team(kept.groupId))],
