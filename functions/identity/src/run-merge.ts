@@ -2,7 +2,7 @@ import type { Groups, Identities, Members, Persons, Shares } from '@ledgerly/cor
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
-import { moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
+import { memberOf, moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
 import { moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
 
@@ -35,7 +35,7 @@ export async function finishMerges(
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
     if (placeholder.userId || placeholder.deletedAt) continue
     if (!(await hasIdentity(services.db, placeholder.$id))) continue
-    const { joined, finished } = await runMerge(services, userId, placeholder.$id, intoId, deadline)
+    const { joined, finished } = await runMerge(services, userId, placeholder, intoId, deadline)
     result.joined.push(...joined)
     if (finished) result.finished += 1
   }
@@ -51,19 +51,21 @@ export async function finishMerges(
 async function runMerge(
   services: Services,
   userId: string,
-  fromId: string,
+  placeholder: Persons,
   intoId: string,
   deadline: number,
 ): Promise<{ joined: string[]; finished: boolean }> {
   const { db, now } = services
+  const fromId = placeholder.$id
   const merge = { from: fromId, into: intoId }
   const kept = new Set<string>()
   const joined: string[] = []
   const putOff = new Set<string>()
   const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
   let done = true
-  // P's groups whose row step 2 hasn't moved yet, and U's, where an earlier claim moved it.
-  const groupIds = new Set([...(await groupsOf(db, fromId)), ...(await groupsOf(db, intoId))])
+  // Only P's groups, as step 1 listed them, can name P; never U's others, so a merge costs what
+  // P had. A P marked before step 1 kept the list has its member rows to go by.
+  const groupIds = placeholder.mergeGroupIds ?? (await groupsOf(db, fromId))
   for (const groupId of groupIds) {
     if (Date.now() >= deadline) {
       done = false
@@ -79,6 +81,9 @@ async function runMerge(
       putOff.add(groupId)
       continue
     }
+    // Neither has a row here (U's, once P's, was removed since): moving P's work here would name
+    // someone who isn't a member (I-3), so it's left, and `stray()` keeps the merge open.
+    if (!(await memberOf(db, groupId, intoId))) continue
     // Templates first, so an expansion from now on names U.
     const templates = await moveTemplates(db, merge, [groupId], deadline)
     const inputs = await moveInputs(db, merge, [groupId], now, deadline)

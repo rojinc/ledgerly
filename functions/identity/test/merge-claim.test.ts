@@ -85,7 +85,7 @@ function house(more: Record<string, object[]> = {}): Fakes {
   const services = fakes(
     {
       persons: [SAM, SAMMY, ALEX],
-      identities: [EMAIL, PHONE],
+      identities: [EMAIL, PHONE, ...(more.identities ?? [])],
       groups: [
         group('g1'),
         group('g2'),
@@ -314,6 +314,49 @@ describe('POST /claim, merging a placeholder', () => {
     expect(writes).not.toHaveBeenCalled()
   })
 
+  it('moves only the key Sam verified: a key typed for Sammy is deleted as the merge starts', async () => {
+    // Someone added Sammy by email too, an address Sam never verified (the #252 S1 attack).
+    const typed = {
+      $id: 'iTyped',
+      key: 'email:sammy@example.com',
+      type: 'email',
+      personId: 'pP',
+      verified: false,
+    }
+    const services = house({ identities: [typed] })
+    await claim(services)
+    expect(services.db.rows('identities').map((row) => [row.$id, row.personId])).toEqual([
+      ['iEmail', 'pSam'],
+      ['iPhone', 'pSam'],
+    ])
+    expect(stopped()).toEqual([])
+  })
+
+  it('looks in Sammy’s groups only, never Sam’s others', async () => {
+    // g9 is Sam's own, with a transaction and a schedule of its own: Sammy was never in it.
+    const services = house({
+      groups: [group('g9')],
+      members: [
+        placeholderRow('m9', 'g9', 'pSam', BEFORE, { status: 'active', displayName: 'Sam Lee' }),
+      ],
+      transactions: [transaction('t9', 'g9', { payers: [{ personId: 'pSam', cents: 100 }] }, 100)],
+    })
+    const reads = vi.spyOn(services.db, 'listRows')
+    await claim(services)
+    expect(services.db.rows('persons').find((row) => row.$id === 'pP')?.mergeGroupIds).toEqual([
+      'g1',
+      'g2',
+    ])
+    expect(
+      reads.mock.calls.some(
+        ([params]) =>
+          ['transactions', 'schedules'].includes(params.tableId) &&
+          JSON.stringify(params.queries).includes('g9'),
+      ),
+    ).toBe(false)
+    expect(stopped()).toEqual([])
+  })
+
   it('leaves Sammy’s rows and shares in a group Sam left on their own, and still finishes', async () => {
     const services = house({
       groups: [group('g3')],
@@ -493,13 +536,13 @@ describe('POST /claim, merging a placeholder', () => {
     'carries on a merge cut off at clock read %i, and adds nothing twice',
     async (cutAt) => {
       const services = house()
-      // Marked as a claim would; then time runs out partway through.
+      // Marked as a claim would, with P's groups; then time runs out partway through.
       await withTransaction(services.db, (tx) =>
         tx.write({
           action: 'update',
           tableId: 'persons',
           rowId: 'pP',
-          data: { mergedInto: 'pSam' },
+          data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2'] },
         }),
       )
       const start = Date.now()
@@ -555,10 +598,20 @@ describe('POST /claim, merging a placeholder', () => {
       ],
       shares: [share('s9', 't9', 'g3', 'pX', 2000, 1000), share('s10', 't9', 'g3', 'pP', 0, 1000)],
     })
+    // Marked in that earlier claim, so g3 is one of Sammy's groups.
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'persons',
+        rowId: 'pP',
+        data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2', 'g3'] },
+      }),
+    )
     await claim(services)
-    // Sam has no row in g3, so Sammy's share stays (I-3), logged by ID, and the phone waits.
+    // Sam has no row in g3, so nothing there moves: Sammy's share and input stay (I-3), the
+    // share is logged by ID, and the phone waits.
     expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
-    expect(namingSammy(services).identities).toEqual(['iPhone'])
+    expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: ['t9'] })
     expect(warn).toHaveBeenCalledWith(
       'merge pP into pSam left shares row s10 in group g3 for a later claim',
     )

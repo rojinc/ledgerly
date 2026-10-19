@@ -15,9 +15,9 @@ import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
-import { Raced } from '@ledgerly/server/ledger/transactions'
+import { listAll, Raced } from '@ledgerly/server/ledger/transactions'
 import { ID, Permission, Query, Role } from 'node-appwrite'
-import { getRowOrNull, isAppwriteError, tryAgain } from './rows'
+import { getRowOrNull, isAppwriteError, tryAgain, typedKeyDeletes } from './rows'
 import type { Services } from './services'
 
 // identity-and-invites.md#merging-two-persons: placeholder P is merged into U in steps that are
@@ -27,17 +27,28 @@ import type { Services } from './services'
 /** Thrown inside a transaction when P turned out not to be U's to merge. */
 class NotOurs extends Error {}
 
+/** Thrown inside a transaction when another claim for U marked P first. */
+class MarkedAlready extends Error {}
+
 /**
  * Step 1: marks P as merged into U. It stages `mergedInto`, then reads P's stored row, so of
- * two adoptions or merges at once only one wins. True when P is U's to merge: marked now, or
- * already by an earlier call that was cut off.
+ * two adoptions or merges at once only one wins. In the same transaction it records P's groups
+ * (`mergeGroupIds`) and deletes P's identities whose key isn't in `verified`, U's verified keys
+ * (identity-and-invites.md#only-verified-keys-move), so `resolvePerson()` can never follow a
+ * typed key to U. True when P is U's to merge: marked now, or already by an earlier call that
+ * was cut off.
  */
-export async function markMerged(db: Db, placeholderId: string, intoId: string): Promise<boolean> {
+export async function markMerged(
+  db: Db,
+  placeholderId: string,
+  intoId: string,
+  verified: readonly string[],
+): Promise<boolean> {
   const stored = await getRowOrNull<Persons>(db, TABLES.persons, placeholderId)
   if (!stored || stored.userId || stored.deletedAt) return false
   if (stored.mergedInto) return stored.mergedInto === intoId
   try {
-    await withTransaction(db, async (tx) => {
+    const typed = await withTransaction(db, async (tx) => {
       await tx.write({
         action: 'update',
         tableId: TABLES.persons,
@@ -55,10 +66,30 @@ export async function markMerged(db: Db, placeholderId: string, intoId: string):
       ) {
         throw new NotOurs()
       }
+      // Another claim for U marked it first: its list and its deletes stand, and its step 2 may
+      // already have moved rows, so listing them again here would lose those groups.
+      if (current.mergedInto === intoId) throw new MarkedAlready()
+      // P's groups, listed once P's row is staged: an add that found P stages a guard on P's
+      // row (L2), so one that commits later fails and resolves again, to U. The list is final.
+      const rows = await listAll<Members>(db, TABLES.members, [
+        Query.equal('personId', placeholderId),
+      ])
+      await tx.write({
+        action: 'update',
+        tableId: TABLES.persons,
+        rowId: placeholderId,
+        data: { mergeGroupIds: [...new Set(rows.map((row) => row.groupId))].sort() },
+      })
+      const deletes = await typedKeyDeletes(db, placeholderId, verified)
+      if (deletes.length > 0) await tx.write(...deletes)
+      return deletes.length
     })
+    // After the commit, so a rolled-back try logs nothing.
+    if (typed > 0) console.log(`merge ${placeholderId} into ${intoId}: ${typed} typed keys deleted`)
     return true
   } catch (error) {
     if (error instanceof NotOurs) return false
+    if (error instanceof MarkedAlready) return true
     // P changed after it was staged: whoever changed it decides.
     if (isAppwriteError(error, 409)) {
       const current = await getRowOrNull<Persons>(db, TABLES.persons, placeholderId)
@@ -130,7 +161,11 @@ async function twoSided(db: Db, groupId: string): Promise<boolean> {
 }
 
 /** The person's member row in the group (`uniq_group_person`), or undefined. */
-async function memberOf(db: Db, groupId: string, personId: string): Promise<Members | undefined> {
+export async function memberOf(
+  db: Db,
+  groupId: string,
+  personId: string,
+): Promise<Members | undefined> {
   const { rows } = await db.listRows<Members>({
     databaseId: DATABASE_ID,
     tableId: TABLES.members,

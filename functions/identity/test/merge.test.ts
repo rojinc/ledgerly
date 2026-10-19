@@ -39,24 +39,87 @@ afterEach(() => {
 })
 
 describe('markMerged (step 1)', () => {
-  it('marks a placeholder as merged into U', async () => {
-    const store = db()
-    expect(await markMerged(store, 'pP', 'pU')).toBe(true)
-    expect(store.rows('persons').find((row) => row.$id === 'pP')?.mergedInto).toBe('pU')
+  it('marks a placeholder as merged into U, with the groups of every row of P’s', async () => {
+    const store = new FakeDb({
+      persons: [U, P],
+      members: [
+        placeholderRow('m1', 'g2', 'pP', NOW.toISOString()),
+        placeholderRow('m2', 'g1', 'pP', NOW.toISOString(), { status: 'left' }),
+        placeholderRow('m3', 'g3', 'pU', NOW.toISOString(), { status: 'active' }),
+      ],
+    } as ConstructorParameters<typeof FakeDb>[0])
+    expect(await markMerged(store, 'pP', 'pU', [])).toBe(true)
+    expect(store.rows('persons').find((row) => row.$id === 'pP')).toMatchObject({
+      mergedInto: 'pU',
+      mergeGroupIds: ['g1', 'g2'],
+    })
+  })
+
+  it('lists P’s rows once P’s row is staged, so a row added before then is on the list', async () => {
+    const store = new FakeDb({
+      persons: [U, P],
+      members: [placeholderRow('m1', 'g1', 'pP', NOW.toISOString())],
+    } as ConstructorParameters<typeof FakeDb>[0])
+    // An add that resolved P commits just before the merge stages P's row.
+    const { $id, $createdAt, ...added } = placeholderRow('m2', 'g2', 'pP', NOW.toISOString())
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"mergedInto"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'create',
+            tableId: 'members',
+            rowId: 'm2',
+            data: added,
+          }),
+        ),
+    )
+    expect(await markMerged(store, 'pP', 'pU', [])).toBe(true)
+    expect(store.rows('persons').find((row) => row.$id === 'pP')?.mergeGroupIds).toEqual([
+      'g1',
+      'g2',
+    ])
+  })
+
+  it('deletes the keys of P that U hasn’t verified, as it marks P, and keeps the ones U has', async () => {
+    const typed = { ...identity(1), verified: false }
+    const claimedThrough = { ...identity(2), verified: false }
+    const store = db([U, P], [typed, claimedThrough, identity(3, 'pX')])
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(await markMerged(store, 'pP', 'pU', [claimedThrough.key])).toBe(true)
+    expect(store.rows('identities').map((row) => row.$id)).toEqual(['i2', 'i3'])
+    // IDs and counts only.
+    expect(log).toHaveBeenCalledWith('merge pP into pU: 1 typed keys deleted')
+  })
+
+  it('deletes nothing when P turns out not to be U’s', async () => {
+    const store = db([U, { ...P, userId: 'u2' }], [{ ...identity(1), verified: false }])
+    expect(await markMerged(store, 'pP', 'pU', [])).toBe(false)
+    expect(store.rows('identities')).toHaveLength(1)
+    // Another merge that marks P first, between the read and the staging, rolls this one back.
+    const raced = db([U, P], [{ ...identity(1), verified: false }])
+    beforeStaging(
+      raced,
+      (operations) => operations.includes('"mergedInto"'),
+      () => updateRow(raced, 'persons', 'pP', { mergedInto: 'pX' }),
+    )
+    expect(await markMerged(raced, 'pP', 'pU', [])).toBe(false)
+    expect(raced.rows('identities')).toHaveLength(1)
   })
 
   it('counts a placeholder already marked for U as U’s, so a cut-off merge carries on', async () => {
     const store = db([U, { ...P, mergedInto: 'pU' }])
-    expect(await markMerged(store, 'pP', 'pU')).toBe(true)
+    expect(await markMerged(store, 'pP', 'pU', [])).toBe(true)
   })
 
   it('leaves alone a person with an account, a deleted one, one merged elsewhere, or none', async () => {
-    expect(await markMerged(db([U, { ...P, userId: 'u2' }]), 'pP', 'pU')).toBe(false)
+    expect(await markMerged(db([U, { ...P, userId: 'u2' }]), 'pP', 'pU', [])).toBe(false)
     expect(
-      await markMerged(db([U, { ...P, deletedAt: '2026-10-01T00:00:00.000Z' }]), 'pP', 'pU'),
+      await markMerged(db([U, { ...P, deletedAt: '2026-10-01T00:00:00.000Z' }]), 'pP', 'pU', []),
     ).toBe(false)
-    expect(await markMerged(db([U, { ...P, mergedInto: 'pX' }]), 'pP', 'pU')).toBe(false)
-    expect(await markMerged(db([U]), 'pP', 'pU')).toBe(false)
+    expect(await markMerged(db([U, { ...P, mergedInto: 'pX' }]), 'pP', 'pU', [])).toBe(false)
+    expect(await markMerged(db([U]), 'pP', 'pU', [])).toBe(false)
   })
 
   it('loses to another merge or adoption that lands before its staging', async () => {
@@ -66,7 +129,7 @@ describe('markMerged (step 1)', () => {
       (operations) => operations.includes('mergedInto'),
       () => updateRow(store, 'persons', 'pP', { mergedInto: 'pX' }),
     )
-    expect(await markMerged(store, 'pP', 'pU')).toBe(false)
+    expect(await markMerged(store, 'pP', 'pU', [])).toBe(false)
     expect(store.rows('persons').find((row) => row.$id === 'pP')?.mergedInto).toBe('pX')
   })
 
@@ -78,37 +141,44 @@ describe('markMerged (step 1)', () => {
         (operations) => operations.includes('mergedInto'),
         () => updateRow(store, 'persons', 'pP', change),
       )
-      expect(await markMerged(store, 'pP', 'pU')).toBe(false)
+      expect(await markMerged(store, 'pP', 'pU', [])).toBe(false)
       expect(store.rows('persons').find((row) => row.$id === 'pP')?.mergedInto).toBeNull()
     }
   })
 
   it('counts P as U’s when a claim for U marked it first, and refuses a P deleted meanwhile', async () => {
-    const first = db()
+    // Its step 2 has moved P's row in g1 already, so this claim mustn't list P's groups again or
+    // delete keys that claim kept.
+    const first = db([U, P], [{ ...identity(1), verified: false }])
     beforeStaging(
       first,
       (operations) => operations.includes('mergedInto'),
-      () => updateRow(first, 'persons', 'pP', { mergedInto: 'pU' }),
+      () => updateRow(first, 'persons', 'pP', { mergedInto: 'pU', mergeGroupIds: ['g1', 'g2'] }),
     )
-    expect(await markMerged(first, 'pP', 'pU')).toBe(true)
+    expect(await markMerged(first, 'pP', 'pU', [])).toBe(true)
+    expect(first.rows('persons').find((row) => row.$id === 'pP')?.mergeGroupIds).toEqual([
+      'g1',
+      'g2',
+    ])
+    expect(first.rows('identities')).toHaveLength(1)
     const deleted = db()
     beforeStaging(
       deleted,
       (operations) => operations.includes('mergedInto'),
       () => updateRow(deleted, 'persons', 'pP', { deletedAt: '2026-10-18T00:00:00.000Z' }),
     )
-    expect(await markMerged(deleted, 'pP', 'pU')).toBe(false)
+    expect(await markMerged(deleted, 'pP', 'pU', [])).toBe(false)
   })
 
   it('reads the stored row after a failed commit to see who won', async () => {
     const lost = db()
     beforeCommit(lost, () => updateRow(lost, 'persons', 'pP', { userId: 'u2' }))
-    expect(await markMerged(lost, 'pP', 'pU')).toBe(false)
+    expect(await markMerged(lost, 'pP', 'pU', [])).toBe(false)
 
     // The same merge running twice at once: the other call marked P for U, so P is U's.
     const twice = db()
     beforeCommit(twice, () => updateRow(twice, 'persons', 'pP', { mergedInto: 'pU' }))
-    expect(await markMerged(twice, 'pP', 'pU')).toBe(true)
+    expect(await markMerged(twice, 'pP', 'pU', [])).toBe(true)
   })
 })
 
