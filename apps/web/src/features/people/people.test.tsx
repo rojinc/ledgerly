@@ -181,6 +181,13 @@ describe('NewPairPage', () => {
     expect(screen.getByText(/can’t be linked to this if they sign up later/)).toBeTruthy()
     type('Email (optional)', 'sam@example.com')
     expect(screen.queryByText(/can’t be linked/)).toBeNull()
+    // Someone new keeps one key: with both, the email.
+    type('Mobile number (optional)', '+61 400 000 000')
+    expect(
+      screen.getByText(
+        'Once they join, they’ll see what you’ve recorded together. The email comes first: the number only finds someone it already belongs to, and isn’t saved.',
+      ),
+    ).toBeTruthy()
   })
 
   it('shows errors inline and sends nothing', async () => {
