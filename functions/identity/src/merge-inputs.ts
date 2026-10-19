@@ -196,11 +196,12 @@ async function moveGroupInputs(
     const outcome = await rename(page)
     if (outcome === 'putOff') return 'putOff'
     if (outcome === 'raced') continue
-    // A page's rows all come after the cursor, so none of them is in `left` yet.
-    for (const rowId of outcome) {
+    // Usually none of a page's rows is in `left` yet, but two runs at once can store a `left`
+    // row past the other's `after` (saveCursor keeps the last writer's): count it once.
+    for (const rowId of outcome.filter((id) => !left.includes(id))) {
       console.warn(`merge ${merge.from} into ${merge.into} left transaction ${rowId} as it is`)
+      left.push(rowId)
     }
-    left.push(...outcome)
     after = page.at(-1)?.$id ?? after
     if (after !== undefined) {
       await saveCursor(db, merge.from, { groupId, after, left }, cleared, deadline)
