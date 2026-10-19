@@ -28,22 +28,21 @@ const TRANSACTION_COLUMNS = [
 const SHARE_COLUMNS = ['$id', 'transactionId', 'personId', 'groupId', 'givenCents', 'receivedCents']
 const MEMBER_COLUMNS = ['$id', 'groupId', 'personId', 'displayName']
 
-// Reads before giving up on a group that keeps changing, as balances does (ledger.md).
+// Whole reads before giving up, whatever made each one start again, as balances.ts does.
 const TRIES = 3
 
-/** A write between pages can delete the row a cursor points at; reading again from the start fixes it. */
-function cursorLost(error: unknown): boolean {
-  return error instanceof AppwriteException && (error.code === 400 || error.code === 404)
-}
-
-/** `read` again, up to `TRIES` times in all, while it fails with a lost cursor. */
-async function retried<T>(read: () => Promise<T>): Promise<T> {
-  for (let tries = 1; ; tries++) {
-    try {
-      return await read()
-    } catch (error) {
-      if (tries >= TRIES || !cursorLost(error)) throw error
+/**
+ * `read`'s answer, or undefined when a write between pages deleted the row a cursor points at:
+ * reading again from the start fixes that. Any other error, a lost group included, is thrown.
+ */
+async function unlessCursorLost<T>(read: () => Promise<T>): Promise<T | undefined> {
+  try {
+    return await read()
+  } catch (error) {
+    if (error instanceof AppwriteException && error.type === 'general_cursor_not_found') {
+      return undefined
     }
+    throw error
   }
 }
 
@@ -99,24 +98,21 @@ async function groupRev(groupId: string): Promise<string | null> {
 /**
  * A group's records dated `start` to `end` (both included) as CSV (F-72): its transactions on
  * `idx_group_date`, their shares on `idx_transactionId`, and the members' names in the group.
- * Every ledger write changes the group's `rev` (ledger.md#concurrency), so the
- * pages are one consistent read when `rev` is the same before and after; otherwise it reads again,
- * up to 3 times. Only reads what the caller's team membership already lets them read.
+ * Every ledger write changes the group's `rev` (ledger.md#concurrency), so the pages are one
+ * consistent read when `rev` is the same before and after. A changed `rev` or a lost cursor reads
+ * again, up to 3 reads in all. Only reads what the caller's team membership already lets them read.
  */
 export async function groupExport(
   group: Pick<Groups, '$id' | 'currency'>,
   start: LocalDate,
   end: LocalDate,
 ): Promise<string> {
-  for (let tries = 1; ; tries++) {
-    const read = await retried(async () => {
-      const before = await groupRev(group.$id)
-      const csv = await readGroup(group, start, end)
-      return { csv, same: before === (await groupRev(group.$id)) }
-    })
-    if (read.same) return read.csv
-    if (tries >= TRIES) throw new Error('The group kept changing while it was read')
+  for (let tries = 0; tries < TRIES; tries++) {
+    const before = await groupRev(group.$id)
+    const csv = await unlessCursorLost(() => readGroup(group, start, end))
+    if (csv !== undefined && before === (await groupRev(group.$id))) return csv
   }
+  throw new Error('The group kept changing while it was read')
 }
 
 async function readGroup(
@@ -156,7 +152,11 @@ export async function myRecordsExport(
   groups: readonly Groups[],
 ): Promise<string> {
   // Shares span groups, so there's no one `rev` to check: only a lost cursor reads again.
-  return retried(() => readMyRecords(personId, groups))
+  for (let tries = 0; tries < TRIES; tries++) {
+    const csv = await unlessCursorLost(() => readMyRecords(personId, groups))
+    if (csv !== undefined) return csv
+  }
+  throw new Error('Your shares kept changing while they were read')
 }
 
 async function readMyRecords(personId: string, groups: readonly Groups[]): Promise<string> {

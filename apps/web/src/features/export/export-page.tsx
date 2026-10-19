@@ -14,19 +14,24 @@ import { download, fileUrl, groupExport, myRecordsExport, profileExport } from '
 // Long names make file names some systems refuse.
 const NAME_LENGTH = 60
 
+const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
 /**
- * A file name from the group's name: letters (any script, accents dropped), digits and dashes,
- * up to 60 characters.
+ * A file name from the group's name: letters of any script, digits and dashes, up to 60
+ * characters. Accents come off Latin letters only: elsewhere, as in Hindi or Thai, a mark is part
+ * of the word.
  */
 export function fileName(name: string): string {
   const slug = name
     .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
+    .replace(/(\p{Script=Latin})\p{M}+/gu, '$1')
+    .normalize('NFC')
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')
     .replace(/^-/, '')
-  // By code point, so a letter outside the BMP isn't cut in half.
-  return Array.from(slug).slice(0, NAME_LENGTH).join('').replace(/-$/, '') || 'group'
+  // By what reads as one character, so a syllable or a letter with its marks isn't cut in half.
+  const kept = Array.from(GRAPHEMES.segment(slug), ({ segment }) => segment).slice(0, NAME_LENGTH)
+  return kept.join('').replace(/-$/, '') || 'group'
 }
 
 function GroupOption({ group }: { group: Groups }) {
