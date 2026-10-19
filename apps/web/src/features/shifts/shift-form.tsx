@@ -1,7 +1,9 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import { shiftAmountCents } from '@ledgerly/core/money/shift-amount'
 import { type TransactionInput, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
+import { useEffect } from 'react'
 import { type FieldErrors, get, type Resolver, useForm } from 'react-hook-form'
 import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
@@ -17,6 +19,10 @@ type Props = {
   submitLabel: string
   /** The group's default rate as text, for a new shift whose group changes. */
   rateFor: (group: Groups) => string
+  /** Today in the group's time zone, for a new shift whose date wasn't given. */
+  dateFor?: (group: Groups) => LocalDate
+  /** Told whether the form has unsaved changes. */
+  onDirtyChange?: (dirty: boolean) => void
   onSave: (body: TransactionInput) => Promise<unknown>
   /**
    * An existing shift's paid minutes. A timer stores whole minutes it ran, which can be a
@@ -94,8 +100,10 @@ export function ShiftForm({
   defaultValues,
   submitLabel,
   rateFor,
+  dateFor,
   onSave,
   storedMinutes,
+  onDirtyChange,
 }: Props) {
   const byId = new Map(groups.map((group) => [group.$id, group]))
   const currencyOf = (groupId: string) => byId.get(groupId)?.currency ?? 'AUD'
@@ -116,6 +124,7 @@ export function ShiftForm({
     defaultValues,
   })
   const { errors, isSubmitting, isSubmitSuccessful, isDirty } = form.formState
+  useEffect(() => onDirtyChange?.(isDirty), [isDirty, onDirtyChange])
   const values = form.watch()
   const currency = currencyOf(values.groupId)
   const minutes = toBody(values).shift?.minutes ?? Number.NaN
@@ -153,6 +162,8 @@ export function ShiftForm({
               const group = byId.get(event.target.value)
               if (group && !form.getFieldState('rate').isDirty)
                 form.setValue('rate', rateFor(group))
+              if (group && dateFor && !form.getFieldState('date').isDirty)
+                form.setValue('date', dateFor(group))
             },
           })}
         >

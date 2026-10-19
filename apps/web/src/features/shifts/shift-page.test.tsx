@@ -6,6 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
+import { queryKeys } from '../../lib/query-keys'
 import { useGroup, useGroups, useMyMember } from '../groups/use-groups'
 import { shiftRoutes } from './routes'
 
@@ -291,6 +292,27 @@ describe('NewShiftPage', () => {
     expect(input('Employer').value).toBe('g2')
     expect(input('Date').value).toBe('2026-10-18')
     expect(input('Hourly rate (USD)').value).toBe('30.00')
+  })
+
+  it('moves an untouched date to today in the employer chosen, but not a typed one', async () => {
+    mockGroups([acme, bistro])
+    await renderNew('/shifts/new')
+    // 22:00 UTC: the 19th in Sydney, still the 18th in New York.
+    expect(input('Date').value).toBe('2026-10-19')
+    type('Employer', 'g2')
+    expect(input('Date').value).toBe('2026-10-18')
+    type('Employer', 'g1')
+    expect(input('Date').value).toBe('2026-10-19')
+    type('Date', '2026-10-10')
+    type('Employer', 'g2')
+    expect(input('Date').value).toBe('2026-10-10')
+  })
+
+  it('keeps the date from the URL when the employer changes', async () => {
+    mockGroups([acme, bistro])
+    await renderNew('/shifts/new?date=2026-09-30')
+    type('Employer', 'g2')
+    expect(input('Date').value).toBe('2026-09-30')
   })
 
   it('updates an untouched rate when the employer changes, but not a typed one', async () => {
@@ -652,6 +674,97 @@ describe('ShiftPage', () => {
     await act(async () => pending.resolve(view(shiftRow({ status: 'posted' }))))
     await settle()
     expect(screen.getByText('Confirmed.')).toBeTruthy()
+  })
+
+  it('won’t confirm while the form has unsaved changes', async () => {
+    mockRow(shiftRow({ status: 'scheduled' }))
+    call.mockImplementation(async (_fn, _method, _path, body) =>
+      view(shiftRow({ status: 'scheduled', ...(body as object) })),
+    )
+    renderAt('/shifts/t1')
+    const confirm = (await screen.findByRole('button', {
+      name: 'Confirm as worked',
+    })) as HTMLButtonElement
+    expect(confirm.disabled).toBe(false)
+    type('End', '19:30')
+    expect(confirm.disabled).toBe(true)
+    expect(screen.getByText('Save your changes first.').id).toBe(
+      confirm.getAttribute('aria-describedby'),
+    )
+    // Back as stored: nothing to save.
+    type('End', '17:30')
+    expect(confirm.disabled).toBe(false)
+    type('End', '19:30')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(confirm.disabled).toBe(false))
+    expect(screen.queryByText('Save your changes first.')).toBeNull()
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(call.mock.calls[0]?.[2]).toBe('/transactions/t1')
+  })
+
+  it('starts the form again from the row the server posted', async () => {
+    mockRow(shiftRow({ status: 'scheduled' }))
+    // Changed on another device meanwhile: the server posts what it has.
+    const stored = { ...storedShift, endTime: '18:30', minutes: 540 }
+    call.mockResolvedValue(
+      view(
+        shiftRow({
+          status: 'posted',
+          totalCents: 22950,
+          inputJson: JSON.stringify({ payers: [{ personId: 'p1', cents: 22950 }], shift: stored }),
+        }),
+      ),
+    )
+    renderAt('/shifts/t1')
+    await screen.findByText(/^8 h 0 min paid/)
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm as worked' }))
+    await settle()
+    expect(screen.getByText('Confirmed.')).toBeTruthy()
+    expect(input('End').value).toBe('18:30')
+    expect(screen.getByText(/^9 h 0 min paid · .*229\.50$/)).toBeTruthy()
+  })
+
+  it('reloads the shift when confirming is refused as LOCKED', async () => {
+    mockRow(shiftRow({ status: 'scheduled' }))
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'LOCKED', message: 'It’s on a statement being finalised.' },
+    })
+    renderAt('/shifts/t1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm as worked' }))
+    await settle()
+    expect(screen.getByRole('alert').textContent).toBe('It’s on a statement being finalised.')
+    await waitFor(() => expect(getRow).toHaveBeenCalledTimes(2))
+  })
+
+  it('reloads the shift when saving is refused as ARCHIVED, and doesn’t on other errors', async () => {
+    mockRow(shiftRow())
+    call.mockResolvedValue(failure('Something else.'))
+    renderAt('/shifts/t1')
+    await screen.findByRole('button', { name: 'Save' })
+    type('Description', 'Late shift')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByText('Something else.')
+    await settle()
+    expect(getRow).toHaveBeenCalledTimes(1)
+    call.mockResolvedValue({ ok: false, error: { code: 'ARCHIVED', message: 'Archived.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(getRow).toHaveBeenCalledTimes(2))
+  })
+
+  it('marks the group’s balance and history stale after a save', async () => {
+    mockRow(shiftRow())
+    call.mockResolvedValue(view(shiftRow({ description: 'Late shift' })))
+    const { queryClient } = renderAt('/shifts/t1')
+    queryClient.setQueryData(queryKeys.balances('g1'), { people: [], transfers: [] })
+    queryClient.setQueryData(queryKeys.history('g1', {}), { pages: [], pageParams: [] })
+    await screen.findByRole('button', { name: 'Save' })
+    type('Description', 'Late shift')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByText('Saved.')
+    expect(queryClient.getQueryState(queryKeys.balances('g1'))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(queryKeys.history('g1', {}))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryData(queryKeys.transactionShares('t1'))).toEqual([])
   })
 
   it('puts a scheduled shift back and shows the error when confirming fails', async () => {

@@ -12,15 +12,10 @@ import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { centsToText } from '../groups/employer-form'
 import { useGroup, useGroups, useMyMember } from '../groups/use-groups'
+import { useTransaction } from '../transactions/use-transactions'
 import { ShiftForm } from './shift-form'
 import { type ShiftValues, toShiftValues } from './shift-values'
-import {
-  useConfirmShift,
-  useMyRoles,
-  useSaveShift,
-  useTransaction,
-  useVoidShift,
-} from './use-shifts'
+import { useConfirmShift, useMyRoles, useSaveShift, useVoidShift } from './use-shifts'
 
 /** The group's default hourly rate as text, or empty when it has none. */
 export function defaultRate(group: Groups): string {
@@ -93,9 +88,12 @@ export function NewShiftPage() {
       )
     } else {
       const date = params.get('date')
+      const fixedDate = date && isLocalDate(date) ? date : undefined
+      // Today where the employer is, unless the link names the day.
+      const todayFor = (group: Groups) => localToday(group.timezone, new Date())
       const values: ShiftValues = {
         groupId: first.$id,
-        date: date && isLocalDate(date) ? date : localToday(first.timezone, new Date()),
+        date: fixedDate ?? todayFor(first),
         description: 'Shift',
         timing: 'times',
         startTime: '',
@@ -111,6 +109,7 @@ export function NewShiftPage() {
           defaultValues={values}
           submitLabel="Add shift"
           rateFor={defaultRate}
+          dateFor={fixedDate ? undefined : todayFor}
           onSave={async (body) => {
             const view = await save.mutateAsync({ body, isNew: true })
             navigate(`/shifts/${view.transaction.$id}`, { replace: true })
@@ -164,6 +163,8 @@ function ShiftDetails({ row }: { row: Transactions }) {
   const confirm = useConfirmShift(row.$id)
   const voidShift = useVoidShift(row.$id)
   const [reason, setReason] = useState('')
+  // Confirm posts the stored shift, so it waits until the form's changes are saved.
+  const [dirty, setDirty] = useState(false)
 
   if (!group.data || member.data === undefined) {
     return (group.isError && !group.data) || (member.isError && member.data === undefined) ? (
@@ -191,9 +192,12 @@ function ShiftDetails({ row }: { row: Transactions }) {
       {!mayChange && !locked && (
         <Message>Only an admin or the person who added it can change it.</Message>
       )}
-      {open && row.status === 'scheduled' && <ConfirmShift confirm={confirm} />}
+      {open && row.status === 'scheduled' && <ConfirmShift confirm={confirm} dirty={dirty} />}
       {shift && open && (row.status === 'scheduled' || row.status === 'posted') && (
         <ShiftForm
+          // A new status starts the form again from the stored shift, so it never shows pay
+          // that wasn't recorded.
+          key={row.status}
           groups={[group.data]}
           id={row.$id}
           defaultValues={toShiftValues(
@@ -204,6 +208,7 @@ function ShiftDetails({ row }: { row: Transactions }) {
           submitLabel="Save"
           rateFor={defaultRate}
           storedMinutes={shift.minutes}
+          onDirtyChange={setDirty}
           onSave={(body) => save.mutateAsync({ body, isNew: false })}
         />
       )}
@@ -215,12 +220,27 @@ function ShiftDetails({ row }: { row: Transactions }) {
   )
 }
 
-function ConfirmShift({ confirm }: { confirm: ReturnType<typeof useConfirmShift> }) {
+function ConfirmShift({
+  confirm,
+  dirty,
+}: {
+  confirm: ReturnType<typeof useConfirmShift>
+  dirty: boolean
+}) {
   return (
     <div className="flex flex-col items-start gap-2">
-      <Button onClick={() => confirm.mutate()} disabled={confirm.isPending}>
+      <Button
+        onClick={() => confirm.mutate()}
+        disabled={confirm.isPending || dirty}
+        aria-describedby={dirty ? 'confirm-hint' : undefined}
+      >
         Confirm as worked
       </Button>
+      {dirty && (
+        <p id="confirm-hint" className="text-sm text-muted-foreground">
+          Save your changes first.
+        </p>
+      )}
       {confirm.isError && <Message alert>{confirm.error.message}</Message>}
     </div>
   )

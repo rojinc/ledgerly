@@ -6,6 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
+import { queryKeys } from '../../lib/query-keys'
 import { useGroups } from '../groups/use-groups'
 import { TodayPage } from './today-page'
 
@@ -398,6 +399,21 @@ describe('TodayPage', () => {
     expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy()
     expect(call).toHaveBeenCalledTimes(1)
     expect(call.mock.calls[0]).toStrictEqual(['ledger', 'POST', '/timer/stop', body])
+  })
+
+  it('marks the group’s balance and history stale after a stop, and stores the shares', async () => {
+    mockRows([], [running])
+    const posted = { ...running, status: 'posted' as const, totalCents: 25 }
+    const shares = [{ $id: 's1', personId: 'p1', givenCents: 25, receivedCents: 0 }]
+    call.mockResolvedValue({ ok: true, data: { transaction: posted, shares } })
+    const queryClient = renderPage()
+    queryClient.setQueryData(queryKeys.balances('g1'), { people: [], transfers: [] })
+    queryClient.setQueryData(queryKeys.history('g1', {}), { pages: [], pageParams: [] })
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
+    await settle()
+    expect(queryClient.getQueryState(queryKeys.balances('g1'))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(queryKeys.history('g1', {}))?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryData(queryKeys.transactionShares('r1'))).toEqual(shares)
   })
 
   it('refuses a break that isn’t whole minutes and sends nothing', async () => {

@@ -1,6 +1,6 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Items, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
 import type {
   StartTimerBody,
   StopTimerBody,
@@ -9,29 +9,13 @@ import type {
 } from '@ledgerly/core/schemas/ledger'
 import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Query } from 'appwrite'
-import { callFunction } from '../../lib/api'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { useCurrentUser } from '../auth/use-current-user'
-
-// Hand-copied from the ledger function's response until #113 moves response types to core.
-export type TransactionView = { transaction: Transactions; shares: Shares[]; items: Items[] }
+import { LedgerError, ledger, type TransactionView } from '../transactions/use-transactions'
 
 // Appwrite's limit for one page and for the values of one Query.equal.
 const PAGE = 100
-
-/** One transaction row, readable by its group's team. */
-export function useTransaction(id: string) {
-  return useQuery({
-    queryKey: queryKeys.transaction(id),
-    queryFn: () =>
-      tablesDB.getRow<Transactions>({
-        databaseId: DATABASE_ID,
-        tableId: 'transactions',
-        rowId: id,
-      }),
-  })
-}
 
 /**
  * The caller's role in each of `groups`, from their own member rows (permissions.md): who may
@@ -135,28 +119,38 @@ async function listAll(queries: string[]): Promise<Transactions[]> {
   }
 }
 
-async function ledger<T>(method: 'POST' | 'PATCH', path: string, body: unknown): Promise<T> {
-  const result = await callFunction<T>('ledger', method, path, body)
-  if (!result.ok) throw new Error(result.error.message)
-  return result.data
-}
-
-/** After any shift write: the shift, today and the calendar show the stored state. */
-function refresh(queryClient: QueryClient, view?: TransactionView) {
-  if (view) queryClient.setQueryData(queryKeys.transaction(view.transaction.$id), view.transaction)
+/**
+ * After any shift write: the shift and its shares show the stored state, and the group's balance,
+ * history, today and the calendar are out of date (as in use-transactions).
+ */
+function refresh(queryClient: QueryClient, view: TransactionView) {
+  const { transaction } = view
+  queryClient.setQueryData(queryKeys.transaction(transaction.$id), transaction)
+  queryClient.setQueryData(queryKeys.transactionShares(transaction.$id), view.shares)
+  void queryClient.invalidateQueries({ queryKey: queryKeys.balances(transaction.groupId) })
+  void queryClient.invalidateQueries({ queryKey: ['history', transaction.groupId] })
   void queryClient.invalidateQueries({ queryKey: ['today'] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
+}
+
+/** Locked by a statement, or the group archived, meanwhile: reload so the page turns read-only. */
+function reloadIfClosed(queryClient: QueryClient, error: Error, id: string, groupId?: string) {
+  if (!(error instanceof LedgerError && ['LOCKED', 'ARCHIVED'].includes(error.code))) return
+  void queryClient.invalidateQueries({ queryKey: queryKeys.transaction(id) })
+  if (groupId) void queryClient.invalidateQueries({ queryKey: queryKeys.group(groupId) })
 }
 
 /**
  * Shows `patch` on the cached transaction at once, and puts the old row back if the write fails
  * (conventions.md#react: optimistic updates).
  */
-function optimistic(queryClient: QueryClient, id: string, patch: Partial<Transactions>) {
+async function optimistic(queryClient: QueryClient, id: string, patch: Partial<Transactions>) {
   const key = queryKeys.transaction(id)
+  // A refetch already on its way would land on top of this and show the old state.
+  await queryClient.cancelQueries({ queryKey: key, exact: true })
   const before = queryClient.getQueryData<Transactions>(key)
   if (before) queryClient.setQueryData(key, { ...before, ...patch })
-  return () => queryClient.setQueryData(key, before)
+  return { rollback: () => queryClient.setQueryData(key, before), groupId: before?.groupId }
 }
 
 /** `POST /transactions` (new) or `PATCH /transactions/{id}`. */
@@ -167,6 +161,7 @@ export function useSaveShift() {
       isNew
         ? ledger<TransactionView>('POST', '/transactions', body)
         : ledger<TransactionView>('PATCH', `/transactions/${body.id}`, body),
+    onError: (error, { body }) => reloadIfClosed(queryClient, error, body.id, body.groupId),
     onSuccess: (view) => refresh(queryClient, view),
   })
 }
@@ -178,7 +173,10 @@ export function useVoidShift(id: string) {
     mutationFn: (body: VoidTransactionBody) =>
       ledger<TransactionView>('POST', `/transactions/${id}/void`, body),
     onMutate: (body) => optimistic(queryClient, id, { status: 'void', voidReason: body.reason }),
-    onError: (_error, _body, rollback) => rollback?.(),
+    onError: (error, _body, context) => {
+      context?.rollback()
+      reloadIfClosed(queryClient, error, id, context?.groupId)
+    },
     onSuccess: (view) => refresh(queryClient, view),
   })
 }
@@ -189,7 +187,10 @@ export function useConfirmShift(id: string) {
   return useMutation({
     mutationFn: () => ledger<TransactionView>('POST', `/transactions/${id}/post`, {}),
     onMutate: () => optimistic(queryClient, id, { status: 'posted' }),
-    onError: (_error, _body, rollback) => rollback?.(),
+    onError: (error, _body, context) => {
+      context?.rollback()
+      reloadIfClosed(queryClient, error, id, context?.groupId)
+    },
     onSuccess: (view) => refresh(queryClient, view),
   })
 }
