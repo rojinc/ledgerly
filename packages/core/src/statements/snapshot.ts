@@ -99,6 +99,43 @@ export function buildStatementSnapshot(input: SnapshotInput): StatementSnapshot 
 }
 
 /**
+ * Statements core rule 2 after a person merge (identity-and-invites.md#merging-two-persons): a
+ * closing whose person has no member row in the group counts for the person they were merged
+ * into, following `mergedInto` to the first person who has one, and is added to that person's
+ * own closing. A closing that can't be followed that far stays as it is, so the snapshot
+ * reports it.
+ */
+export function mergedClosings(
+  closings: readonly Net[],
+  inGroup: ReadonlySet<string>,
+  mergedInto: ReadonlyMap<string, string | null>,
+): Net[] {
+  const totals = new Map<string, number>()
+  for (const { personId, netCents } of closings) {
+    const owner = ownerInGroup(personId, inGroup, mergedInto)
+    totals.set(owner, (totals.get(owner) ?? 0) + netCents)
+  }
+  return [...totals].map(([personId, netCents]) => ({ personId, netCents }))
+}
+
+function ownerInGroup(
+  personId: string,
+  inGroup: ReadonlySet<string>,
+  mergedInto: ReadonlyMap<string, string | null>,
+): string {
+  const seen = new Set<string>()
+  let current = personId
+  while (!inGroup.has(current)) {
+    const next = mergedInto.get(current)
+    // Not merged, or a loop: leave the closing where it is.
+    if (!next || seen.has(next)) return personId
+    seen.add(current)
+    current = next
+  }
+  return current
+}
+
+/**
  * Finalize step 5 (statements.md#2-finalize): each closing is the opening plus
  * that person's nets over the lines, the closings add up to 0, and they equal
  * `freshBalances`, a fresh sum of every locked share in the group.

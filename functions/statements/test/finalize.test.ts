@@ -198,6 +198,43 @@ describe('POST /statements/{id}/finalize', () => {
     expect(services.files.stored.has('st1')).toBe(true)
   })
 
+  it('opens from merged persons’ closings and passes its check after a merge (#39)', async () => {
+    // September named two old placeholders for Acme, merged one into the other and then into
+    // acme. Their member rows and locked shares are acme's now (identity-and-invites.md).
+    const services = fakes(
+      rowsOf(
+        shift('s0', '2026-09-10', 120, { statementId: 'st-sep' }),
+        shift('s1', '2026-10-02', 240),
+        {
+          statements: [
+            statement('st-sep', {
+              periodStart: '2026-09-01',
+              periodEnd: '2026-09-30',
+              status: 'final',
+              snapshotJson: snapshotClosing(
+                { start: '2026-09-01', end: '2026-09-30' },
+                { 'acme-older': -2000, 'acme-old': -3000, sam: 5000 },
+              ),
+            }),
+            statement('st1'),
+          ],
+        },
+      ),
+    )
+    await commitNow(services.db, [
+      op('persons', 'acme-old', { displayName: 'Acme', mergedInto: 'acme' }, 'create'),
+      op('persons', 'acme-older', { displayName: 'Acme', mergedInto: 'acme-old' }, 'create'),
+    ])
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.people).toMatchObject([
+      { personId: 'acme', openingCents: -5000, closingCents: -15000 },
+      { personId: 'sam', openingCents: 5000, closingCents: 15000 },
+    ])
+    expect(errors).toEqual([])
+  })
+
   it('unlocks everything and goes back to draft when the check fails', async () => {
     // September's final invoice says Acme owes $50.00, but no locked share backs that up.
     const services = fakes(

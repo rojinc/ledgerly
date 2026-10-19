@@ -11,7 +11,8 @@ import type {
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { businessDetailsSchema } from '@ledgerly/core/schemas/identity'
 import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/schemas/statements'
-import { buildStatementSnapshot } from '@ledgerly/core/statements/snapshot'
+import type { Net } from '@ledgerly/core/settle/nets'
+import { buildStatementSnapshot, mergedClosings } from '@ledgerly/core/statements/snapshot'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
@@ -77,17 +78,52 @@ export async function computeSnapshot(
     },
     period,
     people: members.map((member) => ({ personId: member.personId, name: member.displayName })),
-    previousClosing: previous
-      ? previous.people.map((person) => ({
-          personId: person.personId,
-          netCents: person.closingCents,
-        }))
-      : [],
+    previousClosing: previous ? await openings(db, previous, members) : [],
     lines: transactions.map((row) => lineOf(row, shares.get(row.$id) ?? [])),
     ...(type === 'invoice' ? await invoiceParties(db, group, members) : {}),
     generatedAt: now.toISOString(),
   })
   return { snapshot, unlockedIds: unlocked.map((row) => row.$id) }
+}
+
+/**
+ * The previous statement's closings, with a merged person's counted for the person they were
+ * merged into (statements.md#core-rules, rule 2). Reads `persons` only for closings whose person
+ * has no member row in the group, following each `mergedInto` chain once.
+ */
+async function openings(
+  db: Db,
+  previous: StatementSnapshot,
+  members: readonly Members[],
+): Promise<Net[]> {
+  const closings = previous.people.map((person) => ({
+    personId: person.personId,
+    netCents: person.closingCents,
+  }))
+  const inGroup = new Set(members.map((member) => member.personId))
+  const mergedInto = new Map<string, string | null>()
+  let unread = [...new Set(closings.map((net) => net.personId))].filter((id) => !inGroup.has(id))
+  while (unread.length > 0) {
+    for (const id of unread) mergedInto.set(id, null)
+    const rows = (
+      await Promise.all(
+        chunks(unread).map((ids) =>
+          listAll<Persons>(db, TABLES.persons, [Query.equal('$id', ids)]),
+        ),
+      )
+    ).flat()
+    for (const row of rows) mergedInto.set(row.$id, row.mergedInto)
+    unread = [
+      ...new Set(
+        rows.flatMap((row) =>
+          row.mergedInto && !inGroup.has(row.mergedInto) && !mergedInto.has(row.mergedInto)
+            ? [row.mergedInto]
+            : [],
+        ),
+      ),
+    ]
+  }
+  return mergedClosings(closings, inGroup, mergedInto)
 }
 
 /** The snapshot of the latest final statement ending before `period` does, if there is one. */
