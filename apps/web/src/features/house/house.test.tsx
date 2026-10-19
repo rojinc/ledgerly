@@ -83,7 +83,15 @@ beforeEach(() => {
   seed()
   getRow.mockImplementation((async () => stored.group) as never)
   // useMyMember asks for one person's row; useMembers for the whole house.
-  listRows.mockImplementation((async ({ queries }: { queries: string[] }) => {
+  listRows.mockImplementation((async ({
+    tableId,
+    queries,
+  }: {
+    tableId: string
+    queries: string[]
+  }) => {
+    // The house's history (#183) has no transactions here.
+    if (tableId !== 'members') return { total: 0, rows: [] }
     const person = queries.map((query) => JSON.parse(query)).find((q) => q.attribute === 'personId')
     const rows = person
       ? stored.members.filter((row) => row.personId === person.values[0])
@@ -258,10 +266,16 @@ describe('HousePage', () => {
       expect(screen.getByRole('region', { name: 'Settings' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Archive group' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
-      expect(screen.getByRole('link', { name: 'Add expense' }).getAttribute('href')).toBe(
-        '/transactions/new?groupId=g1',
+      // #180's, and the empty history's (#183).
+      await waitFor(() =>
+        expect(screen.getAllByRole('link', { name: 'Add expense' })).toHaveLength(2),
       )
       expect(screen.getByText('Settle up section')).toBeTruthy()
+      const adds = screen.getAllByRole('link', { name: 'Add expense' })
+      expect(adds.map((link) => link.getAttribute('href'))).toEqual([
+        '/transactions/new?groupId=g1',
+        '/transactions/new?groupId=g1',
+      ])
     })
 
     it('lets a member add people with the default role, and nothing else', async () => {
@@ -275,7 +289,10 @@ describe('HousePage', () => {
       expect(screen.queryByRole('region', { name: 'Settings' })).toBeNull()
       expect(screen.queryByRole('region', { name: 'Archive group' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
-      expect(screen.getByRole('link', { name: 'Add expense' })).toBeTruthy()
+      // #180's, and the empty history's (#183).
+      await waitFor(() =>
+        expect(screen.getAllByRole('link', { name: 'Add expense' })).toHaveLength(2),
+      )
     })
 
     it('lets a viewer only look, and leave', async () => {
@@ -286,6 +303,9 @@ describe('HousePage', () => {
       expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+      // The history is for everyone who can open the house (#183).
+      const history = screen.getByRole('region', { name: 'History' })
+      expect(await within(history).findByText('No expenses yet.')).toBeTruthy()
     })
 
     it('makes an archived house read-only for everyone', async () => {
@@ -296,6 +316,8 @@ describe('HousePage', () => {
       expect(screen.queryAllByRole('button')).toEqual([])
       expect(screen.queryByRole('textbox')).toBeNull()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+      const history = screen.getByRole('region', { name: 'History' })
+      expect(await within(history).findByText('No expenses yet.')).toBeTruthy()
     })
   })
 

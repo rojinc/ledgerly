@@ -10,6 +10,7 @@ import { ARCHIVED_NOTICE, ArchiveGroup } from '../groups/archive-group'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { useMembers } from '../transactions/use-transactions'
 import { HouseForm } from './house-form'
+import { HouseHistory } from './house-history'
 import {
   type HouseValues,
   memberStatusText,
@@ -143,6 +144,11 @@ function House({
         <AddHousemate group={group} isAdmin={role === 'admin'} writes={writes} />
       )}
       <SettleUp group={group} me={me} members={members} />
+      <HouseHistory
+        group={group}
+        members={members}
+        canAdd={role === 'admin' || role === 'member'}
+      />
       {/* Someone who moved out is still in the team until they leave (permissions.md). */}
       {!archived && me && me.status !== 'placeholder' && <LeaveHouse group={group} />}
       {role === 'admin' && <HouseSettings group={group} />}
