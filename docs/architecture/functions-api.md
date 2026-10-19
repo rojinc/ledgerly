@@ -47,6 +47,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 
 - Creating something takes a **client-generated `id`** (`ID.unique()`). If a row with that ID exists **with the same content**, the function returns it with 200. If the content differs, it returns `CONFLICT`. So the app can safely retry after a timeout or a lost connection.
 - Updates are naturally idempotent: the same body twice gives the same result.
+- **Exception:** `identity POST /reminders` answers any body with a used `id`, from the same sender in the same group, with the stored `{ sentAt }`, and sends the email again under the same key ([reminders](identity-and-invites.md#reminders)).
 
 ## Shared types
 

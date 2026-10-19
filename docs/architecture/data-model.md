@@ -287,7 +287,7 @@ Append-only. Never updated. Deleted only with a group purged when a member delet
 | `actorPersonId` | varchar(36)? | Empty for system jobs |
 | `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized`, `reminder.sent` |
 | `transactionId` | varchar(36)? | |
-| `subjectPersonId` | varchar(36)? | The person a `member.*` row is about, so the app shows their current name ("Former member" after deletion) |
+| `subjectPersonId` | varchar(36)? | The person a `member.*` or `reminder.sent` row is about, so the app shows their current name ("Former member" after deletion) |
 | `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member or group row names its person through `subjectPersonId` instead (rows written before #50 keep their text). |
 | `changesJson` | text? | `{ before, after }` of the changed fields; never a display name |
 | `at` | datetime | |
@@ -326,7 +326,7 @@ One row per reminder sent ([reminders](identity-and-invites.md#reminders), F-63)
 
 The address typed and the amount are **not stored**: the limits count by person, and the address is already an identity row.
 Indexes: `idx_sentBy_sentAt (sentBy, sentAt)`, `idx_toPerson_sentAt (toPersonId, sentAt)`, `idx_groupId (groupId)` (for a purge).
-Permissions: none (server only). Deleted with either person's account, and with a purged group ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
+Permissions: none (server only). Kept until either person's account is deleted, or the group is purged ([deleting an account](identity-and-invites.md#deleting-an-account-m4)); pruning old rows is a later follow-up.
 
 ## Storage buckets
 
