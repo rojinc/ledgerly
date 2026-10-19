@@ -28,7 +28,10 @@ export async function requireMember(
   options: { roles?: readonly Role[]; allowArchived?: boolean } = {},
 ): Promise<Membership> {
   const callerId = requireUser(userId)
-  const person = await findOne<Persons>(db, TABLES.persons, [Query.equal('userId', callerId)])
+  const found = await findOne<Persons>(db, TABLES.persons, [Query.equal('userId', callerId)])
+  // A person with deletedAt is never resolved from a userId: the same answer as no person
+  // (identity-and-invites.md#order).
+  const person = found?.deletedAt ? undefined : found
   const member =
     person &&
     (await findOne<Members>(db, TABLES.members, [
