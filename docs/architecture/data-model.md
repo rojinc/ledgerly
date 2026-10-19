@@ -32,6 +32,7 @@ persons ──┬── identities                       (server only)
                       statements
                       activity
                       invites                   (server only)
+                      migrations                (server only)
 ```
 
 ## persons
@@ -240,9 +241,21 @@ Which transactions list each file in the `receipts` bucket, so the scheduler can
   - it adds every transaction that lists a file to its row, making the row if needed and clearing `detachedAt`;
   - it gives every other file in the bucket that has no row a row with `detachedAt = now`, so step 5 deletes it a day later. These are uploads that were never attached, which step 5's 72-hour window would miss, and files taken off before the rows existed.
 
-  Its key needs `rows.read`, `rows.write` and `files.read`.
+  Its key needs `rows.read`, `rows.write` and `files.read`. Its last write is the [`migrations`](#migrations) row `receipt-files-backfill`, and step 5 does nothing until that row exists.
 
 Indexes: `idx_detachedAt (detachedAt)`.
+Permissions: none (server only).
+
+## migrations
+
+One row per one-off script that has finished in this environment, so the code that depends on it can wait for it. The row ID names the script.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `doneAt` | datetime | When the script finished |
+
+- `receipt-files-backfill`: written last by `scripts/backfill-receipt-files.mjs` ([receiptFiles](#receiptfiles)). Scheduler step 5 reads it once per run, and does nothing until it exists.
+
 Permissions: none (server only).
 
 ## schedules

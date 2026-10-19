@@ -143,9 +143,9 @@ The email goes only to a verified account email, and a period with no shares and
 
 ### Step 5: receipt clean-up
 
-Deletes the files in the `receipts` bucket that no transaction lists, using the [`receiptFiles`](data-model.md#receiptfiles) rows the ledger keeps ([permissions](permissions.md#storage)). `now` is when the run started. A run deletes at most 200 files; the rest wait for the next run. Step 5 ships only once the [backfill](data-model.md#receiptfiles) has run in that environment.
+Deletes the files in the `receipts` bucket that no transaction lists, using the [`receiptFiles`](data-model.md#receiptfiles) rows the ledger keeps ([permissions](permissions.md#storage)). `now` is when the run started. A run deletes at most 200 files; the rest wait for the next run. Until the [backfill](data-model.md#receiptfiles) has run in the environment, step 5 does nothing: it first reads the [`migrations`](data-model.md#migrations) row `receipt-files-backfill`, once per run.
 
-1. **Never attached:** files in `receipts` with `$createdAt` after `now − 72 h` and at or before `now − 24 h`, paged by `$id` (`Query.greaterThan('$id', last)`, as in [scaling](scaling.md#appwrite-limits-we-design-around)), with their `receiptFiles` rows read a page at a time. A file that has a row is left to pass 2. For each file with no row:
+1. **Never attached:** files in `receipts` with `$createdAt` after `now − 72 h` and at or before `now − 24 h`, ordered by `$id`, with their `receiptFiles` rows read a page at a time. `listFiles` pages with `Query.cursorAfter` (it doesn't take `greaterThan('$id')`), and a deleted file can't be a cursor. So the cursor is the last file on the page that this pass didn't delete; when it deleted the whole page, the next query starts from the top again, and those files are gone by then. A query that fails ends the pass for this run. A file that has a row is left to pass 2. For each file with no row:
    1. One database transaction creates the row with `detachedAt` set to the file's `$createdAt` and `deletingAt = now`. If the row exists by then (409), the ledger attached the file first, and it's skipped.
    2. Delete the file. One that's already gone is skipped.
 

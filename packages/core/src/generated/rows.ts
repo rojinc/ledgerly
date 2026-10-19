@@ -220,6 +220,10 @@ export type ReceiptFiles = Models.Row & {
     deletingAt: string | null;
 }
 
+export type Migrations = Models.Row & {
+    doneAt: string;
+}
+
 export type Schedules = Models.Row & {
     groupId: string;
     kind: SchedulesKind;

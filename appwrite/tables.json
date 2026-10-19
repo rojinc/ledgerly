@@ -865,6 +865,24 @@
     ]
   },
   {
+    "$id": "migrations",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "migrations",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "doneAt",
+        "type": "datetime",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": []
+  },
+  {
     "$id": "schedules",
     "$permissions": [],
     "databaseId": "main",
