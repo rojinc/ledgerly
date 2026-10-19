@@ -4,7 +4,14 @@ import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { markMerged, moveIdentities, moveMembers, moveReminders, moveShares } from '../src/merge'
+import {
+  markMerged,
+  moveIdentities,
+  moveMembers,
+  moveReminders,
+  moveShares,
+  moveSubjects,
+} from '../src/merge'
 import {
   beforeCommit,
   beforeStaging,
@@ -1319,5 +1326,100 @@ describe('moveReminders (step 3)', () => {
       done: false,
     })
     expect(store.rows('reminders')[0]?.toPersonId).toBe('pP')
+  })
+})
+
+describe('moveSubjects (step 3)', () => {
+  function about(n: number, groupId = 'g1', subjectPersonId = 'pP') {
+    return {
+      $id: `a${String(n).padStart(3, '0')}`,
+      groupId,
+      actorPersonId: 'pX',
+      action: 'member.added',
+      subjectPersonId,
+      summary: 'was added',
+      at: NOW.toISOString(),
+    }
+  }
+
+  function seed(activity: object[]) {
+    return new FakeDb({ persons: [U, P], activity } as ConstructorParameters<typeof FakeDb>[0])
+  }
+
+  it('starts no batch once the deadline has passed, even partway through a group', async () => {
+    const store = seed(Array.from({ length: 100 }, (_, n) => about(n)))
+    // Out of time once the first batch has been read.
+    const start = Date.now()
+    let reads = 0
+    vi.spyOn(Date, 'now').mockImplementation(() => (++reads > 1 ? start + 60_000 : start))
+    expect(await moveSubjects(store, 'pP', 'pU', ['g1'], start + 1000)).toEqual({
+      moved: 90,
+      done: false,
+    })
+  })
+
+  it('makes every activity row about P in its groups about U, in batches of at most 90', async () => {
+    const store = seed([
+      ...Array.from({ length: 100 }, (_, n) => about(n)),
+      // Not one of the groups it was given (a kept group's), and not about P.
+      about(100, 'g2'),
+      about(101, 'g1', 'pX'),
+    ])
+    const commits = vi.spyOn(store, 'createOperations')
+    expect(await moveSubjects(store, 'pP', 'pU', ['g1'], FAR)).toEqual({ moved: 100, done: true })
+    const subjects = store.rows('activity').map((row) => row.subjectPersonId)
+    expect(subjects.filter((id) => id === 'pU')).toHaveLength(100)
+    // Only the subject changes.
+    expect(store.rows('activity')[0]).toMatchObject({ ...about(0), subjectPersonId: 'pU' })
+    expect(subjects.slice(100)).toEqual(['pP', 'pX'])
+    const sizes = new Map<string, number>()
+    for (const [params] of commits.mock.calls) {
+      sizes.set(
+        params.transactionId,
+        (sizes.get(params.transactionId) ?? 0) + (params.operations?.length ?? 0),
+      )
+    }
+    expect([...sizes.values()]).toEqual([MERGE_BATCH, 10])
+  })
+
+  it('runs a batch again when a purge deletes one of its rows first', async () => {
+    const store = seed([about(1), about(2)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"subjectPersonId"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({ action: 'delete', tableId: 'activity', rowId: 'a001' }),
+        ),
+    )
+    expect(await moveSubjects(store, 'pP', 'pU', ['g1'], FAR)).toEqual({ moved: 1, done: true })
+    expect(store.rows('activity').map((row) => [row.$id, row.subjectPersonId])).toEqual([
+      ['a002', 'pU'],
+    ])
+  })
+
+  it('runs a batch again when another run of the merge moved a row first', async () => {
+    const store = seed([about(1), about(2)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"subjectPersonId"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'activity',
+            rowId: 'a001',
+            data: { subjectPersonId: 'pU' },
+          }),
+        ),
+    )
+    expect(await moveSubjects(store, 'pP', 'pU', ['g1'], FAR)).toEqual({ moved: 1, done: true })
+    expect(store.rows('activity').every((row) => row.subjectPersonId === 'pU')).toBe(true)
+  })
+
+  it('starts nothing once the deadline has passed', async () => {
+    const store = seed([about(1)])
+    expect(await moveSubjects(store, 'pP', 'pU', ['g1'], 0)).toEqual({ moved: 0, done: false })
+    expect(store.rows('activity')[0]?.subjectPersonId).toBe('pP')
   })
 })
