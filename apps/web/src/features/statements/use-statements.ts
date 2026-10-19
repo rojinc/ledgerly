@@ -2,7 +2,7 @@ import type { Statements } from '@ledgerly/core/generated/rows'
 import type { VoidStatementBody } from '@ledgerly/core/schemas/statements'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AppwriteException, ExecutionMethod, Query, Storage } from 'appwrite'
-import { callFunction, type Method, parseEnvelope } from '../../lib/api'
+import { callFunction, type ErrorCode, type Method, parseEnvelope } from '../../lib/api'
 import { client, DATABASE_ID, functions, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { writeErrorMessage } from '../groups/archive-group'
@@ -105,8 +105,11 @@ export function useVoidStatement(id: string) {
   })
 }
 
-/** How a finalize ended: the statement as stored, and the error if the execution failed. */
-export type FinalizeResult = { statement: Statements; error?: string }
+/**
+ * How a finalize ended: the statement as stored, and the error if the execution failed, with its
+ * code when the answer kept one (or its status code says it: 409 is always `CONFLICT`).
+ */
+export type FinalizeResult = { statement: Statements; error?: string; code?: ErrorCode }
 
 /**
  * `POST /statements/{id}/finalize` as an **async** execution (functions-api.md#statements): polls
@@ -143,12 +146,14 @@ export function useFinalizeStatement(statement: Statements) {
           const row = await read()
           if (run.status === 'completed' && run.responseStatusCode < 400) return { statement: row }
           const answer = run.responseBody ? parseEnvelope(run) : undefined
+          const refusal = answer && !answer.ok ? answer.error : undefined
+          const code = refusal?.code ?? (run.responseStatusCode === 409 ? 'CONFLICT' : undefined)
           return {
             statement: row,
-            error:
-              answer && !answer.ok
-                ? writeErrorMessage(answer.error)
-                : (FINALIZE_REFUSED[run.responseStatusCode] ?? 'The server stopped with an error.'),
+            error: refusal
+              ? writeErrorMessage(refusal)
+              : (FINALIZE_REFUSED[run.responseStatusCode] ?? 'The server stopped with an error.'),
+            ...(code && { code }),
           }
         }
         return {
@@ -170,11 +175,38 @@ export function useFinalizeStatement(statement: Statements) {
   })
 }
 
+/**
+ * `POST /statements/{id}/discard`: deletes a draft (statements.md#5). Asking again gets
+ * `NOT_FOUND`, which counts as done: an earlier try's answer may have been lost.
+ */
+export function useDiscardStatement(statement: Statements) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async () => {
+      const result = await callFunction<object>(
+        'statements',
+        'POST',
+        `/statements/${statement.$id}/discard`,
+      )
+      if (!result.ok && result.error.code !== 'NOT_FOUND') {
+        throw new Error(writeErrorMessage(result.error))
+      }
+    },
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: queryKeys.statement(statement.$id) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.statements(statement.groupId) })
+    },
+    // It may have been discarded although the answer was lost, or changed by someone else.
+    onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.statement(statement.$id) }),
+  })
+}
+
 const storage = new Storage(client)
 
 /**
- * The PDF of a final (or since voided) statement, saved as `<number>.pdf`. Fetched through the SDK, so the
- * session goes with it, then handed to the browser.
+ * The PDF of a final (or since voided) statement, saved as `<number>.pdf`, or
+ * `divide-<periodEnd>.pdf` for a divide (statements.md#2, step 7). Fetched through the SDK, so
+ * the session goes with it, then handed to the browser.
  */
 export async function downloadPdf(statement: Statements): Promise<void> {
   const url = storage.getFileDownload({
@@ -185,7 +217,10 @@ export async function downloadPdf(statement: Statements): Promise<void> {
   const href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
   const link = document.createElement('a')
   link.href = href
-  link.download = `${statement.displayNumber ?? 'invoice'}.pdf`
+  link.download =
+    statement.type === 'divide'
+      ? `divide-${statement.periodEnd}.pdf`
+      : `${statement.displayNumber ?? 'invoice'}.pdf`
   link.click()
   // Later, so the browser has started saving it first.
   setTimeout(() => URL.revokeObjectURL(href), 1000)

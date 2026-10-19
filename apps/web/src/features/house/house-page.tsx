@@ -121,6 +121,13 @@ function House({
           Add expense
         </Link>
       )}
+      {/* #166: the house's monthly divides, for everyone in it. */}
+      <Link
+        to={`/groups/${group.$id}/statements`}
+        className="self-start text-sm underline underline-offset-4"
+      >
+        Statements
+      </Link>
       <section aria-labelledby="housemates" className="flex flex-col gap-2">
         <h2 id="housemates" className="font-medium">
           Housemates

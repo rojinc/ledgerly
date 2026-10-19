@@ -286,6 +286,10 @@ describe('HousePage', () => {
       expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+      // Everyone can read the house's divides (#166).
+      expect(screen.getByRole('link', { name: 'Statements' }).getAttribute('href')).toBe(
+        '/groups/g1/statements',
+      )
     })
 
     it('makes an archived house read-only for everyone', async () => {
