@@ -3,6 +3,7 @@ import type {
   Balances,
   Groups,
   Identities,
+  Invites,
   Items,
   Members,
   Persons,
@@ -118,8 +119,8 @@ async function deleteFile(files: FilesApi, bucketId: string, fileId: string, gro
   }
 }
 
-// Every row of the group but its member rows and the group row, in transactions of at most 90
-// writes: each transaction with its shares and items, and its receipts taken off, never split,
+// Every row of the group but its member rows and the group row, with the invites to its member
+// rows, in transactions of at most 90 writes: each transaction with its shares and items, and its receipts taken off, never split,
 // and the balances row with the first, so the cache never disagrees with the shares. Each batch
 // also gives the group row a fresh `rev`, as every other writer of shares does
 // (ledger.md#concurrency), so a nightly check reading the group meanwhile sees it change, and
@@ -177,6 +178,19 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
   for (const tableId of [TABLES.schedules, TABLES.statements, TABLES.activity, TABLES.reminders]) {
     for await (const row of pages<Models.Row>(services, tableId, ofGroup)) {
       await add([remove(tableId, row.$id)])
+    }
+  }
+  // Every invite to one of its member rows, whoever sent it: each holds the address it went to.
+  // Found through the member rows, so before they go. idx_groupId, then invites.memberId, which
+  // has no index: Appwrite reads the small table, as step 5 does (delete-account.ts).
+  const memberIds: string[] = []
+  for await (const member of pages<Members>(services, TABLES.members, ofGroup)) {
+    memberIds.push(member.$id)
+  }
+  for (let start = 0; start < memberIds.length; start += IDS_PER_QUERY) {
+    const toMembers = [Query.equal('memberId', memberIds.slice(start, start + IDS_PER_QUERY))]
+    for (const invite of await allRows<Invites>(db, TABLES.invites, toMembers)) {
+      await add([remove(TABLES.invites, invite.$id)])
     }
   }
   await flush()

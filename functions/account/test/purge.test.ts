@@ -98,6 +98,11 @@ function world(moreActivity = 0) {
         { $id: 'h2', peopleJson: '[]' },
         { $id: 'h1', peopleJson: '[]' },
       ],
+      // Ray, who left h2, invited Kim there; Alex invited Lee to h1, which is kept.
+      invites: [
+        invite('vKim', 'h2', 'pKim', 'p3', 'email:kim@example.com'),
+        invite('vLee', 'h1', 'pLee', 'p2', 'email:lee@example.com'),
+      ],
       // r6 has none: attached before the ledger kept them.
       receiptFiles: [
         receipt('r1', ['t1']),
@@ -147,6 +152,21 @@ function world(moreActivity = 0) {
 
 function identity(id: string, key: string, personId: string) {
   return { $id: id, key, type: key.split(':')[0], personId, verified: false, verifiedAt: null }
+}
+
+function invite(id: string, groupId: string, personId: string, invitedBy: string, key: string) {
+  return {
+    $id: id,
+    groupId,
+    memberId: `${groupId}-${personId}`,
+    identityKey: key,
+    tokenHash: id.padEnd(64, '0'),
+    channel: 'email',
+    invitedBy,
+    sentAt: BEFORE,
+    expiresAt: '2026-09-15T00:00:00.000Z',
+    acceptedAt: null,
+  }
 }
 
 function receipt(fileId: string, transactionIds: string[]) {
@@ -409,11 +429,15 @@ describe('POST /delete: purging a group nobody else is in', () => {
     }
     expect(batches[first]).not.toContain('transactions/tBig2')
     expect(batches[first + 1]).toContain('items/tBig2-item29')
-    // Member rows only once no share of the group is left (I-3).
+    // Member rows only once no share of the group is left (I-3), and after the invites found
+    // through them.
     const writes = batches.flat()
     const lastShare = writes.findLastIndex((write) => /^shares\/(t3|t4|tBig\d)-/.test(write))
+    const invite = writes.indexOf('invites/vKim')
     expect(lastShare).toBeGreaterThan(-1)
-    expect(writes.findIndex((write) => write.startsWith('members/h2-'))).toBeGreaterThan(lastShare)
+    expect(invite).toBeGreaterThan(-1)
+    const firstMember = writes.findIndex((write) => write.startsWith('members/h2-'))
+    expect(firstMember).toBeGreaterThan(Math.max(lastShare, invite))
   })
 
   it('deletes a balances row a nightly check built again after the first batch', async () => {
@@ -540,6 +564,55 @@ describe('POST /delete: purging a group nobody else is in', () => {
     await insert(services, 'reminders', [reminder('rH2', 'h2'), reminder('rH1', 'h1')])
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
     expect(services.db.rows('reminders').map((row) => row.$id)).toEqual(['rH1'])
+  })
+
+  it('deletes the invites to its member rows, whoever sent them, and keeps another group’s', async () => {
+    const services = world()
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    // Ray's invite to Kim went with h2; Alex's to Lee in h1 stays.
+    expect(services.db.rows('invites').map((row) => row.$id)).toEqual(['vLee'])
+  })
+
+  it('reads the invites 100 member rows at a time, as Appwrite allows', async () => {
+    const services = world()
+    const people = Array.from({ length: 120 }, (_, n) => `pMany${String(n).padStart(3, '0')}`)
+    for (let start = 0; start < people.length; start += 60) {
+      await insert(
+        services,
+        'members',
+        people
+          .slice(start, start + 60)
+          .map((id) => member('h2', id, { role: 'member', status: 'placeholder' })),
+      )
+    }
+    await insert(services, 'invites', [
+      invite('vLast', 'h2', 'pMany119', 'p3', 'email:last@example.com'),
+    ])
+    const listRows = vi.spyOn(services.db, 'listRows')
+    expect((await remove(services)).finished).toBe(true)
+    const sizes = listRows.mock.calls.flatMap(([params]) =>
+      (params.queries ?? [])
+        .map((query) => JSON.parse(query) as { method: string; attribute?: string; values: [] })
+        .filter((query) => query.method === 'equal' && query.attribute === 'memberId')
+        .map((query) => query.values.length),
+    )
+    expect(sizes.length).toBeGreaterThan(1)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(100)
+    expect(rowOf(services, 'invites', 'vLast')).toBeUndefined()
+  })
+
+  it('leaves a group to the next run when an invite is deleted meanwhile, and the rerun counts it done', async () => {
+    const services = world()
+    // As Ray's own deletion does with the invites Ray sent (step 5).
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"invites"'),
+      () => deleteRow(services, 'invites', 'vKim'),
+    )
+    expect((await remove(services)).finished).toBe(false)
+    vi.restoreAllMocks()
+    expect((await remove(services)).finished).toBe(true)
+    expect(state(services)).toEqual(await oneRun())
   })
 
   it('purges a group whose statement has been stuck finalizing for over an hour', async () => {
@@ -820,6 +893,7 @@ describe('POST /delete: a purge cut off by a crash, then run again', () => {
     ['a file', (services) => crashOnCall(services.files, 'deleteFile', () => true, 2)],
     ['the files', staging('"tableId":"balances","rowId":"h2"')],
     ['taking a batch’s receipts off', staging('"tableId":"receiptFiles"')],
+    ['the invites', staging('"tableId":"invites"')],
     ['a batch of rows', staging('aMany', 2)],
     ['two batches of rows', staging('aMany', 3)],
     ['the rows', staging('"rowId":"h2-p3"')],
