@@ -292,7 +292,7 @@ async function deleteOwnRows(db: Db, userId: string, personId: string): Promise<
       tableId: TABLES.invites,
       rowId: row.$id,
     })),
-    ...reminders.map((row) => ({
+    ...unique(reminders).map((row) => ({
       action: 'delete' as const,
       tableId: TABLES.reminders,
       rowId: row.$id,
