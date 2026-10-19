@@ -206,6 +206,34 @@ describe('mergeSplit', () => {
       ],
     })
     expect(splitSpecSchema.safeParse(exact).success).toBe(true)
+    // The parts are the ones posting would have made (#264): planned before and after the merge,
+    // every person but P and U keeps theirs, and U gets P's and U's together.
+    const members = ['P', 'U', 'X'].map((personId) => ({
+      personId,
+      joinedOn: '2026-01-01' as LocalDate,
+      leftOn: null,
+    }))
+    const plan = (split: SplitSpec, people = members) =>
+      buildShares(
+        {
+          kind: 'expense',
+          date: '2026-10-01' as LocalDate,
+          totalCents: 9000,
+          payers: [{ personId: 'X', cents: 9000 }],
+          split,
+        },
+        { groupType: 'house', ownerPersonId: 'X', callerPersonId: 'X', members: people },
+      ).shares.map((share) => [share.personId, share.receivedCents])
+    const before = Object.fromEntries(plan(heavy))
+    expect(
+      plan(
+        exact,
+        members.filter((member) => member.personId !== 'P'),
+      ),
+    ).toEqual([
+      ['U', (before.P as number) + (before.U as number)],
+      ['X', before.X],
+    ])
     // A refund is split the same way, then flipped; nothing to split leaves everyone at 0.
     expect(mergeSplit(heavy, merge, -9000)).toEqual({
       mode: 'exact',
