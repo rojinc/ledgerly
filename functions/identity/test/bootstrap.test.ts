@@ -30,11 +30,11 @@ function identity(id: string, key: string, personId: string) {
 }
 
 // Sam was added to g1 before signing up, and to g2 after.
-function addedBeforeSignUp() {
+function addedBeforeSignUp(typed: ReturnType<typeof identity>[] = []) {
   return fakes(
     {
       persons: [placeholder('pSam')],
-      identities: [identity('iSam', 'email:sam@example.com', 'pSam')],
+      identities: [identity('iSam', 'email:sam@example.com', 'pSam'), ...typed],
       members: [
         placeholderRow('m1', 'g1', 'pSam', BEFORE),
         placeholderRow('m2', 'g2', 'pSam', AFTER),
@@ -179,6 +179,35 @@ describe('POST /bootstrap', () => {
     expect(teams.members('g2')?.map((membership) => membership.userId)).toEqual(['uAdmin'])
   })
 
+  describe('only the keys the user verified stay theirs (#252)', () => {
+    // Whoever added Sam typed a phone too, one Sam hasn't verified.
+    const typedPhone = () => identity('iTyped', 'phone:+61400000000', 'pSam')
+
+    it('deletes a typed key when it adopts, in the same transaction, and logs a count', async () => {
+      const services = addedBeforeSignUp([typedPhone()])
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+      expect((await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)).personId).toBe(
+        'pSam',
+      )
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam'])
+      expect(log).toHaveBeenCalledWith('bootstrap adopted pSam: 1 typed keys deleted')
+      log.mockRestore()
+    })
+
+    it('keeps a key the user verified too, and logs nothing', async () => {
+      const services = addedBeforeSignUp([typedPhone()])
+      services.users.get = async () => account({ phone: '+61400000000', phoneVerification: true })
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+      await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)
+      expect(services.db.rows('identities')).toEqual([
+        expect.objectContaining({ $id: 'iSam', personId: 'pSam', verified: true }),
+        expect.objectContaining({ $id: 'iTyped', personId: 'pSam', verified: true }),
+      ])
+      expect(log).not.toHaveBeenCalled()
+      log.mockRestore()
+    })
+  })
+
   it('ignores an unverified email, even one that matches a placeholder', async () => {
     const services = addedBeforeSignUp()
     services.users.get = async () => account({ emailVerification: false })
@@ -304,7 +333,7 @@ describe('POST /bootstrap', () => {
   ])(
     'says CONFLICT, try again, when another user claims the placeholder first, %s',
     async (_, race) => {
-      const services = addedBeforeSignUp()
+      const services = addedBeforeSignUp([identity('iTyped', 'phone:+61400000000', 'pSam')])
       race(services, () => updateRow(services.db, 'persons', 'pSam', { userId: 'uOther' }))
       expect(await failure(services, 'POST', '/bootstrap', BODY)).toEqual({
         status: 409,
@@ -313,6 +342,8 @@ describe('POST /bootstrap', () => {
       })
       expect(services.db.rows('profiles')).toEqual([])
       expect(services.db.rows('persons')[0]?.userId).toBe('uOther')
+      // Its typed-key delete went with the rest: the placeholder is the other user's to claim.
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iTyped'])
     },
   )
 

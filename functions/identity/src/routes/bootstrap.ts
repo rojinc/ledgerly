@@ -17,6 +17,7 @@ import {
   isAppwriteError,
   isPlaceholder,
   tryAgain,
+  typedKeys,
 } from '../rows'
 import type { AccountUser, Services } from '../services'
 import { claim, type VerifiedIdentity, verifiedIdentities } from './claim'
@@ -109,6 +110,17 @@ async function setUp(
         // already has the new userId. Another user may have claimed the placeholder first.
         const stored = await getRowOrNull<Persons>(db, TABLES.persons, person.personId)
         if (!stored || !(isPlaceholder(stored) || stored.userId === userId)) throw tryAgain()
+        // Only the keys the user verified stay theirs; the ones someone typed go, in this same
+        // transaction (identity-and-invites.md#only-verified-keys-move). IDs and counts only.
+        const typed = await typedKeys(
+          db,
+          person.personId,
+          identities.map((identity) => identity.key),
+        )
+        if (typed.length > 0) {
+          await tx.write(...typed)
+          console.log(`bootstrap adopted ${person.personId}: ${typed.length} typed keys deleted`)
+        }
       }
     })
   } catch (error) {
