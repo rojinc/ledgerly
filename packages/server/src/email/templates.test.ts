@@ -7,6 +7,7 @@ import {
   reminderEmail,
   shiftToConfirmEmail,
   statementReadyEmail,
+  summaryEmail,
   timerRunningEmail,
 } from './templates'
 
@@ -284,6 +285,134 @@ describe('timerRunningEmail', () => {
   })
 })
 
+describe('summaryEmail', () => {
+  const report = (currency: string, extra: object = {}) => ({
+    currency,
+    spendingCents: 0,
+    spendingByCategory: {},
+    earningsCents: 0,
+    moneyReceivedCents: 0,
+    incomeCents: 0,
+    paidOutCents: 0,
+    personalIncomeCents: 0,
+    ...extra,
+  })
+  const summary = (input: Partial<Parameters<typeof summaryEmail>[0]> = {}) =>
+    summaryEmail({
+      periodStart: day('2026-10-12'),
+      periodEnd: day('2026-10-18'),
+      reports: [],
+      balances: [],
+      url: 'https://app.example/',
+      profileUrl: 'https://app.example/profile',
+      ...input,
+    })
+
+  it('gives spending by category, biggest first, income and balances', () => {
+    const content = summary({
+      reports: [
+        report('AUD', {
+          spendingCents: 12_345,
+          spendingByCategory: { food: 2_345, groceries: 8_000, none: 2_000 },
+          incomeCents: 150_000,
+        }),
+      ],
+      balances: [
+        { groupName: 'Elm St', currency: 'AUD', cents: -2_050 },
+        { groupName: 'Acme', currency: 'AUD', cents: 50_000 },
+        { groupName: 'Pine Rd', currency: 'AUD', cents: -9_000 },
+        { groupName: 'Birch Ln', currency: 'AUD', cents: 50_000 },
+      ],
+    })
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your 12–18 October summary')
+    expect(content.text).toBe(
+      [
+        'Here is your summary for 12–18 October.',
+        'You spent $123.45.',
+        '- Groceries: $80.00\n- Food: $23.45\n- No category: $20.00',
+        'Your income was $1,500.00.',
+        'Owed to you:',
+        '- Acme: $500.00\n- Birch Ln: $500.00',
+        'You owe:',
+        '- Pine Rd: $90.00\n- Elm St: $20.50',
+        'You can turn these emails off, or change how often they come, in your profile.',
+        'Open Ledgerly: https://app.example/',
+        'Change your summary emails: https://app.example/profile',
+        '--\nSent with Ledgerly.',
+      ].join('\n\n'),
+    )
+    expect(content.html).toContain(
+      '<ul><li>Groceries: $80.00</li><li>Food: $23.45</li><li>No category: $20.00</li></ul>',
+    )
+    expect(content.html).toContain(
+      '<a href="https://app.example/profile">Change your summary emails</a>',
+    )
+  })
+
+  it('names a whole month, and gives refunds as negative spending', () => {
+    const content = summary({
+      periodStart: day('2026-10-01'),
+      periodEnd: day('2026-10-31'),
+      reports: [report('AUD', { spendingCents: -500, spendingByCategory: { household: -500 } })],
+    })
+    expect(content.subject).toBe('Your October summary')
+    expect(content.text).toContain('You spent -$5.00.')
+    expect(content.text).toContain('- Household: -$5.00')
+    expect(content.text).not.toContain('Owed to you')
+    expect(content.text).not.toContain('You owe')
+  })
+
+  it('gives each currency its own section, with only what it has', () => {
+    const content = summary({
+      reports: [report('AUD', { spendingCents: 1_000, spendingByCategory: { food: 1_000 } })],
+      balances: [{ groupName: 'Bob', currency: 'USD', cents: 2_000 }],
+    })
+    const text = content.text
+    expect(text.indexOf('In AUD:')).toBeLessThan(text.indexOf('You spent $10.00.'))
+    expect(text.indexOf('You spent $10.00.')).toBeLessThan(text.indexOf('In USD:'))
+    // USD has a balance but no shares in the period, so no spending or income line.
+    expect(text.slice(text.indexOf('In USD:'))).not.toContain('You spent')
+    expect(text).toMatch(/In USD:\n\nOwed to you:\n\n- Bob: USD\s20\.00/)
+    expect(text.match(/Your income was/g)).toHaveLength(1)
+  })
+
+  it('orders currencies, and categories and groups of the same size by name', () => {
+    const content = summary({
+      reports: [
+        report('USD', { spendingCents: 200, spendingByCategory: { food: 100, bills: 100 } }),
+        report('AUD'),
+      ],
+      balances: [
+        { groupName: 'Pine Rd', currency: 'AUD', cents: 500 },
+        { groupName: 'Elm St', currency: 'AUD', cents: 500 },
+      ],
+    })
+    const text = content.text
+    expect(text.indexOf('In AUD:')).toBeLessThan(text.indexOf('In USD:'))
+    expect(text).toMatch(/- Bills: USD\s1\.00\n- Food: USD\s1\.00/)
+    expect(text).toContain('- Elm St: $5.00\n- Pine Rd: $5.00')
+  })
+
+  it('leaves out categories and balances at 0, and empty lists', () => {
+    const content = summary({
+      reports: [report('AUD', { incomeCents: 100, spendingByCategory: { groceries: 0 } })],
+      balances: [{ groupName: 'Elm St', currency: 'AUD', cents: 0 }],
+    })
+    expect(content.text).toContain('You spent $0.00.\n\nYour income was $1.00.')
+    expect(content.text).not.toMatch(/Groceries|Elm St|Owed to you|You owe/)
+    expect(content.html).not.toContain('<ul>')
+  })
+
+  it('escapes group names in the HTML', () => {
+    const content = summary({
+      balances: [{ groupName: '<b>Tom & Jo</b>', currency: 'AUD', cents: 100 }],
+    })
+    expect(content.html).toContain('<li>&lt;b&gt;Tom &amp; Jo&lt;/b&gt;: $1.00</li>')
+    expect(content.html).not.toContain('<b>')
+  })
+})
+
 describe('user-typed text', () => {
   it('is escaped in the HTML and kept on one line in the subject', () => {
     const content = statementReadyEmail({
@@ -311,6 +440,19 @@ describe('user-typed text', () => {
       ).toThrow('Email links must be http(s)')
     },
   )
+
+  it('checks every link, not only the first', () => {
+    expect(() =>
+      summaryEmail({
+        periodStart: day('2026-10-12'),
+        periodEnd: day('2026-10-18'),
+        reports: [],
+        balances: [],
+        url: 'https://app.example/',
+        profileUrl: 'javascript:alert(1)',
+      }),
+    ).toThrow('Email links must be http(s)')
+  })
 })
 
 describe('reminderEmail', () => {

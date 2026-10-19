@@ -183,6 +183,20 @@ describe('identity POST /reminders', () => {
     })
     await ok(services, 'POST', '/reminders', { ...BODY, email: 'Alex@Example.COM' })
     expect(services.db.rows('reminders')[0]?.toPersonId).toBe('pAlex2')
+    // To the address as stored.
+    expect(vi.mocked(services.sendEmail).mock.calls[0]?.[0]).toMatchObject({
+      to: 'alex@example.com',
+    })
+  })
+
+  it('finds a merged person by an identity still on the placeholder, mid-merge', async () => {
+    // Step 2 moved Alex's member row to Alex2; the identity moves last, so it's still on Alex.
+    const services = fixture({
+      persons: [SAM, { ...ALEX, mergedInto: 'pAlex2' }, { ...ALEX, $id: 'pAlex2', userId: 'u2' }],
+      members: [member('m1', 'pSam', 'Sam'), member('m2', 'pAlex2', 'Alex', { role: 'member' })],
+    })
+    await ok(services, 'POST', '/reminders', BODY)
+    expect(services.db.rows('reminders')[0]?.toPersonId).toBe('pAlex2')
   })
 
   describe('refuses, and sends nothing', () => {
@@ -352,6 +366,18 @@ describe('identity POST /reminders', () => {
           reminder(`o${n}`, { groupId: `g${n + 2}`, toPersonId: `p${n}` }),
         ),
       ],
+      [
+        'the recipient got 3 exactly 7 days ago',
+        [1, 2, 3].map((n) =>
+          reminder(`o${n}`, { sentBy: `p${n}`, groupId: `g${n + 1}`, sentAt: ago(7 * DAY) }),
+        ),
+      ],
+      [
+        'the sender sent 20 exactly 24 hours ago',
+        Array.from({ length: 20 }, (_, n) =>
+          reminder(`o${n}`, { groupId: `g${n + 2}`, toPersonId: `p${n}`, sentAt: ago(DAY) }),
+        ),
+      ],
     ])('sends when %s', async (_case, reminders) => {
       await ok(fixture({ reminders }), 'POST', '/reminders', BODY)
     })
@@ -437,6 +463,28 @@ describe('identity POST /reminders', () => {
       )
       expect(await ok(services, 'POST', '/reminders', BODY)).toEqual({ sentAt: ago(1000) })
     })
+  })
+
+  it('sends exactly one email for a burst of 5 parallel reminders with different ids', async () => {
+    const services = fixture()
+    const answers = await Promise.all(
+      [1, 2, 3, 4, 5].map((n) => call(services, 'POST', '/reminders', { ...BODY, id: `r${n}` })),
+    )
+    expect(answers.filter(({ status }) => status === 200)).toHaveLength(1)
+    expect(services.sendEmail).toHaveBeenCalledTimes(1)
+    expect(services.db.rows('reminders')).toHaveLength(1)
+  })
+
+  it('answers CONFLICT when someone else’s reminder with the same id commits first', async () => {
+    const services = fixture()
+    const { $id: _id, ...data } = reminder('r1', { sentBy: 'pOther', groupId: 'g9' })
+    beforeCommit(services.db, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write({ action: 'create', tableId: 'reminders', rowId: 'r1', data }),
+      ),
+    )
+    expect((await failure(services, 'POST', '/reminders', BODY)).code).toBe('CONFLICT')
+    expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
   it('lets only one of two parallel reminders with different ids through: the guards', async () => {
@@ -526,11 +574,19 @@ describe('identity POST /reminders', () => {
     })
   })
 
-  it('logs no address, name or amount', async () => {
+  it('logs no address, name or amount, and a failed send only by its type', async () => {
     const services = fixture()
-    vi.mocked(services.sendEmail).mockRejectedValueOnce(new Error('boom alex@example.com'))
-    const { logs } = await call(services, 'POST', '/reminders', BODY)
-    await call(fixture(), 'POST', '/reminders', { ...BODY, email: 'stranger@example.com' })
-    expect(logs.join('\n')).not.toMatch(/alex@|stranger@|Sam|Alex|50\.00|5000/)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.mocked(services.sendEmail).mockRejectedValueOnce(
+      new EmailError('boom alex@example.com', 'application_error', 500),
+    )
+    const first = await call(services, 'POST', '/reminders', BODY)
+    const second = await call(fixture(), 'POST', '/reminders', {
+      ...BODY,
+      email: 'stranger@example.com',
+    })
+    expect(errors).toHaveBeenCalledWith('reminder r1 not sent: EmailError application_error 500')
+    const logged = [...first.logs, ...second.logs, ...errors.mock.calls.map(String)].join('\n')
+    expect(logged).not.toMatch(/alex@|stranger@|Sam|Alex|50\.00|5000/)
   })
 })

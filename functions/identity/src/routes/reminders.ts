@@ -1,6 +1,6 @@
 import { REMINDER_LIMITS } from '@ledgerly/core/constants/limits'
 import type { Groups, Identities, Members, Persons, Reminders } from '@ledgerly/core/generated/rows'
-import { identityKey } from '@ledgerly/core/identity/normalize'
+import { identityKey, normalizeEmail } from '@ledgerly/core/identity/normalize'
 import { type SendReminderResult, sendReminderBodySchema } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -95,7 +95,8 @@ async function deliver(
   try {
     // Resend sends one email per key within 24 hours, so a retry isn't delivered twice.
     await services.sendEmail({
-      to: input.email,
+      // As stored: identityKey() matched the address in this form.
+      to: normalizeEmail(input.email),
       ...reminderEmail({
         senderName: input.senderName,
         amountCents: input.owedCents,
@@ -106,9 +107,14 @@ async function deliver(
     })
   } catch (error) {
     // Sent already under this key, with other content: it counts as sent.
-    if (!(error instanceof EmailError && ALREADY_SENT.has(error.type))) {
-      throw new AppError('INTERNAL', NOT_SENT)
-    }
+    if (error instanceof EmailError && ALREADY_SENT.has(error.type)) return
+    // Resend's type and status, never its message, which can quote the address.
+    const cause =
+      error instanceof EmailError
+        ? `EmailError ${error.type} ${error.status ?? ''}`.trim()
+        : 'Error'
+    console.error(`reminder ${input.id} not sent: ${cause}`)
+    throw new AppError('INTERNAL', NOT_SENT)
   }
 }
 
@@ -164,6 +170,8 @@ async function commitReminder(
           tableId: TABLES.reminders,
           rowId: id,
           data: { groupId, sentBy: sender, toPersonId: recipient, channel: 'email', sentAt },
+          // Server only, like identities.
+          permissions: [],
         },
         {
           action: 'create',
