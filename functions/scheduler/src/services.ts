@@ -8,8 +8,8 @@ import { type Models, Teams, Users } from 'node-appwrite'
 // timeout; the next hourly run picks up the rest (scheduling.md#the-scheduler-job).
 const RUN_BUDGET_MS = 12 * 60_000
 
-/** The parts of an Appwrite account the reminders read. */
-export type AccountUser = Pick<Models.User, '$id' | 'email' | 'emailVerification'>
+/** The parts of an Appwrite account the reminders and summaries read. */
+export type AccountUser = Pick<Models.User, '$id' | 'email' | 'emailVerification' | 'status'>
 
 /** The parts of Users that the scheduler uses; the real `Users` satisfies it. */
 export interface UsersApi {
@@ -31,6 +31,17 @@ export type Services = {
   appUrl: string
   /** True once this run's time budget is used up. */
   outOfTime: () => boolean
+}
+
+/**
+ * The web app's address for links, without a trailing slash. Steps check it before any row,
+ * so a missing APP_URL fails the run instead of every row.
+ */
+export function appBase(appUrl: string): string {
+  if (!/^https?:\/\//.test(appUrl)) {
+    throw new Error('APP_URL is not set. Add it as an Appwrite project variable.')
+  }
+  return appUrl.replace(/\/+$/, '')
 }
 
 /** The real services for one request, with the per-execution API key. */
