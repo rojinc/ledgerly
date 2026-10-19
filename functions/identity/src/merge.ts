@@ -1,10 +1,19 @@
-import type { Identities, Persons, Shares, Statements } from '@ledgerly/core/generated/rows'
+import type {
+  Identities,
+  Members,
+  Persons,
+  Shares,
+  Statements,
+} from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
-import { Query } from 'node-appwrite'
-import { getRowOrNull, isAppwriteError } from './rows'
+import { ID, Permission, Query, Role } from 'node-appwrite'
+import { getRowOrNull, isAppwriteError, tryAgain } from './rows'
+import type { Services } from './services'
 
 // identity-and-invites.md#merging-two-persons: placeholder P is merged into U in steps that are
 // each safe to repeat. Logs hold IDs and counts only (security-and-privacy.md).
@@ -46,6 +55,148 @@ export async function markMerged(db: Db, placeholderId: string, intoId: string):
     }
     throw error
   }
+}
+
+/** What step 2 did: the kept groups (U left them on their own) and the groups U joined. */
+export type MembersResult = { kept: Set<string>; joined: string[] }
+
+/**
+ * Step 2: P's member rows, one at a time (`idx_person_status`). U joins each of P's groups,
+ * archived ones too, except where U left on their own: there P keeps its row and its shares
+ * (the kept groups). A row is finished once it no longer points at P, so a retry carries on.
+ */
+export async function moveMembers(
+  services: Services,
+  userId: string,
+  fromId: string,
+  intoId: string,
+): Promise<MembersResult> {
+  const { db } = services
+  const kept = new Set<string>()
+  const joined: string[] = []
+  for (;;) {
+    const { rows } = await db.listRows<Members>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.members,
+      queries: [
+        Query.equal('personId', fromId),
+        ...[...kept].map((groupId) => Query.notEqual('groupId', groupId)),
+        Query.limit(1),
+      ],
+      total: false,
+    })
+    const theirs = rows[0]
+    if (!theirs) return { kept, joined }
+    const own = await memberOf(db, theirs.groupId, intoId)
+    if (own && (await leftOnTheirOwn(db, own.groupId, intoId, own.$createdAt))) {
+      kept.add(theirs.groupId)
+    } else if (await moveMember(services, userId, theirs, own, intoId)) {
+      joined.push(theirs.groupId)
+    }
+  }
+}
+
+/** The person's member row in the group (`uniq_group_person`), or undefined. */
+async function memberOf(db: Db, groupId: string, personId: string): Promise<Members | undefined> {
+  const { rows } = await db.listRows<Members>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.members,
+    queries: [Query.equal('groupId', groupId), Query.equal('personId', personId), Query.limit(1)],
+    total: false,
+  })
+  return rows[0]
+}
+
+/**
+ * One of P's rows: U joins the team first ("already a member" counts as done), then in one
+ * transaction U's own row is kept (with the earlier `joinedOn`) and P's deleted, or P's row is
+ * repointed to U, with the status as in joining and `member.joined` by U. True if this call
+ * moved it; false if a merge running at the same time did.
+ */
+async function moveMember(
+  { db, teams, now }: Services,
+  userId: string,
+  theirs: Members,
+  own: Members | undefined,
+  intoId: string,
+): Promise<boolean> {
+  await addToTeam(teams, theirs.groupId, userId)
+  const kept = own
+    ? { ...own, joinedOn: theirs.joinedOn < own.joinedOn ? theirs.joinedOn : own.joinedOn }
+    : { ...theirs, personId: intoId }
+  try {
+    await withTransaction(db, async (tx) => {
+      await tx.write(
+        ...(own
+          ? [
+              {
+                action: 'update' as const,
+                tableId: TABLES.members,
+                rowId: own.$id,
+                data: { joinedOn: kept.joinedOn, status: statusOf(kept) },
+              },
+              { action: 'delete' as const, tableId: TABLES.members, rowId: theirs.$id },
+            ]
+          : [
+              {
+                action: 'update' as const,
+                tableId: TABLES.members,
+                rowId: theirs.$id,
+                data: { personId: intoId, status: statusOf(kept) },
+              },
+            ]),
+      )
+      // Stage, then check: both rows as stored, not this transaction's view of them.
+      const storedTheirs = await getRowOrNull<Members>(db, TABLES.members, theirs.$id)
+      const storedOwn = own ? await getRowOrNull<Members>(db, TABLES.members, own.$id) : null
+      if (!sameMember(storedTheirs, theirs) || (own && !sameMember(storedOwn, own))) {
+        throw new Changed()
+      }
+      await tx.write({
+        action: 'create',
+        tableId: TABLES.activity,
+        rowId: ID.unique(),
+        data: {
+          groupId: kept.groupId,
+          actorPersonId: intoId,
+          action: 'member.joined',
+          summary: `${kept.displayName} joined`,
+          at: now.toISOString(),
+        },
+        permissions: [Permission.read(Role.team(kept.groupId))],
+      })
+    })
+  } catch (error) {
+    // Take back the team membership, unless U has a joined row there.
+    const ours = await memberOf(db, theirs.groupId, intoId)
+    if (!ours || ours.status === 'placeholder') await removeFromTeam(teams, theirs.groupId, userId)
+    const current = await getRowOrNull<Members>(db, TABLES.members, theirs.$id)
+    if (current?.personId === theirs.personId) {
+      throw error instanceof Changed || isAppwriteError(error, 409) ? tryAgain() : error
+    }
+    // P's row is gone or U's now: a merge running at the same time moved it.
+    return false
+  }
+  // As in joinGroup: a parallel failure may have taken back the membership just before this
+  // commit, and the row is joined now.
+  await addToTeam(teams, theirs.groupId, userId)
+  return true
+}
+
+// `left` if they moved out, so a former housemate can still see and settle up (as in joining).
+function statusOf(member: Members): 'active' | 'left' {
+  return member.leftOn ? 'left' : 'active'
+}
+
+/** True when the stored row still says what was read: same person, status, role and dates. */
+function sameMember(stored: Members | null, read: Members): boolean {
+  return (
+    stored?.personId === read.personId &&
+    stored.status === read.status &&
+    stored.role === read.role &&
+    stored.joinedOn === read.joinedOn &&
+    stored.leftOn === read.leftOn
+  )
 }
 
 /**

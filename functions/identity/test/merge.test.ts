@@ -1,8 +1,17 @@
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
+import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MERGE_BATCH, markMerged, moveIdentities, moveShares } from '../src/merge'
-import { beforeCommit, beforeStaging, updateRow } from './harness'
+import { MERGE_BATCH, markMerged, moveIdentities, moveMembers, moveShares } from '../src/merge'
+import {
+  beforeCommit,
+  beforeStaging,
+  fakes,
+  NOW,
+  placeholderRow,
+  TRY_AGAIN,
+  updateRow,
+} from './harness'
 
 // P (a placeholder) is merged into U (the caller's person).
 const U = { $id: 'pU', displayName: 'Sam Lee', userId: 'u1', mergedInto: null, deletedAt: null }
@@ -68,6 +77,157 @@ describe('markMerged (step 1)', () => {
     const twice = db()
     beforeCommit(twice, () => updateRow(twice, 'persons', 'pP', { mergedInto: 'pU' }))
     expect(await markMerged(twice, 'pP', 'pU')).toBe(true)
+  })
+})
+
+describe('moveMembers (step 2)', () => {
+  const CREATED = '2026-09-01T00:00:00.000Z'
+
+  /** Every group's team exists, with nobody in it yet. */
+  function setUp(seed: Parameters<typeof fakes>[0]) {
+    return fakes(seed, { teams: { g1: [], g2: [], g3: [] } })
+  }
+
+  /** U's own member row, joined. */
+  function ownRow(id: string, groupId: string, extra: object = {}) {
+    return placeholderRow(id, groupId, 'pU', CREATED, {
+      displayName: 'Sam Lee',
+      status: 'active',
+      joinedOn: '2026-10-01',
+      ...extra,
+    })
+  }
+
+  function activity(id: string, groupId: string, action: string, at: string) {
+    return { $id: id, $createdAt: at, at, groupId, actorPersonId: 'pU', action, summary: 'Sam' }
+  }
+
+  function members(services: ReturnType<typeof fakes>) {
+    return services.db
+      .rows('members')
+      .map((row) => [row.$id, row.groupId, row.personId, row.status, row.joinedOn])
+  }
+
+  function joinedRows(services: ReturnType<typeof fakes>) {
+    return services.db
+      .rows('activity')
+      .filter((row) => row.action === 'member.joined')
+      .map((row) => [row.groupId, row.actorPersonId, row.summary, row.at])
+  }
+
+  it('repoints P’s row to U, or keeps U’s with the earlier joinedOn, and joins U to each team', async () => {
+    const services = setUp({
+      persons: [U, P],
+      members: [
+        placeholderRow('m1', 'g1', 'pP', CREATED),
+        // P moved out before anyone joined.
+        placeholderRow('m2', 'g2', 'pP', CREATED, { leftOn: '2026-10-05', role: 'viewer' }),
+        placeholderRow('m3', 'g3', 'pP', CREATED, { joinedOn: '2026-08-01' }),
+        ownRow('m4', 'g3'),
+      ],
+    })
+    expect(await moveMembers(services, 'u1', 'pP', 'pU')).toEqual({
+      kept: new Set(),
+      joined: ['g1', 'g2', 'g3'],
+    })
+    expect(members(services)).toEqual([
+      ['m1', 'g1', 'pU', 'active', '2026-09-01'],
+      ['m2', 'g2', 'pU', 'left', '2026-09-01'],
+      ['m4', 'g3', 'pU', 'active', '2026-08-01'],
+    ])
+    for (const groupId of ['g1', 'g2', 'g3']) {
+      expect(services.teams.members(groupId)?.map((member) => member.userId)).toEqual(['u1'])
+    }
+    expect(joinedRows(services)).toEqual([
+      ['g1', 'pU', 'Sammy joined', NOW.toISOString()],
+      ['g2', 'pU', 'Sammy joined', NOW.toISOString()],
+      ['g3', 'pU', 'Sam Lee joined', NOW.toISOString()],
+    ])
+    // Nothing points at P any more: a second run is a no-op.
+    expect(await moveMembers(services, 'u1', 'pP', 'pU')).toEqual({ kept: new Set(), joined: [] })
+  })
+
+  it('keeps a group U left on their own: P keeps its row there, and U stays out of the team', async () => {
+    const services = setUp({
+      persons: [U, P],
+      members: [
+        placeholderRow('m1', 'g1', 'pP', CREATED),
+        ownRow('m2', 'g1', { status: 'left', role: 'viewer', leftOn: '2026-10-10' }),
+        // In g2, U left and then came back (a later member.joined): a fresh membership.
+        placeholderRow('m3', 'g2', 'pP', CREATED),
+        ownRow('m4', 'g2'),
+      ],
+      activity: [
+        activity('a1', 'g1', 'member.left', '2026-10-10T00:00:00.000Z'),
+        activity('a2', 'g2', 'member.left', '2026-10-10T00:00:00.000Z'),
+        activity('a3', 'g2', 'member.joined', '2026-10-12T00:00:00.000Z'),
+      ],
+    })
+    expect(await moveMembers(services, 'u1', 'pP', 'pU')).toEqual({
+      kept: new Set(['g1']),
+      joined: ['g2'],
+    })
+    expect(members(services)).toEqual([
+      ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],
+      ['m2', 'g1', 'pU', 'left', '2026-10-01'],
+      ['m4', 'g2', 'pU', 'active', '2026-09-01'],
+    ])
+    expect(services.teams.members('g1')).toEqual([])
+    expect(services.teams.members('g2')?.map((member) => member.userId)).toEqual(['u1'])
+  })
+
+  it('answers try again, and takes back the team, when P’s row changed after it was read', async () => {
+    const services = setUp({
+      persons: [U, P],
+      members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
+    })
+    // An admin marks P as moved out between the list and the staging.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"members"'),
+      () => updateRow(services.db, 'members', 'm1', { leftOn: '2026-10-05' }),
+    )
+    await expect(moveMembers(services, 'u1', 'pP', 'pU')).rejects.toThrow(TRY_AGAIN)
+    expect(members(services)).toEqual([['m1', 'g1', 'pP', 'placeholder', '2026-09-01']])
+    expect(services.teams.members('g1')).toEqual([])
+    expect(joinedRows(services)).toEqual([])
+    // The next claim moves it as it is now.
+    expect((await moveMembers(services, 'u1', 'pP', 'pU')).joined).toEqual(['g1'])
+    expect(members(services)).toEqual([['m1', 'g1', 'pU', 'left', '2026-09-01']])
+  })
+
+  it('answers try again when U’s row changed after it was read, and U keeps the team', async () => {
+    const services = fakes(
+      { persons: [U, P], members: [placeholderRow('m1', 'g1', 'pP', CREATED), ownRow('m2', 'g1')] },
+      { teams: { g1: ['u1'] } },
+    )
+    beforeCommit(services.db, () => updateRow(services.db, 'members', 'm2', { role: 'admin' }))
+    await expect(moveMembers(services, 'u1', 'pP', 'pU')).rejects.toThrow(TRY_AGAIN)
+    expect(members(services).map(([id]) => id)).toEqual(['m1', 'm2'])
+    // U's own joined row there keeps them in the team.
+    expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u1'])
+  })
+
+  it('joins the team again when a parallel failure took it back just before the commit', async () => {
+    const services = setUp({
+      persons: [U, P],
+      members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
+    })
+    beforeCommit(services.db, () => removeFromTeam(services.teams, 'g1', 'u1'))
+    expect((await moveMembers(services, 'u1', 'pP', 'pU')).joined).toEqual(['g1'])
+    expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u1'])
+  })
+
+  it('counts a row another merge moved meanwhile as done', async () => {
+    const services = setUp({
+      persons: [U, P],
+      members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
+    })
+    beforeCommit(services.db, () =>
+      updateRow(services.db, 'members', 'm1', { personId: 'pU', status: 'active' }),
+    )
+    expect(await moveMembers(services, 'u1', 'pP', 'pU')).toEqual({ kept: new Set(), joined: [] })
+    expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u1'])
   })
 })
 
