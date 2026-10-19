@@ -16,13 +16,18 @@ const PAGE = 100
 export const finalizeTiming = { pollMs: 2000, polls: 160 }
 
 // An async execution keeps no response body (functions-api.md), so a refusal is known only by
-// its status code: these are the finalize route's.
-const FINALIZE_REFUSED: Record<number, string> = {
-  400: 'This invoice can’t be finalized as it is. Reload the page to see it as it is now.',
-  401: 'Please log in again.',
-  403: 'Only an admin can finalize this invoice.',
-  404: 'This invoice no longer exists. Reload the page.',
-  409: 'It couldn’t be finalized yet: an earlier invoice of this group must be finalized first, or something else changed it at the same time. Try again.',
+// its status code: these are the finalize route's. A divide is never called an invoice
+// (statements.md#monthly-divide-pdf-layout-house).
+function finalizeRefused(status: number, type: Statements['type']): string | undefined {
+  const noun = type === 'divide' ? 'divide' : 'invoice'
+  const earlier = type === 'divide' ? 'statement' : 'invoice'
+  return {
+    400: `This ${noun} can’t be finalized as it is. Reload the page to see it as it is now.`,
+    401: 'Please log in again.',
+    403: `Only an admin can finalize this ${noun}.`,
+    404: `This ${noun} no longer exists. Reload the page.`,
+    409: `It couldn’t be finalized yet: an earlier ${earlier} of this group must be finalized first, or something else changed it at the same time. Try again.`,
+  }[status]
 }
 
 /** Calls the statements function; a refusal throws its message in plain words. */
@@ -106,10 +111,15 @@ export function useVoidStatement(id: string) {
 }
 
 /**
- * How a finalize ended: the statement as stored, and the error if the execution failed, with its
- * code when the answer kept one (or its status code says it: 409 is always `CONFLICT`).
+ * How a finalize ended: the statement as stored, and if the execution failed, the error, its
+ * code when the answer kept one, and its status code.
  */
-export type FinalizeResult = { statement: Statements; error?: string; code?: ErrorCode }
+export type FinalizeResult = {
+  statement: Statements
+  error?: string
+  code?: ErrorCode
+  status?: number
+}
 
 /**
  * `POST /statements/{id}/finalize` as an **async** execution (functions-api.md#statements): polls
@@ -147,13 +157,14 @@ export function useFinalizeStatement(statement: Statements) {
           if (run.status === 'completed' && run.responseStatusCode < 400) return { statement: row }
           const answer = run.responseBody ? parseEnvelope(run) : undefined
           const refusal = answer && !answer.ok ? answer.error : undefined
-          const code = refusal?.code ?? (run.responseStatusCode === 409 ? 'CONFLICT' : undefined)
           return {
             statement: row,
             error: refusal
               ? writeErrorMessage(refusal)
-              : (FINALIZE_REFUSED[run.responseStatusCode] ?? 'The server stopped with an error.'),
-            ...(code && { code }),
+              : (finalizeRefused(run.responseStatusCode, statement.type) ??
+                'The server stopped with an error.'),
+            ...(refusal && { code: refusal.code }),
+            status: run.responseStatusCode,
           }
         }
         return {

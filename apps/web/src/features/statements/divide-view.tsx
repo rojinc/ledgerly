@@ -7,9 +7,9 @@ import { formatDate, lineText } from './invoice-view'
 function Section({ id, title, children }: { id: string; title: string; children: ReactNode }) {
   return (
     <section aria-labelledby={id} className="flex flex-col gap-2">
-      <h3 id={id} className="font-medium">
+      <h2 id={id} className="font-medium">
         {title}
-      </h3>
+      </h2>
       {children}
     </section>
   )
@@ -145,7 +145,7 @@ export function DivideView({
                         share.receivedCents !== 0 && `share ${money(share.receivedCents)}`,
                       ]
                         .filter(Boolean)
-                        .join(', ')}
+                        .join(', ') || 'no part'}
                     </li>
                   ))}
                 </ul>

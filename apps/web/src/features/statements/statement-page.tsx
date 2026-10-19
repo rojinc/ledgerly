@@ -14,6 +14,7 @@ import { formatDate, InvoiceView } from './invoice-view'
 import { STATUS_LABEL } from './statements-page'
 import {
   downloadPdf,
+  type FinalizeResult,
   useDiscardStatement,
   useFinalizeStatement,
   useRefreshStatement,
@@ -183,7 +184,8 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       {open && unfinished && all.data && !earlier && (
         <Finalize statement={row} refreshing={refresh.isPending} onFinish={finish} />
       )}
-      {open && isDraft && all.data && latest !== undefined && (
+      {/* An invoice draft with a number can't be discarded (statements.md#5): it's refused. */}
+      {open && isDraft && row.number === null && all.data && latest !== undefined && (
         <Discard statement={row} latest={latest} busy={refresh.isPending} />
       )}
       {(row.status === 'final' || row.status === 'void') && group.data && (
@@ -213,10 +215,21 @@ function sentOn(sentAt: string, group: Groups): string {
   return formatDate(localToday(group.timezone, new Date(sentAt)))
 }
 
-// A divide's refusals in its own words (#166); an invoice keeps the server's.
-const DIVIDE_REFUSED: Partial<Record<string, string>> = {
-  CONFLICT: 'Finalize the earlier statement first.',
-  INVARIANT_VIOLATION: 'It didn’t add up, so it’s still a draft.',
+/**
+ * A divide's refused finalize in its own words (#166); an invoice keeps the server's. An async
+ * execution usually keeps no body, so its status code stands in for the code: a 409 back at
+ * `draft` is most likely an earlier statement or a clash (it says to try again), and a 500 back
+ * at `draft` is finalize step 5's failed check (statements.md#2).
+ */
+function divideRefused({ statement, code, status }: FinalizeResult): string | undefined {
+  if (statement.status !== 'draft') return undefined
+  if (code === 'CONFLICT' || (!code && status === 409)) {
+    return 'Finalize the earlier statement first. If there isn’t one, try again.'
+  }
+  if (code === 'INVARIANT_VIOLATION' || (!code && status === 500)) {
+    return 'It didn’t add up, so it’s still a draft.'
+  }
+  return undefined
 }
 
 function Finalize({
@@ -239,11 +252,10 @@ function Finalize({
     if (busy) return
     setError('')
     finalize.mutate(send, {
-      onSuccess: ({ statement: row, error: failed, code }) => {
+      onSuccess: (result) => {
+        const { statement: row, error: failed } = result
         if (row.status !== 'final') {
-          setError(
-            (divide && code && DIVIDE_REFUSED[code]) || failed || 'It wasn’t finalized. Try again.',
-          )
+          setError((divide && divideRefused(result)) || failed || 'It wasn’t finalized. Try again.')
           return
         }
         const notSent = send && !row.sentAt

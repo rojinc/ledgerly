@@ -866,6 +866,14 @@ describe('StatementPage: a monthly divide (#166)', () => {
     expect(within(lines).getByText(/^Alice: paid .*1,500\.00, share .*500\.00$/)).toBeTruthy()
   })
 
+  it('says when someone in a transaction has no part of it', async () => {
+    const snap = divideSnapshot()
+    snap.lines[1]?.shares.push({ personId: 'pd', givenCents: 0, receivedCents: 0 })
+    store(divide('d1', FINAL_DIVIDE, snap))
+    renderAt('/groups/g1/statements/d1')
+    expect(await screen.findByText('Someone: no part')).toBeTruthy()
+  })
+
   it('says everyone is settled when there are no transfers', async () => {
     store(divide('d1', FINAL_DIVIDE, divideSnapshot({ transfers: [] })))
     renderAt('/groups/g1/statements/d1')
@@ -916,9 +924,19 @@ describe('StatementPage: a monthly divide (#166)', () => {
 
   it.each([
     [
-      'an earlier draft (409, no body kept)',
+      'a clash or an earlier draft (409, no body kept)',
       { status: 'completed', responseStatusCode: 409, responseBody: '' },
-      'Finalize the earlier statement first.',
+      'Finalize the earlier statement first. If there isn’t one, try again.',
+    ],
+    [
+      'a check that didn’t add up (500, no body kept, back at draft)',
+      { status: 'failed', responseStatusCode: 500, responseBody: '' },
+      'It didn’t add up, so it’s still a draft.',
+    ],
+    [
+      'a refusal never worded as an invoice',
+      { status: 'completed', responseStatusCode: 403, responseBody: '' },
+      'Only an admin can finalize this divide.',
     ],
     [
       'a check that didn’t add up',
@@ -1024,7 +1042,7 @@ describe('StatementPage: discard a draft (#166)', () => {
       divide('d0', { ...FINAL_DIVIDE, periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
     )
     answer(ok({}))
-    const { router } = renderAt('/groups/g1/statements/d1')
+    const { router, queryClient } = renderAt('/groups/g1/statements/d1')
     const open = await screen.findByRole('button', { name: 'Discard draft…' })
     fireEvent.click(open)
     const period = `${formatDate('2026-10-01')} – ${formatDate('2026-10-31')}`
@@ -1042,8 +1060,16 @@ describe('StatementPage: discard a draft (#166)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements'))
     expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/d1/discard')
-    expect(await screen.findByText(`The draft for ${period} was discarded.`)).toBeTruthy()
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Statements for The flat')
+    // Said in a status region that was already there, with focus on the heading.
+    const note = await screen.findByText(`The draft for ${period} was discarded.`)
+    expect(note.getAttribute('role')).toBe('status')
+    const list = screen.getByRole('heading', { level: 1 })
+    expect(list.textContent).toBe('Statements for The flat')
+    expect(document.activeElement).toBe(list)
+    // Cleared, so a reload doesn't say it again.
+    expect(router.state.location.state).toBeNull()
+    // The deleted row isn't kept, so nothing shows it again.
+    expect(queryClient.getQueryData(['statement', 'd1'])).toBeUndefined()
   })
 
   it('doesn’t say so for a draft that isn’t the latest, and Cancel puts focus back', async () => {
@@ -1090,6 +1116,33 @@ describe('StatementPage: discard a draft (#166)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }))
     expect((await screen.findByRole('alert')).textContent).toBe(message)
     expect(router.state.location.pathname).toBe('/groups/g1/statements/d1')
+  })
+
+  it('waits for the refresh on open before discarding', async () => {
+    store(divide('d1'))
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
+    const button = screen.getByRole('button', { name: 'Discard draft' })
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(button)
+    // A mutation starts on a later tick.
+    await act(async () => {})
+    expect(call.mock.calls.map(([, , path]) => path)).toEqual(['/statements/d1/refresh'])
+  })
+
+  it('offers no discard on a statement being finalized, or an invoice draft with a number', async () => {
+    store(divide('d1', { status: 'finalizing' }))
+    answer(ok({}))
+    renderAt('/groups/g1/statements/d1')
+    expect(await screen.findByRole('button', { name: 'Finalize…' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Discard draft…' })).toBeNull()
+    cleanup()
+    mockGroup('admin')
+    store(statement('s1', { number: 7 }))
+    renderAt('/groups/g1/statements/s1')
+    expect(await screen.findByRole('button', { name: 'Finalize…' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Discard draft…' })).toBeNull()
   })
 
   it('discards an invoice draft too', async () => {

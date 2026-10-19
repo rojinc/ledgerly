@@ -1,7 +1,7 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
-import type { ReactNode } from 'react'
-import { Link, useLocation, useParams } from 'react-router'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { useGroup } from '../groups/use-groups'
 import { readSnapshot } from './invoice-sections'
@@ -34,9 +34,20 @@ export function StatementsPage() {
   const groupId = useParams().groupId ?? ''
   const group = useGroup(groupId)
   const statements = useStatements(groupId)
-  // Set by a discard, which comes back here (#166).
-  const discarded = (useLocation().state as { discarded?: string } | null)?.discarded
   const house = group.data?.type === 'house'
+  // A discard comes back here (#166): say so in a status region that was already there, so it's
+  // read out, and focus the heading. The state is cleared, so a reload doesn't say it again.
+  const location = useLocation()
+  const navigate = useNavigate()
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [note, setNote] = useState('')
+  useEffect(() => {
+    const discarded = (location.state as { discarded?: string } | null)?.discarded
+    if (!discarded) return
+    setNote(`The draft for ${discarded} was discarded.`)
+    heading.current?.focus()
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.state, location.pathname, navigate])
 
   let content: ReactNode
   if (!statements.data || !group.data) {
@@ -106,11 +117,17 @@ export function StatementsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="min-w-0 text-2xl font-semibold break-words">
+      <h1
+        ref={heading}
+        tabIndex={-1}
+        className="min-w-0 text-2xl font-semibold break-words outline-none"
+      >
         {house ? 'Statements' : 'Invoices'}
         {group.data ? ` for ${group.data.name}` : ''}
       </h1>
-      {discarded && <Message>The draft for {discarded} was discarded.</Message>}
+      <p role="status" className="text-muted-foreground empty:hidden">
+        {note}
+      </p>
       {content}
     </div>
   )
