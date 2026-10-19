@@ -149,8 +149,11 @@ function EditPhone({
   if (!user.passwordUpdate) {
     return (
       <p>
-        Set a password first: changing the phone on your account needs it, and yours doesn’t have
-        one yet.{' '}
+        {/* The Password section on this page (#203). */}
+        <a href="#password" className="underline underline-offset-4">
+          Set a password
+        </a>{' '}
+        first: changing the phone on your account needs it, and yours doesn’t have one yet.{' '}
         <Button variant="link" className="h-auto px-0" onClick={onCancel}>
           Back
         </Button>

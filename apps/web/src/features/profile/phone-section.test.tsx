@@ -162,7 +162,11 @@ describe('PhoneSection', () => {
     mockUser = { ...mockUser, passwordUpdate: '' }
     renderSection()
     fireEvent.click(screen.getByRole('button', { name: 'Add a phone number' }))
-    expect(screen.getByText(/^Set a password first/)).toBeTruthy()
+    // It links to the Password section on the same page (#203).
+    expect(screen.getByRole('link', { name: 'Set a password' }).getAttribute('href')).toBe(
+      '#password',
+    )
+    expect(screen.getByText(/first: changing the phone on your account needs it/)).toBeTruthy()
     expect(screen.queryByLabelText('Mobile number')).toBeNull()
   })
 })
