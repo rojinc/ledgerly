@@ -37,7 +37,9 @@ export async function joinGroup(
           groupId: current.groupId,
           actorPersonId: personId,
           action: 'member.joined',
-          summary: `${current.displayName} joined`,
+          // No name (data-model.md#activity): the app shows theirs from subjectPersonId.
+          subjectPersonId: current.personId,
+          summary: 'joined',
           at: now.toISOString(),
         },
         permissions: [Permission.read(Role.team(current.groupId))],

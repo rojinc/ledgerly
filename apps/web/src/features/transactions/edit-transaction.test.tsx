@@ -553,7 +553,6 @@ describe('TransactionPage, who sees Edit', () => {
     { payers: [{ personId: 'pw', cents: 4000 }], split: { mode: 'equal', personIds: ['pf'] } },
     { groupId: 'g2', kind: 'loan', category: null },
   )
-  const house = { ...acme, $id: 'g3', type: 'house', name: 'The flat' } as Groups
 
   it.each([
     ['an admin', reimbursable, {}, true],
@@ -592,7 +591,6 @@ describe('TransactionPage, who sees Edit', () => {
       },
       false,
     ],
-    ['a house expense (part 2)', { ...reimbursable, groupId: 'g3' }, { group: house }, false],
     ['a loan in an employer group', { ...lent, groupId: 'g1' }, {}, false],
     [
       'an expense in a pair group',
@@ -705,5 +703,242 @@ describe('TransactionPage, bills and shifts', () => {
     expect(details).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Change this/ })).toBeNull()
     expect(within(document.body).queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+})
+
+// #202: changing a posted house expense with the house expense form.
+describe('Edit a house expense (#202)', () => {
+  const flat = {
+    ...acme,
+    $id: 'g3',
+    type: 'house',
+    name: 'The flat',
+    ownerPersonId: 'pc',
+  } as Groups
+  const HOUSE_MEMBERS = [
+    { personId: 'pw', displayName: 'Sam', joinedOn: '2026-01-01' },
+    { personId: 'pa', displayName: 'Alice', joinedOn: '2026-01-01' },
+    // Cara moved in on 1 March: a date before that wouldn't tick her by default.
+    { personId: 'pc', displayName: 'Cara', joinedOn: '2026-03-01' },
+  ].map(
+    (member, n) =>
+      ({ $id: `h${n}`, groupId: 'g3', role: 'member', leftOn: null, ...member }) as Members,
+  )
+  // Sam paid 90.00; Alice 60.00 and Sam and Cara 15.00 each, as amounts.
+  const groceries = row(
+    {
+      payers: [{ personId: 'pw', cents: 9000 }],
+      split: {
+        mode: 'exact',
+        amounts: [
+          { personId: 'pa', cents: 6000 },
+          { personId: 'pc', cents: 1500 },
+          { personId: 'pw', cents: 1500 },
+        ],
+      },
+      note: 'Market',
+    },
+    { groupId: 'g3', description: 'Groceries', category: 'groceries', totalCents: 9000 },
+  )
+  const house = (stored = groceries, role: Members['role'] = 'admin', extra = {}) =>
+    mock(stored, { group: flat, members: HOUSE_MEMBERS, role, ...extra })
+
+  async function openHouseForm() {
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    const heading = screen.getByRole('heading', { name: 'Change this expense' })
+    expect(document.activeElement).toBe(heading)
+  }
+
+  const ticked = (name: string) =>
+    (screen.getByRole('checkbox', { name: new RegExp(`^${name}`) }) as HTMLInputElement).checked
+
+  it('fills the form from the row and sends it back exactly when saved unchanged', async () => {
+    house()
+    call.mockImplementation(saves(groceries))
+    renderPage()
+    await openHouseForm()
+    expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('90.00')
+    expect((screen.getByLabelText('Paid by') as HTMLSelectElement).value).toBe('pw')
+    expect((screen.getByRole('radio', { name: 'By amounts' }) as HTMLInputElement).checked).toBe(
+      true,
+    )
+    expect((screen.getByLabelText('Alice’s amount (AUD)') as HTMLInputElement).value).toBe('60.00')
+    expect((screen.getByLabelText('Note (optional)') as HTMLInputElement).value).toBe('Market')
+    // A change can't itemise it (decision 1).
+    expect(screen.queryByLabelText('Itemise this receipt')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(patched()).toStrictEqual(sameBody(groceries))
+    // The page stays, and focus goes back to Edit (decision 3).
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' })),
+    )
+  })
+
+  it('sends a changed amount and split, with the row’s own id', async () => {
+    house()
+    call.mockImplementation(saves(groceries))
+    renderPage()
+    await openHouseForm()
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText('Alice’s amount (AUD)'), { target: { value: '70' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(patched()).toMatchObject({
+      id: 't1',
+      totalCents: 10000,
+      payers: [{ personId: 'pw', cents: 10000 }],
+      split: {
+        mode: 'exact',
+        amounts: [
+          { personId: 'pa', cents: 7000 },
+          { personId: 'pc', cents: 1500 },
+          { personId: 'pw', cents: 1500 },
+        ],
+      },
+    })
+  })
+
+  it('keeps who shares it when the date changes (decision 2)', async () => {
+    house()
+    renderPage()
+    await openHouseForm()
+    expect(ticked('Cara')).toBe(true)
+    // Before Cara moved in: a new expense would untick her.
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-02-01' } })
+    expect(ticked('Cara')).toBe(true)
+  })
+
+  it('shows the function’s own CONFLICT message, never the duplicate warning', async () => {
+    house()
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'Someone else changed it. Reload and try again.' },
+    })
+    renderPage()
+    await openHouseForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Someone else changed it. Reload and try again.')).toBeTruthy()
+    expect(screen.queryByText(/may already have been saved/)).toBeNull()
+  })
+
+  it('keeps Save and Cancel from acting while it saves, and Cancel sends nothing', async () => {
+    house()
+    let answer!: (value: Result<unknown>) => void
+    call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    renderPage()
+    await openHouseForm()
+    const save = screen.getByRole('button', { name: 'Save' })
+    fireEvent.click(save)
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const busy = screen.getByRole('button', { name: 'Saving…' })
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(busy)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('heading', { name: 'Change this expense' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Void' })).toBeNull()
+    await act(async () => answer(ok({ transaction: groceries, shares: [] })))
+    expect(call).toHaveBeenCalledTimes(1)
+    cleanup()
+    call.mockClear()
+    house()
+    renderPage()
+    await openHouseForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }))
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an admin', groceries, 'admin', {}, true],
+    ['the member who added it', groceries, 'member', {}, true],
+    ['a member who didn’t add it', { ...groceries, createdBy: 'pa' }, 'member', {}, false],
+    ['a viewer', groceries, 'viewer', {}, false],
+    ['a locked row', { ...groceries, statementId: 'st1' }, 'admin', {}, false],
+    ['a void row', { ...groceries, status: 'void' }, 'admin', {}, false],
+    ['an itemised row', groceries, 'admin', { items: [{ $id: 'i1', transactionId: 't1' }] }, false],
+    ['a paid house bill', { ...groceries, kind: 'bill' }, 'admin', {}, false],
+    ['a house payment', { ...groceries, kind: 'payment' }, 'admin', {}, false],
+    [
+      'an archived house',
+      groceries,
+      'admin',
+      { group: { ...flat, archivedAt: '2026-10-01T00:00:00Z' } },
+      false,
+    ],
+  ] as const)('%s: Edit shown is %s', async (_, stored, role, extra, shown) => {
+    house(stored as Transactions, role, extra)
+    const { queryClient } = renderPage()
+    await settled(queryClient)
+    if (shown) expect(await screen.findByRole('button', { name: 'Edit' })).toBeTruthy()
+    else expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.queryByText(/can’t be changed here/)).toBeNull()
+  })
+
+  it.each([
+    ['LOCKED', 'It’s on a final invoice.', 'It’s on a final invoice.'],
+    [
+      'ARCHIVED',
+      'Archived.',
+      'This group has been archived, so it can’t be changed any more. Reload the page to see it as it is now.',
+    ],
+    ['FORBIDDEN', 'Only an admin can change this.', 'Only an admin can change this.'],
+    ['NOT_FOUND', 'Not found.', 'Not found.'],
+    ['VALIDATION_FAILED', 'The date is too far ahead.', 'The date is too far ahead.'],
+  ] as const)(
+    'shows %s next to the house form, re-reading as #211 does',
+    async (code, message, shown) => {
+      house()
+      call.mockResolvedValue({ ok: false, error: { code, message } })
+      const { queryClient } = renderPage()
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      await openHouseForm()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(alerts().map((alert) => alert.textContent)).toEqual([shown]))
+      expect(screen.getByRole('heading', { name: 'Change this expense' })).toBeTruthy()
+      const reread = ['LOCKED', 'ARCHIVED', 'FORBIDDEN'].includes(code)
+      expect(invalidate).toHaveBeenCalledTimes(reread ? 4 : 0)
+      if (reread) {
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 't1'], exact: true })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g3'] })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member', 'g3'] })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['members', 'g3'] })
+      }
+    },
+  )
+
+  it('keeps a LOCKED refusal, with focus on it, once the re-read hides the house form', async () => {
+    house()
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'LOCKED', message: 'It’s on a final invoice.' },
+    })
+    renderPage()
+    await openHouseForm()
+    getRow.mockResolvedValue({ ...groceries, statementId: 'st1' } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Change this expense' })).toBeNull(),
+    )
+    const [alert, ...more] = alerts()
+    expect(more).toEqual([])
+    expect(alert?.textContent).toBe('It’s on a final invoice.')
+    expect(document.activeElement).toBe(alert)
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+
+  it('says a stored input it can’t show can’t be changed here (decision 4)', async () => {
+    house(
+      row(
+        { payers: [{ personId: 'pw', cents: 4000 }], split: { mode: 'days' } },
+        { groupId: 'g3' },
+      ),
+    )
+    const { queryClient } = renderPage()
+    await settled(queryClient)
+    expect(
+      await screen.findByText('This entry can’t be changed here. Void it and add it again.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
   })
 })

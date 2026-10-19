@@ -79,13 +79,9 @@ export async function deleteMember(
         if (current?.status !== member.status || current.role !== member.role) throw tryAgain()
         if (joinedAdmin) await keepAnotherAdmin(db, tx, groupId, memberId, NEEDS_ADMIN)
         await tx.write(
-          activityWrite(
-            groupId,
-            caller.$id,
-            'member.removed',
-            `${member.displayName} was removed`,
-            now,
-          ),
+          activityWrite(groupId, caller.$id, 'member.removed', 'was removed', now, {
+            subjectPersonId: current.personId,
+          }),
         )
       }),
     )

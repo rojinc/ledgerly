@@ -37,7 +37,7 @@ function setUp(type = 'house', extra: object = {}, seed: object = {}) {
 }
 
 describe('PATCH /groups/{id}', () => {
-  it('changes only the fields given, and records the change', async () => {
+  it('changes only the fields given, and records the change without the name', async () => {
     const services = setUp()
     const updated = await ok(services, 'PATCH', '/groups/g1', { name: 'Home', currency: 'NZD' })
     expect(updated).toMatchObject({
@@ -59,9 +59,10 @@ describe('PATCH /groups/{id}', () => {
         $permissions: ['read("team:g1")'],
       }),
     ])
+    // A pair group's name is a person's, so only the summary says it changed.
     expect(JSON.parse(String(activity[0]?.changesJson))).toEqual({
-      before: { name: 'Group g1', currency: 'AUD' },
-      after: { name: 'Home', currency: 'NZD' },
+      before: { currency: 'AUD' },
+      after: { currency: 'NZD' },
     })
   })
 

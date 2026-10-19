@@ -1,12 +1,6 @@
 import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localTimeToUtc, localToday } from '@ledgerly/core/dates/time-zone'
-import type {
-  Groups,
-  Members,
-  Persons,
-  Schedules,
-  Transactions,
-} from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Persons, Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -18,7 +12,6 @@ import {
   timerRunningEmail,
 } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
-import { madeLate } from '../occurrences'
 import type { Services } from '../services'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
@@ -39,11 +32,10 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
   const { db, now } = services
   const link = linkTo(services.appUrl)
   const counts: ReminderCounts = { sent: 0, skipped: 0, failed: 0 }
-  // Read once per run. Groups are never deleted; schedules can be.
+  // Read once per run. Groups are never deleted.
   const groups = memo((rowId) =>
     db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId }),
   )
-  const schedules = memo((rowId) => getOrUndefined<Schedules>(db, TABLES.schedules, rowId))
   // `<groupId>/<personId>`: Appwrite IDs have no slash.
   const recipients = memo((key) => {
     const [groupId, personId] = key.split('/') as [string, string]
@@ -66,9 +58,8 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       if (!isAwake(group, now) || compareDates(shift.date as LocalDate, today(group, now)) >= 0) {
         return
       }
-      // Step 2 posts the shifts of schedules that auto-post, except one made after its day.
-      const schedule = shift.scheduleId ? await schedules(shift.scheduleId) : undefined
-      if (schedule?.autoPost && !madeLate(shift, group.timezone)) return
+      // Any shift still `scheduled`, auto-post ones too: step 2 runs first every hour from just
+      // after local midnight, so by 07:00 an auto-post shift left here is one it couldn't post.
       const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
       const content = shiftToConfirmEmail({
         groupName: group.name,
@@ -226,7 +217,7 @@ async function verifiedEmail(
   }
 }
 
-async function getOrUndefined<R extends Persons | Schedules | Transactions>(
+async function getOrUndefined<R extends Persons | Transactions>(
   db: Db,
   tableId: string,
   rowId: string,

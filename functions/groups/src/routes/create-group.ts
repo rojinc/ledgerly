@@ -20,6 +20,7 @@ import { ID, Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
   activityWrite,
+  aRole,
   checkRegion,
   conflictAsTryAgain,
   findFirst,
@@ -135,7 +136,11 @@ export async function createGroup(
             permissions,
           },
         ]
-        if (counterpartInput) {
+        // No names in activity rows (data-model.md#activity), not even the group's: a pair
+        // group's is what its creator calls the other person.
+        writes.push(activityWrite(input.id, creator.$id, 'group.created', 'Created the group', now))
+        // Both are set for employer and pair groups; checking both narrows the role's type.
+        if (counterpartInput && counterpartRole) {
           const counterpart = await resolveCounterpart(
             db,
             counterpartInput,
@@ -143,34 +148,31 @@ export async function createGroup(
             creator.$id,
             tx.id,
           )
-          writes.push(...counterpart.writes, {
-            action: 'create',
-            tableId: TABLES.members,
-            rowId: ID.unique(),
-            data: {
-              groupId: input.id,
-              personId: counterpart.personId,
-              displayName: counterpartInput.displayName,
-              role: counterpartRole,
-              // Even a registered person: they join the group themselves (D-016).
-              status: 'placeholder',
-              joinedOn,
-            },
-            permissions,
-          })
-        }
-        writes.push(
-          activityWrite(input.id, creator.$id, 'group.created', `Created ${input.name}`, now),
-        )
-        if (counterpartInput) {
-          // identity-and-invites.md#adding-someone-to-a-group, step 5: the counterpart is added too.
           writes.push(
+            ...counterpart.writes,
+            {
+              action: 'create',
+              tableId: TABLES.members,
+              rowId: ID.unique(),
+              data: {
+                groupId: input.id,
+                personId: counterpart.personId,
+                displayName: counterpartInput.displayName,
+                role: counterpartRole,
+                // Even a registered person: they join the group themselves (D-016).
+                status: 'placeholder',
+                joinedOn,
+              },
+              permissions,
+            },
+            // identity-and-invites.md#adding-someone-to-a-group, step 5: the counterpart is added too.
             activityWrite(
               input.id,
               creator.$id,
               'member.added',
-              `${counterpartInput.displayName} was added`,
+              `was added as ${aRole(counterpartRole)}`,
               now,
+              { subjectPersonId: counterpart.personId },
             ),
           )
         }

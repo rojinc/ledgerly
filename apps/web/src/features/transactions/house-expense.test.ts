@@ -16,6 +16,7 @@ import {
   previewShares,
   splitProblems,
   toHouseExpenseBody,
+  toHouseExpenseValues,
 } from './house-expense'
 
 const IDS = { id: 'tx1', groupId: 'house1' }
@@ -579,5 +580,225 @@ describe('itemised receipts (#42)', () => {
         'AUD',
       ).total,
     ).toBe('A receipt can have at most 30 items.')
+  })
+})
+
+describe('toHouseExpenseValues (#202)', () => {
+  type Stored = Record<string, unknown>
+  function row(stored: Stored, extra: Record<string, unknown> = {}) {
+    return {
+      kind: 'expense' as const,
+      totalCents: 9000,
+      date: '2026-10-19',
+      description: 'Groceries',
+      category: 'groceries',
+      inputJson: JSON.stringify(stored),
+      ...extra,
+    }
+  }
+  const ALICE_PAID = [{ personId: 'alice', cents: 9000 }]
+
+  // Saving unchanged sends the stored input back exactly: the row's columns plus its input.
+  it.each<[string, Stored, Record<string, unknown>?]>([
+    [
+      'one payer, equal',
+      { payers: ALICE_PAID, split: { mode: 'equal', personIds: ['alice', 'bob'] } },
+    ],
+    [
+      'several payers, exact, a note',
+      {
+        payers: [
+          { personId: 'alice', cents: 6000 },
+          { personId: 'bob', cents: 3000 },
+        ],
+        split: {
+          mode: 'exact',
+          amounts: [
+            { personId: 'alice', cents: 1050 },
+            { personId: 'bob', cents: 7950 },
+          ],
+        },
+        note: 'Market run',
+      },
+    ],
+    [
+      'percent',
+      {
+        payers: ALICE_PAID,
+        split: {
+          mode: 'percent',
+          percents: [
+            { personId: 'alice', basisPoints: 3333 },
+            { personId: 'bob', basisPoints: 3333 },
+            { personId: 'cara', basisPoints: 3334 },
+          ],
+        },
+      },
+    ],
+    [
+      'weights, no category',
+      {
+        payers: ALICE_PAID,
+        split: {
+          mode: 'weights',
+          weights: [
+            { personId: 'bob', weight: 2 },
+            { personId: 'cara', weight: 1 },
+          ],
+        },
+      },
+      { category: null },
+    ],
+    [
+      'a whole percent',
+      {
+        payers: ALICE_PAID,
+        split: { mode: 'percent', percents: [{ personId: 'bob', basisPoints: 10000 }] },
+      },
+    ],
+  ])('round-trips %s', (_case, stored, extra = {}) => {
+    const stored_ = row(stored, extra)
+    const values = toHouseExpenseValues(stored_, MEMBERS, 'AUD')
+    expect(values).toBeDefined()
+    expect(toHouseExpenseBody(values as HouseExpenseValues, IDS, 'AUD')).toStrictEqual({
+      ...IDS,
+      kind: 'expense',
+      date: '2026-10-19',
+      description: 'Groceries',
+      ...(stored_.category === null ? {} : { category: 'groceries' }),
+      ...('note' in stored ? { note: stored.note } : {}),
+      totalCents: 9000,
+      payers: stored.payers,
+      split: stored.split,
+    })
+  })
+
+  it('round-trips a currency without cents', () => {
+    const stored = {
+      payers: [{ personId: 'alice', cents: 4500 }],
+      split: {
+        mode: 'exact',
+        amounts: [
+          { personId: 'alice', cents: 1500 },
+          { personId: 'bob', cents: 3000 },
+        ],
+      },
+    }
+    const values = toHouseExpenseValues(row(stored, { totalCents: 4500 }), MEMBERS, 'JPY')
+    expect(values?.amount).toBe('4500')
+    expect(values?.parts).toEqual({ alice: '1500', bob: '3000' })
+    expect(toHouseExpenseBody(values as HouseExpenseValues, IDS, 'JPY')).toStrictEqual({
+      ...IDS,
+      kind: 'expense',
+      date: '2026-10-19',
+      description: 'Groceries',
+      category: 'groceries',
+      totalCents: 4500,
+      payers: stored.payers,
+      split: stored.split,
+    })
+  })
+
+  it('fills the form as it was typed', () => {
+    expect(
+      toHouseExpenseValues(
+        row({
+          payers: [
+            { personId: 'alice', cents: 6000 },
+            { personId: 'bob', cents: 3000 },
+          ],
+          split: { mode: 'equal', personIds: ['alice', 'bob', 'cara'] },
+          note: 'Market',
+        }),
+        MEMBERS,
+        'AUD',
+      ),
+    ).toEqual({
+      amount: '90.00',
+      date: '2026-10-19',
+      description: 'Groceries',
+      category: 'groceries',
+      paidBy: 'alice',
+      severalPaid: true,
+      paid: { alice: '60.00', bob: '30.00' },
+      splitMode: 'equal',
+      splitBetween: ['alice', 'bob', 'cara'],
+      parts: {},
+      itemised: false,
+      items: [{ ...NEW_ITEM, excluded: [], shares: {} }],
+      note: 'Market',
+    })
+  })
+
+  // Decision 4: inputs the form can't show, so saving would change them.
+  it.each<[string, Stored, Record<string, unknown>?]>([
+    ['a days split', { payers: ALICE_PAID, split: { mode: 'days' } }],
+    ['no split', { payers: ALICE_PAID }],
+    [
+      'an empty note',
+      { payers: ALICE_PAID, split: { mode: 'equal', personIds: ['bob'] }, note: '' },
+    ],
+    [
+      'a payer who isn’t a member',
+      { payers: [{ personId: 'zed', cents: 9000 }], split: { mode: 'equal', personIds: ['bob'] } },
+    ],
+    [
+      'someone in the split who isn’t a member',
+      { payers: ALICE_PAID, split: { mode: 'equal', personIds: ['bob', 'zed'] } },
+    ],
+    [
+      'people out of personId order',
+      { payers: ALICE_PAID, split: { mode: 'equal', personIds: ['bob', 'alice'] } },
+    ],
+    ['no payers', { split: { mode: 'equal', personIds: ['bob'] } }],
+    [
+      'payers out of personId order',
+      {
+        payers: [
+          { personId: 'bob', cents: 3000 },
+          { personId: 'alice', cents: 6000 },
+        ],
+        split: { mode: 'equal', personIds: ['bob'] },
+      },
+    ],
+    [
+      'the same payer twice',
+      {
+        payers: [
+          { personId: 'alice', cents: 3000 },
+          { personId: 'alice', cents: 6000 },
+        ],
+        split: { mode: 'equal', personIds: ['bob'] },
+      },
+    ],
+    [
+      'several payers with one paying nothing',
+      {
+        payers: [
+          { personId: 'alice', cents: 9000 },
+          { personId: 'bob', cents: 0 },
+        ],
+        split: { mode: 'equal', personIds: ['bob'] },
+      },
+    ],
+    ['a split with nobody', { payers: ALICE_PAID, split: { mode: 'equal', personIds: [] } }],
+    [
+      'not an expense',
+      { payers: ALICE_PAID, split: { mode: 'equal', personIds: ['bob'] } },
+      { kind: 'loan' },
+    ],
+    [
+      'a refund',
+      { payers: ALICE_PAID, split: { mode: 'equal', personIds: ['bob'] } },
+      { totalCents: -9000 },
+    ],
+  ])('gives undefined for %s', (_case, stored, extra = {}) => {
+    expect(toHouseExpenseValues(row(stored, extra), MEMBERS, 'AUD')).toBeUndefined()
+  })
+
+  it('gives undefined for a stored input that isn’t JSON', () => {
+    expect(
+      toHouseExpenseValues({ ...row({}), inputJson: 'not json' }, MEMBERS, 'AUD'),
+    ).toBeUndefined()
   })
 })

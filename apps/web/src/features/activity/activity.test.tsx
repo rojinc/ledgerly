@@ -90,7 +90,7 @@ function renderAt(path: string) {
 
 const FIRST_PAGE = [
   Query.equal('groupId', 'g1'),
-  Query.select(['$id', 'actorPersonId', 'transactionId', 'summary', 'at']),
+  Query.select(['$id', 'actorPersonId', 'subjectPersonId', 'transactionId', 'summary', 'at']),
   Query.orderDesc('at'),
   Query.orderDesc('$id'),
   Query.limit(100),
@@ -148,6 +148,26 @@ describe('ActivityPage', () => {
       expect.stringMatching(/^Kim · /),
       expect.stringMatching(/^Automatic · /),
       expect.stringMatching(/^A former member · /),
+    ])
+  })
+
+  it("puts the member's current name before a name-free member row, as written since #50", async () => {
+    mockGroups([house])
+    mockRows([
+      entry('a4', { action: 'member.updated', subjectPersonId: 'p2', summary: 'was renamed' }),
+      entry('a3', { action: 'member.removed', subjectPersonId: 'gone', summary: 'was removed' }),
+      entry('a2', { action: 'member.joined', subjectPersonId: 'p1', summary: 'joined' }),
+      entry('a1', { action: 'member.added', subjectPersonId: null, summary: 'Kimberly was added' }),
+    ])
+    renderAt('/activity')
+    const items = await screen.findAllByRole('listitem')
+    expect(items.map((item) => item.querySelector('p')?.textContent)).toEqual([
+      // The name the group uses now, not the one it had when the row was written.
+      'Kim was renamed',
+      'A former member was removed',
+      'Sam joined',
+      // A row from before #50 keeps its own text.
+      'Kimberly was added',
     ])
   })
 
