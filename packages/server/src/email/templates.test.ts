@@ -5,6 +5,7 @@ import {
   type EmailContent,
   inviteEmail,
   invoiceEmail,
+  passwordChangedEmail,
   reminderEmail,
   shiftToConfirmEmail,
   statementReadyEmail,
@@ -326,6 +327,34 @@ describe('inviteEmail', () => {
     expect(() =>
       inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: '/invite#token' }),
     ).toThrow('Email links must be http(s)')
+  })
+})
+
+describe('passwordChangedEmail', () => {
+  const notice = (changedAt: string, timeZone = 'Australia/Sydney') =>
+    passwordChangedEmail({ changedAt, timeZone, url: 'https://app.example/login' })
+
+  it("says when, on the wall clock of the profile's time zone, and links only to the sign-in page", () => {
+    // 21:02 UTC is 08:02 the next morning in Sydney (AEDT, UTC+11).
+    const content = notice('2026-10-15T21:02:00.000Z')
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your Ledgerly password was changed')
+    expect(content.text).toContain(
+      'The password for your Ledgerly account was set or changed on Friday 16 October, 8:02 am (Australia/Sydney time).',
+    )
+    expect(content.text).toContain("If this wasn't you, reset your password now.")
+    expect(content.text).toContain('Go to Ledgerly: https://app.example/login')
+    expect(content.html.match(/href=/g)).toHaveLength(1)
+  })
+
+  it('names UTC when there is no profile', () => {
+    expect(notice('2026-10-15T21:02:00.000Z', 'UTC').text).toContain(
+      'on Thursday 15 October, 9:02 pm (UTC time).',
+    )
+  })
+
+  it.each(['2026-10-16', 'not a time', '2026-10-16T10:00:00.000'])('refuses %j', (changedAt) => {
+    expect(() => notice(changedAt)).toThrow('changedAt must be an ISO date and time')
   })
 })
 

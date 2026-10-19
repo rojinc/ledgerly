@@ -7,7 +7,7 @@ import { type Models, Teams, Users } from 'node-appwrite'
 /** The parts of the caller's Appwrite account that identity reads. */
 export type AccountUser = Pick<
   Models.User,
-  '$id' | 'name' | 'email' | 'emailVerification' | 'phone' | 'phoneVerification'
+  '$id' | 'name' | 'email' | 'emailVerification' | 'phone' | 'phoneVerification' | 'passwordUpdate'
 >
 
 /** The parts of Users that identity uses; the real `Users` satisfies it. */
@@ -22,7 +22,7 @@ export type Services = {
   users: UsersApi
   now: Date
   sendEmail: typeof sendEmail
-  /** The web app's address, for links in emails (invites and reminders) (environments-and-deploys.md: `APP_URL`). */
+  /** The web app's address, for links in emails (environments-and-deploys.md: `APP_URL`). */
   appUrl: string
 }
 
