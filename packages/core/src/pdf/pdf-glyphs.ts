@@ -2,6 +2,8 @@
 // bundles, and pdfmake leaves out a character its font can't draw without any error (#103). So
 // every text it prints goes through printable(), and a missing character shows as a visible �.
 
+import { NOTO_EMOJI_PACKED, NOTO_SANS_CJK_PACKED } from './pdf-glyphs-noto'
+
 /**
  * The code points that both bundled Roboto weights (regular and medium) can draw, as inclusive
  * ranges in order: Latin with accents (Vietnamese too), Greek, Cyrillic, punctuation, common
@@ -138,4 +140,109 @@ export function missingGlyphs(text: string): number[] {
  */
 export function printable(text: string): string {
   return Array.from(text.normalize('NFC'), (char) => drawn(char) ?? '�').join('')
+}
+
+type Ranges = readonly (readonly [from: number, to: number])[]
+
+/** A table from pdf-glyphs-noto.ts as inclusive ranges in order, the form of ROBOTO_RANGES. */
+function unpack(packed: string): Ranges {
+  let to = -1
+  return packed
+    .trim()
+    .split(/\s+/)
+    .map((range) => {
+      const [gap, length] = range.split(',').map((n) => Number.parseInt(n, 36)) as [number, number]
+      const from = to + 1 + gap
+      to = from + length
+      return [from, to] as const
+    })
+}
+
+// Unpacked on first use: the web app imports this module for printable() and must not pay for
+// them when it starts.
+let cjk: Ranges | undefined
+let emoji: Ranges | undefined
+
+/** What Noto Sans CJK SC (regular) can draw: Chinese, Japanese and Korean. */
+export function cjkRanges(): Ranges {
+  cjk ??= unpack(NOTO_SANS_CJK_PACKED)
+  return cjk
+}
+
+/** What Noto Emoji (regular, monochrome) can draw. */
+export function emojiRanges(): Ranges {
+  emoji ??= unpack(NOTO_EMOJI_PACKED)
+  return emoji
+}
+
+/** The invoice PDF's fonts, by their pdfmake font names. */
+export type PdfFont = 'Roboto' | 'NotoSansCJK' | 'NotoEmoji'
+
+type FontRun = { font: PdfFont; text: string }
+
+const FONTS: readonly PdfFont[] = ['Roboto', 'NotoSansCJK', 'NotoEmoji']
+
+// simple: a scan that stops at the first range ending at or after the code point (the ranges are
+// in order). fontRuns() takes about 7 µs for a Korean letter, near the end of cjkRanges() (6,000
+// in 42 ms); binary search if a profile ever shows it.
+function within(ranges: Ranges, codePoint: number): boolean {
+  const range = ranges.find(([, to]) => codePoint <= to)
+  return range !== undefined && range[0] <= codePoint
+}
+
+function has(font: PdfFont, codePoint: number): boolean {
+  if (font === 'Roboto') return drawable(codePoint)
+  return within(font === 'NotoSansCJK' ? cjkRanges() : emojiRanges(), codePoint)
+}
+
+/** The first font that can draw every character of `chars`. */
+function firstFont(chars: string): PdfFont | undefined {
+  const codePoints = Array.from(chars, (char) => char.codePointAt(0) as number)
+  return FONTS.find((font) => codePoints.every((codePoint) => has(font, codePoint)))
+}
+
+// A zero-width joiner or a variation selector changes how the character before it is drawn, so
+// it has to go to the same font.
+function joinsPrevious(codePoint: number): boolean {
+  return (
+    codePoint === 0x200d ||
+    (0xfe00 <= codePoint && codePoint <= 0xfe0f) ||
+    (0xe0100 <= codePoint && codePoint <= 0xe01ef)
+  )
+}
+
+// Built on first use, like the tables, and kept: an invoice splits each text it prints.
+let graphemes: Intl.Segmenter | undefined
+
+/**
+ * `text`, composed (NFC), as runs by font. Each grapheme cluster (what a reader sees as one
+ * character) goes to the first font that has all of it: Roboto, then Noto Sans CJK, then Noto
+ * Emoji. `张三 Pty Ltd` → NotoSansCJK `张三`, Roboto ` Pty Ltd`. Only Noto Emoji has U+FE0F,
+ * U+FE0E, U+20E3 and U+200D, so an emoji sequence (`♥` + U+FE0F, a keycap, 🏃 + U+200D + `♀`)
+ * goes there whole. When no font has a whole cluster, each of its characters goes to the first
+ * font that has it, a zero-width joiner (U+200D) or variation selector (U+FE00–U+FE0F,
+ * U+E0100–U+E01EF) staying with the character before it, and a character no font has becomes
+ * U+FFFD in a Roboto run.
+ */
+export function fontRuns(text: string): FontRun[] {
+  const runs: FontRun[] = []
+  const add = (font: PdfFont, chars: string) => {
+    const last = runs.at(-1)
+    if (last?.font === font) last.text += chars
+    else runs.push({ font, text: chars })
+  }
+  graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+  for (const { segment } of graphemes.segment(text.normalize('NFC'))) {
+    const font = firstFont(segment)
+    if (font) {
+      add(font, segment)
+      continue
+    }
+    for (const char of segment) {
+      const last = runs.at(-1)
+      const own = last && joinsPrevious(char.codePointAt(0) as number) ? last.font : firstFont(char)
+      add(own ?? 'Roboto', own ? char : '\u{FFFD}')
+    }
+  }
+  return runs
 }
