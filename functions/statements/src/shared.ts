@@ -1,8 +1,11 @@
+import type { Role as MemberRole } from '@ledgerly/core/constants/domain'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/schemas/statements'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
+import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Membership, requireMember } from '@ledgerly/server/auth/require-member'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
@@ -102,11 +105,34 @@ export function chunks<T>(values: readonly T[], size = PAGE_SIZE): T[][] {
 
 const PAGE_SIZE = 100
 
+const NO_SUCH_STATEMENT = 'There is no such statement.'
+
 /** The statement, or NOT_FOUND. */
 export async function getStatement(db: Db, statementId: string): Promise<Statements> {
   const statement = await getRowOrNull<Statements>(db, TABLES.statements, statementId)
-  if (!statement) throw new AppError('NOT_FOUND', 'There is no such statement.')
+  if (!statement) throw new AppError('NOT_FOUND', NO_SUCH_STATEMENT)
   return statement
+}
+
+/**
+ * requireMember for the group of a statement that was looked up by ID. Someone who isn't a
+ * member gets NOT_FOUND, the same as for an ID that doesn't exist, so IDs can't be probed (#136).
+ */
+export async function requireMemberOf(
+  db: Db,
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  userId: string,
+  statement: Statements,
+  options: { roles?: readonly MemberRole[] } = {},
+): Promise<Membership> {
+  try {
+    return await requireMember(db, teams, userId, statement.groupId, options)
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'NOT_A_MEMBER') {
+      throw new AppError('NOT_FOUND', NO_SUCH_STATEMENT)
+    }
+    throw error
+  }
 }
 
 export function teamRead(groupId: string): string[] {

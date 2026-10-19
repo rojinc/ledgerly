@@ -2,8 +2,11 @@ import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  acmeJoins,
   afterLatestFinalRead,
+  archiveJob,
   beforeStaging,
+  expectHiddenFromDan,
   failure,
   fakes,
   job,
@@ -102,13 +105,26 @@ describe('POST /statements/{id}/send', () => {
       'u-sam',
       'VALIDATION_FAILED',
     ],
-    ['someone outside the group', {}, { finalized: true }, 'u-dan', 'NOT_A_MEMBER'],
   ])('refuses %s', async (_case, settings, { finalized }: { finalized?: boolean }, user, code) => {
     const services = fakes({ groups: [job(settings)], statements: [statement('st1')] })
     if (finalized) await finalize(services, 'st1')
     expect((await failure(services, 'POST', '/statements/st1/send', undefined, user)).code).toBe(
       code,
     )
+    expect(services.sent).toEqual([])
+  })
+
+  it('answers someone outside the group as for a missing statement; members get theirs', async () => {
+    const services = fakes({ statements: [statement('st1')] })
+    await finalize(services, 'st1')
+    await expectHiddenFromDan(services, 'send', 'st1')
+    await acmeJoins(services)
+    expect(
+      (await failure(services, 'POST', '/statements/st1/send', undefined, 'u-acme')).code,
+    ).toBe('FORBIDDEN')
+    await archiveJob(services)
+    await expectHiddenFromDan(services, 'send', 'st1')
+    expect((await failure(services, 'POST', '/statements/st1/send')).code).toBe('ARCHIVED')
     expect(services.sent).toEqual([])
   })
 })
@@ -196,7 +212,6 @@ describe('POST /statements/{id}/void', () => {
       'VALIDATION_FAILED',
     ],
     ['a body with no reason', 'st-oct', {}, 'u-sam', 'VALIDATION_FAILED'],
-    ['someone outside the group', 'st-oct', { reason: 'x' }, 'u-dan', 'NOT_A_MEMBER'],
   ])('refuses %s', async (_case, id, body, user, code) => {
     const services = twoMonths()
     await finalize(services, 'st-sep')
@@ -209,6 +224,22 @@ describe('POST /statements/{id}/void', () => {
     const services = twoMonths()
     const response = await failure(services, 'POST', '/statements/st-sep/void', { reason: 'x' })
     expect(response.code).toBe('VALIDATION_FAILED')
+  })
+
+  it('answers someone outside the group as for a missing statement; members get theirs', async () => {
+    const services = twoMonths()
+    await finalize(services, 'st-sep')
+    await finalize(services, 'st-oct')
+    const body = { reason: 'x' }
+    await expectHiddenFromDan(services, 'void', 'st-oct', body)
+    await acmeJoins(services)
+    expect((await failure(services, 'POST', '/statements/st-oct/void', body, 'u-acme')).code).toBe(
+      'FORBIDDEN',
+    )
+    await archiveJob(services)
+    await expectHiddenFromDan(services, 'void', 'st-oct', body)
+    expect((await failure(services, 'POST', '/statements/st-oct/void', body)).code).toBe('ARCHIVED')
+    expect(stored(services, 'st-oct').status).toBe('final')
   })
 })
 

@@ -2,8 +2,10 @@ import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  archiveJob,
   BUSINESS,
   commitNow,
+  expectHiddenFromDan,
   failure,
   fakes,
   job,
@@ -162,15 +164,13 @@ describe('a member who left', () => {
     expect(snapshot.lines.map((line) => line.transactionId)).toEqual(['s1'])
   })
 
-  it('gets NOT_A_MEMBER on preview and refresh after leaving on their own', async () => {
+  it('is an outsider after leaving on their own: NOT_A_MEMBER on preview, NOT_FOUND on refresh', async () => {
     const services = await withDanLeft()
     leftOnTheirOwn(services, 'u-dan')
     expect((await failure(services, 'POST', '/statements/preview', preview, 'u-dan')).code).toBe(
       'NOT_A_MEMBER',
     )
-    expect(
-      (await failure(services, 'POST', '/statements/st1/refresh', undefined, 'u-dan')).code,
-    ).toBe('NOT_A_MEMBER')
+    await expectHiddenFromDan(services, 'refresh', 'st1')
   })
 })
 
@@ -244,13 +244,12 @@ describe('POST /statements/{id}/refresh', () => {
     })
   })
 
-  it.each([
-    ['a missing statement', 'nope', 'u-sam', 'NOT_FOUND'],
-    ['someone outside the group', 'st1', 'u-dan', 'NOT_A_MEMBER'],
-  ])('refuses %s', async (_case, id, user, code) => {
+  it('answers someone outside the group as for a missing statement, archived or not', async () => {
     const services = fakes({ statements: [statement('st1')] })
-    expect(
-      (await failure(services, 'POST', `/statements/${id}/refresh`, undefined, user)).code,
-    ).toBe(code)
+    await expectHiddenFromDan(services, 'refresh', 'st1')
+    await archiveJob(services)
+    await expectHiddenFromDan(services, 'refresh', 'st1')
+    expect((await failure(services, 'POST', '/statements/st1/refresh')).code).toBe('ARCHIVED')
+    expect(services.db.rows('statements')[0]?.snapshotJson).toBe(statement('st1').snapshotJson)
   })
 })
