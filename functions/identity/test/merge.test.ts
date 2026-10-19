@@ -108,6 +108,21 @@ describe('markMerged (step 1)', () => {
     expect(log).toHaveBeenCalledWith('merge pP into pU: 1 typed keys deleted')
   })
 
+  it('deletes a phone typed for P when U verified only an email', async () => {
+    const phone = {
+      $id: 'i9',
+      key: 'phone:+61400000009',
+      type: 'phone',
+      personId: 'pP',
+      verified: false,
+    }
+    const claimedThrough = { ...identity(2), verified: false }
+    const store = db([U, P], [phone, claimedThrough])
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(await markMerged(store, 'pP', 'pU', [claimedThrough.key])).toBe(true)
+    expect(store.rows('identities').map((row) => row.$id)).toEqual(['i2'])
+  })
+
   it('counts P as merged when another claim for U deleted the typed key first', async () => {
     const store = db(
       [U, P],
@@ -955,36 +970,36 @@ describe('moveShares (step 3)', () => {
     expect(store.rows('balances')).toEqual([])
   })
 
+  // U leaves g1 on their own, as `groups POST /leave` writes it.
+  const uLeaves = [
+    {
+      action: 'update' as const,
+      tableId: 'members' as const,
+      rowId: 'mU-g1',
+      data: { status: 'left', role: 'viewer', leftOn: '2026-10-18' },
+    },
+    {
+      action: 'create' as const,
+      tableId: 'activity' as const,
+      rowId: 'aLeft',
+      data: {
+        groupId: 'g1',
+        action: 'member.left',
+        summary: 'left',
+        at: '2026-10-18T00:00:00.000Z',
+        actorPersonId: 'pU',
+        subjectPersonId: 'pU',
+      },
+    },
+  ]
+
   // #242 D/E: each batch guards U's member row, then checks it as stored.
   it.each([
     [
       'an admin removes U’s row',
       [{ action: 'delete' as const, tableId: 'members' as const, rowId: 'mU-g1' }],
     ],
-    [
-      'U leaves on their own',
-      [
-        {
-          action: 'update' as const,
-          tableId: 'members' as const,
-          rowId: 'mU-g1',
-          data: { status: 'left', role: 'viewer', leftOn: '2026-10-18' },
-        },
-        {
-          action: 'create' as const,
-          tableId: 'activity' as const,
-          rowId: 'aLeft',
-          data: {
-            groupId: 'g1',
-            action: 'member.left',
-            summary: 'left',
-            at: '2026-10-18T00:00:00.000Z',
-            actorPersonId: 'pU',
-            subjectPersonId: 'pU',
-          },
-        },
-      ],
-    ],
+    ['U leaves on their own', uLeaves],
   ])('moves no share onto U when %s just before a batch', async (_, writes) => {
     const store = seed([share('s1', 't1', 'pP', 0, 4500), share('s2', 't1', 'pX', 4500, 0)])
     beforeStaging(
@@ -998,6 +1013,35 @@ describe('moveShares (step 3)', () => {
       done: true,
     })
     // P's share stays P's, and stray() keeps the merge open (run-merge.ts).
+    expect(store.rows('shares').map((row) => row.personId)).toEqual(['pP', 'pX'])
+  })
+
+  it('fails a leave of U’s staged before a batch commits: the guard is a real change to U’s row', async () => {
+    const store = seed([share('s1', 't1', 'pP', 0, 4500), share('s2', 't1', 'pX', 4500, 0)])
+    // The leave stages U's row, a batch commits in between, then the leave commits. Its retry
+    // reads U's new share (groups' own check).
+    await expect(
+      withTransaction(store, async (tx) => {
+        await tx.write(...uLeaves)
+        expect((await moveShares(store, 'pP', 'pU', ['g1'], FAR)).moved).toBe(1)
+      }),
+    ).rejects.toMatchObject({ code: 409, type: 'transaction_conflict' })
+    expect(store.rows('members').find((row) => row.$id === 'mU-g1')?.status).toBe('active')
+    expect(store.rows('shares').map((row) => row.personId)).toEqual(['pU', 'pX'])
+  })
+
+  it('moves nothing when U leaves just before the batch stages U’s row: it checks after staging', async () => {
+    const store = seed([share('s1', 't1', 'pP', 0, 4500), share('s2', 't1', 'pX', 4500, 0)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"members"'),
+      () => withTransaction(store, (tx) => tx.write(...uLeaves)),
+    )
+    expect(await moveShares(store, 'pP', 'pU', ['g1'], FAR)).toEqual({
+      moved: 0,
+      putOff: [],
+      done: true,
+    })
     expect(store.rows('shares').map((row) => row.personId)).toEqual(['pP', 'pX'])
   })
 
