@@ -41,7 +41,7 @@ The job's period ends on the group's local date 12 hours before the stored `next
                          └── discard ──► (deleted)
 ```
 
-### 1. Draft (statements job, hourly at :15)
+### 1. Draft (statements job, hourly)
 
 Appwrite runs the job as `POST /` on the `statements` function; nobody else can call it. For each group where `nextCloseAt <= now` and that isn't archived, in **one database transaction**:
 
@@ -84,7 +84,7 @@ The finalized, sent, voided and discarded summaries in `activity` name an invoic
 
 ### 4. Void (`POST /statements/{id}/void`)
 
-Admin only, and only for the **latest** final statement in the group, so openings never break. It stages `void` with a guard write to the group row (a fresh `rev`), then checks the stored rows: no statement of the group `finalizing` (`CONFLICT`), and still the latest final. The finalizing check comes first because finalize's last step doesn't write the group row: a statement turning final between the two reads is seen by one of them. Reissue reads them in the same order. Then it unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
+Admin only, and only for the **latest** final statement in the group, so openings never break. It stages `void` with a guard write to the group row (a fresh `rev`), then checks the stored rows: no statement of the group `finalizing` (`CONFLICT`), and still the latest final. The finalizing check comes first because finalize's last step doesn't write the group row: a statement turning final between the two reads is seen by one of them. Reissue reads them in the same order. Then it unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. A merge renames merged persons in locked rows too ([merging](identity-and-invites.md#merging-two-persons), step 3), so the rows a void unlocks can be edited as they are, apart from two kinds that keep naming P: a payment between the two, and a row the merge couldn't read. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
 
 To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`. Once finalized, an invoice gets a new number; the void statement keeps its own. While that draft is unfinished, asking again returns it.
 
