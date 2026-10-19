@@ -36,6 +36,7 @@ import {
   type PairPeople,
   toEntryBody,
 } from './pair-values'
+import { ReminderSection } from './reminder-form'
 
 const ENTRY_TYPES: { value: EntryType; label: (name: string) => string }[] = [
   { value: 'lent', label: (name) => `I lent ${name} money` },
@@ -186,6 +187,11 @@ function PairDetails({
           </Button>
         )}
       </section>
+      {/* Only when they owe you: nothing else to remind about (F-63). */}
+      {!group.archivedAt && mayAdd && (net ?? 0) > 0 && (
+        // Keyed by group: another pair's page starts with its own form, ID and news.
+        <ReminderSection key={group.$id} group={group} personId={people.me} name={name} />
+      )}
       {group.archivedAt ? (
         <Message>{ARCHIVED_NOTICE}</Message>
       ) : (
