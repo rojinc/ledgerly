@@ -644,6 +644,26 @@ describe('TransactionPage', () => {
     expect((screen.getByLabelText('Reason for voiding') as HTMLInputElement).value).toBe('Twice')
   })
 
+  it('offers receipts only on a row that can still change (#162)', async () => {
+    const cases: [Partial<Transactions>, boolean][] = [
+      [{}, true],
+      [{ statementId: 'st1' }, false],
+      [{ status: 'void' }, false],
+      [{ status: 'running', kind: 'shift' }, false],
+    ]
+    for (const [extra, offered] of cases) {
+      mockGroups(acme, 'admin')
+      mockRows([], shares)
+      getRow.mockResolvedValue(row('t1', extra) as never)
+      renderAt('/transactions/t1')
+      expect(await screen.findByRole('heading', { name: 'Supplies' })).toBeTruthy()
+      await screen.findByText('Group')
+      // This test's user isn't verified, so an offer is the prompt to verify.
+      expect(Boolean(screen.queryByText('Verify your email to add receipts.'))).toBe(offered)
+      cleanup()
+    }
+  })
+
   it('has no Void in an archived group, on a final invoice, for a viewer, or for another member’s row', async () => {
     const cases: [Groups, Members['role'], Partial<Transactions>, string | null][] = [
       [
