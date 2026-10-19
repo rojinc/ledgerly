@@ -147,7 +147,8 @@ describe('POST / (cron run)', () => {
   })
 
   it('logs counts only', async () => {
-    const services = seeded([transaction('t1')])
+    const teams = Object.fromEntries(['acme', 'utc', 'la', 'old'].map((id) => [id, ['u1']]))
+    const services = seeded([transaction('t1')], { teams })
     const { body, logs } = await call(services, 'POST', '/', { userId: null, scheduled: true })
     expect(body).toEqual({
       ok: true,
@@ -156,6 +157,17 @@ describe('POST / (cron run)', () => {
         posted: { posted: 0, skipped: 0, failed: 0 },
         reminders: { sent: 1, skipped: 0, failed: 0 },
         summaries: { sent: 0, skipped: 0, failed: 0 },
+        // Step 6's first pass backfills each group's balances row.
+        nightly: {
+          checked: 4,
+          busy: 0,
+          cutOff: 0,
+          skipped: 0,
+          findings: 0,
+          merging: 0,
+          repaired: 4,
+          failed: 0,
+        },
       },
     })
     expect(logs.join('\n')).not.toContain('sam@example.com')

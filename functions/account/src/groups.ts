@@ -220,7 +220,7 @@ async function endSchedules(
       compareDates(schedule.startsOn as LocalDate, today) > 0 &&
       !(await hasOccurrence(db, schedule.$id, [Query.equal('status', 'posted')]))
     ) {
-      await deleteScheduleRows(db, group, schedule.$id)
+      await deleteScheduleRows(db, group, schedule.$id, now)
       continue
     }
     const endsOn = storedEnd && compareDates(storedEnd, today) < 0 ? storedEnd : today
