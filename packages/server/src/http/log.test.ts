@@ -132,7 +132,8 @@ group('logProblem', () => {
       logProblem('password_notice', { userId: 'u1', outcome })
     }
     // A merge (#242): what it did logs, what it left warns, what stops it is an error. The
-    // hourly run's tally of merges (#246) logs.
+    // hourly run's tally of merges (#246) logs, a U it can't carry on is an error, and a walk
+    // cut short warns.
     const merge = { personId: 'pP', intoPersonId: 'pU' }
     logProblem('merge_typed_keys_deleted', { ...merge, count: 1 })
     logProblem('merge_finished', merge)
@@ -146,7 +147,9 @@ group('logProblem', () => {
     logProblem('merge_stopped', { intoPersonId: 'pU', error: new Error('x') })
     logProblem('merge_no_member_dates', { personId: 'pP', groupId: 'g1' })
     logProblem('merge_member_dates_unreadable', { personId: 'pP' })
-    logProblem('merge_run', { counts: { unfinished: 1 } })
+    logProblem('merge_run', { counts: { unfinished: 1, stopped: 1 } })
+    logProblem('merge_run_failed', { intoPersonId: 'pU', error: new Error('x') })
+    logProblem('merge_walk_cut_off', { count: 100 })
     expect(levels()).toEqual([
       'error',
       'error',
@@ -172,6 +175,8 @@ group('logProblem', () => {
       'error',
       'error',
       'log',
+      'error',
+      'warn',
     ])
     expect(lines()[1]).toEqual({
       fn: 'unknown',

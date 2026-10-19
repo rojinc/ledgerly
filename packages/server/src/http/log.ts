@@ -38,6 +38,8 @@ export type LogEvent =
   | 'merge_carries_on'
   | 'merge_stopped_into_deleted'
   | 'merge_stopped'
+  | 'merge_run_failed'
+  | 'merge_walk_cut_off'
   | 'merge_run'
 
 /**
@@ -62,6 +64,7 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_left_stray_row: 'warn',
   merge_left_subjects: 'warn',
   merge_stopped: 'warn',
+  merge_walk_cut_off: 'warn',
 }
 
 /** What the password notice did (identity-and-invites.md#password-notice). */
@@ -85,6 +88,7 @@ const COUNTS = [
   'finished',
   'skipped',
   'cutOff',
+  'stopped',
   'personsRead',
 ] as const
 export type LogCount = (typeof COUNTS)[number]
