@@ -13,13 +13,14 @@ Keeping authority in one place (`members.role`) means there is one source of tru
 - A person is a team member only if they have a user account (`persons.userId`) **and** have joined the group. Placeholders, including registered people who haven't joined yet, are in `members` but not in the team ([D-016](decisions.md)).
 - Team memberships are created, changed and deleted **only by functions**, with the server key. Clients never call the Teams API to change membership.
 - After a group is created, only the `identity` function adds people to its team: when a claim links a placeholder to a new account, or when a registered person joins a group they were added to ([identity](identity-and-invites.md#joining-a-group)).
+- The scheduler's [nightly check](scheduling.md#step-5-nightly-check) removes a membership, over an hour old, that no joined member row backs: one left by a join, removal or leave that stopped between its Teams call and its database transaction. That's the scheduler's only team write.
 
 ## Row permissions by table
 
 | Table | Row permissions | Set by |
 | --- | --- | --- |
 | `persons` (registered) | `read("user:<userId>")` | `identity` |
-| `persons` (placeholder), `identities`, `invites` | none | n/a |
+| `persons` (placeholder), `identities`, `invites`, `balances` | none | n/a |
 | `profiles` | `read("user:<userId>")` | `identity` |
 | `groups`, `members`, `transactions`, `shares`, `items`, `schedules`, `statements`, `activity` | `read("team:<groupId>")` | the writing function |
 
