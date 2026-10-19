@@ -448,8 +448,8 @@ function billPeriod(row: Transactions): DateRange | undefined {
 /**
  * Stored JSON with P renamed: `json` is the new text, undefined when nothing changed, and
  * `voided` as `rename` says. The stored object is renamed as it is, so its keys keep their order.
- * Undefined when the JSON can't be read, or is no longer valid once renamed (weights that add up
- * past `MAX_WEIGHT`, say): nothing invalid is ever written.
+ * Undefined when the JSON can't be read, or is no longer valid once renamed (a locked payment
+ * between P and U, whose two sides would both be U, say): nothing invalid is ever written.
  */
 function renamed(
   text: string,
@@ -559,14 +559,19 @@ async function runBatch(
     const same =
       batch.every((rewrite) => {
         const now = rows.get(rewrite.row.$id)
+        // The total too: an unposted row's split may be written out from it (#348).
         return (
           now?.status === rewrite.row.status &&
           now.statementId === rewrite.row.statementId &&
-          now.inputJson === rewrite.row.inputJson
+          now.inputJson === rewrite.row.inputJson &&
+          now.totalCents === rewrite.row.totalCents
         )
       }) &&
       batch.every((rewrite) =>
-        rewrite.items.every((item) => items.get(item.$id)?.splitJson === item.splitJson),
+        rewrite.items.every((item) => {
+          const now = items.get(item.$id)
+          return now?.splitJson === item.splitJson && now.amountCents === item.amountCents
+        }),
       )
     if (!same) throw new Raced()
   })

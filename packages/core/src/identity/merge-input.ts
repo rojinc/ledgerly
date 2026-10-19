@@ -7,7 +7,6 @@ import {
   type ShareInput,
 } from '../ledger/build-shares'
 import { byPersonId, type Part, type SplitContext, splitAmount } from '../ledger/split-amount'
-import { allocate } from '../money/allocate'
 import { everyPersonId, type TransactionTemplate } from '../schemas/ledger'
 import { type SplitSpec, splitPersonIds, splitSpecSchema } from '../schemas/split'
 
@@ -97,23 +96,17 @@ export function mergeSplit(split: SplitSpec, merge: Merge): SplitSpec {
 const addCents = (a: Part, b: Part) => ({ ...a, cents: a.cents + b.cents })
 
 /**
- * A split with P renamed to U, in an unposted row or a schedule template, which has no shares to
- * go by (#348). Where the rename leaves a `weights` split invalid (U's weight, P's added to it,
- * past `MAX_WEIGHT`), it's written out as `exact`: `allocate()` splits `amountCents` by the
- * weights as they were, P's and U's apart, then P's part is added to U's. So each person's part
- * is what the split gave before the merge, and the row can still be stored and edited.
+ * A split with P renamed to U, where there are no shares to go by: an unposted row or a schedule
+ * template, or a posted row whose group is gone (#348). Where the rename leaves a `weights` split
+ * invalid (U's weight, P's added to it, past `MAX_WEIGHT`), it's written out as `exact`:
+ * `allocate()` splits `amountCents` by the weights as they were, P's and U's apart, as posting
+ * splits them, then P's part is added to U's. So each person's part is what the split gave before
+ * the merge, and the row can still be stored and edited.
  */
 export function mergeUnpostedSplit(split: SplitSpec, merge: Merge, amountCents: number): SplitSpec {
   const renamed = mergeSplit(split, merge)
   if (split.mode !== 'weights' || splitSpecSchema.safeParse(renamed).success) return renamed
-  const cents = allocate(
-    amountCents,
-    split.weights.map((entry) => entry.weight),
-  )
-  const parts = split.weights.map((entry, i) => ({
-    personId: entry.personId,
-    cents: cents[i] as number,
-  }))
+  const parts = splitAmount(split, amountCents, { members: [] })
   return { mode: 'exact', amounts: mergeEntries(parts, merge, addCents) }
 }
 
@@ -223,9 +216,9 @@ export function mergePostedSplit(
  * With a 0 total there are no parts: the renamed split stays, unless the rename left it invalid
  * (weights past MAX_WEIGHT); then it's `exact` with everyone it names at 0.
  *
- * Without `posted`, the split and a template's items are renamed as `mergeUnpostedSplit` says,
- * with `totalCents`: an unposted transaction's, which its stored input doesn't hold, or else the
- * template's own. Without either, the split is renamed only.
+ * Without `posted`, the split is renamed as `mergeUnpostedSplit` says, from `totalCents` (an
+ * unposted transaction's, which its stored input doesn't hold, or else the template's own), and
+ * a template's items from their own amounts. With no total, the split is renamed only.
  *
  * A loan that becomes U to U is voided.
  */

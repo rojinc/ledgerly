@@ -684,6 +684,26 @@ describe('mergeInput: an unposted row or a template', () => {
     expect(transactionTemplateSchema.safeParse(itemised).success).toBe(true)
   })
 
+  it('writes a posted row out from its shares, even given a total', () => {
+    // 0.01 by X 1, P 6000 and U 6000 went to P. From the shares that's U 1, with no 0 for X.
+    const tiny: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'X', weight: 1 },
+        { personId: 'P', weight: 6000 },
+        { personId: 'U', weight: 6000 },
+      ],
+    }
+    const { input } = mergeInput(
+      { ...paidByX(1), split: tiny },
+      'expense',
+      merge,
+      posted([['P', 1]]),
+      1,
+    )
+    expect(input.split).toEqual({ mode: 'exact', amounts: [{ personId: 'U', cents: 1 }] })
+  })
+
   it('renames only a split with no total to go by', () => {
     expect(mergeInput({ split: overCap }, 'expense', merge).input.split).toEqual(
       mergeSplit(overCap, merge),

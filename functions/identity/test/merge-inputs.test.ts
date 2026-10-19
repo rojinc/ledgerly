@@ -700,7 +700,8 @@ describe('moveInputs (step 3)', () => {
 
   it('leaves a row it can’t rename as it is, says so by ID, and isn’t done', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // P's and U's weights would add up past MAX_WEIGHT; the other input isn't JSON.
+    // Posted, with no shares to go by: P's and U's weights would add up past MAX_WEIGHT. The
+    // other input isn't JSON.
     const heavy = transaction('t1', {
       payers: [{ personId: 'pX', cents: 9000 }],
       split: {
@@ -780,6 +781,81 @@ describe('moveInputs (step 3)', () => {
       mode: 'exact',
       amounts: [{ personId: 'pU', cents: 500 }],
     })
+  })
+
+  // #348: the split is written out from the total, so a total changed meanwhile is a race.
+  const overCap = {
+    mode: 'weights',
+    weights: [
+      { personId: 'pP', weight: 6000 },
+      { personId: 'pU', weight: 6000 },
+      { personId: 'pX', weight: 1 },
+    ],
+  }
+  // 60.00 by 6000, 6000 and 1 gives P 30.00, U 30.00 and X 0.
+  const fromSixty = {
+    mode: 'exact',
+    amounts: [
+      { personId: 'pU', cents: 6000 },
+      { personId: 'pX', cents: 0 },
+    ],
+  }
+
+  it('runs again on an unposted row whose total changed after it was read', async () => {
+    const store = seed([transaction('t1', { split: overCap }, { status: 'due' })])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { totalCents: 6000 },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+      done: true,
+    })
+    expect(input(store, 't1').split).toEqual(fromSixty)
+  })
+
+  it('runs again on an unposted row whose item amount changed after it was read', async () => {
+    const store = seed([transaction('t2', {}, { status: 'scheduled', totalCents: 9000 })], {
+      items: [
+        {
+          $id: 'i1',
+          transactionId: 't2',
+          position: 0,
+          name: 'Rent',
+          quantity: 1,
+          amountCents: 9000,
+          category: null,
+          splitJson: JSON.stringify(overCap),
+        },
+      ],
+    })
+    beforeStaging(
+      store,
+      (operations) => operations.includes('splitJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'items',
+            rowId: 'i1',
+            data: { amountCents: 6000 },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+      done: true,
+    })
+    expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual(fromSixty)
   })
 
   it('keeps the stored input’s key order, and voids as the void route does', async () => {
