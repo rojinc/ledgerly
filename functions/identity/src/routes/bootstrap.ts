@@ -6,6 +6,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, ensureTeam } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppError } from '@ledgerly/server/http/app-error'
 import { profileDefaults } from '@ledgerly/server/identity/defaults'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { ID, Permission, Query, Role } from 'node-appwrite'
@@ -22,6 +23,8 @@ import {
 import type { AccountUser, Services } from '../services'
 import { claim, type VerifiedIdentity, verifiedIdentities } from './claim'
 
+// The Appwrite label of a user whose account is being deleted (account's step 3).
+const DELETED_LABEL = 'deleted'
 const PERSONAL_GROUP_NAME = 'Personal'
 const MAX_NAME_LENGTH = 100 // persons.displayName
 
@@ -34,6 +37,10 @@ export async function bootstrap(
   const { timezone } = parseBody(bootstrapBodySchema, body)
   const { db } = services
   const user = await services.users.get({ userId })
+  // identity-and-invites.md#order: a deleted account never gets a person or profile again.
+  if (user.labels.includes(DELETED_LABEL) || (await hasDeletedPerson(db, userId))) {
+    throw accountDeleted()
+  }
   const identities = verifiedIdentities(user)
   // Step 1: with a profile, go straight to claim, so an interrupted claim always gets finished.
   const profile =
@@ -48,7 +55,7 @@ export async function bootstrap(
 // Step 2: the person, profile, personal group, its team and an admin membership. Returns the
 // new profile, or the one a bootstrap for the same user running at the same time made first.
 async function setUp(
-  { db, teams, now }: Services,
+  { db, teams, users, now }: Services,
   user: AccountUser,
   identities: VerifiedIdentity[],
   timeZone: string,
@@ -65,6 +72,7 @@ async function setUp(
   const team = [Permission.read(Role.team(groupId))]
   try {
     const deleted = await withTransaction(db, async (tx) => {
+      let typed = 0
       await tx.write(
         person.write,
         {
@@ -118,9 +126,16 @@ async function setUp(
           identities.map((identity) => identity.key),
         )
         if (deletes.length > 0) await tx.write(...deletes)
-        return deletes.length
+        typed = deletes.length
+      } else if (person.write.action === 'update') {
+        // The same for their own person, whose deletion may have passed step 2 since the check
+        // in `bootstrap`.
+        const stored = await getRowOrNull<Persons>(db, TABLES.persons, person.personId)
+        if (stored?.deletedAt) throw accountDeleted()
       }
-      return 0
+      // On every path: a deletion's step 3 may have labelled the user since that check too.
+      if ((await users.get({ userId })).labels.includes(DELETED_LABEL)) throw accountDeleted()
+      return typed
     })
     // Once committed, so a lost race logs nothing. IDs and counts only.
     if (deleted > 0) {
@@ -204,6 +219,23 @@ async function planPerson(
 function ownName(user: AccountUser): string | undefined {
   const name = [...user.name.trim()].slice(0, MAX_NAME_LENGTH).join('').trim()
   return name === '' ? undefined : name
+}
+
+// Being deleted, or deleted: the deletion passed its point of no return (`deletedAt`) for a
+// person naming the user, or labelled the user (identity-and-invites.md#deleting-an-account-m4).
+function accountDeleted(): AppError {
+  return new AppError('UNAUTHENTICATED', 'This account has been deleted.')
+}
+
+// `idx_userId`
+async function hasDeletedPerson(db: Db, userId: string): Promise<boolean> {
+  const { rows } = await db.listRows<Persons>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.persons,
+    queries: [Query.equal('userId', userId), Query.isNotNull('deletedAt'), Query.limit(1)],
+    total: false,
+  })
+  return rows.length > 0
 }
 
 async function findPersonalGroupId(db: Db, personId: string): Promise<string> {

@@ -1,5 +1,4 @@
 import { useQueryClient } from '@tanstack/react-query'
-import { AppwriteException } from 'appwrite'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { account } from '../../lib/appwrite'
@@ -7,31 +6,17 @@ import { queryKeys } from '../../lib/query-keys'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
-import { authErrorMessage } from '../auth/auth-error'
+import { errorType } from '../auth/auth-error'
+import {
+  PASSWORD_MAX,
+  PASSWORD_MIN,
+  PASSWORD_TOO_SHORT,
+  passwordRefusal,
+} from '../auth/password-rules'
 import { useCurrentUser } from '../auth/use-current-user'
-
-/** Appwrite's limits for a password; the minimum matches sign-up. */
-const MIN = 8
-const MAX = 256
-
-// Appwrite's refusals of a new password, by error type (its response codes). The others go to
-// authErrorMessage.
-const REFUSED: Record<string, string> = {
-  user_invalid_credentials: 'Your current password isn’t right.',
-  password_recently_used: 'Pick a password you haven’t used recently.',
-  password_personal_data: 'Pick a password that doesn’t include your name, email or phone.',
-  password_pwned: 'This password has appeared in a data breach. Pick another one.',
-  general_pwned_passwords_unavailable:
-    'We couldn’t check that password just now. Try again in a minute.',
-  general_rate_limit_exceeded: 'Too many tries. Wait a few minutes and try again.',
-}
 
 // Setting a first one is refused this way when another device set one meanwhile.
 const SET_ELSEWHERE = 'Your account has a password now. Enter it to change it.'
-
-function typeOf(error: unknown): string | undefined {
-  return error instanceof AppwriteException ? error.type : undefined
-}
 
 /**
  * Set a password on an account made with an email code, which has none (`passwordUpdate` is
@@ -83,13 +68,13 @@ export function PasswordSection() {
     const password = String(fields.get('new-password') ?? '')
     const current = String(fields.get('current-password') ?? '')
     const found = {
-      password: password.length < MIN ? `Use at least ${MIN} characters.` : undefined,
+      password: password.length < PASSWORD_MIN ? PASSWORD_TOO_SHORT : undefined,
       current: !hasPassword
         ? undefined
         : current === ''
           ? 'Enter your current password.'
           : // No password is shorter than sign-up allows: this one can't be right.
-            current.length < MIN
+            current.length < PASSWORD_MIN
             ? 'Your current password isn’t right.'
             : undefined,
     }
@@ -105,8 +90,7 @@ export function PasswordSection() {
         hasPassword ? { password, oldPassword: current } : { password },
       )
     } catch (error) {
-      const type = typeOf(error)
-      if (!hasPassword && type === 'user_invalid_credentials') {
+      if (!hasPassword && errorType(error) === 'user_invalid_credentials') {
         // Another device set one: read the user again, so the change form appears, open, with
         // this message.
         setOpen(true)
@@ -114,7 +98,7 @@ export function PasswordSection() {
         toCurrent.current = true
         void queryClient.invalidateQueries({ queryKey: queryKeys.currentUser })
       } else {
-        setRefused((type && REFUSED[type]) ?? authErrorMessage(error))
+        setRefused(passwordRefusal(error))
       }
       sending.current = false
       setBusy(false)
@@ -179,7 +163,7 @@ export function PasswordSection() {
               type="password"
               autoComplete="current-password"
               label="Current password"
-              maxLength={MAX}
+              maxLength={PASSWORD_MAX}
               error={errors.current ? { type: 'validate', message: errors.current } : undefined}
             />
           )}
@@ -189,8 +173,8 @@ export function PasswordSection() {
             type="password"
             autoComplete="new-password"
             label="New password"
-            hint={`At least ${MIN} characters.`}
-            maxLength={MAX}
+            hint={`At least ${PASSWORD_MIN} characters.`}
+            maxLength={PASSWORD_MAX}
             error={errors.password ? { type: 'validate', message: errors.password } : undefined}
           />
           <div className="flex flex-wrap gap-3">

@@ -60,6 +60,20 @@
         "required": false,
         "array": true,
         "default": null
+      },
+      {
+        "key": "mergeMembersJson",
+        "type": "mediumtext",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "mergeCursorsJson",
+        "type": "mediumtext",
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
