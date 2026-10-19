@@ -15,6 +15,11 @@ import { allRows, pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import {
+  type ReceiptChange,
+  receiptRows,
+  writeReceiptRows,
+} from '@ledgerly/server/ledger/receipt-files'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, type Models, Permission, Query, Role } from 'node-appwrite'
 import { getRowOrNull, isPlaceholder } from './rows'
@@ -23,6 +28,8 @@ import type { FilesApi, Services } from './services'
 // data-model.md#storage-buckets
 const RECEIPTS_BUCKET = 'receipts'
 const STATEMENTS_BUCKET = 'statements'
+// Appwrite's limit on the values in one `equal`.
+const IDS_PER_QUERY = 100
 
 /**
  * The purge of a group nobody else is in (identity-and-invites.md#each-group-they-joined), once
@@ -50,19 +57,35 @@ export async function purge(services: Services, own: Members): Promise<boolean> 
   return true
 }
 
-// The receipts its transactions list and its statements' PDFs, before the rows that name them.
-// Only a file readable by exactly the group's team goes, so one shared with another group's
-// transaction stays.
+// The receipts only its transactions list and its statements' PDFs, before the rows that name
+// them. Only a file readable by exactly the group's team goes. A receipt also needs a
+// `receiptFiles` row that lists no transaction outside the group, so one shared with another
+// group's transaction stays, and so does one with no row: it was attached before the ledger kept
+// them, and may be listed elsewhere (data-model.md#receiptfiles).
 async function deleteFiles(services: Services, groupId: string): Promise<boolean> {
-  const { files } = services
+  const { db, files } = services
+  const transactionIds = new Set<string>()
+  const fileIds = new Set<string>()
   // idx_group_date
-  const transactions = pages<Transactions>(services, TABLES.transactions, [
+  for await (const row of pages<Transactions>(services, TABLES.transactions, [
     Query.equal('groupId', groupId),
-  ])
-  for await (const row of transactions) {
-    for (const fileId of row.receiptFileIds ?? []) {
-      await deleteFile(files, RECEIPTS_BUCKET, fileId, groupId)
+  ])) {
+    transactionIds.add(row.$id)
+    for (const fileId of row.receiptFileIds ?? []) fileIds.add(fileId)
+  }
+  // A row is checked against all of the group's transactions, so none goes until they're read.
+  if (services.outOfTime()) return false
+  const listed = [...fileIds]
+  for (let start = 0; start < listed.length; start += IDS_PER_QUERY) {
+    const chunk = listed.slice(start, start + IDS_PER_QUERY)
+    const rows = await receiptRows(db, chunk)
+    for (const fileId of chunk) {
+      const row = rows.get(fileId)
+      if (row && (row.transactionIds ?? []).every((id) => transactionIds.has(id))) {
+        await deleteFile(files, RECEIPTS_BUCKET, fileId, groupId)
+      }
     }
+    if (services.outOfTime()) return false
   }
   // idx_group_period
   const statements = pages<Statements>(services, TABLES.statements, [
@@ -89,14 +112,16 @@ async function deleteFile(files: FilesApi, bucketId: string, fileId: string, gro
 }
 
 // Every row of the group but its member rows and the group row, in transactions of at most 90
-// writes: each transaction with its shares and items, never split, and the balances row with
-// the first, so the cache never disagrees with the shares. Each batch also gives the group row
-// a fresh `rev`, as every other writer of shares does (ledger.md#concurrency), so a nightly check
-// reading the group meanwhile sees it change, and its repair fails rather than build the
-// balances row again.
+// writes: each transaction with its shares and items, and its receipts taken off, never split,
+// and the balances row with the first, so the cache never disagrees with the shares. Each batch
+// also gives the group row a fresh `rev`, as every other writer of shares does
+// (ledger.md#concurrency), so a nightly check reading the group meanwhile sees it change, and
+// its repair fails rather than build the balances row again. The `receiptFiles` rows stay, the
+// deleted files' rows detached: scheduler step 5 deletes them (data-model.md#receiptfiles).
 async function deleteRows(services: Services, groupId: string): Promise<boolean> {
-  const { db } = services
+  const { db, now } = services
   let batch: Write[] = []
+  let receipts: ReceiptChange[] = []
   const flush = async () => {
     if (batch.length === 0) return
     const guard: Write = {
@@ -105,12 +130,23 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
       rowId: groupId,
       data: { rev: randomId() },
     }
-    await withTransaction(db, (tx) => tx.write(guard, ...batch))
+    await withTransaction(db, async (tx) => {
+      await tx.write(guard, ...batch)
+      // Read now and again once staged (writeReceiptRows): a change meanwhile, such as an attach
+      // in another group, leaves the group to the next run.
+      const rows = await receiptRows(db, [...new Set(receipts.map(({ fileId }) => fileId))])
+      await writeReceiptRows(db, tx, rows, receipts, now)
+    })
     batch = []
+    receipts = []
   }
-  const add = async (writes: Write[]) => {
-    if (batch.length + writes.length > MAX_OPS_PER_DB_TRANSACTION - 1) await flush()
+  // With the guard, at most 90 writes, counting one receipt row write for each file each
+  // transaction lists (writeReceiptRows writes a file once, so maybe fewer).
+  const add = async (writes: Write[], taken: ReceiptChange[] = []) => {
+    const size = batch.length + receipts.length + writes.length + taken.length
+    if (size > MAX_OPS_PER_DB_TRANSACTION - 1) await flush()
     batch.push(...writes)
+    receipts.push(...taken)
   }
   if (await getRowOrNull<Balances>(db, TABLES.balances, groupId)) {
     await add([remove(TABLES.balances, groupId)])
@@ -121,11 +157,14 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
     const ofRow = [Query.equal('transactionId', row.$id)]
     const shares = await allRows<Shares>(db, TABLES.shares, ofRow)
     const items = await allRows<Items>(db, TABLES.items, ofRow)
-    await add([
-      ...shares.map((share) => remove(TABLES.shares, share.$id)),
-      ...items.map((item) => remove(TABLES.items, item.$id)),
-      remove(TABLES.transactions, row.$id),
-    ])
+    await add(
+      [
+        ...shares.map((share) => remove(TABLES.shares, share.$id)),
+        ...items.map((item) => remove(TABLES.items, item.$id)),
+        remove(TABLES.transactions, row.$id),
+      ],
+      (row.receiptFileIds ?? []).map((fileId) => ({ fileId, remove: [row.$id] })),
+    )
   }
   // idx_groupId, idx_group_period, idx_group_at, idx_groupId
   for (const tableId of [TABLES.schedules, TABLES.statements, TABLES.activity, TABLES.reminders]) {
