@@ -74,7 +74,7 @@ async function leaveGroup(
     // finished, never with its schedules still running.
     if (!group.archivedAt) {
       await endSchedules(services, person.$id, group)
-      if (!(await hasJoinedAdmin(db, group.$id))) await archive(services, group)
+      if (!(await hasJoinedAdmin(db, group.$id))) await archive(services, person.$id, group)
     }
     await removeFromTeam(teams, group.$id, userId)
     return true
@@ -174,10 +174,10 @@ async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
   return rows.length > 0
 }
 
-// Archives the group. One archived meanwhile, or with a statement being finalized, throws
-// `Raced`: the group is left for the next run, which finds it archived, or waits until the
-// finalize ends.
-async function archive({ db, now }: Services, group: Groups): Promise<void> {
+// Archives the group, with a group.archived row by them, as an admin's archive writes, so the
+// others see why. One archived meanwhile, or with a statement being finalized, throws `Raced`:
+// the group is left for the next run, which finds it archived, or waits until the finalize ends.
+async function archive({ db, now }: Services, personId: string, group: Groups): Promise<void> {
   await withTransaction(db, async (tx) => {
     await tx.write({
       action: 'update',
@@ -190,6 +190,19 @@ async function archive({ db, now }: Services, group: Groups): Promise<void> {
     // `finalizing` (statements.md#2-finalize-post-statementsidfinalize).
     const current = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
     if (current?.archivedAt || (await isFinalizing(db, group.$id))) throw new Raced()
+    await tx.write({
+      action: 'create',
+      tableId: TABLES.activity,
+      rowId: ID.unique(),
+      data: {
+        groupId: group.$id,
+        actorPersonId: personId,
+        action: 'group.archived',
+        summary: 'Archived the group',
+        at: now.toISOString(),
+      },
+      permissions: [Permission.read(Role.team(group.$id))],
+    })
   })
 }
 

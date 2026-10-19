@@ -28,7 +28,8 @@ export async function listPendingGroups(
   userId: string,
 ): Promise<PendingGroupsResult> {
   const person = await findPersonOfUser(db, userId)
-  if (!person) throw new AppError('NOT_FOUND', SET_UP_FIRST)
+  // A person with deletedAt is never resolved from a userId (identity-and-invites.md#order).
+  if (!person || person.deletedAt) throw new AppError('NOT_FOUND', SET_UP_FIRST)
   const groupIds = (await placeholderRows(db, person.$id)).map((member) => member.groupId)
   const groups: PendingGroup[] = []
   for (let start = 0; start < groupIds.length; start += PAGE_SIZE) {
@@ -99,7 +100,9 @@ export async function joinPendingGroup(
 ): Promise<JoinGroupResult> {
   parseBody(emptyBodySchema, body ?? {})
   const { db } = services
-  const person = await findPersonOfUser(db, userId)
+  const found = await findPersonOfUser(db, userId)
+  // Never a deleted account's person (identity-and-invites.md#order).
+  const person = found?.deletedAt ? undefined : found
   let member = person ? await ownMemberRow(db, groupId, person.$id) : undefined
   if (!person || !member) throw notAMember()
   // Someone who left on their own is out of the team, and coming back isn't supported in v1;

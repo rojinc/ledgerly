@@ -431,6 +431,19 @@ describe('POST /delete: each group they joined', () => {
     })
     expect(rowOf(services, 'groups', 'q1')).toMatchObject({ archivedAt: null })
     expect(rowOf(services, 'groups', 'q2')).toMatchObject({ archivedAt: DELETED_AT })
+    // As an admin's archive does, so the others see why; it names no one.
+    for (const [groupId, archived] of [
+      ['e1', true],
+      ['q1', false],
+      ['q2', true],
+    ] as const) {
+      const rows = activityIn(services, groupId).filter((row) => row.action === 'group.archived')
+      expect(rows).toEqual(
+        archived
+          ? [expect.objectContaining({ actorPersonId: 'p1', summary: 'Archived the group' })]
+          : [],
+      )
+    }
     expect(rowOf(services, 'members', 'e1-p1')).toMatchObject({ status: 'left', role: 'viewer' })
     expect(teamOf(services, 'e1')).toEqual(['u3'])
     expect(teamOf(services, 'q2')).toEqual(['u3'])
@@ -543,8 +556,12 @@ describe('POST /delete: each group they joined', () => {
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
     expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: DELETED_AT })
     expect(teamOf(services, 'e1')).toEqual(['u3'])
-    expect(activityIn(services, 'e1')).toHaveLength(1)
-    expect(activityIn(services, 'h1')).toHaveLength(1)
+    // One member.left each, never a second on the rerun, and the archive's row once.
+    expect(activityIn(services, 'e1').map((row) => row.action)).toEqual([
+      'member.left',
+      'group.archived',
+    ])
+    expect(activityIn(services, 'h1').map((row) => row.action)).toEqual(['member.left'])
   })
 
   it('leaves a group nobody else is in, such as their personal group, untouched for its purge', async () => {

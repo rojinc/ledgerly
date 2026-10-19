@@ -148,6 +148,15 @@ describe('GET /groups/pending', () => {
     expect(groups).toEqual([{ id: 'g6', type: 'employer', name: 'Zed Cafe', archivedAt: null }])
   })
 
+  it('is NOT_FOUND for a deleted account, whose person is never resolved from its userId', async () => {
+    const services = fakes({
+      persons: [{ ...SAM, deletedAt: BEFORE }],
+      groups: GROUPS,
+      members: defaultMembers(),
+    })
+    expect((await failure(services, 'GET', '/groups/pending')).code).toBe('NOT_FOUND')
+  })
+
   it('is NOT_FOUND before bootstrap, and UNAUTHENTICATED without a JWT', async () => {
     const services = fixture()
     expect((await failure(services, 'GET', '/groups/pending', undefined, 'u2')).code).toBe(
@@ -293,6 +302,16 @@ describe('POST /groups/{id}/join', () => {
     expect(getRow).not.toHaveBeenCalled()
     expect(add).not.toHaveBeenCalled()
     expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it("is NOT_A_MEMBER for a deleted account, and doesn't touch the team or the row", async () => {
+    const services = fakes(
+      { persons: [{ ...SAM, deletedAt: BEFORE }], groups: GROUPS, members: defaultMembers() },
+      { teams: { g1: ['uAdmin'] } },
+    )
+    expect((await failure(services, 'POST', '/groups/g1/join')).code).toBe('NOT_A_MEMBER')
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(memberRow(services, 'm1')?.status).toBe('placeholder')
   })
 
   it('is NOT_A_MEMBER before bootstrap', async () => {

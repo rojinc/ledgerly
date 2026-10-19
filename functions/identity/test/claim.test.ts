@@ -308,6 +308,18 @@ describe('POST /claim', () => {
     expect(new Set(linked).size).toBe(101)
   })
 
+  it('is NOT_FOUND for a deleted account, whose person is never resolved from its userId', async () => {
+    const deleted = {
+      $id: 'p1',
+      userId: 'u1',
+      displayName: 'Former member',
+      claimedAt: BEFORE,
+      mergedInto: null,
+      deletedAt: BEFORE,
+    }
+    expect((await failure(fakes({ persons: [deleted] }), 'POST', '/claim')).code).toBe('NOT_FOUND')
+  })
+
   it('is NOT_FOUND before bootstrap', async () => {
     expect(await failure(fakes(), 'POST', '/claim')).toEqual({
       status: 404,

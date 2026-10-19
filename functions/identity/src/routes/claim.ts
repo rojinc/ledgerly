@@ -69,7 +69,8 @@ export async function claim(
   identities: VerifiedIdentity[],
 ): Promise<string[]> {
   const person = await findPersonOfUser(services.db, userId)
-  if (!person) throw new AppError('NOT_FOUND', SET_UP_FIRST)
+  // A person with deletedAt is never resolved from a userId (identity-and-invites.md#order).
+  if (!person || person.deletedAt) throw new AppError('NOT_FOUND', SET_UP_FIRST)
   for (const identity of identities) {
     try {
       await claimIdentity(services, person.$id, identity)
