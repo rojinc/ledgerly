@@ -176,16 +176,21 @@ describe('NewPairPage', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
   })
 
-  it('says a person with no email or phone can’t be linked later', () => {
+  it('says which key links them when they sign up later', () => {
     renderAt('/people/new')
     expect(screen.getByText(/can’t be linked to this if they sign up later/)).toBeTruthy()
     type('Email (optional)', 'sam@example.com')
     expect(screen.queryByText(/can’t be linked/)).toBeNull()
-    // Someone new keeps one key: with both, the email.
+    expect(
+      screen.getByText(
+        'Once they join with this email, they’ll see what you’ve recorded together.',
+      ),
+    ).toBeTruthy()
+    // With both, only one is used.
     type('Mobile number (optional)', '+61 400 000 000')
     expect(
       screen.getByText(
-        'Once they join, they’ll see what you’ve recorded together. The email comes first: the number only finds someone it already belongs to, and isn’t saved.',
+        'Once they join, they’ll see what you’ve recorded together. Only one of them is used: the email, unless only the number already belongs to someone. The other isn’t saved.',
       ),
     ).toBeTruthy()
   })

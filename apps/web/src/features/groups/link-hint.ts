@@ -1,10 +1,14 @@
 /**
  * What a form that adds someone says about linking them when they sign up
- * (identity-and-invites.md#adding-someone-to-a-group). Someone new keeps one key, the email if
- * both are given, so with both it says the email comes first. It goes by what was typed only,
+ * (identity-and-invites.md#adding-someone-to-a-group). Only one key is used: the email, unless
+ * only the number finds someone, and the other isn't saved. It goes by what was typed only,
  * never by whether anyone was found, so it shows nobody who uses Ledgerly.
  */
-export function linkHint(email: string, phone: string, place: { linked: string; seen: string }) {
+export function linkHint(
+  email: string,
+  phone: string,
+  place: { linked: string; seen: string },
+): string {
   const hasEmail = email.trim() !== ''
   const hasPhone = phone.trim() !== ''
   if (!hasEmail && !hasPhone) {
@@ -12,5 +16,5 @@ export function linkHint(email: string, phone: string, place: { linked: string; 
   }
   if (!hasPhone) return `Once they join with this email, they’ll see ${place.seen}.`
   if (!hasEmail) return `Once they join with this number, they’ll see ${place.seen}.`
-  return `Once they join, they’ll see ${place.seen}. The email comes first: the number only finds someone it already belongs to, and isn’t saved.`
+  return `Once they join, they’ll see ${place.seen}. Only one of them is used: the email, unless only the number already belongs to someone. The other isn’t saved.`
 }

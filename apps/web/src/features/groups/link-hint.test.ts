@@ -14,10 +14,16 @@ describe('linkHint', () => {
     ['an email', 'sam@example.com', '', 'Once they join with this email, they’ll see the house.'],
     ['a number', '', '+61 400 000 000', 'Once they join with this number, they’ll see the house.'],
     [
-      'both, where the email comes first',
+      'an email of only spaces and a number',
+      '  ',
+      '+61 400 000 000',
+      'Once they join with this number, they’ll see the house.',
+    ],
+    [
+      'both, where only one is used',
       'sam@example.com',
       '+61 400 000 000',
-      'Once they join, they’ll see the house. The email comes first: the number only finds someone it already belongs to, and isn’t saved.',
+      'Once they join, they’ll see the house. Only one of them is used: the email, unless only the number already belongs to someone. The other isn’t saved.',
     ],
   ])('says what happens with %s', (_case, email, phone, hint) => {
     expect(linkHint(email, phone, PLACE)).toBe(hint)
