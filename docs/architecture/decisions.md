@@ -72,7 +72,7 @@ Format: ID, date, status (`accepted`, `superseded by D-xxx`), decision, why, tra
 ### D-010: Closed periods never change
 *2026-10-18 · accepted*
 
-**Decision:** Final statements lock their transactions. Corrections are `adjustment` transactions on the next statement. Only the latest statement can be voided. One exception: a person merge repoints a locked transaction's shares from the merged placeholder to the person it was merged into, and nothing else ([I-7](ledger.md#invariants)).
+**Decision:** Final statements lock their transactions. Corrections are `adjustment` transactions on the next statement. Only the latest statement can be voided. One exception: a person merge renames the merged placeholder to the person it was merged into in a locked transaction: in its shares, its stored input and its item splits, and nothing else ([I-7](ledger.md#invariants)). *Amended 2026-10-19 ([#263](https://github.com/rojinc/ledgerly/issues/263)): the stored input and item splits were added, so a statement voided after a merge leaves rows an edit can keep.*
 **Why:** Invoices that were sent must stay true, and openings always chain correctly.
 **Trade-off:** Fixing an old mistake shows up as a new line, not an edit.
 
