@@ -167,6 +167,7 @@ describe('step 5b: invite clean-up', () => {
 
   it('ends the step when a query fails, and the run goes on to the nightly check', async () => {
     const services = seeded(old(3))
+    // Every other table reads empty: enough to show the run carries on past this step.
     const invites = vi.fn()
     vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
       if (params.tableId !== 'invites') return { total: 0, rows: [] }
