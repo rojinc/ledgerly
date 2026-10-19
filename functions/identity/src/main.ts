@@ -5,9 +5,11 @@ import {
   type RouteContext,
   route,
 } from '@ledgerly/server/http/create-handler'
+import { acceptInvite } from './routes/accept-invite'
 import { bootstrap } from './routes/bootstrap'
 import { postClaim } from './routes/claim'
-import { passwordNotice } from './routes/password-notice'
+import { eventRun } from './routes/event-run'
+import { createInvite } from './routes/invites'
 import { joinPendingGroup, listPendingGroups } from './routes/pending-groups'
 import { updateProfile } from './routes/profile'
 import { sendReminder } from './routes/reminders'
@@ -23,18 +25,19 @@ export function identityRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
-    // One route for both runs that come with no caller: the hourly schedule finishes merges
-    // (identity-and-invites.md#finishing-merges), and the users.*.update.password and
-    // users.*.recovery.*.update events send the password notice (#password-notice). A signed-in
-    // call gets the password notice's FORBIDDEN; one with neither a JWT nor a trigger gets
-    // createHandler's UNAUTHENTICATED first.
+    // One route for every run that comes with no caller: the hourly schedule finishes merges
+    // (identity-and-invites.md#finishing-merges), and the users.*.update.password,
+    // users.*.recovery.*.update, users.*.update.email and users.*.update.phone events send the
+    // password and change notices (#password-notice, #email-and-phone-change-notice). A signed-in
+    // call gets FORBIDDEN; one with neither a JWT nor a trigger gets createHandler's
+    // UNAUTHENTICATED first.
     route(
       'POST',
       '/',
       async (ctx) =>
         ctx.scheduled
           ? run(ctx.scheduled, () => services(ctx))
-          : passwordNotice(services(ctx), ctx.event, ctx.headers, ctx.body),
+          : eventRun(services(ctx), ctx.event, ctx.headers, ctx.body),
       { event: true },
     ),
     route('POST', '/bootstrap', async (ctx) =>
@@ -45,6 +48,12 @@ export function identityRoutes(
     ),
     route('POST', '/claim', async (ctx) =>
       postClaim(services(ctx), requireUser(ctx.userId), ctx.body),
+    ),
+    route('POST', '/invites', async (ctx) =>
+      createInvite(services(ctx), requireUser(ctx.userId), ctx.body),
+    ),
+    route('POST', '/invites/accept', async (ctx) =>
+      acceptInvite(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
     route('POST', '/reminders', async (ctx) =>
       sendReminder(services(ctx), requireUser(ctx.userId), ctx.body),

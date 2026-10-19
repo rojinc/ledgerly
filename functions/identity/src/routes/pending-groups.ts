@@ -129,7 +129,7 @@ function notAMember(): AppError {
 }
 
 // One row per person and group (members.uniq_group_person).
-async function ownMemberRow(
+export async function ownMemberRow(
   db: Db,
   groupId: string,
   personId: string,
