@@ -3,7 +3,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { schedulerRoutes } from '../src/main'
 import type { RunResult } from '../src/routes/run'
 import {
@@ -18,6 +18,16 @@ import {
   ok,
   person,
 } from './harness'
+
+// Every logProblem line a test writes, checked for personal data after each test.
+let logged: MockInstance<typeof console.error>
+beforeEach(() => {
+  logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+})
+afterEach(() => {
+  for (const args of logged.mock.calls) expect(String(args)).not.toMatch(/@|Sam|Acme/)
+  logged.mockRestore()
+})
 
 const SYDNEY_YESTERDAY = '2026-10-18'
 
@@ -370,12 +380,22 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 't2')).toBe(NOW.toISOString())
   })
 
-  it('counts any other failure and carries on with the next row', async () => {
+  it('counts and logs any other failure, and carries on with the next row', async () => {
     const services = seeded([transaction('t1'), transaction('t2', { date: '2026-10-17' })])
-    services.sendEmail.mockRejectedValueOnce(new TypeError('boom'))
+    services.sendEmail.mockRejectedValueOnce(new TypeError('Sam <sam@example.com>'))
     expect((await runCron(services)).reminders).toEqual({ sent: 1, skipped: 0, failed: 1 })
     expect(remindedAt(services, 't1')).toBeNull()
     expect(remindedAt(services, 't2')).toBe(NOW.toISOString())
+    // IDs and the error's name, never its message.
+    expect(logged.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'reminder_failed',
+        groupId: 'acme',
+        transactionId: 't1',
+        cause: 'TypeError',
+      },
+    ])
   })
 
   it('sends nothing about a shift posted after the page was read', async () => {

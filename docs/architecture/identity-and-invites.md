@@ -229,7 +229,7 @@ The `identity` function subscribes to two Appwrite events: `users.*.update.passw
 4. **The email** goes to that verified address, through Resend with the idempotency key `password-notice-<SHA-256 hex of "<userId>:<passwordUpdate>">`, so each change sends at most one email.
    - It says when the change happened, in the profile's time zone (UTC with no profile), and "If this wasn't you, reset your password now", with a link to the app's sign-in page (`APP_URL`).
    - It holds no password, token, or link that signs anyone in.
-5. **Logs** hold the user ID and the outcome only: `sent`, `stale`, `unverified`, `gone`, or `failed` with the email error's type.
+5. **Logs** hold the user ID and the outcome only (`logProblem`'s `password_notice`): `sent`, `stale`, `unverified`, `gone`, or `failed` with the email error's type and status.
 
 A forged or replayed call can do nothing new: at worst it asks again, within the hour, for the email the real event already sent, and Resend's key drops that copy. **Accepted:**
 - A phone-only account gets no notice until SMS can carry it (#175).
