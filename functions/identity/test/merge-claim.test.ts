@@ -258,7 +258,7 @@ function partDone(services: Fakes) {
       !services.db
         .rows('members')
         .some((row) => row.groupId === groupId && row.personId === 'pP') &&
-      ['shares', 'transactions', 'schedules'].some((table) =>
+      ['shares', 'transactions', 'schedules', 'activity'].some((table) =>
         services.db
           .rows(table as 'shares')
           .some((row) => row.groupId === groupId && /\bpP\b/.test(JSON.stringify(row))),
@@ -675,6 +675,18 @@ describe('POST /claim, merging a placeholder', () => {
         ),
       ],
       shares: [share('s9', 't9', 'g3', 'pX', 2000, 1000), share('s10', 't9', 'g3', 'pP', 0, 1000)],
+      activity: [
+        {
+          $id: 'aG3',
+          $createdAt: BEFORE,
+          at: BEFORE,
+          groupId: 'g3',
+          actorPersonId: 'pX',
+          action: 'member.added',
+          subjectPersonId: 'pP',
+          summary: 'was added',
+        },
+      ],
     })
     // Marked in that earlier claim, so g3 is one of Sammy's groups.
     await withTransaction(services.db, (tx) =>
@@ -694,6 +706,10 @@ describe('POST /claim, merging a placeholder', () => {
     // waits. The input names Sam now: it named a non-member before, so nothing changes there.
     expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: [] })
+    // The activity there moves all the same: it doesn't need a member row (#257).
+    expect(services.db.rows('activity').find((row) => row.$id === 'aG3')?.subjectPersonId).toBe(
+      'pSam',
+    )
     expect(warn).toHaveBeenCalledWith(
       'merge pP into pSam left shares row s10 in group g3 for a later claim',
     )
@@ -787,7 +803,11 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     expect(phase).toBe(2)
     // g1's template and t1 both still name Sammy: g1 waits whole for the next claim.
-    expect(namingSammy(services)).toMatchObject({ schedules: ['sc1'], transactions: ['t1'] })
+    expect(namingSammy(services)).toMatchObject({
+      schedules: ['sc1'],
+      transactions: ['t1'],
+      activity: ['aAdded'],
+    })
   })
 
   it('keeps the merge open when a row of Sammy’s appears outside the groups it walked', async () => {

@@ -1252,6 +1252,18 @@ describe('moveSubjects (step 3)', () => {
     return new FakeDb({ persons: [U, P], activity } as ConstructorParameters<typeof FakeDb>[0])
   }
 
+  it('starts no batch once the deadline has passed, even partway through a group', async () => {
+    const store = seed(Array.from({ length: 100 }, (_, n) => about(n)))
+    // Out of time once the first batch has been read.
+    const start = Date.now()
+    let reads = 0
+    vi.spyOn(Date, 'now').mockImplementation(() => (++reads > 1 ? start + 60_000 : start))
+    expect(await moveSubjects(store, 'pP', 'pU', ['g1'], start + 1000)).toEqual({
+      moved: 90,
+      done: false,
+    })
+  })
+
   it('makes every activity row about P in its groups about U, in batches of at most 90', async () => {
     const store = seed([
       ...Array.from({ length: 100 }, (_, n) => about(n)),
