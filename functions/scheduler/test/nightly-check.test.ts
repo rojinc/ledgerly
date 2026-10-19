@@ -710,7 +710,8 @@ describe('step 6: nightly check', () => {
       teams: Object.fromEntries(groups.map((row) => [row.$id, []])),
     })
     expect(await nightlyCheck(services)).toMatchObject({ checked: 250, failed: 0, busy: 0 })
-  })
+    // 250 groups take about 1.5 s alone, and more than 5 s on a busy machine.
+  }, 20_000)
 
   it('fails a group whose team can’t be read, and leaves it due', async () => {
     const services = seeded()
