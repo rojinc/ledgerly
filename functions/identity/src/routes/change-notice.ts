@@ -155,12 +155,11 @@ async function sendEach(
       } catch (error) {
         if (!(error instanceof EmailError)) return 'failed (unknown)'
         if (ALREADY_SENT.has(error.type)) return 'sent'
-        // After Resend's wait, cut so the retry can still start in time.
+        // After Resend's wait, and only if that wait ends by LAST_START_MS (the lead on #329):
+        // a retry sent sooner only gets another 429 and holds up the addresses after it.
         const retryAt = Date.now() + (error.retryAfterMs ?? RETRY_AFTER_MS)
         const retry =
-          error.type === 'rate_limit_exceeded' &&
-          attempt === 1 &&
-          (await startAt(Math.min(retryAt, started + LAST_START_MS)))
+          error.type === 'rate_limit_exceeded' && attempt === 1 && (await startAt(retryAt))
         if (!retry) return `failed (${error.type})`
       }
     }

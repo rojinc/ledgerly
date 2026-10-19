@@ -478,19 +478,31 @@ describe('sending (step 6)', () => {
     ])
   })
 
-  it('cuts a long retry-after so the retry still starts by 12 s', async () => {
+  it('doesn’t retry when Resend’s wait ends after 12 s, and goes on to the next address', async () => {
     const services = seeded(old(2))
     const attempts = clocked(services, async (attempt) => {
       if (attempt === 0) throw failure('rate_limit_exceeded', 429, 60_000)
     })
     expect((await run(services)).status).toBe(500)
+    expect(attempts.map(({ at, to }) => [at, to])).toEqual([
+      [0, 'old0@example.com'],
+      [500, 'old1@example.com'],
+    ])
+    expect(lines()).toEqual([
+      'identity: email change notice for user u1: failed (rate_limit_exceeded)',
+      'identity: email change notice for user u1: sent',
+    ])
+  })
+
+  it('retries when Resend’s wait ends at 12 s exactly', async () => {
+    const services = seeded(old(1))
+    const attempts = clocked(services, async (attempt) => {
+      if (attempt === 0) throw failure('rate_limit_exceeded', 429, 12_000)
+    })
+    expect((await run(services)).body).toEqual({ ok: true, data: {} })
     expect(attempts.map(({ at, timeoutMs }) => [at, timeoutMs])).toEqual([
       [0, 14_000],
       [12_000, 2_000],
-    ])
-    expect(lines()).toEqual([
-      'identity: email change notice for user u1: sent',
-      'identity: email change notice for user u1: failed (budget): 1 left',
     ])
   })
 
