@@ -29,7 +29,7 @@ The planned `receiptFiles` rows (#163), one for each receipt a write adds or rem
 The `balances` cache ([ledger](ledger.md#balances)) is **one row per group**, with everyone's balance in its JSON, and not one row per person:
 - A per-person row's ID would be `<groupId>_<personId>`, 41 to 57 characters, and Appwrite IDs allow 36.
 - A `PATCH` that moves a split from 15 people to 15 others would write 30 rows, for 64 + 30 = 94 operations, over 90.
-- A missing per-person row couldn't tell "no shares" from "not backfilled yet". A missing group row only ever means the second.
+- A missing per-person row couldn't tell "no shares" from "not built". A missing group row only ever means the second: not built yet, or deleted until the nightly check builds it again.
 
 The JSON holds one entry for each person who has a share in the group: tens of entries, far under `mediumtext`'s 16 MB.
 
@@ -39,6 +39,7 @@ The JSON holds one entry for each person who has a share in the group: tens of e
 | --- | --- | --- |
 | The scheduler loops over every user | Not an issue: it only queries `schedules` with `nextRunAt <= now` (indexed) and `groups` with `nextCloseAt <= now`. Work grows with what is **due**. | If one run can't finish the due work within the hour, run the cron every 15 minutes, then split by schedule kind into separate functions. |
 | Balances are summed on every dashboard load | A `balances` row per group, kept by every write of shares in its own transaction. `GET /balances` reads that one row, and the scheduler's [nightly check](scheduling.md#step-5-nightly-check) compares it with a fresh sum ([ledger](ledger.md#balances)). | Nothing more needed. Clients didn't change. |
+| The nightly check reads every group's shares again each day | Step 5 reads each due group whole once a day, in what's left of the hourly runs' budget. Work grows with all shares, not with what changed. | When step 5 can't check every due group within a day's runs (groups still due after 24 hours): skip a group whose `rev` hasn't changed since its last finished check (an additive `groups.checkedRev`). |
 | Long history lists | Cursor pagination, filtered by date range | Nothing more needed. |
 | Slow queries | An index exists for every query in [data model](data-model.md) | Any new query in a PR must name the index it uses. |
 | Duplicate writes from retries or bad mobile networks | Client-generated IDs; deterministic occurrence IDs | Nothing more needed. |

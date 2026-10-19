@@ -62,7 +62,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
+The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, then the nightly check. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -143,28 +143,29 @@ The email goes only to a verified account email, and a period with no shares and
 
 ### Step 5: nightly check
 
-Runs last. It takes groups where `nextCheckAt` is empty or `<= now` (`idx_nextCheckAt`), in pages of 100, until the run's time budget. Archived groups are checked too. A check only reads, apart from the two repairs below: it never writes shares, transactions or members, and it doesn't finish merges.
+Runs last, in what's left of the run's budget. It takes groups where `nextCheckAt` is empty or `<= now` (`idx_nextCheckAt`), in pages of 100 by `$id` as step 1 does, until the budget is used. Archived groups are checked too. A check reads, apart from the two repairs below and its `nextCheckAt`: it never writes shares, transactions or members, and it doesn't finish merges. A group whose team is gone (a [purge](identity-and-invites.md#deleting-an-account-m4) in progress) has no memberships to check.
 
 **Reading a group whole.** It reads the group's `rev`, then the group's members, posted transactions (`idx_group_status_date`), shares and `balances` row, then `rev` again. Every write of shares changes `rev` ([concurrency](ledger.md#concurrency)), so the same value means nothing changed in between. Otherwise it reads again, up to 3 times, then leaves the group for the next run (counted as `busy`).
 
 **Checks.** Each finding is one error log line with the event, the `groupId`, and the `transactionId`, `membershipId` or rule. IDs only ([personal data](security-and-privacy.md#personal-data)).
 - The `balances` row, if the group has one, equals the one built fresh from the shares (core `balancesFromShares()`).
-- Every posted transaction passes `assertShareInvariants()` (I-1, I-2, I-4, I-5).
-- Every share's person has a member row in the group (I-3). A person with `mergedInto` set counts as `merging`, not as broken: a merge cut off partway leaves shares on P ([merging](identity-and-invites.md#merging-two-persons)).
+- Every posted transaction passes `assertShareInvariants()` (I-1, I-2, I-4, I-5), with each of its shares' persons counted as a member, so I-3 below doesn't stop the other checks.
+- Every share's person has a member row in the group (I-3). A share of a person whose merge isn't finished (`mergedInto` set, and the person still has an identity) counts as `merging`, not as broken: a merge cut off partway leaves shares on P ([merging](identity-and-invites.md#merging-two-persons)). Once P has no identity, a share left on P is broken.
 - Every share belongs to a posted transaction of this group (I-6).
 
 Broken shares or transactions are reported, never fixed. They're fixed by hand, with adjustments.
 
-**Repairing the `balances` row.** A missing row (the backfill) or a wrong one is rewritten in one database transaction: stage the group's guard write, sum the shares after it, then write the row. A wrong row also logs an error. A write of shares that lands meanwhile fails one of the two commits.
+**Repairing the `balances` row.** A missing row (the backfill, or one deleted since) or a wrong one is rewritten in one database transaction: stage the group's guard write, sum the shares after it, then write the row. A wrong row also logs an error. A write of shares that lands meanwhile fails one of the two commits.
 
 **The team.** A team membership is removed when all of these hold:
-- The user's person has no `active` or `left` member row in the group, or has one they left on their own (`leftOnTheirOwn()`: their own `member.left` is the newest of their `member.left` and `member.joined` rows, [leaving](permissions.md#leaving-a-group)).
+- The user's person has no `active` or `left` member row in the group, or only a `left` row they left on their own since that member row was created (`leftOnTheirOwn()`: their own `member.left` is the newest of their `member.left` and `member.joined` rows, [leaving](permissions.md#leaving-a-group)).
+- The person isn't being deleted (`deletedAt` empty): [account deletion](identity-and-invites.md#deleting-an-account-m4) leaves the team as its own last step for each group, and decides a rerun from it.
 - The membership is more than 1 hour old, because joining and merging add the team membership before the member row ([joining](identity-and-invites.md#joining-a-group)).
 - Reading the member rows again just before removing still shows this.
 
-This catches a join, a removal or a leave that stopped between its Teams call and its database transaction. A membership that's already gone counts as removed. It's the scheduler's only team write (the `teams.write` scope), and no route that people call reaches it.
+After removing it, the check reads the member rows once more, and adds the membership back if a join or a merge made the person a joined member meanwhile. This catches a join, a merge or a leave that stopped between its Teams call and its database transaction. A membership that's already gone counts as removed. These are the scheduler's only team writes (the `teams.write` scope), and no route that people call reaches them.
 
-**When it's done.** A group whose check finished gets `nextCheckAt` = 03:00 tomorrow in the group's time zone, worked out as a local date and then converted to UTC, as for summaries. A group cut off by the budget keeps its old value, so the next run checks it from the start. Writing `nextCheckAt` changes the group row, so a ledger write that overlaps it runs once more. Runs that overlap are safe: the checks only read, the repairs are guarded, and the run returns counts only. Until alerting exists, the error lines are the alert.
+**When it's done.** A group whose check finished gets `nextCheckAt` = 03:00 tomorrow in the group's time zone, worked out as a local date and then converted to UTC, as for summaries. A group cut off by the budget, or left as `busy`, gets `nextCheckAt` one hour later: a later run checks it from the start, and the next run starts with the groups after it. Writing `nextCheckAt` changes the group row, so a ledger write that overlaps it runs once more. Runs that overlap are safe: the checks only read, the repairs are guarded, and the run returns counts only. Until alerting exists, the error lines are the alert.
 
 ## Schedule routes
 

@@ -229,7 +229,7 @@ A cache of each person's balance in a group, so `GET /groups/{groupId}/balances`
 | --- | --- | --- |
 | `peopleJson` | mediumtext | `BalancesPeople`: `{ personId, netCents, shares }[]`, one entry for each person with at least one share in the group, with their net and how many shares they have, in ascending `personId` order |
 
-A group with no row hasn't been backfilled yet: `/balances` sums its shares instead, and the [nightly check](scheduling.md#step-5-nightly-check) creates the row. Why it isn't one row per person: [Scaling](scaling.md#the-balances-cache).
+A group with no row has none built yet, or had it deleted (by a [merge](identity-and-invites.md#merging-two-persons), or because it didn't fit, [ledger](ledger.md#balances)): `/balances` sums its shares instead, and the [nightly check](scheduling.md#step-5-nightly-check) builds the row. Why it isn't one row per person: [Scaling](scaling.md#the-balances-cache).
 Indexes: none (read by ID).
 Permissions: none (server only). Clients get balances from `GET /groups/{groupId}/balances`.
 
