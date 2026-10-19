@@ -17,7 +17,7 @@ import {
   isAppwriteError,
   isPlaceholder,
   tryAgain,
-  typedKeys,
+  typedKeyDeletes,
 } from '../rows'
 import type { AccountUser, Services } from '../services'
 import { claim, type VerifiedIdentity, verifiedIdentities } from './claim'
@@ -64,7 +64,7 @@ async function setUp(
   const { region, currency } = profileDefaults(timeZone)
   const team = [Permission.read(Role.team(groupId))]
   try {
-    await withTransaction(db, async (tx) => {
+    const deleted = await withTransaction(db, async (tx) => {
       await tx.write(
         person.write,
         {
@@ -111,18 +111,21 @@ async function setUp(
         const stored = await getRowOrNull<Persons>(db, TABLES.persons, person.personId)
         if (!stored || !(isPlaceholder(stored) || stored.userId === userId)) throw tryAgain()
         // Only the keys the user verified stay theirs; the ones someone typed go, in this same
-        // transaction (identity-and-invites.md#only-verified-keys-move). IDs and counts only.
-        const typed = await typedKeys(
+        // transaction (identity-and-invites.md#only-verified-keys-move).
+        const deletes = await typedKeyDeletes(
           db,
           person.personId,
           identities.map((identity) => identity.key),
         )
-        if (typed.length > 0) {
-          await tx.write(...typed)
-          console.log(`bootstrap adopted ${person.personId}: ${typed.length} typed keys deleted`)
-        }
+        if (deletes.length > 0) await tx.write(...deletes)
+        return deletes.length
       }
+      return 0
     })
+    // Once committed, so a lost race logs nothing. IDs and counts only.
+    if (deleted > 0) {
+      console.log(`bootstrap adopted ${person.personId}; typed keys deleted: ${deleted}`)
+    }
   } catch (error) {
     if (!isAppwriteError(error, 409)) throw error
     // A bootstrap for the same user that ran at the same time created the profile first: use

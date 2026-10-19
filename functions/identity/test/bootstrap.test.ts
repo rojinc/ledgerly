@@ -1,4 +1,5 @@
 import type { BootstrapResult } from '@ledgerly/core/schemas/identity'
+import { resolvePerson } from '@ledgerly/server/identity/resolve-person'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -45,13 +46,18 @@ function addedBeforeSignUp(typed: ReturnType<typeof identity>[] = []) {
 }
 
 let warn: ReturnType<typeof vi.spyOn>
+let log: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  log = vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 afterEach(() => {
   // No personal data in logs: no email, phone number or name.
   for (const args of warn.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}|Sam/)
+  // An adoption logs IDs and counts only, never a key.
+  for (const args of log.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}/)
   warn.mockRestore()
+  log.mockRestore()
 })
 
 describe('POST /bootstrap', () => {
@@ -184,27 +190,58 @@ describe('POST /bootstrap', () => {
     const typedPhone = () => identity('iTyped', 'phone:+61400000000', 'pSam')
 
     it('deletes a typed key when it adopts, in the same transaction, and logs a count', async () => {
-      const services = addedBeforeSignUp([typedPhone()])
-      const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+      // Another placeholder's typed key is nothing to do with this adoption.
+      const services = addedBeforeSignUp([
+        typedPhone(),
+        identity('iOther', 'phone:+61400000999', 'pOther'),
+      ])
       expect((await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)).personId).toBe(
         'pSam',
       )
-      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam'])
-      expect(log).toHaveBeenCalledWith('bootstrap adopted pSam: 1 typed keys deleted')
-      log.mockRestore()
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iOther'])
+      expect(log).toHaveBeenCalledWith('bootstrap adopted pSam; typed keys deleted: 1')
     })
 
     it('keeps a key the user verified too, and logs nothing', async () => {
       const services = addedBeforeSignUp([typedPhone()])
       services.users.get = async () => account({ phone: '+61400000000', phoneVerification: true })
-      const log = vi.spyOn(console, 'log').mockImplementation(() => {})
       await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)
       expect(services.db.rows('identities')).toEqual([
         expect.objectContaining({ $id: 'iSam', personId: 'pSam', verified: true }),
         expect.objectContaining({ $id: 'iTyped', personId: 'pSam', verified: true }),
       ])
       expect(log).not.toHaveBeenCalled()
-      log.mockRestore()
+    })
+
+    it("drops the victim's typed email when someone adopts by their own phone (#247)", async () => {
+      // Someone added P as the victim's email beside their own phone, then signed up and
+      // verified only the phone.
+      const services = fakes({
+        persons: [placeholder('pP')],
+        identities: [
+          identity('iVictim', 'email:victim@example.com', 'pP'),
+          identity('iPhone', 'phone:+61412345678', 'pP'),
+        ],
+      })
+      services.users.get = async () =>
+        account({
+          email: '',
+          emailVerification: false,
+          phone: '+61412345678',
+          phoneVerification: true,
+        })
+      expect((await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)).personId).toBe('pP')
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iPhone'])
+      // So a group that adds the victim later gets a new placeholder, not the account.
+      const added = await resolvePerson(
+        services.db,
+        { displayName: 'Vic', email: 'victim@example.com' },
+        'AU-NSW',
+      )
+      expect(added.personId).not.toBe('pP')
+      expect(added.writes).toContainEqual(
+        expect.objectContaining({ action: 'create', tableId: 'persons' }),
+      )
     })
   })
 
@@ -344,6 +381,8 @@ describe('POST /bootstrap', () => {
       expect(services.db.rows('persons')[0]?.userId).toBe('uOther')
       // Its typed-key delete went with the rest: the placeholder is the other user's to claim.
       expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iTyped'])
+      // And nothing claims it was adopted.
+      expect(log).not.toHaveBeenCalled()
     },
   )
 

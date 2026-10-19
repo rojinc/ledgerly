@@ -54,16 +54,18 @@ export async function findIdentity(db: Db, key: string): Promise<Identities | un
  * verified keys: a claim, by adoption or by merge, moves only those to the user
  * (identity-and-invites.md#only-verified-keys-move).
  */
-export async function typedKeys(
+export async function typedKeyDeletes(
   db: Db,
   placeholderId: string,
   verified: readonly string[],
 ): Promise<Write[]> {
-  // One page: a placeholder has one typed key (two from before #252), and the user's own keys.
+  // One page: a placeholder has only the keys typed when it was added, one since #252 (an email
+  // and a phone before it).
   const { rows } = await db.listRows<Identities>({
     databaseId: DATABASE_ID,
     tableId: TABLES.identities,
     queries: [Query.equal('personId', placeholderId), Query.limit(100)],
+    total: false,
   })
   return rows
     .filter((identity) => !verified.includes(identity.key))
