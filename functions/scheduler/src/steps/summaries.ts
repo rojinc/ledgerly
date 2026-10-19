@@ -60,8 +60,10 @@ async function summarise(
     email = seen.summaryFrequency === 'none' ? undefined : await summaryOf(services, seen, links)
   } catch (error) {
     // One that can never be built (an amount too big to show, a query Appwrite refuses) would
-    // fail on every run, so it moves on and counts as failed. A read that failed for now (a
-    // timeout, a rate limit) leaves it for the next run.
+    // fail on every run, and a group row gone only meets a deleted person, who gets none: these
+    // move on and count as failed. Anything else leaves it for the next run: a timeout, a rate
+    // limit, an outage, a key missing a scope or a table missing, so a config error fixed later
+    // loses no period.
     if (!lasting(error)) throw error
     console.error(`scheduler: summary failed for profile ${seen.$id}: ${describe(error)}`)
     return (await moveOn(services, seen)) ? 'failed' : undefined
@@ -69,14 +71,13 @@ async function summarise(
   return moveOn(services, seen, email)
 }
 
+// A row gone, not a table or route missing (as transaction.ts's ROW_GONE).
+const ROW_GONE = ['row_not_found', 'document_not_found']
+
 function lasting(error: unknown): boolean {
-  return (
-    error instanceof RangeError ||
-    (error instanceof AppwriteException &&
-      error.code >= 400 &&
-      error.code < 500 &&
-      error.code !== 429)
-  )
+  if (error instanceof RangeError) return true
+  if (!(error instanceof AppwriteException)) return false
+  return error.code === 400 || (error.code === 404 && ROW_GONE.includes(error.type))
 }
 
 class Changed extends Error {}
