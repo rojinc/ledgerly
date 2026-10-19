@@ -60,6 +60,29 @@ export async function requireMember(
   return { person, member, group }
 }
 
+/**
+ * requireMember for the group of a row that was looked up by ID: a transaction, statement or
+ * schedule. Someone who isn't a member gets the route's `NOT_FOUND`, the same answer as for an
+ * ID that doesn't exist, so IDs can't be probed (#121, #136). Every other error passes through.
+ */
+export async function requireMemberOf(
+  db: Db,
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  userId: string | null,
+  groupId: string,
+  notFound: string,
+  options: { roles?: readonly Role[] } = {},
+): Promise<Membership> {
+  try {
+    return await requireMember(db, teams, userId, groupId, options)
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'NOT_A_MEMBER') {
+      throw new AppError('NOT_FOUND', notFound)
+    }
+    throw error
+  }
+}
+
 async function findOne<R extends Persons | Members>(
   db: Db,
   tableId: string,

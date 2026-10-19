@@ -1,7 +1,6 @@
 import { addDays } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Schedules } from '@ledgerly/core/generated/rows'
-import { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
+import { scheduleInputSchema, type UpdatedSchedule } from '@ledgerly/core/schemas/scheduler'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { guardGroupAndMembers, ledgerRoute, loadLedger } from '@ledgerly/server/ledger/transactions'
@@ -10,12 +9,11 @@ import { parseBody } from '../parse-body'
 import {
   checkTemplate,
   getSchedule,
+  requireRecentStart,
   requireScheduleWriter,
   scheduleColumns,
 } from '../schedule-rows'
 import type { Services } from '../services'
-
-export type UpdatedSchedule = { schedule: Schedules; created: number; removed: number }
 
 /**
  * `scheduler PATCH /schedules/{id}` (scheduling.md#schedule-routes): saves the new rule and
@@ -42,6 +40,9 @@ export async function updateSchedule(
         "A schedule's group and kind can't change. End it and add a new one.",
       )
     }
+    if (input.startsOn !== schedule.startsOn) {
+      requireRecentStart(input.startsOn, membership.group, now)
+    }
     const yesterday = addDays(localToday(membership.group.timezone, now), -1)
     const changes = {
       ...scheduleColumns(input),
@@ -60,7 +61,7 @@ export async function updateSchedule(
     })
     // The expansion brings the occurrences from today on in line with the new rule. One that
     // stops partway is finished by the next cron run.
-    const { created, removed } = await generateOccurrences(
+    const expansion = await generateOccurrences(
       db,
       await getSchedule(db, scheduleId),
       membership.group,
@@ -68,6 +69,6 @@ export async function updateSchedule(
       now,
       changes.generatedThrough,
     )
-    return { schedule: await getSchedule(db, scheduleId), created, removed }
+    return { schedule: await getSchedule(db, scheduleId), ...expansion }
   })
 }

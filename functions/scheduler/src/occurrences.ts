@@ -87,8 +87,8 @@ export function nextRunAt(today: LocalDate, timeZone: string): string {
   return new Date(midnight + 5 * MS_PER_MINUTE).toISOString()
 }
 
-/** What an expansion did: occurrences it created, and ones it deleted as stale. */
-export type Expansion = { created: number; removed: number }
+/** What an expansion did: occurrences it created, changed in place, and deleted as stale. */
+export type Expansion = { created: number; updated: number; removed: number }
 
 // One change an expansion makes, on one date.
 type Step =
@@ -185,7 +185,7 @@ export async function generateOccurrences(
   }
 
   let seen = schedule
-  const result: Expansion = { created: 0, removed: 0 }
+  const result: Expansion = { created: 0, updated: 0, removed: 0 }
   const batches = batchesOf(steps, 2 + people.length)
   for (const [index, batch] of batches.entries()) {
     if (outOfTime()) break
@@ -206,6 +206,7 @@ export async function generateOccurrences(
     seen = { ...seen, ...progress }
     for (const step of batch) {
       if (step.action === 'create') result.created += 1
+      if (step.action === 'update') result.updated += 1
       if (step.action === 'delete') result.removed += 1
     }
   }

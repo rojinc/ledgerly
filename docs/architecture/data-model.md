@@ -226,7 +226,7 @@ Permissions: `read("team:<groupId>")` (the function sets the group's team when i
 | `groupId` | varchar(36) | |
 | `kind` | enum(shift, bill, expense, income) | |
 | `description` | varchar(200) | |
-| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule), and without `receiptFileIds` (a receipt belongs to one transaction) |
+| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule), and without `receiptFileIds` (a receipt belongs to one transaction); a bill's is `due`, with no `dueOn`, billing period or `days` split |
 | `rrule` | varchar(255) | RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=TH` |
 | `startsOn` | varchar(10) | First possible occurrence (local date) |
 | `endsOn` | varchar(10)? | Last possible occurrence. Empty = until stopped. |
