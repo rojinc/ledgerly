@@ -15,3 +15,5 @@ export const MAX_HOURS_CAP_MINUTES = { week: 7 * 24 * 60, fortnight: 14 * 24 * 6
 
 // #50: deleting an account needs a session signed in this recently, so an old, stolen one can't.
 export const REAUTH_WINDOW_MINUTES = 10
+// …nor while the password is this new: a stolen session could set a first one and sign in again.
+export const RECENT_PASSWORD_CHANGE_HOURS = 24

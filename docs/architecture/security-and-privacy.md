@@ -65,7 +65,7 @@ Rules, in `packages/core/src/export/`:
 
 - **Money** is a decimal string made from integer cents with the currency's digits (`-12.30`, `0.05`; JPY `1234`), never through a float. **Dates** are the stored `YYYY-MM-DD`. `person` is the member's display name in that group.
 - **RFC 4180:** CRLF line ends, a UTF-8 byte order mark, quotes doubled, and quotes around any field holding `,`, `"`, CR or LF.
-- **Spreadsheet formulas:** a text cell starting with `=`, `+`, `-`, `@`, tab or CR gets a leading `'`, so opening the file never runs a formula someone typed. Money cells never get one.
+- **Spreadsheet formulas:** a text cell starting with `=`, `+`, `-`, `@` (or their full-width forms `＝＋－＠`), tab or CR gets a leading `'`, so opening the file never runs a formula someone typed. Names, descriptions, categories and profile values are all text cells; money cells never get one.
 - Any member can export a group they can read, viewers and people who moved out included. Nothing is written or uploaded.
 
 ## Retention
@@ -76,7 +76,7 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 - **A purged group's invoices are deleted** with it. The delete screen tells users to export first.
 - **Backups** follow Appwrite Cloud's retention, so deleted data can stay in a backup for that period.
 - **Activity rows written before #50** keep the names in their text, as history; rows written since name no one ([activity](data-model.md#activity)).
-- **Open question for the security review:** an account that signs in only with an email code has no password. If Appwrite lets a session set a first password without the old one (as `account.updatePassword` does today), a stolen session could set one, sign in fresh and pass the recent sign-in check. The app's password section (#203) allows exactly that, so #54 and the security pass should decide whether setting a first password also needs a recent sign-in.
+- **Deleting needs a recent sign-in and an old password.** The session must be under 10 minutes old, and `passwordUpdate` over 24 hours old, so a stolen session can't set a first password, sign in fresh and delete the account the same day ([refusals](identity-and-invites.md#refusals)). Accepted risk: signing in with Google (OAuth, later) would make a fresh session without a password change, so this rule must be revisited when OAuth is added. A follow-up emails the account's verified address whenever a password is set or changed.
 
 ## Secrets inventory
 

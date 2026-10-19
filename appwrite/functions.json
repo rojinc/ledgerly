@@ -41,20 +41,11 @@
     "ignore": ["*", "!dist/", "!dist/**", "!package.json"],
     "execute": ["users"],
     "events": [],
-    "schedule": "35 * * * *",
-    "timeout": 900,
+    "schedule": "",
+    "timeout": 15,
     "enabled": true,
     "logging": true,
-    "scopes": [
-      "rows.read",
-      "rows.write",
-      "files.read",
-      "files.write",
-      "teams.read",
-      "teams.write",
-      "users.read",
-      "users.write"
-    ]
+    "scopes": ["rows.read", "rows.write", "teams.read", "teams.write", "users.read"]
   },
   {
     "$id": "scheduler",
