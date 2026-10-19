@@ -55,10 +55,12 @@ jobs:
           # Every branch, so this commit can be checked against main's latest.
           fetch-depth: 0
 
-      # `push table --force` makes the database match this commit's tables.json, so deploying
+      # `push table --force` makes the database match the commit's tables.json, so deploying
       # an older commit (re-running an old run) would drop columns added since, with their data.
-      # Only main's latest commit deploys; a newer one's own run deploys that.
-      - name: Check this is main's latest commit
+      # So every run deploys main's latest commit. A run for an older one checks out the latest
+      # instead of skipping: merges that land together can get the newer runs cancelled
+      # (`concurrency` keeps one pending run), which would leave main's latest undeployed.
+      - name: Check out main's latest commit
         id: latest
         if: steps.secrets.outputs.ready == 'true'
         run: |
@@ -66,12 +68,17 @@ jobs:
             echo "::error::Deploy only from main, not $GITHUB_REF."
             exit 1
           fi
-          if [ "$(git rev-parse origin/main)" = "$GITHUB_SHA" ]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Skipped: main has a newer commit, and its own run deploys it."
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          latest=$(git rev-parse origin/main)
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            # This run's steps come from its own commit, so they must still be the latest's.
+            if ! git diff --quiet "$GITHUB_SHA" "$latest" -- .github/workflows/deploy.yml scripts/appwrite-table-plan.py; then
+              echo "::error::main's latest commit (${latest:0:7}) changed the deploy itself, so this run for ${GITHUB_SHA:0:7} can't deploy it. Nothing was deployed. Run Deploy on main."
+              exit 1
+            fi
+            git checkout --quiet --detach "$latest"
+            echo "::notice::Deploying main's latest commit, ${latest:0:7}, in place of ${GITHUB_SHA:0:7}."
           fi
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
 
       # The CLI takes the endpoint from APPWRITE_ENDPOINT over the config file's, and the config
       # file names the project, so this is the only check that the secrets and the file agree.

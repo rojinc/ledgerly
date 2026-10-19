@@ -40,7 +40,12 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 | **Run workflow** on `main`, by a person | the same steps: a redeploy of `main`'s latest commit. Agents never run it (AGENTS.md). |
 
 - **One deploy at a time,** and a running one is never cancelled.
-- **Only `main`'s latest commit deploys.** `push table --force` makes the database match the commit's `tables.json`, so deploying an older commit would drop columns added since, with their data. A re-run of an older run is skipped with a warning (the newer commit's own run deploys it), and a run on another branch fails. To undo a change, revert it on `main`.
+- **Every run deploys `main`'s latest commit, never an older one.** `push table --force` makes the database match the commit's `tables.json`, so deploying an older commit would drop columns added since, with their data.
+  - **A run for an older commit** (or a re-run of an old run) checks out `main`'s latest and deploys that, with a notice naming both commits.
+  - **Why it doesn't skip:** merges that land together can get the newer runs cancelled, since `concurrency` keeps only one pending run, and a skip would leave `main`'s latest undeployed.
+  - **One exception:** a run's steps come from its own commit. So if `main`'s latest changed `deploy.yml` or the plan script, that run fails without deploying, and a person runs **Deploy** on `main`.
+  - **A run on another branch** fails.
+  - **To undo a change,** revert it on `main`.
 - **A table push stops before it deletes or recreates anything the checks can see.** The plan, and then a check that the server has exactly the config's tables, come first; either one stops the deploy ([schema changes that lose data](#schema-changes-that-lose-data)). A change made on the server in the seconds between the checks and the push isn't caught before it's applied, only reported after.
 - **The CLI can exit 0 when a resource fails to push** (for example "Deployed 4 of 5 functions … 1 failed."), or when `--all` skips one that lacks a setting (`Skipping it: set "entrypoint" …`). So each push runs under `pipefail` and also fails on any `✗`, "… failed." or "Skipping it:" line in the CLI's output. `appwrite push all` can't be used: it needs a console login, not an API key.
 - **The CLI takes the endpoint from `APPWRITE_ENDPOINT` over the config file's,** so nothing in the CLI notices a mismatch. The workflow checks that `APPWRITE_ENDPOINT` is exactly the config's `endpoint` and that the project secret matches its `projectId` before it pushes.
