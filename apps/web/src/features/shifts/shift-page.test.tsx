@@ -718,9 +718,9 @@ describe('ShiftPage', () => {
     renderAt('/shifts/t1')
     await screen.findByText(/^8 h 0 min paid/)
     fireEvent.click(screen.getByRole('button', { name: 'Confirm as worked' }))
-    await settle()
+    // Waits for the posted row, not a fixed number of ticks (it was flaky under load).
+    await waitFor(() => expect(input('End').value).toBe('18:30'))
     expect(screen.getByText('Confirmed.')).toBeTruthy()
-    expect(input('End').value).toBe('18:30')
     expect(screen.getByText(/^9 h 0 min paid · .*229\.50$/)).toBeTruthy()
   })
 
@@ -732,8 +732,9 @@ describe('ShiftPage', () => {
     })
     renderAt('/shifts/t1')
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm as worked' }))
-    await settle()
-    expect(screen.getByRole('alert').textContent).toBe('It’s on a statement being finalised.')
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toBe('It’s on a statement being finalised.'),
+    )
     await waitFor(() => expect(getRow).toHaveBeenCalledTimes(2))
   })
 
@@ -775,8 +776,7 @@ describe('ShiftPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm as worked' }))
     expect(await screen.findByText('Confirmed.')).toBeTruthy()
     await act(async () => pending.resolve(failure('It was already confirmed.')))
-    await settle()
-    expect(screen.getByText('Scheduled: not confirmed yet.')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('Scheduled: not confirmed yet.')).toBeTruthy())
     expect(screen.getByRole('alert').textContent).toBe('It was already confirmed.')
   })
 
@@ -821,8 +821,7 @@ describe('ShiftPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Void shift' }))
     expect(await screen.findByText('Voided. Reason: Sick')).toBeTruthy()
     await act(async () => pending.resolve(failure('It’s on a final invoice.')))
-    await settle()
-    expect(screen.getByText('Confirmed.')).toBeTruthy()
+    await waitFor(() => expect(screen.getByText('Confirmed.')).toBeTruthy())
     expect(screen.getByRole('alert').textContent).toBe('It’s on a final invoice.')
   })
 
