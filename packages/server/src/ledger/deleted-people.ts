@@ -98,17 +98,28 @@ export async function refuseDeletedPeople(
 type StoredInput = TransactionTemplate & { kind: TransactionKind; date: LocalDate }
 
 // Who an unposted row's stored input splits it to, whatever its amount: a shift's two people, or
-// those its default split takes. Never a payer the server fills in. An explicit split or items
-// name their people already (`before`). The default split names them only through its shares,
-// which a zero total, a refund or a share rounded to nothing would hide, so it's planned at a
-// nominal amount, paid by the server's filled-in payer.
+// those a split that names nobody takes: the default split, or `days` without `personIds`
+// (everyone present in the bill's period), at the top level or in an item. Never a payer the
+// server fills in. A split that names its people has them in `before` already. The others name
+// them only through their shares, which a zero total, a refund or a share rounded to nothing
+// would hide, so each is planned on its own at a nominal amount, paid by the server's payer.
 function splitTo(input: StoredInput, ledger: Ledger): readonly string[] {
   if (input.kind === 'shift') return ledger.memberIds
-  if (input.split || input.items?.length) return []
-  const nominal = { ...input, payers: undefined, totalCents: NOMINAL_CENTS }
-  return plan(nominal, 'posted', ledger)
-    .shares.filter((share) => share.receivedCents > 0)
-    .map((share) => share.personId)
+  const splits = input.items?.length ? input.items.map((item) => item.split) : [input.split]
+  return splits
+    .filter((split) => split === undefined || (split.mode === 'days' && !split.personIds))
+    .flatMap((split) => {
+      const nominal = {
+        ...input,
+        payers: undefined,
+        items: undefined,
+        split,
+        totalCents: NOMINAL_CENTS,
+      }
+      return plan(nominal, 'posted', ledger)
+        .shares.filter((share) => share.receivedCents > 0)
+        .map((share) => share.personId)
+    })
 }
 
 /**

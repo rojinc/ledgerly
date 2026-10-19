@@ -301,6 +301,22 @@ describe('step 2: auto-post', () => {
     expect(row(services, id).status).toBe('scheduled')
   })
 
+  it('is refused too when the default split leaves out the creator it would pay', async () => {
+    // Alex joined on the 13th, so the default split on the 12th is Sam's alone. The occurrence
+    // was made before the deletion, but the payer it fills in still isn't kept (#337 re-check).
+    const services = seeded()
+    await create(services, { ...groceries, template: { totalCents: 6_000 } }, 'u2')
+    await update(services, 'members', 'elm-pAlex', { joinedOn: '2026-10-13' })
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 1 })
+    expect(row(services, id).status).toBe('scheduled')
+  })
+
   it('doesn’t post an expense its creator would pay if they move out just before its guard', async () => {
     const services = seeded()
     const forSam = {

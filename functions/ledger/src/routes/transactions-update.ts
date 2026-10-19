@@ -141,7 +141,14 @@ export const updateTransaction = (services: ServicesFor) =>
             kind: input.kind,
             // With the payer resolved above (a row's creator, say) and the default split.
             people: planned.people,
-            before: [...everyPersonId(before), ...oldShares.map((share) => share.personId)],
+            before: [
+              ...everyPersonId(before),
+              ...oldShares.map((share) => share.personId),
+              // A posted shift has its two people on it, even one of no minutes, with no shares.
+              ...(existing.status === 'posted' && existing.kind === 'shift'
+                ? ledger.memberIds
+                : []),
+            ],
             ...(existing.status === 'posted'
               ? {}
               : { unposted: { madeAt: existing.$createdAt, input: before } }),
