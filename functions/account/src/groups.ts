@@ -12,7 +12,7 @@ import { everyPersonId, type TransactionTemplate } from '@ledgerly/core/schemas/
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
+import { deleteTeam, othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { logProblem } from '@ledgerly/server/http/log'
@@ -25,6 +25,7 @@ import {
   laterOf,
 } from '@ledgerly/server/scheduler/end-schedule'
 import { ID, Permission, Query, Role } from 'node-appwrite'
+import { purge } from './purge'
 import { FORMER_MEMBER, getRowOrNull, isAppwriteError } from './rows'
 import type { Services } from './services'
 
@@ -65,9 +66,9 @@ function joinedRows(db: Db, personId: string): Promise<Members[]> {
   ])
 }
 
-// One group. False when it's left for the next run: it needs a purge, a statement in it is being
-// finalized, or something changed it meanwhile. A rerun never decides again: the group's state
-// says how it carries on, never the team as it is by then.
+// One group. False when it's left for the next run: a statement in it is being finalized,
+// something changed it meanwhile, or a purge ran out of time. A rerun never decides again: the
+// group's state says how it carries on, never the team as it is by then.
 async function leaveGroup(
   services: Services,
   userId: string,
@@ -77,14 +78,21 @@ async function leaveGroup(
   const { db, teams } = services
   try {
     const others = await othersInTeam(teams, member.groupId, userId)
-    // The team is gone: a purge was started, and carries on. Purges are #50 PR-2.
-    if (others === null) return false
+    // The team is gone: a purge was started, and carries on. Their own member row, deleted
+    // last, ends it.
+    if (others === null) return await purge(services, member)
     const group = await getRowOrNull<Groups>(db, TABLES.groups, member.groupId)
     if (!group) return false
     if (!(await isKept(db, person, member))) {
-      // Nobody else is in the team, as in their personal group: it's purged (#50 PR-2), so
-      // until then it waits, untouched.
-      if (!others) return false
+      if (!others) {
+        // Nobody else is in the team, as in their personal group: it's purged. `archivedAt`
+        // first, as the keep's archive sets it (so no statement is being finalized, and none
+        // can start), then the team, so jobs and writes stop. A crash between the two leaves
+        // the team, so a rerun decides from it again.
+        if (!group.archivedAt) await archive(services, person.$id, group, true)
+        await deleteTeam(teams, group.$id)
+        return await purge(services, member)
+      }
       await keep(services, person, member, group)
     }
     // Then, in this order, on every run once the keep is done (each is safe to repeat): the
@@ -270,13 +278,20 @@ async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
 }
 
 // Archives the group, with a group.archived row by them, as an admin's archive writes, so the
-// others see why. One archived meanwhile, with a statement being finalized, or with a timer
-// someone else started still running (it couldn't be stopped once archived) throws `Raced`: the
-// group is left for the next run, which finds it archived, or waits until the finalize ends or
-// the timer stops. A finalize stuck for an hour is never waited for: see `isStuck`.
-async function archive({ db, now }: Services, personId: string, group: Groups): Promise<void> {
+// others see why (a purge's goes with the group's rows). One archived meanwhile, with a
+// statement being finalized, or, unless it's for a purge, with a timer someone else started
+// still running (it couldn't be stopped once archived) throws `Raced`: the group is left for the
+// next run, which finds it archived, or waits until the finalize ends or the timer stops. A
+// purge doesn't wait for a timer: nobody else is in the team, and it goes with the group's rows.
+// Nor for a finalize stuck for an hour (see `isStuck`), which a kept group isn't archived over.
+async function archive(
+  { db, now }: Services,
+  personId: string,
+  group: Groups,
+  purging = false,
+): Promise<void> {
   const finalizing = await finalizingStatement(db, group.$id)
-  if (finalizing && isStuck(finalizing, now)) {
+  if (finalizing && isStuck(finalizing, now) && !purging) {
     logProblem('stuck_finalize_not_archived', { groupId: group.$id, statementId: finalizing.$id })
     return
   }
@@ -291,10 +306,11 @@ async function archive({ db, now }: Services, personId: string, group: Groups): 
     // Stage, then check: finalize step 1 stages the group row in the transaction that sets
     // `finalizing` (statements.md#2-finalize-post-statementsidfinalize).
     const current = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
+    const stillFinalizing = await finalizingStatement(db, group.$id)
     if (
       current?.archivedAt ||
-      (await finalizingStatement(db, group.$id)) ||
-      (await othersTimerRunning(db, group.$id, personId))
+      (stillFinalizing && !(purging && isStuck(stillFinalizing, now))) ||
+      (!purging && (await othersTimerRunning(db, group.$id, personId)))
     ) {
       throw new Raced()
     }

@@ -1,12 +1,11 @@
 // Generated: don't edit by hand. What each Noto font the invoice PDF falls back to can draw, as
 // fontkit reads its cmap. pdf-glyphs.ts unpacks these in cjkRanges() and emojiRanges(). Each
 // range is `gap,length` in base 36: the code points skipped since the previous range, then its
-// last code point minus its first. pdf-glyphs.test.ts pins each table's size as measured on #270,
-// until the files are in the repo and a server test checks each table against its file. The
-// files, with their SHA-256:
-// - NotoSansCJKsc-Regular.otf from notofonts/noto-cjk, tag Sans2.004,
+// last code point minus its first. packages/server/src/pdf/pdf-glyphs.test.ts checks each table
+// against its file, which scripts/build-functions.mjs checks by SHA-256:
+// - packages/server/fonts/NotoSansCJKsc-Regular.otf, from notofonts/noto-cjk, tag Sans2.004,
 //   2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b
-// - 400Regular/NotoEmoji_400Regular.ttf from @expo-google-fonts/noto-emoji@0.4.8,
+// - node_modules/@expo-google-fonts/noto-emoji/400Regular/NotoEmoji_400Regular.ttf (0.4.8),
 //   24aaa2a20c9c06ffe9bf04284bfd1f14376a329d10122f902abe2770817eb504
 // To regenerate one, run this from the repo root and paste its output between the backticks:
 // node -p 'let to=-1;const r=[];for(const c of [...new Set(require("fontkit").openSync(process.argv[1]).characterSet)].sort((a,b)=>a-b))r.at(-1)?.[1]===c-1?r.at(-1)[1]=c:r.push([c,c]);r.map(([f,t])=>[f-to-1,t-f,to=t]).map(([g,l])=>g.toString(36)+","+l.toString(36)).join(" ").replace(/(.{1,99})( |$)/g,"$1\n")' <font file>

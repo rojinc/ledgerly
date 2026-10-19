@@ -40,7 +40,12 @@
     "commands": "",
     "ignore": ["*", "!dist/", "!dist/**", "!package.json"],
     "execute": ["users"],
-    "events": ["users.*.update.password", "users.*.recovery.*.update"],
+    "events": [
+      "users.*.update.password",
+      "users.*.recovery.*.update",
+      "users.*.update.email",
+      "users.*.update.phone"
+    ],
     "interval": 60,
     "timeout": 15,
     "enabled": true,

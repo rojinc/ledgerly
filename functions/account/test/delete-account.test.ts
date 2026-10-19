@@ -1,5 +1,4 @@
 import type { DeleteAccountResult } from '@ledgerly/core/schemas/identity'
-import type { TableId } from '@ledgerly/server/appwrite/tables'
 import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,19 +7,25 @@ import {
   beforeCommit,
   beforeStaging,
   call,
+  crashOnCall,
+  crashOnList,
   type Fakes,
   FakeUsers,
   failure,
   fakes,
   group,
+  insert,
   member,
   minutesAgo,
   NOW,
   occurrence,
   ok,
   person,
+  rowOf,
   schedule,
+  setRow,
   TODAY,
+  teamOf,
 } from './harness'
 
 const DELETED_AT = NOW.toISOString()
@@ -140,12 +145,6 @@ function remove(services: Fakes) {
   return ok<DeleteAccountResult>(services)
 }
 
-function setRow(services: Fakes, tableId: TableId, rowId: string, data: object) {
-  return withTransaction(services.db, (tx) =>
-    tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
-  )
-}
-
 type Seed = NonNullable<Parameters<typeof fakes>[0]>
 
 // Before DELETED_AT, as Appwrite writes times (`+00:00`).
@@ -178,19 +177,7 @@ async function withPairAndEmployer(extra: Seed): Promise<Fakes> {
   return services
 }
 
-function insert(
-  services: Fakes,
-  tableId: TableId,
-  rows: Array<Record<string, unknown> & { $id: string }>,
-) {
-  return withTransaction(services.db, (tx) =>
-    tx.write(
-      ...rows.map(({ $id, ...data }) => ({ action: 'create' as const, tableId, rowId: $id, data })),
-    ),
-  )
-}
-
-// Their personal group: nobody else is ever in its team, so it's purged (#50 PR-2).
+// Their personal group: nobody else is ever in its team, so it's purged (purge.test.ts).
 async function withPersonalGroup(services: Fakes) {
   await insert(services, 'groups', [group('me', 'personal', 'p1')])
   await insert(services, 'members', [member('me', 'p1')])
@@ -198,16 +185,8 @@ async function withPersonalGroup(services: Fakes) {
   await services.teams.createMembership({ teamId: 'me', roles: [], userId: 'u1' })
 }
 
-function rowOf(services: Fakes, tableId: TableId, rowId: string) {
-  return services.db.rows(tableId).find((row) => row.$id === rowId)
-}
-
 function activityIn(services: Fakes, groupId: string) {
   return services.db.rows('activity').filter((row) => row.groupId === groupId)
-}
-
-function teamOf(services: Fakes, teamId: string) {
-  return services.teams.members(teamId)?.map((membership) => membership.userId)
 }
 
 /** Every row, team and account, for "changes nothing" and "the same rows" checks. */
@@ -395,7 +374,8 @@ describe('POST /delete: steps 2 and 3', () => {
         { $id: 's2', $createdAt: minutesAgo(60) },
       ],
     })
-    await withPersonalGroup(services)
+    // Out of time before the groups, so the rest waits.
+    services.outOfTime = () => true
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
     expect(rowOf(services, 'persons', 'p1')).toMatchObject({
       userId: 'u1',
@@ -874,22 +854,17 @@ describe('POST /delete: each group they joined', () => {
     ])
   })
 
-  it('leaves a group nobody else is in, such as their personal group, untouched for its purge', async () => {
+  it('purges a group nobody else is in, such as their personal group, and keeps the others', async () => {
     const services = kept()
     await withPersonalGroup(services)
-    const personal = {
-      group: rowOf(services, 'groups', 'me'),
-      member: rowOf(services, 'members', 'me-p1'),
-    }
-    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
-    expect(rowOf(services, 'groups', 'me')).toEqual(personal.group)
-    expect(rowOf(services, 'members', 'me-p1')).toEqual(personal.member)
-    expect(teamOf(services, 'me')).toEqual(['u1'])
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'groups', 'me')).toBeUndefined()
+    expect(rowOf(services, 'members', 'me-p1')).toBeUndefined()
+    expect(teamOf(services, 'me')).toBeUndefined()
     expect(activityIn(services, 'me')).toEqual([])
-    // The other groups are done, and steps 5–7 wait.
     expect(teamOf(services, 'h1')).toEqual(['u2'])
-    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: 'u1' })
-    expect(rowOf(services, 'profiles', 'u1')).toBeDefined()
+    expect(rowOf(services, 'members', 'h1-p1')).toMatchObject({ status: 'left' })
+    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: null })
   })
 
   it('leaves groups where they never joined exactly as they are', async () => {
@@ -908,13 +883,13 @@ describe('POST /delete: each group they joined', () => {
     expect(activityIn(services, 'g5')).toEqual([])
   })
 
-  it('leaves a group whose team is gone to the purge that deleted it', async () => {
+  it('carries on the purge of a group whose team is gone, without deciding again', async () => {
     const services = kept()
     await insert(services, 'groups', [group('g6', 'house', 'p1', { archivedAt: DELETED_AT })])
     await insert(services, 'members', [member('g6', 'p1')])
-    const row = rowOf(services, 'members', 'g6-p1')
-    expect((await remove(services)).finished).toBe(false)
-    expect(rowOf(services, 'members', 'g6-p1')).toEqual(row)
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'groups', 'g6')).toBeUndefined()
+    expect(rowOf(services, 'members', 'g6-p1')).toBeUndefined()
   })
 
   it('never decides again: a kept group stays kept once everyone else has left its team', async () => {
@@ -1224,53 +1199,56 @@ describe('POST /delete: steps 5 to 7', () => {
     expect(services.users.account('u1')).toBeUndefined()
   })
 
-  it('keeps the user while a person a bootstrap made after step 2 waits for its purge', async () => {
+  it('purges a person a bootstrap made after step 2, with its personal group, then deletes the user', async () => {
     const services = kept()
-    // The bootstrap found no person naming the user once step 6 had cleared it.
+    // A bootstrap that read no label and no deleted person before step 3, and no profile once
+    // step 5 had deleted it, commits its person, profile, personal group and team before step 6.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"userId":null'),
+      async () => {
+        await services.teams.create({ teamId: 'gNew', name: 'Personal' })
+        await services.teams.createMembership({ teamId: 'gNew', roles: [], userId: 'u1' })
+        await insert(services, 'persons', [person('pNew', 'u1', { claimedAt: DELETED_AT })])
+        await insert(services, 'profiles', [profile('u1', 'pNew')])
+        await insert(services, 'identities', [identity('iNew', 'email:sam@example.com', 'pNew')])
+        await insert(services, 'groups', [group('gNew', 'personal', 'pNew')])
+        await insert(services, 'members', [member('gNew', 'pNew')])
+      },
+    )
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    for (const [tableId, rowId] of [
+      ['persons', 'pNew'],
+      ['profiles', 'u1'],
+      ['identities', 'iNew'],
+      ['groups', 'gNew'],
+      ['members', 'gNew-pNew'],
+    ] as const) {
+      expect(rowOf(services, tableId, rowId)).toBeUndefined()
+    }
+    expect(teamOf(services, 'gNew')).toBeUndefined()
+    expect(activityIn(services, 'gNew')).toEqual([])
+    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: null })
+    expect(services.users.account('u1')).toBeUndefined()
+  })
+
+  it('keeps the user while the person a bootstrap made isn’t empty after all', async () => {
+    const services = kept()
+    // It adopted a placeholder someone had added to a group.
     beforeStaging(
       services.db,
       (operations) => operations.includes('"userId":null'),
       () => insert(services, 'persons', [person('pNew', 'u1', { claimedAt: DELETED_AT })]),
     )
+    await insert(services, 'members', [
+      member('h1', 'pNew', { role: 'member', status: 'placeholder' }),
+    ])
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
-    expect(services.users.account('u1')).toMatchObject({ labels: ['deleted'], status: false })
-    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: null })
     expect(rowOf(services, 'persons', 'pNew')).toMatchObject({ userId: 'u1', deletedAt: null })
+    expect(rowOf(services, 'members', 'h1-pNew')).toBeDefined()
+    expect(services.users.account('u1')).toMatchObject({ labels: ['deleted'], status: false })
   })
 })
-
-// Throws once, at the `nth` listing of a table `when` picks, as a crash would.
-function crashOnList(
-  services: Fakes,
-  when: (tableId: string, queries: string) => boolean,
-  nth = 1,
-) {
-  const list = services.db.listRows.bind(services.db)
-  let seen = 0
-  vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
-    if (when(params.tableId, JSON.stringify(params.queries ?? [])) && ++seen === nth) {
-      throw new Error('Crashed')
-    }
-    return list(params)
-  })
-}
-
-// Throws once, at the first call of `method` whose first argument `when` picks.
-function crashOnCall<T extends object>(
-  target: T,
-  method: keyof T & string,
-  when: (params: Record<string, unknown>) => boolean = () => true,
-) {
-  const original = (target[method] as (params: unknown) => Promise<unknown>).bind(target)
-  let crashed = false
-  vi.spyOn(target, method as never).mockImplementation((async (params: Record<string, unknown>) => {
-    if (!crashed && when(params)) {
-      crashed = true
-      throw new Error('Crashed')
-    }
-    return original(params)
-  }) as never)
-}
 
 describe('POST /delete: reruns and the time budget', () => {
   // e1 comes first ($id order): kept and archived, then h1, kept with Sam's schedule.
