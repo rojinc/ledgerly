@@ -175,7 +175,12 @@ function groupRow(services: Fakes, groupId = 'elm') {
   return services.db.rows('groups').find((row) => row.$id === groupId) as unknown as Groups
 }
 
-const logged = () => errors.mock.calls.map(([line]) => String(line))
+// The logProblem lines written, without `fn`.
+const logged = () =>
+  errors.mock.calls.map(([line]) => {
+    const { fn: _fn, ...event } = JSON.parse(String(line)) as Record<string, unknown>
+    return event
+  })
 
 describe('step 6: nightly check', () => {
   it('backfills a group’s balances row on its first check, then waits until 03:00 tomorrow', async () => {
@@ -224,7 +229,9 @@ describe('step 6: nightly check', () => {
     const services = seeded({ balances: [{ $id: 'elm', peopleJson: JSON.stringify(wrong) }] })
     expect(await nightlyCheck(services)).toMatchObject({ repaired: 1, findings: 1 })
     expect(stored(services)).toEqual(ROW)
-    expect(logged()).toEqual(['scheduler: nightly check of group elm: balances row wrong'])
+    expect(logged()).toEqual([
+      { event: 'nightly_check_finding', groupId: 'elm', rule: 'balances_row' },
+    ])
   })
 
   it('repairs a row that can’t be read', async () => {
@@ -276,9 +283,9 @@ describe('step 6: nightly check', () => {
     const before = structuredClone([services.db.rows('shares'), services.db.rows('transactions')])
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, findings: 3, merging: 0 })
     expect(logged()).toEqual([
-      'scheduler: nightly check of group elm: transaction t2 breaks I-1',
-      'scheduler: nightly check of group elm: transaction t3 breaks I-6',
-      'scheduler: nightly check of group elm: transaction t4 breaks I-3',
+      { event: 'nightly_check_finding', groupId: 'elm', rule: 'I-1', transactionId: 't2' },
+      { event: 'nightly_check_finding', groupId: 'elm', rule: 'I-6', transactionId: 't3' },
+      { event: 'nightly_check_finding', groupId: 'elm', rule: 'I-3', transactionId: 't4' },
     ])
     expect([services.db.rows('shares'), services.db.rows('transactions')]).toEqual(before)
   })
@@ -336,7 +343,9 @@ describe('step 6: nightly check', () => {
       ),
     )
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, findings: 1, merging: 0 })
-    expect(logged()).toEqual(['scheduler: nightly check of group elm: transaction t1 breaks I-3'])
+    expect(logged()).toEqual([
+      { event: 'nightly_check_finding', groupId: 'elm', rule: 'I-3', transactionId: 't1' },
+    ])
   })
 
   it('counts a share of a person merged into a deleted account as merging, not as broken', async () => {
@@ -464,7 +473,9 @@ describe('step 6: nightly check', () => {
     // Rolled back, guard and all, and left due.
     expect(groupRow(services).rev).toBe('r0')
     expect(groupRow(services).nextCheckAt ?? null).toBeNull()
-    expect(logged()).toEqual(['scheduler: nightly check failed for group elm: LedgerError'])
+    expect(logged()).toEqual([
+      { event: 'nightly_check_failed', groupId: 'elm', cause: 'LedgerError' },
+    ])
   })
 
   it('puts a group off an hour when a write to its row beats its nextCheckAt', async () => {
@@ -500,12 +511,15 @@ describe('step 6: nightly check', () => {
     )
     expect(await nightlyCheck(services)).toMatchObject({ checked: 0, busy: 0, failed: 1 })
     expect(logged()).toEqual([
-      'scheduler: nightly check failed for group elm: AppwriteException 500 general_unknown',
+      {
+        event: 'nightly_check_failed',
+        groupId: 'elm',
+        cause: 'AppwriteException 500 general_unknown',
+      },
     ])
   })
 
   it('moves a group the budget cuts off to tomorrow, by ID, and checks it then from the start', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const services = seeded()
     // Out of time once the group is read whole.
     let read = false
@@ -517,9 +531,7 @@ describe('step 6: nightly check', () => {
     services.outOfTime = () => read
     expect(await nightlyCheck(services)).toMatchObject({ checked: 0, cutOff: 1, repaired: 0 })
     expect(groupRow(services).nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
-    expect(warn).toHaveBeenLastCalledWith(
-      'scheduler: nightly check of group elm cut off by the budget',
-    )
+    expect(logged().at(-1)).toEqual({ event: 'nightly_check_cut_off', groupId: 'elm' })
     services.outOfTime = () => false
     services.now = new Date(TOMORROW_3AM_SYDNEY)
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, repaired: 1 })
@@ -679,7 +691,11 @@ describe('step 6: nightly check', () => {
     expect(await nightlyCheck(services)).toMatchObject({ checked: 0, skipped: 0, failed: 1 })
     expect(groupRow(services).nextCheckAt ?? null).toBeNull()
     expect(logged()).toEqual([
-      'scheduler: nightly check failed for group elm: AppwriteException 500 general_unknown',
+      {
+        event: 'nightly_check_failed',
+        groupId: 'elm',
+        cause: 'AppwriteException 500 general_unknown',
+      },
     ])
   })
 
@@ -697,7 +713,9 @@ describe('step 6: nightly check', () => {
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, failed: 1 })
     expect(groupRow(services).nextCheckAt ?? null).toBeNull()
     expect(groupRow(services, 'oak').nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
-    expect(logged()).toEqual(['scheduler: nightly check failed for group elm: RangeError'])
+    expect(logged()).toEqual([
+      { event: 'nightly_check_failed', groupId: 'elm', cause: 'RangeError' },
+    ])
   })
 
   it('checks archived groups too', async () => {

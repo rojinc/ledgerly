@@ -51,7 +51,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   // No personal data in logs: no email, phone number or name.
-  for (const args of logged.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}|Sam/)
+  for (const args of logged.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}|\bSam\b/)
   logged.mockRestore()
 })
 
@@ -197,13 +197,14 @@ describe('POST /bootstrap', () => {
       // Another placeholder's typed key is nothing to do with this adoption.
       const services = addedBeforeSignUp([
         typedPhone(),
+        identity('iTyped2', 'phone:+61400000001', 'pSam'),
         identity('iOther', 'phone:+61400000999', 'pOther'),
       ])
       expect((await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)).personId).toBe(
         'pSam',
       )
       expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iOther'])
-      expect(adoptions()).toEqual([{ event: 'typed_keys_deleted', personId: 'pSam', count: 1 }])
+      expect(adoptions()).toEqual([{ event: 'typed_keys_deleted', personId: 'pSam', count: 2 }])
     })
 
     it('keeps a key the user verified too, and logs nothing', async () => {

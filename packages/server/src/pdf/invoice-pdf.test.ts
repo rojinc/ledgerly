@@ -295,7 +295,7 @@ describe('renderInvoicePdf', () => {
   })
 
   it('prints a character Roboto can’t draw as �, so Bill to is never blank (#269)', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     const snapshot = buildStatementSnapshot({
       ...goldenInput({ ...fullBusiness, businessName: 'Café Ngọc' }),
       recipient: { personId: 'employer', name: '张三 Pty Ltd', emails: ['accounts@acme.example'] },
@@ -304,11 +304,13 @@ describe('renderInvoicePdf', () => {
     expect(text).toContain('Bill to �� Pty Ltd accounts@acme.example')
     expect(text).toMatch(/^Café Ngọc /)
     // The count only, never the text.
-    expect(warn.mock.calls).toEqual([['invoice PDF: 2 characters print as U+FFFD']])
+    expect(logged.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      { fn: 'unknown', event: 'pdf_characters_replaced', count: 2 },
+    ])
   })
 
   it('marks every text it prints from the profile and the snapshot', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     const snapshot = buildStatementSnapshot({
       ...goldenInput({
         businessName: '山 Services',
@@ -366,22 +368,24 @@ describe('renderInvoicePdf', () => {
     expect(text).not.toContain('\u0000')
     expect(text).not.toContain('山')
     // Once for the invoice number, wherever it prints.
-    expect(warn.mock.calls).toEqual([['invoice PDF: 11 characters print as U+FFFD']])
+    expect(logged.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      { fn: 'unknown', event: 'pdf_characters_replaced', count: 11 },
+    ])
   })
 
   it('logs nothing when Roboto can draw it all', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     await renderInvoicePdf(goldenSnapshot(), details)
-    expect(warn).not.toHaveBeenCalled()
+    expect(logged).not.toHaveBeenCalled()
   })
 
   it('prints decomposed accents composed, not as �', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     const businessName = 'Nguyễn Thị Ánh'.normalize('NFD')
     const snapshot = buildStatementSnapshot(goldenInput({ businessName }))
     const text = await pdfText(await renderInvoicePdf(snapshot, details))
     expect(text).toMatch(/^Nguyễn Thị Ánh /)
-    expect(warn).not.toHaveBeenCalled()
+    expect(logged).not.toHaveBeenCalled()
   })
 
   it('refuses a divide', async () => {

@@ -16,12 +16,12 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type LogRule, logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { readBalances } from '@ledgerly/server/ledger/balances'
 import { AppwriteException, Query } from 'node-appwrite'
 import { allRows, pages } from '../pages'
 import type { Services } from '../services'
-import { describe } from './auto-post'
 
 /**
  * What step 6 did: groups checked to the end, groups left for the next run because writes kept
@@ -73,7 +73,7 @@ export async function nightlyCheck(services: Services): Promise<CheckCounts> {
         await checkGroup(services, group, counts)
       } catch (error) {
         counts.failed += 1
-        console.error(`scheduler: nightly check failed for group ${group.$id}: ${describe(error)}`)
+        logProblem('nightly_check_failed', { groupId: group.$id, error })
       }
     }
   }
@@ -83,9 +83,9 @@ export async function nightlyCheck(services: Services): Promise<CheckCounts> {
 async function checkGroup(services: Services, group: Groups, counts: CheckCounts): Promise<void> {
   const { db } = services
   const groupId = group.$id
-  const report = (finding: string) => {
+  const report: Report = (rule, transactionId) => {
     counts.findings += 1
-    console.error(`scheduler: nightly check of group ${groupId}: ${finding}`)
+    logProblem('nightly_check_finding', { groupId, rule, transactionId })
   }
   // A purge in progress deletes the team first (identity-and-invites.md#deleting-an-account-m4),
   // then the group's rows: they're left alone, and the group stays due.
@@ -106,7 +106,7 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
   // Tomorrow's check starts it again, so it can't hold up the groups after it on every run.
   const cutOff = async () => {
     counts.cutOff += 1
-    console.warn(`scheduler: nightly check of group ${groupId} cut off by the budget`)
+    logProblem('nightly_check_cut_off', { groupId })
     await setNextCheck(db, groupId, tomorrow)
   }
   let whole: Whole | undefined
@@ -132,7 +132,7 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
 
   const fresh = balancesFromShares(whole.shares)
   if (whole.balances === undefined || !same(whole.balances, fresh)) {
-    if (whole.balances !== undefined) report('balances row wrong')
+    if (whole.balances !== undefined) report('balances_row')
     if (!(await rebuildBalances(db, groupId))) return busy()
     counts.repaired += 1
   }
@@ -188,7 +188,7 @@ async function revOf(db: Db, groupId: string): Promise<string | null> {
 async function checkShares(
   db: Db,
   { members, posted, shares }: Whole,
-  report: (finding: string) => void,
+  report: Report,
 ): Promise<number> {
   const byTransaction = new Map<string, Shares[]>()
   for (const share of shares) {
@@ -208,12 +208,12 @@ async function checkShares(
       )
     } catch (error) {
       if (!(error instanceof LedgerError)) throw error
-      report(`transaction ${transaction.$id} breaks ${ruleOf(error)}`)
+      report(ruleOf(error), transaction.$id)
     }
   }
   const postedIds = new Set(posted.map((transaction) => transaction.$id))
   for (const transactionId of byTransaction.keys()) {
-    if (!postedIds.has(transactionId)) report(`transaction ${transactionId} breaks I-6`)
+    if (!postedIds.has(transactionId)) report('I-6', transactionId)
   }
   const memberIds = new Set(members.map((member) => member.personId))
   const strangers = shares.filter((share) => !memberIds.has(share.personId))
@@ -223,13 +223,16 @@ async function checkShares(
   )
   const broken = strangers.filter((share) => !merged.has(share.personId))
   for (const transactionId of new Set(broken.map((share) => share.transactionId))) {
-    report(`transaction ${transactionId} breaks I-3`)
+    report('I-3', transactionId)
   }
   return strangers.length - broken.length
 }
 
-function ruleOf(error: LedgerError): string {
-  return /I-\d/.exec(error.message)?.[0] ?? 'an invariant'
+/** A finding: the rule broken, and the transaction that breaks it, if it's one transaction's. */
+type Report = (rule: LogRule, transactionId?: string) => void
+
+function ruleOf(error: LedgerError): LogRule {
+  return (/I-[1-7]/.exec(error.message)?.[0] as LogRule | undefined) ?? 'invariant'
 }
 
 /**

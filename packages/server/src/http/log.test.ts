@@ -26,6 +26,10 @@ group('logProblem', () => {
       error: new TypeError('x'),
     })
     logProblem('summary_failed', { profileId: 'u1' })
+    logProblem('typed_keys_deleted', { personId: 'p1', count: 2 })
+    logProblem('person_reminder_failed', { reminderId: 'r1' })
+    logProblem('nightly_check_finding', { groupId: 'elm', rule: 'I-3', transactionId: 't4' })
+    logProblem('password_notice', { userId: 'u1', outcome: 'sent' })
     expect(lines()).toEqual([
       {
         fn: 'statements',
@@ -42,6 +46,16 @@ group('logProblem', () => {
         cause: 'TypeError',
       },
       { fn: 'statements', event: 'summary_failed', profileId: 'u1' },
+      { fn: 'statements', event: 'typed_keys_deleted', personId: 'p1', count: 2 },
+      { fn: 'statements', event: 'person_reminder_failed', reminderId: 'r1' },
+      {
+        fn: 'statements',
+        event: 'nightly_check_finding',
+        groupId: 'elm',
+        transactionId: 't4',
+        rule: 'I-3',
+      },
+      { fn: 'statements', event: 'password_notice', userId: 'u1', outcome: 'sent' },
     ])
   })
 
@@ -56,6 +70,9 @@ group('logProblem', () => {
       statementId: 'Sam Smith',
       transactionId: '+61412345678',
       profileId: 'sam@example.com',
+      personId: 'Sam Smith',
+      reminderId: '+61412345678',
+      userId: 'sam@example.com',
     })
     expect(lines()).toEqual([
       {
@@ -65,7 +82,24 @@ group('logProblem', () => {
         statementId: 'invalid',
         transactionId: 'invalid',
         profileId: 'invalid',
+        personId: 'invalid',
+        reminderId: 'invalid',
+        userId: 'invalid',
       },
+    ])
+  })
+
+  it('writes `invalid` for a count that isn’t a whole number of things', () => {
+    for (const count of [0, 61412345678, -1, 1.5, Number.NaN, 2 ** 53]) {
+      logProblem('pdf_characters_replaced', { count })
+    }
+    expect(lines().map((line) => line.count)).toEqual([
+      0,
+      61412345678,
+      'invalid',
+      'invalid',
+      'invalid',
+      'invalid',
     ])
   })
 

@@ -5,6 +5,7 @@ import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { passwordChangedEmail } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem, type NoticeOutcome } from '@ledgerly/server/http/log'
 import { getRowOrNull, isAppwriteError } from '../rows'
 import type { AccountUser, Services } from '../services'
 
@@ -12,7 +13,7 @@ import type { AccountUser, Services } from '../services'
 // queue, short enough that a replay can't email about an old change.
 const PASSWORD_NOTICE_WINDOW_MINUTES = 60
 
-type Outcome = 'sent' | 'stale' | 'unverified' | 'gone' | `failed (${string})`
+type Outcome = Exclude<NoticeOutcome, 'failed'>
 
 /**
  * `identity POST /` (identity-and-invites.md#password-notice): the `users.*.update.password` and
@@ -28,13 +29,13 @@ export async function passwordNotice(
 ): Promise<Record<string, never>> {
   if (!event) throw new AppError('FORBIDDEN', 'Only Appwrite sends this.')
   const userId = idFromEvent(headers['x-appwrite-event']) ?? idFromBody(body)
-  const log = (outcome: Outcome) =>
-    console.log(`identity: password notice for user ${userId ?? '(none)'}: ${outcome}`)
+  const log = (fields: { outcome: NoticeOutcome; error?: unknown }) =>
+    logProblem('password_notice', { ...(userId === null ? {} : { userId }), ...fields })
   try {
-    log(userId === null ? 'gone' : await notify(services, userId))
+    log({ outcome: userId === null ? 'gone' : await notify(services, userId) })
   } catch (error) {
     // Appwrite doesn't run an event again, so a failed send is lost; the run fails with it.
-    if (error instanceof EmailError) log(`failed (${error.type})`)
+    if (error instanceof EmailError) log({ outcome: 'failed', error })
     throw error
   }
   return {}
