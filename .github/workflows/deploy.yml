@@ -114,32 +114,66 @@ jobs:
         run: |
           appwrite client --endpoint "$APPWRITE_ENDPOINT" --project-id "$PROJECT_ID" --key "$API_KEY"
 
-          # `push table --force` deletes and recreates a column or index whose type or orders
-          # changed, and deletes columns, indexes, tables and databases missing from the
-          # config, without asking: data that's gone for good. So the plan comes first, and
+          # `push table --force` deletes and recreates a column or index whose type, orders or
+          # encryption changed, and deletes columns, indexes, tables and databases missing from
+          # the config, without asking: data that's gone for good. So the plan comes first, and
           # anything that would delete or recreate stops the deploy before it's applied.
           plan="$RUNNER_TEMP/table-plan.log"
-          python3 -I scripts/appwrite-table-plan.py "$plan" \
-            appwrite push table --all --config-file "$CONFIG"
+          if ! python3 -I scripts/appwrite-table-plan.py "$plan" \
+            appwrite push table --all --config-file "$CONFIG"; then
+            echo "::error::The table plan failed or timed out, so it can't show every change. Nothing destructive was applied."
+            exit 1
+          fi
           if grep -qE '\b(recreating|deleting)\b|\(deleted locally\)' "$plan"; then
-            echo "::error::appwrite push table would delete or recreate a table, column, index or database, losing its data. Nothing was pushed. See environments-and-deploys.md#schema-changes-that-lose-data."
+            echo "::error::appwrite push table would delete or recreate a table, column, index or database, losing its data. Nothing destructive was applied. See environments-and-deploys.md#schema-changes-that-lose-data."
             exit 1
           fi
-          # A changed table or database setting stops the CLI before it compares columns.
-          if grep -qE 'Skipping push action|plan: timed out' "$plan"; then
-            echo "::error::The table plan stopped early, so it can't show every change. Nothing was pushed."
+          # A changed table or database setting, or a new database, stops the CLI before it
+          # compares columns.
+          if grep -qE 'Skipping push action' "$plan"; then
+            echo "::error::The table plan stopped early, so it can't show every change. Nothing destructive was applied."
             exit 1
           fi
+
+          # CLI 28.7.0 ignores a failed "list tables" request, so one failed request in the plan
+          # hides a table the push would then delete. So the server's tables are listed here too,
+          # and must be exactly the config's (the plan has already created any new ones).
+          if ! remote=$(appwrite tablesdb list-tables --database-id main --limit 100 --json); then
+            echo "::error::Couldn't list the server's tables. Nothing destructive was applied."
+            exit 1
+          fi
+          REMOTE="$remote" node -e '
+            const config = require("./" + process.env.CONFIG)
+            const local = require("./" + config.includes.tables).map((table) => table.$id)
+            const { total = 0, tables = [] } = JSON.parse(process.env.REMOTE)
+            const remote = tables.map((table) => table.$id)
+            const differ = [
+              ...remote.filter((id) => !local.includes(id)).map((id) => id + " (only on the server)"),
+              ...local.filter((id) => !remote.includes(id)).map((id) => id + " (only in the config)"),
+            ]
+            if (total !== remote.length || differ.length > 0) {
+              console.error("::error::The tables on the server differ from the config: " +
+                (differ.join(", ") || "more than " + remote.length + " tables") +
+                ". Nothing destructive was applied. See environments-and-deploys.md#schema-changes-that-lose-data.")
+              process.exit(1)
+            }
+          '
 
           log="$RUNNER_TEMP/push.log"
           push() {
             appwrite push "$@" --all --force --config-file "$CONFIG" 2>&1 | tee "$log"
             # The CLI can exit 0 after a failure ("✗ Error: …", or "Deployed 4 of 5 functions
             # … 1 failed."), or after skipping a resource that lacks a setting ("Skipping it:
-            # set …", with --all), so read what it printed too. A table push that deleted
-            # something after all (the server changed since the plan) is reported too.
-            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed|Skipping it:|\b(recreating|deleting)\b|Deleting (attribute|index|table|database) ' "$log"; then
+            # set …", with --all), so read what it printed too.
+            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed|Skipping it:' "$log"; then
               echo "::error::appwrite push $1 failed."
+              exit 1
+            fi
+            # A table push that deleted something after all (the server changed since the
+            # checks). Only the table push: function and site build logs can say "deleting".
+            if [ "$1" = table ] &&
+              grep -qE '\b(recreating|deleting)\b|Deleting (attribute|index|table|database) ' "$log"; then
+              echo "::error::appwrite push table deleted or recreated something. See environments-and-deploys.md#schema-changes-that-lose-data."
               exit 1
             fi
           }

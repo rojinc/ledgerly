@@ -12,25 +12,31 @@ without a question). It never sends "y" or Enter, so a question that defaults to
 accepted. The log, without colour codes, is what the deploy greps (environments-and-deploys.md).
 """
 
+import fcntl
 import os
 import pty
 import re
 import select
 import signal
+import struct
 import sys
+import termios
 import time
 
 log, command = sys.argv[1], sys.argv[2:]
 pid, fd = pty.fork()
 if pid == 0:
+    # 50 rows by 200 columns, so the prompts' help line and the change tables are never wrapped.
+    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
     os.execvp(command[0], command)
 
 ansi = re.compile(rb"\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\[[0-9;?]*[ -/]*[@-~]|\r")
 out, answered, deadline = b"", 0, time.time() + 600
 while True:
     if time.time() > deadline:
-        os.kill(pid, signal.SIGKILL)
-        out += b"\nplan: timed out\n"
+        # The child leads its own session (pty.fork), so this also stops anything it started.
+        os.killpg(pid, signal.SIGKILL)
+        out += b"\nplan: timed out after 600 s\n"
         break
     if select.select([fd], [], [], 0.5)[0]:
         try:
