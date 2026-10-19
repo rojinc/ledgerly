@@ -158,3 +158,4 @@ Creating or editing a schedule sets its `nextRunAt` to now before expanding, so 
   - Every start writes a fresh `rev` to the group row and to the person's personal group row ([concurrency](ledger.md#concurrency)). So of two starts at once, in one group or in two, only one succeeds.
   - A timer left running in an archived group doesn't count, because it can no longer be stopped or voided.
 - A retried start with the same `id` returns the timer. A retried stop with the same break returns the posted shift.
+- A group can't be archived while a timer is running in it (`CONFLICT`). The archive stages its write to the group row, then checks for running timers. A start writes the group row too, so of a start and an archive at the same moment, whichever commits second fails or runs again: neither leaves a running timer in an archived group.

@@ -1,24 +1,24 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { useMembers } from '../transactions/use-transactions'
+import { PendingGroups, TYPE_LABEL } from './pending-groups'
 import { useBalances, useGroups } from './use-groups'
-
-const TYPE_LABEL: Record<Groups['type'], string> = {
-  personal: 'Personal',
-  employer: 'Employer',
-  house: 'House',
-  pair: 'Shared with one person',
-}
 
 export function GroupsPage() {
   const groups = useGroups()
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [joined, setJoined] = useState('')
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Groups</h1>
+        <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+          Groups
+        </h1>
         <Link
           to="/groups/new-employer"
           className="inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -26,6 +26,17 @@ export function GroupsPage() {
           New employer
         </Link>
       </div>
+      {/* Mounted from the start, so the announcement is read out when it changes. */}
+      <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        {joined && `Joined ${joined}.`}
+      </p>
+      <PendingGroups
+        onJoined={(name) => {
+          setJoined(name)
+          // The joined row and its focused button go away: keep focus on the page.
+          heading.current?.focus()
+        }}
+      />
       {groups.data ? (
         <>
           <GroupList groups={groups.data.filter((group) => !group.archivedAt)} />
@@ -68,17 +79,32 @@ function GroupList({ groups }: { groups: Groups[] }) {
 }
 
 function GroupRow({ group }: { group: Groups }) {
-  const settings = group.type === 'employer' ? `/groups/${group.$id}/settings` : null
+  const userId = useCurrentUser().data?.$id ?? ''
+  const personId = useBootstrap(userId).data?.personId ?? ''
+  // A pair group's own name is its creator's label for the other person, which is the viewer
+  // when the viewer was added: name it by the other member instead, as /people does (#145).
+  const members = useMembers(group.type === 'pair' ? group.$id : '')
+  const other = personId
+    ? members.data?.find((member) => member.personId !== personId)?.displayName
+    : undefined
+  const name = other ?? group.name
+  // Employers open their settings; lend & borrow opens the person's page (#34).
+  const to =
+    group.type === 'employer'
+      ? `/groups/${group.$id}/settings`
+      : group.type === 'pair'
+        ? `/people/${group.$id}`
+        : null
   return (
     <li className="flex items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0">
         <p className="truncate font-medium">
-          {settings ? (
-            <Link to={settings} className="underline-offset-4 hover:underline">
-              {group.name}
+          {to ? (
+            <Link to={to} className="underline-offset-4 hover:underline">
+              {name}
             </Link>
           ) : (
-            group.name
+            name
           )}
         </p>
         <p className="text-sm text-muted-foreground">

@@ -1,6 +1,6 @@
 # Functions API
 
-Every write goes through one of five Appwrite Functions. This page is the **contract** between frontend and backend: routes, payloads, responses and errors. The zod schemas in `packages/core/src/schemas/` are the code version of this page. Change both in the same `contract` PR.
+Every write goes through one of five Appwrite Functions. This page is the **contract** between frontend and backend: routes, payloads, responses and errors. The zod schemas in `packages/core/src/schemas/` are the code version of this page, and the response types sit next to them (`TransactionView`, `Balances`, `BootstrapResult` and so on), so functions and the web app share one copy. Change both in the same `contract` PR.
 
 ## Calling a function
 
@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
@@ -168,7 +168,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 When `POST /groups` leaves them out, `currency`, `timezone` and `region` come from the creator's profile, and `settings` takes its defaults ([data model](data-model.md#groups)). In a house, a member who isn't an admin can add people only with the default role.
 
-Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseAt`, so no more statements are drafted. A `personal` group can't be archived (`VALIDATION_FAILED`).
+Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseAt`, so no more statements are drafted. A `personal` group can't be archived (`VALIDATION_FAILED`). Nor can a group with a timer running in it (`CONFLICT`): stop or void the timer first, since one in an archived group can't be stopped.
 
 ## identity
 
@@ -179,7 +179,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | see [permissions](permissions.md) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
-| `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt }[] }` | the user |
+| `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole.
@@ -188,7 +188,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 
 `/groups/pending` and `/join` are how someone who already had an account when they were added joins a group ([Joining a group](identity-and-invites.md#joining-a-group)). Both act only on the caller's own person:
 
-- `/groups/pending` lists the groups where that person is a `placeholder` member (`members.idx_person_status`), archived ones included.
+- `/groups/pending` lists the groups where that person is a `placeholder` member (`members.idx_person_status`), archived ones included. For a `pair` group it adds `counterpartName`, the other member's display name: the group's own `name` is what its creator calls the caller. Nothing else about the other member is returned, never an email or phone.
 - `/join` reads the caller's member row in that group first, so someone who isn't in the group learns nothing about it; with no row it returns `NOT_A_MEMBER`. It then runs the steps in [Joining a group](identity-and-invites.md#joining-a-group): team first, then `active` (or `left` if `leftOn` is set) with a `member.joined` row. If the row is already `active`, or `left` for someone who moved out (still in the team), it returns `{ group, member }` unchanged and doesn't touch the team, so a retry is safe. Someone who left on their own (`left`, no longer in the team) gets `NOT_A_MEMBER`: coming back after leaving isn't supported in v1. If the join fails while the row is still `placeholder`, the team membership from the first step is taken back. Joining writes no ledger data, so it works on archived groups, the same as claim and invites.
 
 Details: [People, identity and invites](identity-and-invites.md).

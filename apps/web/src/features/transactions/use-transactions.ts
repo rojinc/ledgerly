@@ -1,6 +1,10 @@
 import type { Category } from '@ledgerly/core/constants/categories'
 import type { Groups, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
-import type { TransactionInput, VoidTransactionBody } from '@ledgerly/core/schemas/ledger'
+import type {
+  TransactionInput,
+  TransactionView,
+  VoidTransactionBody,
+} from '@ledgerly/core/schemas/ledger'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Query } from 'appwrite'
 import { callFunction, type ErrorCode, type Method } from '../../lib/api'
@@ -13,18 +17,12 @@ import type { EmployerPeople } from './presets'
 const PAGE = 100
 /** History rows per page. */
 export const HISTORY_PAGE = 25
-
-/** What the ledger function returns for a write (functions-api.md#ledger). */
-export type TransactionView = { transaction: Transactions; shares: Shares[] }
-
-// Local to this feature: the shared keys file is outside its Scope. The shapes match the
-// ['transaction', id] and ['balances', groupId] keys used elsewhere, so invalidation lines up.
-export const transactionKeys = {
-  transaction: (id: string) => ['transaction', id] as const,
-  shares: (id: string) => ['transaction', id, 'shares'] as const,
-  members: (groupId: string) => ['members', groupId] as const,
-  history: (groupId: string, filters: HistoryFilters) => ['history', groupId, filters] as const,
-}
+/** The columns a history row shows. */
+const HISTORY_COLUMNS = ['$id', 'groupId', 'kind', 'status', 'date', 'description', 'totalCents']
+export type HistoryRow = Pick<
+  Transactions,
+  '$id' | 'groupId' | 'kind' | 'status' | 'date' | 'description' | 'totalCents'
+>
 
 /** Calls the ledger function; a refusal throws its message in plain words (#37). */
 export async function ledger<T>(method: Method, path: string, body?: unknown): Promise<T> {
@@ -46,7 +44,7 @@ export class LedgerError extends Error {
 /** Every member row of a group, readable by its team, by name. */
 export function useMembers(groupId: string) {
   return useQuery({
-    queryKey: transactionKeys.members(groupId),
+    queryKey: queryKeys.members(groupId),
     enabled: groupId !== '',
     queryFn: async () => {
       const { rows } = await tablesDB.listRows<Members>({
@@ -73,7 +71,7 @@ export function employerPeople(
 
 export function useTransaction(id: string) {
   return useQuery({
-    queryKey: transactionKeys.transaction(id),
+    queryKey: queryKeys.transaction(id),
     queryFn: () =>
       tablesDB.getRow<Transactions>({
         databaseId: DATABASE_ID,
@@ -86,7 +84,7 @@ export function useTransaction(id: string) {
 /** A transaction's shares (`shares.idx_transactionId`): who paid, and who it was for. */
 export function useShares(id: string) {
   return useQuery({
-    queryKey: transactionKeys.shares(id),
+    queryKey: queryKeys.transactionShares(id),
     queryFn: async () => {
       const { rows } = await tablesDB.listRows<Shares>({
         databaseId: DATABASE_ID,
@@ -112,11 +110,11 @@ export type HistoryFilters = {
  */
 export function useHistory(groupId: string, filters: HistoryFilters) {
   return useInfiniteQuery({
-    queryKey: transactionKeys.history(groupId, filters),
+    queryKey: queryKeys.history(groupId, filters),
     enabled: groupId !== '',
     initialPageParam: undefined as string | undefined,
     queryFn: async ({ pageParam }) => {
-      const { rows } = await tablesDB.listRows<Transactions>({
+      const { rows } = await tablesDB.listRows<HistoryRow & Transactions>({
         databaseId: DATABASE_ID,
         tableId: 'transactions',
         queries: [
@@ -125,13 +123,15 @@ export function useHistory(groupId: string, filters: HistoryFilters) {
           ...(filters.category ? [Query.equal('category', filters.category)] : []),
           ...(filters.from ? [Query.greaterThanEqual('date', filters.from)] : []),
           ...(filters.to ? [Query.lessThanEqual('date', filters.to)] : []),
+          // Only what the list shows (data-model.md: inputJson can be large).
+          Query.select(HISTORY_COLUMNS),
           Query.orderDesc('date'),
           Query.orderDesc('$id'),
           Query.limit(HISTORY_PAGE),
           ...(pageParam === undefined ? [] : [Query.cursorAfter(pageParam)]),
         ],
       })
-      return rows
+      return rows as HistoryRow[]
     },
     getNextPageParam: (last) => (last.length < HISTORY_PAGE ? undefined : last.at(-1)?.$id),
   })
@@ -140,8 +140,8 @@ export function useHistory(groupId: string, filters: HistoryFilters) {
 /** After a write: the row, its group's balances, history and calendar are out of date. */
 function refresh(queryClient: ReturnType<typeof useQueryClient>, view: TransactionView) {
   const { transaction } = view
-  queryClient.setQueryData(transactionKeys.transaction(transaction.$id), transaction)
-  queryClient.setQueryData(transactionKeys.shares(transaction.$id), view.shares)
+  queryClient.setQueryData(queryKeys.transaction(transaction.$id), transaction)
+  queryClient.setQueryData(queryKeys.transactionShares(transaction.$id), view.shares)
   void queryClient.invalidateQueries({ queryKey: queryKeys.balances(transaction.groupId) })
   void queryClient.invalidateQueries({ queryKey: ['history', transaction.groupId] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
@@ -163,14 +163,23 @@ export function useVoidTransaction(id: string) {
     mutationFn: (body: VoidTransactionBody) =>
       ledger<TransactionView>('POST', `/transactions/${id}/void`, body),
     onMutate: async (body) => {
-      const key = transactionKeys.transaction(id)
+      const key = queryKeys.transaction(id)
       await queryClient.cancelQueries({ queryKey: key })
       const before = queryClient.getQueryData<Transactions>(key)
       if (before)
         queryClient.setQueryData(key, { ...before, status: 'void', voidReason: body.reason })
-      return () => queryClient.setQueryData(key, before)
+      return { rollback: () => queryClient.setQueryData(key, before), groupId: before?.groupId }
     },
-    onError: (_error, _body, rollback) => rollback?.(),
+    onError: (error, _body, context) => {
+      context?.rollback()
+      // Locked by a statement, or the group archived, meanwhile: show the page as it is now.
+      if (error instanceof LedgerError && ['LOCKED', 'ARCHIVED'].includes(error.code)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.transaction(id) })
+        if (context?.groupId) {
+          void queryClient.invalidateQueries({ queryKey: queryKeys.group(context.groupId) })
+        }
+      }
+    },
     onSuccess: (view) => refresh(queryClient, view),
   })
 }

@@ -1,6 +1,6 @@
+import type { BootstrapResult } from '@ledgerly/core/schemas/identity'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { BootstrapResult } from '../src/routes/bootstrap'
 import {
   AFTER,
   account,

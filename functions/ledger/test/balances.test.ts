@@ -1,6 +1,6 @@
+import type { Balances } from '@ledgerly/core/schemas/ledger'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { Balances } from '../src/routes/balances'
 import { call, expense, GROUPS, leftOnTheirOwn, NOW, seed } from './harness'
 
 beforeEach(() => {

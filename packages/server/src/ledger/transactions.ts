@@ -20,6 +20,7 @@ import {
   everyPersonId,
   type TransactionInput,
   type TransactionTemplate,
+  type TransactionView,
   transactionTemplateSchema,
 } from '@ledgerly/core/schemas/ledger'
 import { AppwriteException, ID, type Models, Query } from 'node-appwrite'
@@ -31,9 +32,6 @@ import type { Tx, Write } from '../appwrite/transaction'
 import { type Membership, requireMember } from '../auth/require-member'
 import { AppError } from '../http/app-error'
 import { randomId } from '../identity/random-id'
-
-/** functions-api.md#transactioninput: what `POST` and `PATCH` return. */
-export type TransactionView = { transaction: Transactions; shares: Shares[]; items: Items[] }
 
 const PAGE = 100
 const LOCALE = 'en-AU'

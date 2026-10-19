@@ -5,10 +5,11 @@ import { RedirectIfSignedIn, RequireAuth } from './features/auth/route-guards'
 import { SignupPage } from './features/auth/signup-page'
 import { VerifyEmailPage } from './features/auth/verify-email-page'
 import { CalendarPage } from './features/calendar/calendar-page'
+import { DashboardPage } from './features/dashboard/dashboard-page'
 import { groupRoutes } from './features/groups/routes'
+import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
 import { transactionRoutes } from './features/transactions/routes'
-import { HomePage } from './home-page'
 
 export const routes: RouteObject[] = [
   {
@@ -26,11 +27,12 @@ export const routes: RouteObject[] = [
         element: <AppLayout />,
         // One line per feature route.
         children: [
-          { index: true, element: <HomePage /> },
+          { index: true, element: <DashboardPage /> },
           { path: 'profile', element: <ProfilePage /> },
           groupRoutes,
           { path: 'calendar', element: <CalendarPage /> },
           transactionRoutes,
+          peopleRoutes,
         ],
       },
     ],

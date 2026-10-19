@@ -1,5 +1,4 @@
-import type { Groups, Members } from '@ledgerly/core/generated/rows'
-import type { CreateGroupBody } from '@ledgerly/core/schemas/groups'
+import type { CreateGroupBody, CreateGroupResult } from '@ledgerly/core/schemas/groups'
 import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
 import { useState } from 'react'
@@ -31,12 +30,7 @@ export function NewEmployerPage() {
   const [id] = useState(() => ID.unique())
 
   async function create(body: CreateGroupBody) {
-    const result = await callFunction<{ group: Groups; members: Members[] }>(
-      'groups',
-      'POST',
-      '/groups',
-      body,
-    )
+    const result = await callFunction<CreateGroupResult>('groups', 'POST', '/groups', body)
     if (!result.ok) {
       if (result.error.code !== 'CONFLICT') throw new Error(result.error.message)
       // Either a clash with another write, or an earlier try with this ID went through

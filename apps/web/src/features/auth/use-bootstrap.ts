@@ -1,15 +1,11 @@
-import type { Profiles } from '@ledgerly/core/generated/rows'
-import { type BootstrapBody, bootstrapBodySchema } from '@ledgerly/core/schemas/identity'
+import {
+  type BootstrapBody,
+  type BootstrapResult,
+  bootstrapBodySchema,
+} from '@ledgerly/core/schemas/identity'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
-
-export type BootstrapResult = {
-  profile: Profiles
-  personId: string
-  personalGroupId: string
-  linkedGroupIds: string[]
-}
 
 /** The browser's IANA time zone for a new profile, or UTC if the schema rejects it. */
 export function bootstrapBody(): BootstrapBody {

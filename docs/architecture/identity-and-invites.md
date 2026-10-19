@@ -86,7 +86,7 @@ Joining, done by the `identity` function, in this order so a retry can always fi
 
 All three ways write the same row, so the group can't tell which one happened.
 
-Until they join, the person doesn't see the group's data (only its name, type and whether it's archived, in their pending list) and gets no notifications from it (an invite or an invoice sent to them on purpose is different). Records can still name them, exactly as for any placeholder. Before they join, the group can't tell whether they have an account. After they join, it may be able to (a merge changes their person ID); that's fine, because they chose to join.
+Until they join, the person doesn't see the group's data (only its name, type and whether it's archived in their pending list, plus, for a pair group, the other member's display name, so they can tell who added them) and gets no notifications from it (an invite or an invoice sent to them on purpose is different). Records can still name them, exactly as for any placeholder. Before they join, the group can't tell whether they have an account. After they join, it may be able to (a merge changes their person ID); that's fine, because they chose to join.
 
 ## Merging two persons
 

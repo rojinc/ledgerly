@@ -1,5 +1,10 @@
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
+import type {
+  JoinGroupResult,
+  PendingGroup,
+  PendingGroupsResult,
+} from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { isInTeam } from '@ledgerly/server/appwrite/teams'
@@ -12,16 +17,16 @@ import type { Services } from '../services'
 
 const PAGE_SIZE = 100
 
-export type PendingGroup = Pick<Groups, 'type' | 'name' | 'archivedAt'> & { id: string }
-
 /**
  * `identity GET /groups/pending`: the groups where the caller's person is still a `placeholder`
- * member, archived ones included (functions-api.md#identity). Only what a pending list shows.
+ * member, archived ones included (functions-api.md#identity). Only what a pending list shows:
+ * for a pair group, the other member's display name too, since the group's own name is what
+ * its creator calls the caller.
  */
 export async function listPendingGroups(
   { db }: Services,
   userId: string,
-): Promise<{ groups: PendingGroup[] }> {
+): Promise<PendingGroupsResult> {
   const person = await findPersonOfUser(db, userId)
   if (!person) throw new AppError('NOT_FOUND', SET_UP_FIRST)
   const groupIds = (await placeholderRows(db, person.$id)).map((member) => member.groupId)
@@ -40,7 +45,43 @@ export async function listPendingGroups(
       groups.push({ id: $id, type, name, archivedAt })
     }
   }
-  return { groups: groups.sort((a, b) => a.name.localeCompare(b.name)) }
+  const names = await counterpartNames(
+    db,
+    person.$id,
+    groups.filter((group) => group.type === 'pair').map((group) => group.id),
+  )
+  for (const group of groups) {
+    const counterpartName = names.get(group.id)
+    if (counterpartName !== undefined) group.counterpartName = counterpartName
+  }
+  const shown = (group: PendingGroup) => group.counterpartName ?? group.name
+  return { groups: groups.sort((a, b) => shown(a).localeCompare(shown(b))) }
+}
+
+/**
+ * The other member's display name in each pair group: a pair has exactly two members, so one
+ * row per group. Only the name, never an email or phone.
+ */
+async function counterpartNames(
+  db: Db,
+  personId: string,
+  groupIds: string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>()
+  for (let start = 0; start < groupIds.length; start += PAGE_SIZE) {
+    const { rows } = await db.listRows<Members>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.members,
+      queries: [
+        Query.equal('groupId', groupIds.slice(start, start + PAGE_SIZE)),
+        Query.notEqual('personId', personId),
+        Query.limit(PAGE_SIZE),
+      ],
+      total: false,
+    })
+    for (const row of rows) names.set(row.groupId, row.displayName)
+  }
+  return names
 }
 
 /**
@@ -55,7 +96,7 @@ export async function joinPendingGroup(
   userId: string,
   groupId: string,
   body: unknown,
-): Promise<{ group: Groups; member: Members }> {
+): Promise<JoinGroupResult> {
   parseBody(emptyBodySchema, body ?? {})
   const { db } = services
   const person = await findPersonOfUser(db, userId)
