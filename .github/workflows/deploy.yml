@@ -52,13 +52,14 @@ jobs:
         if: steps.secrets.outputs.ready == 'true'
         with:
           persist-credentials: false
-          # Every branch, so this commit can be checked against main's latest.
+          # Main's latest commit, rather than the run's own: deploying an older one would drop
+          # newer columns (`push table --force`). Without `ref`, checkout resets origin/main to
+          # the run's commit.
+          ref: main
+          # Every branch, so the run's own commit is here to compare with.
           fetch-depth: 0
 
-      # `push table --force` makes the database match this commit's tables.json, so deploying
-      # an older commit (re-running an old run) would drop columns added since, with their data.
-      # Only main's latest commit deploys; a newer one's own run deploys that.
-      - name: Check this is main's latest commit
+      - name: Check main's latest commit
         id: latest
         if: steps.secrets.outputs.ready == 'true'
         run: |
@@ -66,12 +67,20 @@ jobs:
             echo "::error::Deploy only from main, not $GITHUB_REF."
             exit 1
           fi
-          if [ "$(git rev-parse origin/main)" = "$GITHUB_SHA" ]; then
-            echo "deploy=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::warning::Skipped: main has a newer commit, and its own run deploys it."
-            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          latest=$(git rev-parse HEAD)
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" "$latest"; then
+              echo "::error::This run's commit (${GITHUB_SHA:0:7}) isn't in the history of main's latest (${latest:0:7}). Nothing was deployed. Run Deploy on main."
+              exit 1
+            fi
+            # This run's steps come from its own deploy.yml, so it must still be the latest's.
+            if ! git diff --quiet "$GITHUB_SHA" "$latest" -- .github/workflows/deploy.yml; then
+              echo "::error::deploy.yml changed between this run's commit (${GITHUB_SHA:0:7}) and main's latest (${latest:0:7}), so this run can't deploy it. Nothing was deployed. Run Deploy on main."
+              exit 1
+            fi
+            echo "::notice::Deploying main's latest commit, ${latest:0:7}, in place of ${GITHUB_SHA:0:7}."
           fi
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
 
       # The CLI takes the endpoint from APPWRITE_ENDPOINT over the config file's, and the config
       # file names the project, so this is the only check that the secrets and the file agree.
