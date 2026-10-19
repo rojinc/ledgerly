@@ -5,6 +5,7 @@ import { AppLayout } from './app-layout'
 
 vi.mock('./features/auth/use-log-out', () => ({ useLogOut: () => ({ isPending: false }) }))
 vi.mock('./features/auth/verify-email-banner', () => ({ VerifyEmailBanner: () => null }))
+vi.mock('./lib/realtime', () => ({ useRealtimeSync: () => {} }))
 
 function renderAt(path: string) {
   const router = createMemoryRouter(

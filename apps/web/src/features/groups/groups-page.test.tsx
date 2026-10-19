@@ -85,11 +85,15 @@ describe('GroupsPage', () => {
     // Marked in text, not only by colour, and its balance still shows.
     expect(within(archived).getByText('House · Archived')).toBeTruthy()
     expect(await within(archived).findByText(/^You owe .*20\.50$/)).toBeTruthy()
-    // Only employer groups link to their settings.
+    // Employer groups link to their settings, a house to its page, a personal group nowhere.
     expect(screen.getByRole('link', { name: 'Acme' }).getAttribute('href')).toBe(
       '/groups/g2/settings',
     )
-    expect(screen.queryByRole('link', { name: 'Flat' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Flat' }).getAttribute('href')).toBe('/groups/g3')
+    expect(screen.queryByRole('link', { name: 'Personal' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'New house' }).getAttribute('href')).toBe(
+      '/groups/new-house',
+    )
     // The rows come from the user's teams only.
     expect(listRows).toHaveBeenCalledWith(
       expect.objectContaining({

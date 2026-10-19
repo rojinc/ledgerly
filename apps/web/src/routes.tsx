@@ -9,6 +9,7 @@ import { billRoutes } from './features/bills/routes'
 import { CalendarPage } from './features/calendar/calendar-page'
 import { DashboardPage } from './features/dashboard/dashboard-page'
 import { groupRoutes } from './features/groups/routes'
+import { houseRoutes } from './features/house/routes'
 import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
 import { shiftRoutes } from './features/shifts/routes'
@@ -34,6 +35,7 @@ export const routes: RouteObject[] = [
           { index: true, element: <DashboardPage /> },
           { path: 'profile', element: <ProfilePage /> },
           groupRoutes,
+          houseRoutes,
           { path: 'calendar', element: <CalendarPage /> },
           transactionRoutes,
           statementRoutes,
