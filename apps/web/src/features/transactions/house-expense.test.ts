@@ -1,3 +1,4 @@
+import { MAX_WEIGHT } from '@ledgerly/core/constants/limits'
 import type { Members } from '@ledgerly/core/generated/rows'
 import { buildShares } from '@ledgerly/core/ledger/build-shares'
 import { assertShareInvariants } from '@ledgerly/core/ledger/invariants'
@@ -885,6 +886,24 @@ describe('toHouseExpenseValues, itemised (#225)', () => {
     ],
     ['by shares', BY_SHARES, {}, 'AUD'],
     [
+      'a share of MAX_WEIGHT',
+      [
+        {
+          name: 'Pizza',
+          amountCents: 3000,
+          split: {
+            mode: 'weights',
+            weights: [
+              { personId: 'alice', weight: MAX_WEIGHT },
+              { personId: 'bob', weight: 1 },
+            ],
+          },
+        },
+      ],
+      {},
+      'AUD',
+    ],
+    [
       'several payers',
       FLOW_7,
       {
@@ -960,6 +979,8 @@ describe('toHouseExpenseValues, itemised (#225)', () => {
       [{ ...ONE, split: { mode: 'exact', amounts: [{ personId: 'alice', cents: 450 }] } }],
     ],
     ['a quantity of 2', [{ ...ONE, quantity: 2, split: everyone }]],
+    ['a quantity of 0.5', [{ ...ONE, quantity: 0.5, split: everyone }]],
+    ['an equal split with no personIds', [{ ...ONE, split: { mode: 'equal' } }]],
     ['an item for nobody', [{ ...ONE, split: { mode: 'equal', personIds: [] } }]],
     ['someone who isn’t a member', [{ ...ONE, split: { mode: 'equal', personIds: ['zed'] } }]],
     ['people out of order', [{ ...ONE, split: { mode: 'equal', personIds: ['bob', 'alice'] } }]],
