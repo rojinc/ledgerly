@@ -1,5 +1,6 @@
 import { Navigate, type RouteObject } from 'react-router'
 import { AppLayout } from './app-layout'
+import { ActivityPage } from './features/activity/activity-page'
 import { LoginPage } from './features/auth/login-page'
 import { RedirectIfSignedIn, RequireAuth } from './features/auth/route-guards'
 import { SignupPage } from './features/auth/signup-page'
@@ -8,6 +9,7 @@ import { billRoutes } from './features/bills/routes'
 import { CalendarPage } from './features/calendar/calendar-page'
 import { DashboardPage } from './features/dashboard/dashboard-page'
 import { groupRoutes } from './features/groups/routes'
+import { houseRoutes } from './features/house/routes'
 import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
 import { scheduleRoutes } from './features/schedules/routes'
@@ -34,6 +36,7 @@ export const routes: RouteObject[] = [
           { index: true, element: <DashboardPage /> },
           { path: 'profile', element: <ProfilePage /> },
           groupRoutes,
+          houseRoutes,
           { path: 'calendar', element: <CalendarPage /> },
           transactionRoutes,
           statementRoutes,
@@ -41,6 +44,8 @@ export const routes: RouteObject[] = [
           shiftRoutes,
           billRoutes,
           scheduleRoutes,
+          billRoutes,
+          { path: 'activity', element: <ActivityPage /> },
         ],
       },
     ],

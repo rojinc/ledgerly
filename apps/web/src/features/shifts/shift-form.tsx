@@ -44,6 +44,7 @@ const ERROR_FIELD: Record<string, keyof ShiftValues> = {
 /** Schema errors on the fields the form shows, in plain words. */
 function shiftResolver(
   toBody: (values: ShiftValues) => ReturnType<typeof toShiftBody>,
+  stored: ShiftValues,
 ): Resolver<ShiftValues, unknown, TransactionInput> {
   return async (values, context, options) => {
     const resolve = schemaResolver<ShiftValues, TransactionInput>(transactionInputSchema, toBody)
@@ -56,7 +57,14 @@ function shiftResolver(
     if (values.timing === 'times') {
       if (!values.startTime) add('startTime', 'Required')
       if (!values.endTime) add('endTime', 'Required')
-      if (values.startTime && values.startTime === values.endTime) {
+      // A timer stopped within the minute it started is stored with equal times: those can stay,
+      // with its stored minutes, while the times and break are as stored. A changed break would
+      // count equal times as a whole day (minutesBetween), so then they're refused again.
+      const storedTimes =
+        values.startTime === stored.startTime &&
+        values.endTime === stored.endTime &&
+        values.breakMinutes.trim() === stored.breakMinutes.trim()
+      if (values.startTime && values.startTime === values.endTime && !storedTimes) {
         add('endTime', 'The end must differ from the start')
       }
       const breakText = values.breakMinutes.trim()
@@ -120,7 +128,7 @@ export function ShiftForm({
       : body
   }
   const form = useForm<ShiftValues, unknown, TransactionInput>({
-    resolver: shiftResolver(toBody),
+    resolver: shiftResolver(toBody, defaultValues),
     defaultValues,
   })
   const { errors, isSubmitting, isSubmitSuccessful, isDirty } = form.formState
@@ -141,14 +149,21 @@ export function ShiftForm({
   return (
     <form
       noValidate
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          await onSave(body)
-          form.reset(form.getValues())
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
+      onSubmit={(event) => {
+        // Save stays focusable while saving (aria-disabled), so a second submit is ignored here.
+        if (isSubmitting) {
+          event.preventDefault()
+          return
         }
-      })}
+        void form.handleSubmit(async (body) => {
+          try {
+            await onSave(body)
+            form.reset(form.getValues())
+          } catch (error) {
+            form.setError('root', { message: (error as Error).message })
+          }
+        })(event)
+      }}
       className="flex flex-col gap-4"
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
@@ -248,7 +263,7 @@ export function ShiftForm({
           : ' '}
       </p>
       <div className="flex items-center gap-3">
-        <Button type="submit" disabled={isSubmitting}>
+        <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : submitLabel}
         </Button>
         {isSubmitSuccessful && !isDirty && !errors.root && (
