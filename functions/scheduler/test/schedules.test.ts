@@ -720,6 +720,59 @@ describe('races on schedule edits', () => {
     ).toEqual(new Set([5]))
   })
 
+  it.each([
+    // Saved on Wednesday 21 October; the next run that reaches it is Saturday's.
+    ['a day later', '2026-10-20T20:00:00.000Z', '2026-10-23T13:05:00.000Z'],
+    // Saved at 23:58 on Thursday 22 October; the next run is at 00:05 on Friday.
+    ['after midnight', '2026-10-22T12:58:00.000Z', '2026-10-22T13:05:00.000Z'],
+  ])('puts right an edit that loses its races, when the next run comes %s', async (_, at, run) => {
+    const services = seeded()
+    await create(services, thursdays)
+    services.now = new Date(at)
+    failCommit(services, [2, 4], lostRace)
+    await failure(services, 'PATCH', `/schedules/${ID}`, {
+      body: { ...thursdays, rrule: 'FREQ=WEEKLY;BYDAY=FR' },
+    })
+    vi.restoreAllMocks()
+    services.now = new Date(run)
+    await runCron(services)
+    // As the edit would have left it: Thursday 22 October goes, and Friday 23 is there.
+    const dates = occurrences(services).map((row) => row.date)
+    expect(dates).not.toContain('2026-10-22')
+    expect(dates).toContain('2026-10-23')
+    expect(
+      new Set(
+        dates.filter((date) => date >= '2026-10-21').map((date) => weekdayOf(date as LocalDate)),
+      ),
+    ).toEqual(new Set([5]))
+  })
+
+  it('puts right what a short horizon left, however late the next run', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await patch(services, { ...thursdays, rrule: 'FREQ=WEEKLY;BYDAY=FR', horizonDays: 7 })
+    // The next run that reaches it comes 12 days later, on Saturday 31 October.
+    services.now = new Date('2026-10-30T13:05:00.000Z')
+    await runCron(services)
+    const dates = occurrences(services).map((row) => row.date)
+    expect(dates).not.toContain('2026-10-29')
+    expect(dates).toContain('2026-10-30')
+  })
+
+  it('reopens an ended schedule from today, never filling in the past', async () => {
+    const services = seeded()
+    await create(services, { ...thursdays, startsOn: '2026-09-03', endsOn: '2026-09-20' })
+    await patch(services, { ...thursdays, startsOn: '2026-09-03' })
+    const dates = occurrences(services).map((row) => row.date)
+    // 3, 10 and 17 September from before; nothing from 24 September to 15 October.
+    expect(dates.filter((date) => date < '2026-10-19')).toEqual([
+      '2026-09-03',
+      '2026-09-10',
+      '2026-09-17',
+    ])
+    expect(dates.filter((date) => date >= '2026-10-19')).toHaveLength(8)
+  })
+
   it('puts right an edit that stopped partway, at the next cron run', async () => {
     const services = seeded()
     await create(services, groceries)
@@ -1039,11 +1092,29 @@ describe('POST /schedules/{id}/end', () => {
     await create(services, thursdays)
     // Today is 19 October: 8 and 15 October wait for the user.
     expect((await end(services, '2026-10-05')).removed).toBe(8)
+    // The run that follows doesn't reach back before today either.
+    await runCron(services)
     expect(occurrences(services).map((row) => row.date)).toEqual([
       '2026-10-01',
       '2026-10-08',
       '2026-10-15',
     ])
+    expect(scheduleRow(services)).toMatchObject({ generatedThrough: '2026-10-18', nextRunAt: null })
+  })
+
+  it('carries on from today when an end long past is moved later', async () => {
+    const services = seeded()
+    await create(services, { ...thursdays, startsOn: '2026-09-03', endsOn: '2026-09-20' })
+    await end(services, '2026-12-31')
+    await runCron(services)
+    const dates = occurrences(services).map((row) => row.date)
+    // Nothing from 24 September to 15 October; the 8 Thursdays from today on.
+    expect(dates.filter((date) => date < '2026-10-19')).toEqual([
+      '2026-09-03',
+      '2026-09-10',
+      '2026-09-17',
+    ])
+    expect(dates.filter((date) => date >= '2026-10-19')).toHaveLength(8)
   })
 
   it('works even when the template no longer fits the ledger', async () => {

@@ -101,11 +101,11 @@ type Step =
  * from the day after `after` (by default `generatedThrough`; `startsOn` when empty) to its end
  * or the horizon, whichever comes first, in line with the schedule as it is now, then sets
  * `generatedThrough` and `nextRunAt`. It creates the ones that are missing, by ID (one a person
- * moved to another day still holds its ID). An occurrence from today on that's still
- * `scheduled` or `due` and not edited is updated in place when the template changed, and
- * deleted with its items when the rule no longer has its date or it lies after the schedule's
- * end. So an edit that stopped partway is put right by the next run. Earlier ones, and voided,
- * edited and posted ones, are left as they are (scheduling.md#idempotency).
+ * moved to another day still holds its ID). One from the same day on that's still `scheduled`
+ * or `due` and not edited is updated in place when the template changed, and deleted with its
+ * items when the rule no longer has its date or it lies after the schedule's end. So an edit
+ * that stopped partway is put right by the next run, however late. Voided, edited and posted
+ * ones are left as they are (scheduling.md#idempotency).
  *
  * Each batch of at most 90 writes is guarded (ledger.md#concurrency): it stages its progress on
  * the schedule row and checks the stored schedule is the one read, guards the group and the
@@ -133,13 +133,13 @@ export async function generateOccurrences(
   const to = end && compareDates(end, horizon) < 0 ? end : horizon
   const dates = compareDates(from, to) <= 0 ? datesOf(schedule, group, from, to) : []
   const ids = new Map(dates.map((date) => [occurrenceId(schedule.$id, date), date]))
-  // idx_schedule_date: the ones the schedule may still change. None before today: a past one
-  // that wasn't posted waits for the user. Not limited to `from`, so a later startsOn removes
-  // the ones before it.
+  // idx_schedule_date: the ones the schedule may still change, from where it creates. Not
+  // limited to startsOn, so a later startsOn removes the ones before it. An edit moves
+  // generatedThrough to yesterday, so nothing before today changes.
   const changeable = (
     await allRows<Transactions>(db, TABLES.transactions, [
       Query.equal('scheduleId', schedule.$id),
-      Query.greaterThanEqual('date', laterOf(today, next)),
+      Query.greaterThanEqual('date', next ?? from),
     ])
   ).filter(isChangeable)
   const itemsByRow = groupItems(
@@ -179,7 +179,8 @@ export async function generateOccurrences(
   // Nothing is left to create once everything up to the end exists.
   const finished = end !== null && compareDates(end, to) <= 0
   const done = {
-    generatedThrough: to,
+    // Never back: `to` is earlier after an end, and a later run must not reach behind it.
+    generatedThrough: laterOf(to, after),
     nextRunAt: finished ? null : nextRunAt(today, group.timezone),
   }
 
@@ -549,6 +550,7 @@ function packed(units: string[][]): string[][][] {
   return batches
 }
 
-function laterOf(date: LocalDate, other: LocalDate | null): LocalDate {
+/** The later of two dates; `date` when `other` is empty. */
+export function laterOf(date: LocalDate, other: LocalDate | null): LocalDate {
   return other && compareDates(other, date) > 0 ? other : date
 }

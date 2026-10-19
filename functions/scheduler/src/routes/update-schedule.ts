@@ -1,4 +1,4 @@
-import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
+import { addDays } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Schedules } from '@ledgerly/core/generated/rows'
 import { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
@@ -42,13 +42,12 @@ export async function updateSchedule(
         "A schedule's group and kind can't change. End it and add a new one.",
       )
     }
-    const today = localToday(membership.group.timezone, now)
-    const yesterday = addDays(today, -1)
-    const generated = schedule.generatedThrough as LocalDate | null
+    const yesterday = addDays(localToday(membership.group.timezone, now), -1)
     const changes = {
       ...scheduleColumns(input),
-      // Expand again from today; dates before it that were never expanded still will be.
-      generatedThrough: generated && compareDates(generated, yesterday) > 0 ? yesterday : generated,
+      // Expand again from today, never before: nothing past is made, changed or deleted. Empty
+      // stays empty, so a schedule that never expanded starts from startsOn, like a new one.
+      generatedThrough: schedule.generatedThrough === null ? null : yesterday,
       // Due at once, so a cron run finishes the expansion if this request can't.
       nextRunAt: now.toISOString(),
     }
