@@ -1568,7 +1568,8 @@ describe('TransactionPage', () => {
         groupId: 'house1',
         description: 'Groceries',
         totalCents: 5200,
-        inputJson: JSON.stringify({ payers: [{ personId: 'bob', cents: 5200 }], items: stored }),
+        // As the ledger stores it: items are rows of their own, never in inputJson.
+        inputJson: JSON.stringify({ payers: [{ personId: 'bob', cents: 5200 }] }),
       }) as never,
     )
     renderAt('/transactions/t9')
@@ -1595,7 +1596,7 @@ describe('TransactionPage', () => {
     ])
   })
 
-  it('reads no items for an expense that isn’t itemised', async () => {
+  it('shows no Items for an expense without item rows, and keeps its split', async () => {
     mockGroups(house)
     mockRows([], [], HOUSEMATES)
     getRow.mockResolvedValue(
@@ -1605,8 +1606,46 @@ describe('TransactionPage', () => {
       }) as never,
     )
     renderAt('/transactions/t9')
-    expect(await screen.findByText('Split')).toBeTruthy()
+    const split = (await screen.findByText('Split')).nextElementSibling as HTMLElement
+    await waitFor(() => expect(listCalls().some((call) => call.tableId === 'items')).toBe(true))
+    expect(split.textContent).toBe('Equally between 1 person')
     expect(screen.queryByRole('region', { name: 'Items' })).toBeNull()
+  })
+
+  it('reads the items of a bill too', async () => {
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES, [
+      { $id: 'i0', position: 0, name: 'Line rental', amountCents: 6000, splitJson: '{}' },
+    ])
+    getRow.mockResolvedValue(row('t9', { groupId: 'house1', kind: 'bill' }) as never)
+    renderAt('/transactions/t9')
+    const items = await screen.findByRole('region', { name: 'Items' })
+    expect(within(items).getByRole('listitem').textContent).toMatch(/^Line rental: .*60\.00$/)
+  })
+
+  it.each(['shift', 'payment', 'loan'] as const)('reads no items for a %s', async (kind) => {
+    mockGroups(acme)
+    mockRows()
+    getRow.mockResolvedValue(row('t1', { kind }) as never)
+    renderAt('/transactions/t1')
+    expect(await screen.findByText('Group')).toBeTruthy()
+    await act(async () => {})
     expect(listCalls().some((call) => call.tableId === 'items')).toBe(false)
+  })
+
+  it('says so when the items can’t be read', async () => {
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES)
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+      if (tableId === 'items') throw new Error('offline')
+      return { total: 0, rows: tableId === 'members' ? HOUSEMATES : [] }
+    }) as never)
+    getRow.mockResolvedValue(row('t9', { groupId: 'house1' }) as never)
+    renderAt('/transactions/t9')
+    expect(
+      await screen.findByText(
+        'We couldn’t load this expense’s items. Reload the page to try again.',
+      ),
+    ).toBeTruthy()
   })
 })

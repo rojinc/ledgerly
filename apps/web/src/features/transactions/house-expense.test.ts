@@ -7,6 +7,7 @@ import {
   defaultTicks,
   type HouseExpenseValues,
   type ItemValues,
+  itemCents,
   itemProblems,
   NEW_ITEM,
   parsePercent,
@@ -480,6 +481,34 @@ describe('itemised receipts (#42)', () => {
       'alice',
     )
     expect(preview).toEqual({ error: 'A discount can’t make anyone’s part go below zero.' })
+  })
+
+  it('words a refund’s item that pushes someone above zero as a refund', () => {
+    // −30.00 back for all three; Bob's beer makes his part −10.00 + 20.00.
+    const preview = previewShares(
+      toHouseExpenseBody(
+        flow7({
+          items: [
+            item({ name: 'Returned kettle', amount: '-30' }),
+            item({ name: 'Beer', amount: '20', excluded: ['alice', 'cara'] }),
+          ],
+        }),
+        IDS,
+        'AUD',
+      ),
+      { ownerPersonId: 'alice' },
+      MEMBERS,
+      'alice',
+    )
+    expect(preview).toEqual({
+      error: 'On a refund, an item can’t make anyone’s part go above zero.',
+    })
+  })
+
+  it('keeps a typed minus negative when the discount box is ticked too', () => {
+    expect(itemCents(item({ amount: '-2.00', discount: true }), 'AUD')).toBe(-200)
+    expect(itemCents(item({ amount: '2.00', discount: true }), 'AUD')).toBe(-200)
+    expect(itemCents(item({ amount: '-2.00' }), 'AUD')).toBe(-200)
   })
 
   it('checks each item, then the total', () => {

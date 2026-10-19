@@ -371,9 +371,16 @@ export function previewShares(
     return { shares }
   } catch (error) {
     if (error instanceof LedgerError) {
-      // I-4, worded for what causes it on a receipt.
+      // I-4, worded for what causes it on a receipt. Core has no code for it, so its message
+      // ('Amounts can’t mix signs: …', packages/core/src/ledger/build-shares.ts) is matched.
       if (body.items && /mix signs/.test(error.message)) {
-        return { error: 'A discount can’t make anyone’s part go below zero.' }
+        const total = body.items.reduce((sum, item) => sum + item.amountCents, 0)
+        return {
+          error:
+            total < 0
+              ? 'On a refund, an item can’t make anyone’s part go above zero.'
+              : 'A discount can’t make anyone’s part go below zero.',
+        }
       }
       return { error: error.message }
     }
