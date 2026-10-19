@@ -8,6 +8,7 @@ import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { useGroup, useGroups, useMyMember } from '../groups/use-groups'
+import { useProfile } from '../profile/use-profile'
 import { shiftRoutes } from './routes'
 
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
@@ -17,6 +18,8 @@ vi.mock('../../lib/appwrite', () => ({
 }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
 vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'p1' } }) }))
+// No work-hours limit: hours-cap.test.tsx has the lines (#53).
+vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn() }))
 vi.mock('../groups/use-groups', () => ({
   useGroups: vi.fn(),
   useGroup: vi.fn(),
@@ -198,6 +201,14 @@ beforeEach(() => {
   vi.setSystemTime(NOW)
   mockGroups([acme])
   mockGroup(acme)
+  vi.mocked(useProfile).mockReturnValue({
+    data: {
+      personId: 'p1',
+      timezone: 'Australia/Sydney',
+      hoursCapMinutes: null,
+      hoursCapPeriod: null,
+    },
+  } as never)
   mockRoles({ g1: 'admin', g2: 'member' })
 })
 

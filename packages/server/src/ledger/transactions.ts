@@ -513,7 +513,8 @@ type ActivityAction =
  */
 export function activityWrite(
   row: Pick<Transactions, '$id' | 'groupId' | 'description'>,
-  actorPersonId: string,
+  // Null for a system job (data-model.md#activity).
+  actorPersonId: string | null,
   action: ActivityAction,
   summary: string,
   changes: Record<string, { before: unknown; after: unknown }> | null,
@@ -524,6 +525,8 @@ export function activityWrite(
     actorPersonId,
     action,
     transactionId: row.$id,
+    // A ledger row is about a transaction, not a member (data-model.md#activity).
+    subjectPersonId: null,
     summary: summary.slice(0, 255),
     changesJson: changes && Object.keys(changes).length > 0 ? JSON.stringify(changes) : null,
     at: now.toISOString(),

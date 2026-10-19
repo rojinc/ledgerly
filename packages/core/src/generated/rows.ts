@@ -257,6 +257,7 @@ export type Activity = Models.Row & {
     actorPersonId: string | null;
     action: string;
     transactionId: string | null;
+    subjectPersonId: string | null;
     summary: string;
     changesJson: string | null;
     at: string;

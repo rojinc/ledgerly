@@ -106,6 +106,8 @@ An edit, another run, a member removed or an occurrence changed meanwhile makes 
 
 Query with `idx_status_date` (autopay bills: `idx_status_dueOn`) for dates from 7 days ago up to the UTC date plus one day (some timezones are ahead), then check each group's local date before posting. Skip transactions in archived groups; they stay as they are. The 7-day floor matters: shifts waiting for manual confirmation stay `scheduled` for as long as the user ignores them, and without a floor every run would re-read all of them. An auto-post occurrence missed by more than 7 days (a long outage) waits for the user.
 
+A schedule whose `nextRunAt` has come is left for now: step 1 hasn't brought its occurrences in line yet (it ran out of time, or failed on it), and a later run posts them once it has. Each occurrence is read again first, and checked again once its row is guarded, so one a person posted, voided or moved to a later day meanwhile is left alone; an edited one posts with its edited values. It is posted with the ledger's own post (`postInTransaction` in `packages/server`, the same guards and writes as `POST /transactions/{id}/post`) as the schedule's creator: they pay when the template names no payers, and they are its `updatedBy`. The activity row has no actor ([data model](data-model.md#activity)). One a finalizing statement covers (`LOCKED`) is skipped until a later run. One that breaks a ledger rule now (a member removed after it was made) is counted as failed, logged with its ID and error code only, and stays `scheduled` for the user. The run's result counts `posted`, `skipped` and `failed`.
+
 ### Step 3: reminders
 
 | Reminder | Condition | Sent to |
