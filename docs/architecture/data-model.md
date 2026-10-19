@@ -169,7 +169,7 @@ Permissions: `read("team:<groupId>")`.
 | `statementId` | varchar(36)? | Set when a final statement locks it |
 | `receiptFileIds` | varchar(36)[]? | Files in the `receipts` bucket |
 | `startedAt` | datetime? | Timer shifts |
-| `remindedAt` | datetime? | When the last reminder (bill due, shift to confirm, long-running timer) was sent, or was settled without an email (nobody to send to, an archived group, an address Resend refuses) |
+| `remindedAt` | datetime? | When the last reminder (bill due, shift to confirm, long-running timer) was sent, or was settled without an email (nobody to send to, an archived group, an address Resend refuses; but a shift of a schedule that auto-posts isn't settled with nobody to send to). Cleared when a bill's `dueOn` or a `scheduled` row's `date` changes |
 | `voidReason` | varchar(200)? | |
 | `createdBy` | varchar(36) | personId. Schedule occurrences use the schedule's `createdBy`. |
 | `updatedBy` | varchar(36) | personId |

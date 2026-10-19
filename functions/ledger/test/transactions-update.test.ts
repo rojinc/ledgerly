@@ -216,6 +216,35 @@ describe('PATCH /transactions/{id}', () => {
     expect(rows.shares(db)).toEqual([])
   })
 
+  it('clears remindedAt when a scheduled row gets a new date, and only then', async () => {
+    const db = seed({
+      transactions: [
+        {
+          $id: 't1',
+          groupId: 'house',
+          kind: 'expense',
+          status: 'scheduled',
+          date: '2026-10-10',
+          description: 'Groceries',
+          totalCents: 9000,
+          inputJson: JSON.stringify({ split: { mode: 'equal', personIds: ['alice', 'bob'] } }),
+          dueOn: null,
+          remindedAt: '2026-10-11T20:00:00.000Z',
+          createdBy: 'alice',
+          updatedBy: 'alice',
+        },
+      ],
+    })
+    expect(
+      (await call(db, 'PATCH', '/transactions/t1', expense({ description: 'Food' }))).status,
+    ).toBe(200)
+    expect(rows.transactions(db)[0]?.remindedAt).toBe('2026-10-11T20:00:00.000Z')
+    expect(
+      (await call(db, 'PATCH', '/transactions/t1', expense({ date: '2026-10-12' }))).status,
+    ).toBe(200)
+    expect(rows.transactions(db)[0]).toMatchObject({ date: '2026-10-12', remindedAt: null })
+  })
+
   it('clears remindedAt when a due bill gets a new due date, and only then', async () => {
     const bill = (dueOn: string) => ({
       id: 'b1',

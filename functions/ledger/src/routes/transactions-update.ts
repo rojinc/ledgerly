@@ -103,8 +103,13 @@ export const updateTransaction = (services: ServicesFor) =>
             receiptFileIds: receiptsColumn(receipts),
             // scheduling.md: an edited occurrence is kept apart from its schedule from now on.
             overridden: existing.scheduleId !== null || existing.overridden,
-            // A new due date gets its own reminder (functions-api.md#ledger).
-            remindedAt: planned.dueOn === existing.dueOn ? existing.remindedAt : null,
+            // A new due date, or a new date for a `scheduled` row, gets its own reminder, and an
+            // auto-post shift moved to a later day can be posted again (functions-api.md#ledger).
+            remindedAt:
+              planned.dueOn === existing.dueOn &&
+              (existing.status !== 'scheduled' || input.date === existing.date)
+                ? existing.remindedAt
+                : null,
           }
           const [oldShares, oldItems] = await Promise.all([
             listShares(db, existing.$id),

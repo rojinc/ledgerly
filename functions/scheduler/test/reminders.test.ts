@@ -198,6 +198,19 @@ describe('step 3: shift to confirm', () => {
     quiet.mockRestore()
   })
 
+  it('leaves an auto-post shift unmarked when nobody can be asked, so step 2 keeps trying it', async () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const services = seeded([transaction('t1', { scheduleId: 'auto' })], {
+      accounts: { u1: { email: 'sam@example.com', emailVerification: false } },
+    })
+    expect(await runCron(services)).toMatchObject({
+      posted: { posted: 0, skipped: 0, failed: 1 },
+      reminders: { sent: 0, skipped: 0, failed: 0 },
+    })
+    expect(remindedAt(services, 't1')).toBeNull()
+    quiet.mockRestore()
+  })
+
   it('reminds about a shift of an auto-post schedule made after its day, which step 2 leaves', async () => {
     // Made on Sydney's 19 October (now), for the 18th.
     const late = transaction('t1', { scheduleId: 'auto', $createdAt: NOW.toISOString() })
