@@ -1,5 +1,7 @@
-import { clientFromRequest } from '@ledgerly/server/appwrite/client'
+import { clientFromRequest, type Db } from '@ledgerly/server/appwrite/client'
+import type { Tx } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { receiptRows, writeReceiptRows } from '@ledgerly/server/ledger/receipt-files'
 import { teamRead } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, type Models, Storage } from 'node-appwrite'
 
@@ -82,31 +84,66 @@ async function storage<T>(request: () => Promise<T>): Promise<T> {
 const usable = (file: ReceiptFile | undefined): file is ReceiptFile =>
   file?.complete === true && RECEIPT_TYPES.includes(file.mimeType)
 
+/** A write's new receipt list for one transaction. */
+type ReceiptList = {
+  groupId: string
+  transactionId: string
+  fileIds: readonly string[]
+  /** The list on the stored row; empty for a new transaction. */
+  stored?: readonly string[]
+  now: Date
+}
+
 /**
  * permissions.md#storage: checks each file in `fileIds` that isn't in `stored` already, and
- * only once every one passes, limits each to the group's team. Routes call it inside their
- * database transaction, just before its writes, so the reset lands before the commit: a stored
- * ID never points at a file its uploader can still change or delete. A refused list changes
- * no file, and the error names its index only, never anything about the file.
+ * only once every one passes, limits each to the group's team. Then stages the `receiptFiles`
+ * row of each file added or taken off, and reads them again as committed
+ * (data-model.md#receiptfiles). Routes call it inside their
+ * database transaction, just before their own writes, so the reset lands before the commit: a
+ * stored ID never points at a file its uploader can still change or delete. A refused list
+ * changes no file, and the error names its index only, never anything about the file.
  */
 export async function attachReceipts(
   files: Files,
-  groupId: string,
-  fileIds: readonly string[],
-  stored: readonly string[] = [],
+  db: Db,
+  tx: Tx,
+  { groupId, transactionId, fileIds, stored = [], now }: ReceiptList,
 ): Promise<void> {
   const added = fileIds
     .map((fileId, index) => ({ fileId, index }))
     .filter(({ fileId }) => !stored.includes(fileId))
+  const removed = stored.filter((fileId) => !fileIds.includes(fileId))
+  const changed = [...added.map(({ fileId }) => fileId), ...removed]
+  if (changed.length === 0) return
+  // Before the files, so a file the scheduler is deleting is refused before any file is reset
+  // (scheduling.md#step-5-receipt-clean-up).
+  const rows = await receiptRows(db, changed)
   const [team] = teamRead(groupId) as [string]
   const found = await Promise.all(added.map(({ fileId }) => storage(() => files.getFile(fileId))))
-  refuse(added.filter((_, at) => !(usable(found[at]) && found[at].permissions.includes(team))))
+  refuse(
+    added.filter(
+      ({ fileId }, at) =>
+        rows.get(fileId)?.deletingAt ||
+        !(usable(found[at]) && found[at].permissions.includes(team)),
+    ),
+  )
   const reset = await Promise.all(
     added.map(({ fileId }) => storage(() => files.updateFile(fileId, [team]))),
   )
   // Until its reset, an uploader who kept `delete` could swap the file for another under the
   // same ID. Nobody but the server can change it now, so this second look is the one that counts.
   refuse(added.filter((_, at) => !usable(reset[at])))
+  await writeReceiptRows(
+    db,
+    tx,
+    rows,
+    changed.map((fileId) =>
+      fileIds.includes(fileId)
+        ? { fileId, add: [transactionId] }
+        : { fileId, remove: [transactionId] },
+    ),
+    now,
+  )
 }
 
 // One answer for every failure, so the reply never shows whether a file ID exists.
