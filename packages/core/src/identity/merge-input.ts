@@ -156,8 +156,9 @@ function plansTo(input: Named, kind: TransactionKind, posted: Posted, parts: rea
  * and a `days` split counts U's kept member row once), it's written out as `exact` from those
  * parts. The parts are planned with `before`, the members as they were before the merge (P's and
  * U's member rows as step 1 recorded them, #242 B2), and the renamed split with `ctx`, the
- * members as step 2 left them, as an edit would plan it. One that can't be planned before (no
- * record, and a `days` split naming P, whose member row step 2 removed) is renamed only.
+ * members as step 2 left them, as an edit would plan it. The merge never runs without step 1's
+ * record (#301). One that can't be planned with `before` (a `days` split naming someone with no
+ * member row in it) is renamed only.
  */
 export function mergePostedSplit(
   split: SplitSpec,
