@@ -248,10 +248,14 @@ async function saveCursor(
         // Persons are never deleted; without P's row there's nowhere to keep it.
         if (!stored) return
         const cursors = cursorsOf(stored)
-        const theirs = cursors.find((other) => other.groupId === entry.groupId)?.left ?? []
+        const mine = cursors.find((other) => other.groupId === entry.groupId)
+        const theirs = mine?.left ?? []
         const left = [
           ...new Set([...theirs.filter((rowId) => !cleared.includes(rowId)), ...entry.left]),
         ]
+        // Nothing new since it was stored (a run that found no more rows): no write.
+        const same = left.length === theirs.length && left.every((rowId) => theirs.includes(rowId))
+        if (mine?.after === entry.after && same) return
         const next = [
           ...cursors.filter((other) => other.groupId !== entry.groupId),
           { ...entry, left },

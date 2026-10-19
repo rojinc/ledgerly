@@ -3,6 +3,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import {
+  AFTER,
   BEFORE,
   beforeCommit,
   beforeStaging,
@@ -146,6 +147,15 @@ describe('GET /groups/pending', () => {
     ])
     const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups).toEqual([{ id: 'g6', type: 'employer', name: 'Zed Cafe', archivedAt: null }])
+  })
+
+  it('is NOT_FOUND for a deleted account, whose person is never resolved from its userId', async () => {
+    const services = fakes({
+      persons: [{ ...SAM, deletedAt: BEFORE }],
+      groups: GROUPS,
+      members: defaultMembers(),
+    })
+    expect((await failure(services, 'GET', '/groups/pending')).code).toBe('NOT_FOUND')
   })
 
   it('is NOT_FOUND before bootstrap, and UNAUTHENTICATED without a JWT', async () => {
@@ -292,6 +302,64 @@ describe('POST /groups/{id}/join', () => {
     expect(result).toMatchObject({ status: 403, code: 'NOT_A_MEMBER' })
     expect(getRow).not.toHaveBeenCalled()
     expect(add).not.toHaveBeenCalled()
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it("is NOT_A_MEMBER for a deleted account, and doesn't touch the team or the row", async () => {
+    const services = fakes(
+      { persons: [{ ...SAM, deletedAt: BEFORE }], groups: GROUPS, members: defaultMembers() },
+      { teams: { g1: ['uAdmin'] } },
+    )
+    expect((await failure(services, 'POST', '/groups/g1/join')).code).toBe('NOT_A_MEMBER')
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(memberRow(services, 'm1')?.status).toBe('placeholder')
+  })
+
+  it('is NOT_A_MEMBER when the deletion passes its point of no return after the lookup', async () => {
+    const services = fixture()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"members"'),
+      () => updateRow(services.db, 'persons', 'pSam', { deletedAt: AFTER }),
+    )
+    // As for a deleted person found at the lookup.
+    expect(await failure(services, 'POST', '/groups/g1/join')).toEqual({
+      status: 403,
+      code: 'NOT_A_MEMBER',
+      message: "You're not a member of this group.",
+    })
+    expect(memberRow(services, 'm1')?.status).toBe('placeholder')
+    // The team membership from step 1 is taken back.
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('says CONFLICT when the deletion passes it after the join is staged, and a retry is NOT_A_MEMBER', async () => {
+    const services = fixture()
+    beforeCommit(services.db, () => updateRow(services.db, 'persons', 'pSam', { deletedAt: AFTER }))
+    expect(await failure(services, 'POST', '/groups/g1/join')).toMatchObject({
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(memberRow(services, 'm1')?.status).toBe('placeholder')
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    expect(services.db.rows('activity')).toEqual([])
+    expect((await failure(services, 'POST', '/groups/g1/join')).code).toBe('NOT_A_MEMBER')
+  })
+
+  it('is NOT_A_MEMBER once deleted, even when a claim joined the row first', async () => {
+    const services = fixture()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"members"'),
+      async () => {
+        await updateRow(services.db, 'members', 'm1', { status: 'active' })
+        await updateRow(services.db, 'persons', 'pSam', { deletedAt: AFTER })
+      },
+    )
+    expect((await failure(services, 'POST', '/groups/g1/join')).code).toBe('NOT_A_MEMBER')
+    // Joined by the claim, so the membership stays, for the deletion to take back.
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin', 'u1'])
     expect(services.db.rows('activity')).toEqual([])
   })
 

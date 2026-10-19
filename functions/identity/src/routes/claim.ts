@@ -14,6 +14,7 @@ import {
   conflictAsTryAgain,
   findIdentity,
   findPersonOfUser,
+  guardPerson,
   isAppwriteError,
   SET_UP_FIRST,
 } from '../rows'
@@ -70,7 +71,9 @@ export async function claim(
   identities: VerifiedIdentity[],
 ): Promise<string[]> {
   const person = await findPersonOfUser(services.db, userId)
-  if (!person) throw new AppError('NOT_FOUND', SET_UP_FIRST)
+  // A person with deletedAt is never resolved from a userId (identity-and-invites.md#order).
+  // Each write below checks again (guardPerson).
+  if (!person || person.deletedAt) throw setUpFirst()
   const deadline = Date.now() + MERGE_BUDGET_MS
   await claimIdentities(services, person.$id, identities)
   // Every merge into this person that isn't finished: one just marked, or one cut off before.
@@ -83,7 +86,9 @@ export async function claim(
   if (merges.finished > 0) await claimIdentities(services, person.$id, identities)
   const linked = new Set(merges.joined)
   for (const member of await rowsToJoin(services.db, person)) {
-    if (await joinGroup(services, userId, person.$id, member)) linked.add(member.groupId)
+    if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
+      linked.add(member.groupId)
+    }
   }
   return [...linked]
 }
@@ -106,6 +111,10 @@ async function claimIdentities(
   }
 }
 
+function setUpFirst(): AppError {
+  return new AppError('NOT_FOUND', SET_UP_FIRST)
+}
+
 // Step 2, for one verified identity.
 async function claimIdentity(
   { db, now }: Services,
@@ -115,27 +124,29 @@ async function claimIdentity(
 ): Promise<void> {
   const identity = await findIdentity(db, key)
   if (!identity) {
-    await withTransaction(db, (tx) =>
-      tx.write({
+    await withTransaction(db, async (tx) => {
+      await tx.write({
         action: 'create',
         tableId: TABLES.identities,
         rowId: ID.unique(),
         data: { key, type, personId, verified: true, verifiedAt: now.toISOString() },
         permissions: [],
-      }),
-    )
+      })
+      await guardPerson(tx, db, personId, setUpFirst)
+    })
     return
   }
   if (identity.personId === personId) {
     if (identity.verified && identity.verifiedAt) return
-    await withTransaction(db, (tx) =>
-      tx.write({
+    await withTransaction(db, async (tx) => {
+      await tx.write({
         action: 'update',
         tableId: TABLES.identities,
         rowId: identity.$id,
         data: { verified: true, verifiedAt: identity.verifiedAt ?? now.toISOString() },
-      }),
-    )
+      })
+      await guardPerson(tx, db, personId, setUpFirst)
+    })
     return
   }
   // Someone else's: a registered person keeps it. A placeholder is the same human as the
