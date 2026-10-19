@@ -1,3 +1,4 @@
+import { Link } from 'react-router'
 import { useCurrentUser } from '../auth/use-current-user'
 import { BusinessForm } from './business-form'
 import { PasswordSection } from './password-section'
@@ -36,6 +37,17 @@ export function ProfilePage() {
       />
       <BusinessForm profile={profile.data} onSave={update.mutateAsync} />
       <PasswordSection />
+      <section aria-labelledby="your-data-heading" className="flex flex-col gap-2">
+        <h2 id="your-data-heading" className="text-lg font-semibold">
+          Your data
+        </h2>
+        <Link to="/export" className="self-start text-sm underline underline-offset-4">
+          Export your data
+        </Link>
+        <Link to="/account/delete" className="self-start text-sm underline underline-offset-4">
+          Delete your account
+        </Link>
+      </section>
     </div>
   )
 }
