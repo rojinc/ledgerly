@@ -4,7 +4,7 @@ import type { BusinessDetails } from '@ledgerly/core/schemas/identity'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { buildStatementSnapshot, type SnapshotInput } from '@ledgerly/core/statements/snapshot'
 import { extractText, getDocumentProxy } from 'unpdf'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type InvoiceDetails, renderInvoicePdf } from './invoice-pdf'
 
 type Line = StatementSnapshot['lines'][number]
@@ -124,6 +124,10 @@ async function textBeyondPage(pdf: Buffer): Promise<string[]> {
   }
   return beyond
 }
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
 
 describe('renderInvoicePdf', () => {
   it('renders the golden invoice with its number, totals and balance due', async () => {
@@ -288,6 +292,87 @@ describe('renderInvoicePdf', () => {
     })
     const text = await pdfText(await renderInvoicePdf(snapshot, details))
     expect(text).toContain('1 Oct 2026 Short call 0:20 $30.00/h $10.00')
+  })
+
+  it('prints a character Roboto can’t draw as �, so Bill to is never blank (#269)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput({ ...fullBusiness, businessName: 'Café Ngọc' }),
+      recipient: { personId: 'employer', name: '张三 Pty Ltd', emails: ['accounts@acme.example'] },
+    })
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    expect(text).toContain('Bill to �� Pty Ltd accounts@acme.example')
+    expect(text).toMatch(/^Café Ngọc /)
+    // The count only, never the text.
+    expect(warn.mock.calls).toEqual([['invoice PDF: 2 characters print as U+FFFD']])
+  })
+
+  it('marks every text it prints from the profile and the snapshot', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput({
+        businessName: '山 Services',
+        address: '1 山 St',
+        email: 'sam@example.com',
+        bank: { accountName: '山 Lee', bsb: '062000', accountNumber: '12345678' },
+        payId: '山@example.com',
+        invoiceNotes: 'Thanks 山',
+      }),
+      lines: [
+        shift('2026-10-01', 12500),
+        line(
+          '2026-10-02',
+          'expense',
+          4000,
+          [share('worker', 4000, 0), share('employer', 0, 4000)],
+          {
+            description: '山 supplies',
+          },
+        ),
+        line(
+          '2026-10-03',
+          'payment',
+          1000,
+          [share('employer', 1000, 0), share('worker', 0, 1000)],
+          {
+            description: '山 transfer',
+          },
+        ),
+        // A kind from an older snapshot, printed as stored.
+        line('2026-10-04', '山', 3000, [share('employer', 3000, 3000)]),
+      ],
+      recipient: { personId: 'employer', name: '山 Co', emails: ['山@acme.example'] },
+    })
+    const text = await pdfText(
+      await renderInvoicePdf(snapshot, { ...details, displayNumber: '山-0010' }),
+    )
+    for (const expected of [
+      '� Services',
+      '1 � St',
+      'Number �-0010',
+      'Bill to � Co �@acme.example',
+      '2 Oct 2026 � supplies',
+      '3 Oct 2026 � transfer',
+      '4 Oct 2026 � $30.00',
+      'Bank transfer: � Lee,',
+      'PayID: �@example.com',
+      'with �-0010 as the reference.',
+      'Notes Thanks �',
+      '�-0010 · page 1 of',
+    ]) {
+      expect(text).toContain(expected)
+    }
+    // Nothing left that the font would leave out (an unknown glyph extracts as U+0000).
+    expect(text).not.toContain('\u0000')
+    expect(text).not.toContain('山')
+    // Once for the invoice number, wherever it prints.
+    expect(warn.mock.calls).toEqual([['invoice PDF: 11 characters print as U+FFFD']])
+  })
+
+  it('logs nothing when Roboto can draw it all', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await renderInvoicePdf(goldenSnapshot(), details)
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('refuses a divide', async () => {
