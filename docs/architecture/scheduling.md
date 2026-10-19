@@ -192,7 +192,7 @@ Deletes each [`invites`](data-model.md#invites) row 30 days after its invite was
    - one that loses fails its own commit and runs again: an account deletion from its hourly job, a purge on its next run.
 4. **Time:** the step stops 1 minute after it starts, or at the run's limit if that comes first, so step 6 gets the rest of the budget. A rerun finds whatever is left: a deleted row never matches again, and a kept one still does.
 
-Any other failure, of a query or a batch, ends the step for this run: the batch's rows count as `failed`, and the step logs one error line, `invite_cleanup_failed`, with the counts only. Then step 6 runs as usual. The run returns `invites: { deleted, skipped, failed }` and logs nothing per row.
+Any other failure, of a query or a batch, ends the step for this run: the batch's rows count as `failed`, and the step logs one error line, `invite_cleanup_failed`, with the failed count and the error's name only. Then step 6 runs as usual. The run returns `invites: { deleted, skipped, failed }` and logs nothing per row.
 
 ### Step 6: nightly check
 
