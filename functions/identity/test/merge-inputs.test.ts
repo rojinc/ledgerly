@@ -5,7 +5,7 @@ import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { moveShares } from '../src/merge'
+import { guardInto, IntoDeleted, moveShares } from '../src/merge'
 import { cursorsOf, moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
 import { beforeStaging, NOW } from './harness'
 
@@ -13,6 +13,9 @@ import { beforeStaging, NOW } from './harness'
 const merge = { from: 'pP', into: 'pU' }
 const FAR = Number.MAX_SAFE_INTEGER
 const HOUSE = JSON.stringify({ type: 'house', autoFinalize: false, defaultBillSplit: 'days' })
+// P's and U's member rows in g1 as step 1 recorded them: both there all year.
+const ALL_YEAR = { joinedOn: '2026-01-01' as LocalDate, leftOn: null }
+const DATES = [{ groupId: 'g1', from: ALL_YEAR, into: ALL_YEAR }]
 
 function transaction(id: string, input: object, extra: object = {}) {
   return {
@@ -35,10 +38,19 @@ const EXPENSE = {
   note: 'Kept',
 }
 
+// An input that names no P, as one renamed already does.
+const RENAMED = {
+  payers: [{ personId: 'pU', cents: 9000 }],
+  split: { mode: 'equal', personIds: ['pU', 'pX'] },
+  note: 'Kept',
+}
+
 function seed(transactions: object[], more: Record<string, object[]> = {}) {
   return new FakeDb({
     groups: [{ $id: 'g1', type: 'house', name: 'Flat', rev: 'r0', settingsJson: HOUSE }],
     transactions,
+    // U, whose row every rewrite guards (#246).
+    persons: [{ $id: 'pU', userId: 'uU', displayName: 'U', mergedInto: null, deletedAt: null }],
     ...more,
   } as ConstructorParameters<typeof FakeDb>[0])
 }
@@ -52,7 +64,7 @@ afterEach(() => {
 })
 
 describe('moveInputs (step 3)', () => {
-  it('renames P in the inputs and item splits of unlocked rows, and leaves the rest alone', async () => {
+  it('renames P in the inputs and item splits of every row but a void one, locked ones too', async () => {
     const locked = transaction('t2', EXPENSE, { statementId: 'st1' })
     const voided = transaction('t3', EXPENSE, { status: 'void' })
     const without = transaction('t4', { split: { mode: 'equal', personIds: ['pU', 'pX'] } })
@@ -80,8 +92,8 @@ describe('moveInputs (step 3)', () => {
         balances: [{ $id: 'g1', peopleJson: '[]' }],
       },
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
-      rewritten: 2,
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
+      rewritten: 3,
       voided: 0,
       skipped: 0,
       putOff: [],
@@ -103,16 +115,24 @@ describe('moveInputs (step 3)', () => {
       mode: 'equal',
       personIds: ['pU'],
     })
-    // A locked or void row keeps naming P, and a row without P isn't written.
+    // A locked row is renamed as a posted one is (I-7, #263), and nothing else on it changes.
     const stored = Object.fromEntries(store.rows('transactions').map((row) => [row.$id, row]))
-    expect(stored.t2?.inputJson).toBe(locked.inputJson)
+    expect(input(store, 't2')).toEqual(input(store, 't1'))
+    expect([stored.t2?.statementId, stored.t2?.status, stored.t2?.totalCents]).toEqual([
+      'st1',
+      'posted',
+      9000,
+    ])
+    // A void row keeps naming P, and a row without P isn't written.
     expect(stored.t3?.inputJson).toBe(voided.inputJson)
     expect(stored.t4?.inputJson).toBe(without.inputJson)
     expect(store.rows('groups')[0]?.rev).not.toBe('r0')
     // A rewritten input changes no share, so the balances row stays.
     expect(store.rows('balances')).toHaveLength(1)
     // Nothing names P any more: a second run writes nothing.
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 0 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 0,
+    })
   })
 
   it('leaves an itemised row’s split to its items, posted or not', async () => {
@@ -164,7 +184,7 @@ describe('moveInputs (step 3)', () => {
         leftOn: null,
       })),
     })
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
     expect(input(store, 't1')).toEqual({ payers: [{ personId: 'pX', cents: 500 }] })
     expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
       mode: 'weights',
@@ -172,94 +192,106 @@ describe('moveInputs (step 3)', () => {
     })
   })
 
-  it('writes out an item split the merge would change, so an edit after it keeps every net', async () => {
-    // X paid 1.00 of milk, split equally by A, P and U: A 34, P 33, U 33.
-    const store = seed(
-      [transaction('t1', { payers: [{ personId: 'pX', cents: 100 }] }, { totalCents: 100 })],
-      {
-        items: [
-          {
-            $id: 'i1',
-            transactionId: 't1',
-            position: 0,
-            name: 'Milk',
-            quantity: 1,
-            amountCents: 100,
-            category: null,
-            splitJson: JSON.stringify({ mode: 'equal', personIds: ['pA', 'pP', 'pU'] }),
-          },
+  it.each([
+    ['posted', null],
+    ['locked', 'st1'],
+  ])(
+    'writes out an item split the merge would change in a %s row, so an edit after it keeps every net',
+    async (_, statementId) => {
+      // X paid 1.00 of milk, split equally by A, P and U: A 34, P 33, U 33.
+      const store = seed(
+        [
+          transaction(
+            't1',
+            { payers: [{ personId: 'pX', cents: 100 }] },
+            { totalCents: 100, statementId },
+          ),
         ],
-        shares: [
-          {
-            $id: 's1',
-            transactionId: 't1',
+        {
+          items: [
+            {
+              $id: 'i1',
+              transactionId: 't1',
+              position: 0,
+              name: 'Milk',
+              quantity: 1,
+              amountCents: 100,
+              category: null,
+              splitJson: JSON.stringify({ mode: 'equal', personIds: ['pA', 'pP', 'pU'] }),
+            },
+          ],
+          shares: [
+            {
+              $id: 's1',
+              transactionId: 't1',
+              groupId: 'g1',
+              personId: 'pX',
+              givenCents: 100,
+              receivedCents: 0,
+            },
+            {
+              $id: 's2',
+              transactionId: 't1',
+              groupId: 'g1',
+              personId: 'pA',
+              givenCents: 0,
+              receivedCents: 34,
+            },
+            {
+              $id: 's3',
+              transactionId: 't1',
+              groupId: 'g1',
+              personId: 'pP',
+              givenCents: 0,
+              receivedCents: 33,
+            },
+            {
+              $id: 's4',
+              transactionId: 't1',
+              groupId: 'g1',
+              personId: 'pU',
+              givenCents: 0,
+              receivedCents: 33,
+            },
+          ],
+          members: ['pA', 'pU', 'pX'].map((personId) => ({
+            $id: `m${personId}`,
             groupId: 'g1',
-            personId: 'pX',
-            givenCents: 100,
-            receivedCents: 0,
-          },
-          {
-            $id: 's2',
-            transactionId: 't1',
-            groupId: 'g1',
-            personId: 'pA',
-            givenCents: 0,
-            receivedCents: 34,
-          },
-          {
-            $id: 's3',
-            transactionId: 't1',
-            groupId: 'g1',
-            personId: 'pP',
-            givenCents: 0,
-            receivedCents: 33,
-          },
-          {
-            $id: 's4',
-            transactionId: 't1',
-            groupId: 'g1',
-            personId: 'pU',
-            givenCents: 0,
-            receivedCents: 33,
-          },
+            personId,
+            status: 'active',
+            joinedOn: '2026-01-01',
+            leftOn: null,
+          })),
+        },
+      )
+      await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
+      await moveShares(store, 'pP', 'pU', ['g1'], FAR)
+      // As weights A 1, U 2, A would get 33.
+      const split = JSON.parse(store.rows('items')[0]?.splitJson as string)
+      expect(split).toEqual({
+        mode: 'exact',
+        amounts: [
+          { personId: 'pA', cents: 34 },
+          { personId: 'pU', cents: 66 },
         ],
-        members: ['pA', 'pU', 'pX'].map((personId) => ({
-          $id: `m${personId}`,
-          groupId: 'g1',
-          personId,
-          status: 'active',
-          joinedOn: '2026-01-01',
-          leftOn: null,
-        })),
-      },
-    )
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
-    await moveShares(store, 'pP', 'pU', ['g1'], FAR)
-    // As weights A 1, U 2, A would get 33.
-    const split = JSON.parse(store.rows('items')[0]?.splitJson as string)
-    expect(split).toEqual({
-      mode: 'exact',
-      amounts: [
-        { personId: 'pA', cents: 34 },
-        { personId: 'pU', cents: 66 },
-      ],
-    })
-    const members = ['pA', 'pU', 'pX'].map((personId) => ({
-      personId,
-      joinedOn: '2026-01-01' as LocalDate,
-      leftOn: null,
-    }))
-    const replanned = buildShares(
-      {
-        ...input(store, 't1'),
-        kind: 'expense',
-        date: '2026-10-01' as LocalDate,
-        items: [{ name: 'Milk', amountCents: 100, split }],
-      },
-      { groupType: 'house', ownerPersonId: 'pX', callerPersonId: 'pX', members },
-    ).shares
-    expect(netsFromShares(replanned)).toEqual(netsFromShares(store.rows('shares') as never))
-  })
+      })
+      const members = ['pA', 'pU', 'pX'].map((personId) => ({
+        personId,
+        joinedOn: '2026-01-01' as LocalDate,
+        leftOn: null,
+      }))
+      const replanned = buildShares(
+        {
+          ...input(store, 't1'),
+          kind: 'expense',
+          date: '2026-10-01' as LocalDate,
+          items: [{ name: 'Milk', amountCents: 100, split }],
+        },
+        { groupType: 'house', ownerPersonId: 'pX', callerPersonId: 'pX', members },
+      ).shares
+      expect(netsFromShares(replanned)).toEqual(netsFromShares(store.rows('shares') as never))
+    },
+  )
 
   it('plans a days item as the members were before the merge, from step 1’s record (B2)', async () => {
     // X paid a September bill of 75.00, one item split by days: P was there all 30 days, U 15
@@ -313,7 +345,7 @@ describe('moveInputs (step 3)', () => {
         into: { joinedOn: '2026-09-16' as LocalDate, leftOn: null },
       },
     ]
-    await moveInputs(store, merge, ['g1'], NOW, FAR, recorded)
+    await moveInputs(store, merge, ['g1'], NOW, FAR, recorded, [])
     expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
       mode: 'exact',
       amounts: [
@@ -321,7 +353,6 @@ describe('moveInputs (step 3)', () => {
         { personId: 'pX', cents: 3000 },
       ],
     })
-    // With no record, the item can't be planned as it was, so it's renamed only.
     const unrecorded = seed([bill], {
       items: store.rows('items').map((item) => ({
         ...item,
@@ -336,11 +367,18 @@ describe('moveInputs (step 3)', () => {
         leftOn: null,
       })),
     })
-    await moveInputs(unrecorded, merge, ['g1'], NOW, FAR)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await moveInputs(unrecorded, merge, ['g1'], NOW, FAR, [], [])).toMatchObject({
+      rewritten: 0,
+      putOff: ['g1'],
+      done: false,
+    })
+    // With no record, the item can't be planned as it was, so the group waits (#301).
     expect(JSON.parse(unrecorded.rows('items')[0]?.splitJson as string)).toEqual({
       mode: 'days',
-      personIds: ['pU', 'pX'],
+      personIds: ['pP', 'pU', 'pX'],
     })
+    expect(errors).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
   })
 
   it('voids a payment or loan whose two sides are now both U, as the ledger voids one', async () => {
@@ -368,7 +406,7 @@ describe('moveInputs (step 3)', () => {
         balances: [{ $id: 'g1', peopleJson: '[]' }],
       },
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 0,
       voided: 2,
     })
@@ -408,7 +446,7 @@ describe('moveInputs (step 3)', () => {
         leftOn: null,
       })),
     })
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 0,
       voided: 1,
     })
@@ -430,7 +468,7 @@ describe('moveInputs (step 3)', () => {
         { kind: 'loan', groupId: 'g1' },
       ),
     ])
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 2,
       voided: 0,
     })
@@ -438,206 +476,212 @@ describe('moveInputs (step 3)', () => {
     expect(input(store, 't1')).toEqual({ payers: [{ personId: 'pU', cents: 900 }] })
   })
 
-  it('writes out a split the merge would change, so an edit after it keeps every net', async () => {
-    const share = (transactionId: string, personId: string, given: number, got: number) => ({
-      $id: `s-${transactionId}-${personId}`,
-      transactionId,
-      personId,
-      givenCents: given,
-      receivedCents: got,
-      groupId: 'g1',
-      date: '2026-10-01',
-      kind: 'expense',
-      category: null,
-    })
-    // X paid $90 for each row but t4, and each person's part is the shares' received.
-    const paidByX = (transactionId: string, parts: [string, number][]) => [
-      share(transactionId, 'pX', 9000, parts.find(([id]) => id === 'pX')?.[1] ?? 0),
-      ...parts.filter(([id]) => id !== 'pX').map(([id, got]) => share(transactionId, id, 0, got)),
-    ]
-    const paid = { payers: [{ personId: 'pX', cents: 9000 }] }
-    const period = { periodStart: '2026-09-01', periodEnd: '2026-09-30' }
-    const thirds: [string, number][] = [
-      ['pP', 3000],
-      ['pU', 3000],
-      ['pX', 3000],
-    ]
-    const byDays: [string, number][] = [
-      ['pP', 2000],
-      ['pU', 3000],
-      ['pX', 4000],
-    ]
-    const rows: [string, string, object, object[]][] = [
-      // The default split, with P and U both in it.
-      ['t1', 'expense', paid, paidByX('t1', thirds)],
-      // The default split, with P alone: U counts once, which is right.
-      [
-        't2',
-        'expense',
-        paid,
-        paidByX('t2', [
-          ['pP', 4500],
-          ['pX', 4500],
-        ]),
-      ],
-      // A September bill this house splits by days when it names no split.
-      ['t3', 'bill', { ...paid, bill: period }, paidByX('t3', thirds)],
-      // U lent $90 to P and X, with no split.
-      [
-        't4',
-        'loan',
-        { payers: [{ personId: 'pU', cents: 9000 }] },
-        [share('t4', 'pU', 9000, 0), share('t4', 'pP', 0, 4500), share('t4', 'pX', 0, 4500)],
-      ],
-      [
-        't6',
-        'expense',
-        { ...paid, split: { mode: 'equal', personIds: ['pP', 'pU', 'pX'] } },
-        paidByX('t6', thirds),
-      ],
-      [
-        't7',
-        'expense',
-        {
-          ...paid,
-          split: {
-            mode: 'weights',
-            weights: [
-              { personId: 'pP', weight: 1 },
-              { personId: 'pU', weight: 2 },
-              { personId: 'pX', weight: 3 },
-            ],
-          },
-        },
-        paidByX('t7', [
-          ['pP', 1500],
-          ['pU', 3000],
-          ['pX', 4500],
-        ]),
-      ],
-      [
-        't8',
-        'expense',
-        {
-          ...paid,
-          split: {
-            mode: 'exact',
-            amounts: byDays.map(([personId, cents]) => ({ personId, cents })),
-          },
-        },
-        paidByX('t8', byDays),
-      ],
-      [
-        't9',
-        'expense',
-        {
-          ...paid,
-          split: {
-            mode: 'percent',
-            percents: [
-              { personId: 'pP', basisPoints: 2500 },
-              { personId: 'pU', basisPoints: 2500 },
-              { personId: 'pX', basisPoints: 5000 },
-            ],
-          },
-        },
-        paidByX('t9', [
-          ['pP', 2250],
-          ['pU', 2250],
-          ['pX', 4500],
-        ]),
-      ],
-      [
-        't10',
-        'bill',
-        { ...paid, bill: period, split: { mode: 'days', personIds: ['pP', 'pU', 'pX'] } },
-        paidByX('t10', byDays),
-      ],
-      // U came on 16 September, but U's kept row now starts when P's did, in January.
-      [
-        't11',
-        'bill',
-        { ...paid, bill: period },
-        paidByX('t11', [
-          ['pU', 3000],
-          ['pX', 6000],
-        ]),
-      ],
-    ]
-    // The members as step 2 leaves them: P's row is gone, and U's starts at the earlier date.
-    const members = ['pU', 'pX'].map((personId) => ({
-      personId,
-      joinedOn: '2026-01-01' as LocalDate,
-      leftOn: null,
-    }))
-    const store = seed(
-      rows.map(([id, kind, input]) => transaction(id, input, { kind })),
-      {
-        groups: [
-          {
-            $id: 'g1',
-            type: 'house',
-            name: 'Flat',
-            rev: 'r0',
-            settingsJson: JSON.stringify({
-              type: 'house',
-              autoFinalize: false,
-              defaultBillSplit: 'days',
-            }),
-          },
+  it.each([
+    ['unlocked', null],
+    ['locked by a final statement', 'st1'],
+  ])(
+    'writes out a split the merge would change, so an edit after it keeps every net (%s)',
+    async (_case, statementId) => {
+      const share = (transactionId: string, personId: string, given: number, got: number) => ({
+        $id: `s-${transactionId}-${personId}`,
+        transactionId,
+        personId,
+        givenCents: given,
+        receivedCents: got,
+        groupId: 'g1',
+        date: '2026-10-01',
+        kind: 'expense',
+        category: null,
+      })
+      // X paid $90 for each row but t4, and each person's part is the shares' received.
+      const paidByX = (transactionId: string, parts: [string, number][]) => [
+        share(transactionId, 'pX', 9000, parts.find(([id]) => id === 'pX')?.[1] ?? 0),
+        ...parts.filter(([id]) => id !== 'pX').map(([id, got]) => share(transactionId, id, 0, got)),
+      ]
+      const paid = { payers: [{ personId: 'pX', cents: 9000 }] }
+      const period = { periodStart: '2026-09-01', periodEnd: '2026-09-30' }
+      const thirds: [string, number][] = [
+        ['pP', 3000],
+        ['pU', 3000],
+        ['pX', 3000],
+      ]
+      const byDays: [string, number][] = [
+        ['pP', 2000],
+        ['pU', 3000],
+        ['pX', 4000],
+      ]
+      const rows: [string, string, object, object[]][] = [
+        // The default split, with P and U both in it.
+        ['t1', 'expense', paid, paidByX('t1', thirds)],
+        // The default split, with P alone: U counts once, which is right.
+        [
+          't2',
+          'expense',
+          paid,
+          paidByX('t2', [
+            ['pP', 4500],
+            ['pX', 4500],
+          ]),
         ],
-        shares: rows.flatMap(([, , , shares]) => shares),
-        members: members.map((member) => ({
-          $id: `m${member.personId}`,
-          groupId: 'g1',
-          status: 'active',
-          ...member,
-        })),
-      },
-    )
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
-    await moveShares(store, 'pP', 'pU', ['g1'], FAR)
+        // A September bill this house splits by days when it names no split.
+        ['t3', 'bill', { ...paid, bill: period }, paidByX('t3', thirds)],
+        // U lent $90 to P and X, with no split.
+        [
+          't4',
+          'loan',
+          { payers: [{ personId: 'pU', cents: 9000 }] },
+          [share('t4', 'pU', 9000, 0), share('t4', 'pP', 0, 4500), share('t4', 'pX', 0, 4500)],
+        ],
+        [
+          't6',
+          'expense',
+          { ...paid, split: { mode: 'equal', personIds: ['pP', 'pU', 'pX'] } },
+          paidByX('t6', thirds),
+        ],
+        [
+          't7',
+          'expense',
+          {
+            ...paid,
+            split: {
+              mode: 'weights',
+              weights: [
+                { personId: 'pP', weight: 1 },
+                { personId: 'pU', weight: 2 },
+                { personId: 'pX', weight: 3 },
+              ],
+            },
+          },
+          paidByX('t7', [
+            ['pP', 1500],
+            ['pU', 3000],
+            ['pX', 4500],
+          ]),
+        ],
+        [
+          't8',
+          'expense',
+          {
+            ...paid,
+            split: {
+              mode: 'exact',
+              amounts: byDays.map(([personId, cents]) => ({ personId, cents })),
+            },
+          },
+          paidByX('t8', byDays),
+        ],
+        [
+          't9',
+          'expense',
+          {
+            ...paid,
+            split: {
+              mode: 'percent',
+              percents: [
+                { personId: 'pP', basisPoints: 2500 },
+                { personId: 'pU', basisPoints: 2500 },
+                { personId: 'pX', basisPoints: 5000 },
+              ],
+            },
+          },
+          paidByX('t9', [
+            ['pP', 2250],
+            ['pU', 2250],
+            ['pX', 4500],
+          ]),
+        ],
+        [
+          't10',
+          'bill',
+          { ...paid, bill: period, split: { mode: 'days', personIds: ['pP', 'pU', 'pX'] } },
+          paidByX('t10', byDays),
+        ],
+        // U came on 16 September, but U's kept row now starts when P's did, in January.
+        [
+          't11',
+          'bill',
+          { ...paid, bill: period },
+          paidByX('t11', [
+            ['pU', 3000],
+            ['pX', 6000],
+          ]),
+        ],
+      ]
+      // The members as step 2 leaves them: P's row is gone, and U's starts at the earlier date.
+      const members = ['pU', 'pX'].map((personId) => ({
+        personId,
+        joinedOn: '2026-01-01' as LocalDate,
+        leftOn: null,
+      }))
+      const store = seed(
+        rows.map(([id, kind, input]) => transaction(id, input, { kind, statementId })),
+        {
+          groups: [
+            {
+              $id: 'g1',
+              type: 'house',
+              name: 'Flat',
+              rev: 'r0',
+              settingsJson: JSON.stringify({
+                type: 'house',
+                autoFinalize: false,
+                defaultBillSplit: 'days',
+              }),
+            },
+          ],
+          shares: rows.flatMap(([, , , shares]) => shares),
+          members: members.map((member) => ({
+            $id: `m${member.personId}`,
+            groupId: 'g1',
+            status: 'active',
+            ...member,
+          })),
+        },
+      )
+      await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
+      await moveShares(store, 'pP', 'pU', ['g1'], FAR)
 
-    // What each split became.
-    expect(input(store, 't1').split).toEqual({
-      mode: 'weights',
-      weights: [
-        { personId: 'pU', weight: 2 },
-        { personId: 'pX', weight: 1 },
-      ],
-    })
-    expect(input(store, 't2').split).toBeUndefined()
-    // By days, P and U had a third each: weights plan that again.
-    expect(input(store, 't3').split).toEqual(input(store, 't1').split)
-    expect(input(store, 't4').split).toEqual({ mode: 'equal', personIds: ['pU', 'pX'] })
-    expect(input(store, 't10').split).toEqual({
-      mode: 'exact',
-      amounts: [
-        { personId: 'pU', cents: 5000 },
-        { personId: 'pX', cents: 4000 },
-      ],
-    })
-    // Not P's (no part, and not named), so left as it is, though U's kept row has changed what an
-    // edit would plan (lead, #242: only rows that name P or that P has a share in).
-    expect(input(store, 't11').split).toBeUndefined()
+      // What each split became.
+      expect(input(store, 't1').split).toEqual({
+        mode: 'weights',
+        weights: [
+          { personId: 'pU', weight: 2 },
+          { personId: 'pX', weight: 1 },
+        ],
+      })
+      expect(input(store, 't2').split).toBeUndefined()
+      // By days, P and U had a third each: weights plan that again.
+      expect(input(store, 't3').split).toEqual(input(store, 't1').split)
+      expect(input(store, 't4').split).toEqual({ mode: 'equal', personIds: ['pU', 'pX'] })
+      expect(input(store, 't10').split).toEqual({
+        mode: 'exact',
+        amounts: [
+          { personId: 'pU', cents: 5000 },
+          { personId: 'pX', cents: 4000 },
+        ],
+      })
+      // Not P's (no part, and not named), so left as it is, though U's kept row has changed what an
+      // edit would plan (lead, #242: only rows that name P or that P has a share in).
+      expect(input(store, 't11').split).toBeUndefined()
 
-    // An edit plans each row again with the members as they are after the merge, X and U: every
-    // net is the one its merged shares give.
-    const after = {
-      groupType: 'house' as const,
-      ownerPersonId: 'pX',
-      callerPersonId: 'pX',
-      members,
-    }
-    for (const [id, kind] of rows.filter(([id]) => id !== 't11')) {
-      const replanned = buildShares(
-        { ...input(store, id), kind: kind as 'expense', date: '2026-10-01', totalCents: 9000 },
-        after,
-      ).shares
-      const stored = store.rows('shares').filter((row) => row.transactionId === id) as never
-      expect([id, netsFromShares(replanned)]).toEqual([id, netsFromShares(stored)])
-    }
-  })
+      // An edit plans each row again with the members as they are after the merge, X and U: every
+      // net is the one its merged shares give.
+      const after = {
+        groupType: 'house' as const,
+        ownerPersonId: 'pX',
+        callerPersonId: 'pX',
+        members,
+      }
+      for (const [id, kind] of rows.filter(([id]) => id !== 't11')) {
+        const replanned = buildShares(
+          { ...input(store, id), kind: kind as 'expense', date: '2026-10-01', totalCents: 9000 },
+          after,
+        ).shares
+        const stored = store.rows('shares').filter((row) => row.transactionId === id) as never
+        expect([id, netsFromShares(replanned)]).toEqual([id, netsFromShares(stored)])
+      }
+    },
+  )
 
   it('leaves a row it can’t rename as it is, says so by ID, and isn’t done', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -655,7 +699,7 @@ describe('moveInputs (step 3)', () => {
     })
     const broken = { ...transaction('t2', {}), inputJson: '{' }
     const store = seed([heavy, broken, transaction('t3', EXPENSE)])
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
       rewritten: 1,
       voided: 0,
       skipped: 2,
@@ -685,7 +729,7 @@ describe('moveInputs (step 3)', () => {
       ],
       { shares: [] },
     )
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
     expect(Object.keys(input(store, 't1'))).toEqual(['note', 'split'])
     expect(store.rows('transactions')[1]).toMatchObject({ status: 'void', updatedBy: 'pU' })
   })
@@ -702,7 +746,7 @@ describe('moveInputs (step 3)', () => {
         : transaction(`t${String(n).padStart(3, '0')}`, EXPENSE),
     )
     const store = seed(rows, { shares: [] })
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 100,
       voided: 1,
       done: true,
@@ -713,7 +757,7 @@ describe('moveInputs (step 3)', () => {
     const store = seed([transaction('t1', EXPENSE)], {
       statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-09-01' }],
     })
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
       rewritten: 0,
       voided: 0,
       skipped: 0,
@@ -725,7 +769,7 @@ describe('moveInputs (step 3)', () => {
     expect(store.rows('groups')[0]?.rev).toBe('r0')
   })
 
-  it('leaves a row a finalize locked after it was read (I-7)', async () => {
+  it('renames a row a finalize locked after it was read, by the same rule (I-7)', async () => {
     const store = seed([transaction('t1', EXPENSE)])
     beforeStaging(
       store,
@@ -740,10 +784,113 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 0 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+    })
     const [row] = store.rows('transactions')
     expect(row?.statementId).toBe('st1')
-    expect(JSON.parse(row?.inputJson as string)).toEqual(EXPENSE)
+    expect(input(store, 't1').payers).toEqual([{ personId: 'pU', cents: 9000 }])
+  })
+
+  it('reads a row again when a void unlocked it after it was read, and voids it if it must', async () => {
+    // U lent to P: locked, it's renamed; once a void unlocks it, it's U to U and voided.
+    const loan = transaction(
+      't1',
+      { payers: [{ personId: 'pU', cents: 9000 }], split: { mode: 'equal', personIds: ['pP'] } },
+      { kind: 'loan', statementId: 'st1' },
+    )
+    const store = seed([loan])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { statementId: null },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 0,
+      voided: 1,
+    })
+    expect(store.rows('transactions')[0]).toMatchObject({ status: 'void', statementId: null })
+  })
+
+  it('reads a row again when a finalize locked it after it was read, and renames it instead of voiding it', async () => {
+    // U lent to P: unlocked, it's U to U and voided; once a finalize locks it, it's renamed.
+    const loan = transaction(
+      't1',
+      { payers: [{ personId: 'pU', cents: 9000 }], split: { mode: 'equal', personIds: ['pP'] } },
+      { kind: 'loan' },
+    )
+    const store = seed([loan])
+    beforeStaging(
+      store,
+      (operations) => operations.includes(VOID_REASON),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { statementId: 'st1' },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+      voided: 0,
+    })
+    expect(store.rows('transactions')[0]).toMatchObject({ status: 'posted', statementId: 'st1' })
+    expect(input(store, 't1').split).toEqual({ mode: 'equal', personIds: ['pU'] })
+  })
+
+  it('never voids a locked payment or loan: the loan is renamed, the payment left', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const loan = transaction(
+      't1',
+      { payers: [{ personId: 'pU', cents: 9000 }], split: { mode: 'equal', personIds: ['pP'] } },
+      { kind: 'loan', statementId: 'st1' },
+    )
+    // A payment's two sides must differ, so P to U can't become U to U.
+    const payment = transaction(
+      't2',
+      { payment: { fromPersonId: 'pP', toPersonId: 'pU' } },
+      { kind: 'payment', statementId: 'st1' },
+    )
+    const store = seed([loan, payment])
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
+      rewritten: 1,
+      voided: 0,
+      skipped: 0,
+      putOff: [],
+      cutOff: false,
+      done: true,
+    })
+    expect(store.rows('transactions').map((row) => row.status)).toEqual(['posted', 'posted'])
+    expect(input(store, 't1').split).toEqual({ mode: 'equal', personIds: ['pU'] })
+    expect(input(store, 't2')).toEqual({ payment: { fromPersonId: 'pP', toPersonId: 'pU' } })
+    expect(warn).toHaveBeenCalledWith('merge pP into pU left locked transaction t2 as it is')
+  })
+
+  it('leaves a locked row it can’t read, says so by ID, and doesn’t hold the merge open', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const broken = { ...transaction('t1', {}, { statementId: 'st1' }), inputJson: '{' }
+    const store = seed([broken, transaction('t2', EXPENSE, { statementId: 'st1' })])
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
+      rewritten: 1,
+      voided: 0,
+      skipped: 0,
+      putOff: [],
+      cutOff: false,
+      done: true,
+    })
+    expect(store.rows('transactions')[0]?.inputJson).toBe('{')
+    expect(warn).toHaveBeenCalledWith('merge pP into pU left locked transaction t1 as it is')
   })
 
   it('reads a row again when it was edited after it was read, so the edit isn’t lost', async () => {
@@ -762,7 +909,9 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 1 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+    })
     expect(input(store, 't1')).toMatchObject({
       note: 'Edited meanwhile',
       payers: [{ personId: 'pU', cents: 9000 }],
@@ -841,7 +990,9 @@ describe('moveInputs (step 3)', () => {
           ),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 1 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+    })
     expect(input(store, 't1')).toEqual({
       payers: [{ personId: 'pU', cents: 9000 }],
       note: 'Shop',
@@ -865,7 +1016,7 @@ describe('moveInputs (step 3)', () => {
     }))
     const store = seed(rows, { items })
     const staged = vi.spyOn(store, 'createOperations')
-    const result = await moveInputs(store, merge, ['g1'], NOW, FAR)
+    const result = await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
     expect(result.done).toBe(true)
     expect(store.rows('transactions').every((row) => !String(row.inputJson).includes('pP'))).toBe(
       true,
@@ -900,7 +1051,7 @@ describe('moveInputs (step 3)', () => {
       balances: [{ $id: 'g1', peopleJson: '[]' }],
     })
     const staged = vi.spyOn(store, 'createOperations')
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 86,
       voided: 1,
       done: true,
@@ -910,14 +1061,67 @@ describe('moveInputs (step 3)', () => {
       const count = perTransaction.get(params.transactionId) ?? 0
       perTransaction.set(params.transactionId, count + (params.operations?.length ?? 0))
     }
-    // The first: the guard, the delete, the void's 4 and 84 renames.
-    expect([...perTransaction.values()]).toEqual([MERGE_BATCH, 3])
+    // The first: the group's guard, U's guard, the delete, the void's 4 and 83 renames. Then the
+    // two guards and the last 3.
+    expect([...perTransaction.values()]).toEqual([MERGE_BATCH, 5])
     expect(store.rows('balances')).toEqual([])
+  })
+
+  it('renames nothing into a person whose account is being deleted (#246)', async () => {
+    const store = seed([transaction('t1', EXPENSE)], {
+      persons: [
+        {
+          $id: 'pU',
+          userId: 'uU',
+          displayName: 'U',
+          mergedInto: null,
+          deletedAt: '2026-10-18T00:00:00.000Z',
+        },
+      ],
+    })
+    await expect(moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).rejects.toBeInstanceOf(
+      IntoDeleted,
+    )
+    expect(input(store, 't1')).toEqual(EXPENSE)
+  })
+
+  it('renames nothing into U when the deletion commits just before U’s guard is staged', async () => {
+    const store = seed([transaction('t1', EXPENSE)])
+    // Appwrite fails a commit only for changes made after staging, so the guard reads U again.
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"tableId":"persons"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pU',
+            data: { deletedAt: '2026-10-18T00:00:00.000Z' },
+          }),
+        ),
+    )
+    await expect(moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).rejects.toBeInstanceOf(
+      IntoDeleted,
+    )
+    expect(input(store, 't1')).toEqual(EXPENSE)
+  })
+
+  it('treats U’s row being gone as a deletion, rather than as a race to run again', async () => {
+    const store = seed([transaction('t1', EXPENSE)], { persons: [] })
+    // A race would run the batch again until the deadline.
+    await expect(
+      moveInputs(store, merge, ['g1'], NOW, Date.now() + 1_000, DATES, []),
+    ).rejects.toBeInstanceOf(IntoDeleted)
+    await expect(withTransaction(store, (tx) => guardInto(tx, store, 'pU'))).rejects.toBeInstanceOf(
+      IntoDeleted,
+    )
+    expect(input(store, 't1')).toEqual(EXPENSE)
   })
 
   it('starts nothing once the deadline has passed, and says it isn’t done', async () => {
     const store = seed([transaction('t1', EXPENSE)])
-    expect(await moveInputs(store, merge, ['g1'], NOW, 0)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, 0, DATES, [])).toEqual({
       rewritten: 0,
       voided: 0,
       skipped: 0,
@@ -934,14 +1138,22 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
   const ids = (count: number) =>
     Array.from({ length: count }, (_, n) => `t${String(n).padStart(3, '0')}`)
 
-  function withP(transactions: object[], cursors: object | null = null) {
+  function withP(
+    transactions: object[],
+    cursors: object | null = null,
+    more: Record<string, object[]> = {},
+  ) {
     return seed(transactions, {
       persons: [
         { $id: 'pU', userId: 'uU', displayName: 'U', mergedInto: null, deletedAt: null },
         { ...P, mergeCursorsJson: cursors && JSON.stringify(cursors) },
       ],
+      ...more,
     })
   }
+
+  // A row an earlier run left as it is (t001), behind its cursor.
+  const LEFT = [{ groupId: 'g1', after: 't001', left: ['t001'] }]
 
   function cursors(store: FakeDb) {
     return cursorsOf(store.rows('persons').find((row) => row.$id === 'pP') as never)
@@ -960,14 +1172,14 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
         out = true
       },
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, start + 1000)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, start + 1000, DATES, [])).toMatchObject({
       rewritten: 100,
       cutOff: true,
     })
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't099', left: [] }])
     vi.restoreAllMocks()
     const reads = vi.spyOn(store, 'listRows')
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, [], cursors(store))).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, cursors(store))).toMatchObject({
       rewritten: 150,
       done: true,
     })
@@ -983,13 +1195,13 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const broken = { ...transaction('t001', {}), inputJson: '{' }
     const store = withP([transaction('t000', EXPENSE), broken, transaction('t002', EXPENSE)])
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       skipped: 1,
       done: false,
     })
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: ['t001'] }])
     // The next run reads t001 again first: still unreadable, still open.
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, [], cursors(store))).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, cursors(store))).toMatchObject({
       skipped: 1,
       done: false,
     })
@@ -1002,21 +1214,163 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
         data: { status: 'void' },
       }),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, [], cursors(store))).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, cursors(store))).toMatchObject({
       skipped: 0,
       done: true,
     })
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: [] }])
   })
 
-  it('starts the scan again when the cursor’s row has gone since', async () => {
-    const gone = [{ groupId: 'g1', after: 't500', left: [] }]
-    const store = withP([transaction('t000', EXPENSE), transaction('t600', EXPENSE)], gone)
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, [], gone)).toMatchObject({
-      rewritten: 2,
+  it('carries on after the cursor when its row has been deleted since', async () => {
+    // t000 was renamed before the cursor's row, t500, was deleted.
+    const stored = [{ groupId: 'g1', after: 't500', left: [] }]
+    const store = withP([transaction('t000', RENAMED), transaction('t600', EXPENSE)], stored)
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      rewritten: 1,
       done: true,
     })
+    const first = reads.mock.calls.find(([params]) => params.tableId === 'transactions')?.[0]
+    expect(first?.queries).toContainEqual(expect.stringMatching(/greaterThan.*t500/))
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't600', left: [] }])
+  })
+
+  it('counts a row it left once, however many pages it reads after it', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const rows = ids(151).map((id) => transaction(id, EXPENSE))
+    rows[1] = { ...transaction('t001', {}), inputJson: '{' }
+    const store = withP(rows)
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 150,
+      skipped: 1,
+      done: false,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't150', left: ['t001'] }])
+  })
+
+  it('clears a row it left that has been locked or deleted since: a locked one is renamed', async () => {
+    const stored = [{ groupId: 'g1', after: 't002', left: ['t001', 't002'] }]
+    const locked = transaction('t001', EXPENSE, { statementId: 'st1' })
+    const store = withP([transaction('t000', RENAMED), locked], stored)
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      rewritten: 1,
+      skipped: 0,
+      done: true,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: [] }])
+    // Renamed by the locked rule (#263): as a posted row, never voided.
+    expect(JSON.stringify(input(store, 't001'))).not.toMatch(/\bpP\b/)
+  })
+
+  it('reads the rows it left again 100 at a time: no filter holds more values', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const broken = ids(150).map((id) => ({ ...transaction(id, {}), inputJson: '{' }))
+    const stored = [{ groupId: 'g1', after: 't149', left: ids(150) }]
+    const store = withP(broken, stored)
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      skipped: 150,
+      done: false,
+    })
+    const sizes = reads.mock.calls.flatMap(([params]) =>
+      (params.queries ?? [])
+        .map((query) => JSON.parse(query) as { method: string; values: unknown[] })
+        .filter((query) => query.method === 'equal')
+        .map((query) => query.values.length),
+    )
+    expect(Math.max(...sizes)).toBe(100)
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't149', left: ids(150) }])
+  })
+
+  it('renames a row it left once it’s fixed, reading it again when an edit races it', async () => {
+    const store = withP([transaction('t000', RENAMED), transaction('t001', EXPENSE)], LEFT)
+    const edited = { ...EXPENSE, note: 'Edited' }
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't001',
+            data: { inputJson: JSON.stringify(edited) },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, LEFT)).toMatchObject({
+      rewritten: 1,
+      skipped: 0,
+      done: true,
+    })
+    // Renamed as it was after the edit, not before.
+    expect(input(store, 't001')).toMatchObject({ payers: [{ personId: 'pU' }], note: 'Edited' })
+    expect(JSON.stringify(input(store, 't001'))).not.toMatch(/\bpP\b/)
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't001', left: [] }])
+  })
+
+  it('puts the group off, the rows it left untouched, while a statement is being finalized', async () => {
+    const store = withP([transaction('t001', EXPENSE)], LEFT, {
+      statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' }],
+    })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, LEFT)).toMatchObject({
+      rewritten: 0,
+      putOff: ['g1'],
+      done: false,
+    })
+    expect(input(store, 't001')).toEqual(EXPENSE)
+    expect(cursors(store)).toEqual(LEFT)
+  })
+
+  it('reads none of the rows it left once out of time', async () => {
+    const store = withP([transaction('t001', EXPENSE)], LEFT)
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await moveInputs(store, merge, ['g1'], NOW, 0, DATES, LEFT)).toMatchObject({
+      cutOff: true,
+      done: false,
+    })
+    expect(reads.mock.calls.filter(([params]) => params.tableId === 'transactions')).toEqual([])
+  })
+
+  it('stores no resume point once out of time, so the next run reads that page again', async () => {
+    const store = withP(ids(150).map((id) => transaction(id, EXPENSE)))
+    // Out of time as the first batch is staged: the page's batches still all commit.
+    const start = Date.now()
+    let out = false
+    vi.spyOn(Date, 'now').mockImplementation(() => (out ? start + 60_000 : start))
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      async () => {
+        out = true
+      },
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, start + 1000, DATES, [])).toMatchObject({
+      rewritten: 100,
+      cutOff: true,
+    })
+    expect(cursors(store)).toEqual([])
+  })
+
+  it('keeps the rows another run left as they are in the same group, written just before', async () => {
+    const store = withP([transaction('t000', EXPENSE)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('mergeCursorsJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pP',
+            data: {
+              mergeCursorsJson: JSON.stringify([{ groupId: 'g1', after: 't000', left: ['t900'] }]),
+            },
+          }),
+        ),
+    )
+    await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't000', left: ['t900'] }])
   })
 
   it('keeps another run’s cursor for another group, written just before this one', async () => {
@@ -1036,7 +1390,7 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
           }),
         ),
     )
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
     expect(cursors(store)).toEqual([
       { groupId: 'g2', after: 'x', left: ['x'] },
       { groupId: 'g1', after: 't000', left: [] },
@@ -1088,6 +1442,23 @@ describe('moveTemplates (step 3)', () => {
     })
     expect(store.rows('schedules')[1]?.templateJson).toBe(other.templateJson)
     expect(store.rows('groups')[0]?.rev).not.toBe('r0')
+  })
+
+  it('renames no template into a person whose account is being deleted (#246)', async () => {
+    const store = seed([], {
+      schedules: [schedule('sc1', RENT)],
+      persons: [
+        {
+          $id: 'pU',
+          userId: 'uU',
+          displayName: 'U',
+          mergedInto: null,
+          deletedAt: '2026-10-18T00:00:00.000Z',
+        },
+      ],
+    })
+    await expect(moveTemplates(store, merge, ['g1'], FAR)).rejects.toBeInstanceOf(IntoDeleted)
+    expect(template(store, 'sc1')).toEqual(RENT)
   })
 
   it('runs again when an expansion moved the schedule on after it was read', async () => {

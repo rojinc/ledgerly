@@ -4,6 +4,8 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
 import {
+  IntoDeleted,
+  intoDeleted,
   memberOf,
   moveIdentities,
   moveMembers,
@@ -23,7 +25,7 @@ export const MERGE_BUDGET_MS = 9_000
 const PAGE = 100
 
 /** What the merges did: the groups U joined, and how many merges finished. */
-export type MergesResult = { joined: string[]; finished: number }
+export type MergesResult = { joined: string[]; finished: string[] }
 
 /**
  * Carries on with every merge into U (`idx_mergedInto`) that isn't finished, until `deadline`
@@ -37,15 +39,23 @@ export async function finishMerges(
   intoId: string,
   deadline: number,
 ): Promise<MergesResult> {
-  const result: MergesResult = { joined: [], finished: 0 }
+  const result: MergesResult = { joined: [], finished: [] }
   for (const placeholder of await mergedInto(services.db, intoId)) {
     if (Date.now() >= deadline) break
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
     if (placeholder.userId || placeholder.deletedAt) continue
     if (!(await hasIdentity(services.db, placeholder.$id))) continue
-    const { joined, finished } = await runMerge(services, userId, placeholder, intoId, deadline)
-    result.joined.push(...joined)
-    if (finished) result.finished += 1
+    try {
+      // A deletion ends every merge into U (step 2), one with only unguarded writes left too.
+      if (await intoDeleted(services.db, intoId)) throw new IntoDeleted()
+      const { joined, finished } = await runSteps(services, userId, placeholder, intoId, deadline)
+      result.joined.push(...joined)
+      if (finished) result.finished.push(placeholder.$id)
+    } catch (error) {
+      if (!(error instanceof IntoDeleted)) throw error
+      console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
+      break
+    }
   }
   return result
 }
@@ -53,10 +63,11 @@ export async function finishMerges(
 /**
  * Steps 2 and 3 for P, one group at a time: P's member row there, then the group's templates,
  * inputs and shares, before the next group. A cut-off then leaves at most one group part done,
- * and a group that can't go on now (a statement being finalized) waits whole. Then reminders,
- * and P's identities once nothing else names P (step 4).
+ * and a group that can't go on now (a statement being finalized) waits whole. One whose finalize
+ * starts after its member row moved waits part done, and a later claim finishes it first. Then
+ * reminders, and P's identities once nothing else names P (step 4).
  */
-async function runMerge(
+async function runSteps(
   services: Services,
   userId: string,
   placeholder: Persons,
@@ -70,8 +81,15 @@ async function runMerge(
   const joined: string[] = []
   const putOff = new Set<string>()
   const moved = { inputs: 0, voided: 0, shares: 0, subjects: 0, skipped: 0 }
-  const recorded = memberDatesOf(placeholder)
+  const recorded = memberDatesOf(placeholder) ?? []
   const cursors = cursorsOf(placeholder)
+  // Step 3 never plans a posted row's items without step 1's dates (#301), so a group without
+  // them waits whole, P's row included, and keeps the merge open. A kept group needs none.
+  const ready = (groupId: string) => {
+    if (recorded.some((entry) => entry.groupId === groupId)) return true
+    console.error(`merge ${fromId}: no recorded member dates for group ${groupId}`)
+    return false
+  }
   let done = true
   // Only P's groups can name P; never U's others, so a merge costs what P had. A group P has no
   // row in any more comes first: step 2 is done there, so it may be part done, and a later claim
@@ -89,14 +107,7 @@ async function runMerge(
       done = false
       break
     }
-    // Step 3 never plans a posted row's items without step 1's dates (#301): a group without them
-    // waits whole, P's row included, and keeps the merge open.
-    if (!recorded?.some((entry) => entry.groupId === groupId)) {
-      console.error(`merge ${fromId}: no recorded member dates for group ${groupId}`)
-      putOff.add(groupId)
-      continue
-    }
-    const members = await moveMembers(services, userId, fromId, intoId, [groupId], deadline)
+    const members = await moveMembers(services, userId, fromId, intoId, [groupId], deadline, ready)
     joined.push(...members.joined)
     if (members.kept.size > 0) {
       kept.add(groupId)

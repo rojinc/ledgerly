@@ -258,8 +258,10 @@ describe('PasswordSection, an account with a password', () => {
       'general_pwned_passwords_unavailable',
       'We couldn’t check that password just now. Try again in a minute.',
     ],
-    ['general_rate_limit_exceeded', 'Too many tries. Wait a few minutes and try again.'],
+    ['general_rate_limit_exceeded', 'Too many tries. Try again in an hour.'],
     ['something_else', 'Something went wrong. Check your connection and try again.'],
+    // A reply that isn't JSON has no type.
+    ['', 'Something went wrong. Check your connection and try again.'],
   ])('words a %s refusal and keeps what was typed', async (type_, message) => {
     update.mockRejectedValue(new AppwriteException('refused', 400, type_))
     await renderSection()

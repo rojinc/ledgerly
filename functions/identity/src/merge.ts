@@ -33,6 +33,33 @@ const PAGE = 100
 /** Thrown inside a transaction when P turned out not to be U's to merge. */
 class NotOurs extends Error {}
 
+/** Thrown when U's account is being deleted: a merge never joins them to another group. */
+export class IntoDeleted extends Error {}
+
+/**
+ * Stages a guard write on U's person row, then checks it has no `deletedAt` (#246). Deletion
+ * step 2 writes the same row, so a merge write and a deletion take turns, and no merge write
+ * joins a person whose account is being deleted, or makes an input or template name them.
+ */
+export async function guardInto(tx: Tx, db: Db, intoId: string): Promise<void> {
+  // Read first: a row that's gone can't be staged, and staging it would read as a race.
+  if (await intoDeleted(db, intoId)) throw new IntoDeleted()
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: intoId,
+    data: { rev: randomId() },
+  })
+  // Again, as stored: a deletion that committed before the write was staged doesn't fail it.
+  if (await intoDeleted(db, intoId)) throw new IntoDeleted()
+}
+
+/** Whether U's account is being deleted (`deletedAt` set), or U's row is gone. */
+export async function intoDeleted(db: Db, intoId: string): Promise<boolean> {
+  const into = await getRowOrNull<Persons>(db, TABLES.persons, intoId)
+  return !into || into.deletedAt !== null
+}
+
 /** Thrown inside a transaction when another claim for U marked P first. */
 class MarkedAlready extends Error {}
 
@@ -154,7 +181,8 @@ export type MembersResult = { kept: Set<string>; joined: string[]; putOff: strin
  * leave a pair of one, or an employer group paying itself. A group with a statement being
  * finalized is put off whole, P's row included: its inputs and shares must wait, and P's row
  * moved without them would let a leave, a removal or an edit count P's part as someone else's.
- * A row is finished once it no longer points at P, so a retry carries on.
+ * A group step 3 can't go on in (`ready` false) is put off the same way, before anything is
+ * written. A row is finished once it no longer points at P, so a retry carries on.
  */
 export async function moveMembers(
   services: Services,
@@ -163,6 +191,7 @@ export async function moveMembers(
   intoId: string,
   groupIds: readonly string[],
   deadline: number,
+  ready: (groupId: string) => boolean,
 ): Promise<MembersResult> {
   const { db } = services
   const result: MembersResult = { kept: new Set(), joined: [], putOff: [], done: true }
@@ -176,6 +205,10 @@ export async function moveMembers(
       ((await twoSided(db, groupId)) || (await leftOnTheirOwn(db, groupId, intoId, own.$createdAt)))
     ) {
       result.kept.add(groupId)
+      continue
+    }
+    if (!ready(groupId)) {
+      result.putOff.push(groupId)
       continue
     }
     try {
@@ -223,7 +256,8 @@ export async function memberOf(
  * is kept (with the earlier `joinedOn`) and P's deleted, or P's row is repointed to U, with the
  * status as in joining and `member.joined` by U. Each write carries a fresh `rev`, so it's a
  * real change that guards the row (ledger.md#concurrency) even when nothing else on it changes.
- * True if this call moved it and U is joined there; false if a merge running at the same time
+ * The same transaction guards U's person row (`guardInto`), so no merge joins a person whose
+ * account is being deleted. True if this call moved it and U is joined there; false if a merge running at the same time
  * moved it, or a leave of U's own landed just after (so the group isn't one U joined).
  */
 async function moveMember(
@@ -266,6 +300,7 @@ async function moveMember(
               },
             ]),
       )
+      await guardInto(tx, db, intoId)
       // Stage, then check: both rows as stored, not this transaction's view of them.
       const storedTheirs = await getRowOrNull<Members>(db, TABLES.members, theirs.$id)
       const storedOwn = own ? await getRowOrNull<Members>(db, TABLES.members, own.$id) : null
@@ -294,6 +329,7 @@ async function moveMember(
     if (!(await joinedHere(db, theirs.groupId, intoId))) {
       await removeFromTeam(teams, theirs.groupId, userId)
     }
+    if (error instanceof IntoDeleted) throw error
     const current = await getRowOrNull<Members>(db, TABLES.members, theirs.$id)
     if (current?.personId === theirs.personId) {
       throw error instanceof Raced || isAppwriteError(error, 409) ? tryAgain() : error
@@ -391,12 +427,15 @@ export async function moveIdentities(
 }
 
 /**
- * Shares moved per transaction: each may take two writes (combine), plus the group's guard and
- * the delete of its `balances` row.
+ * Shares moved per transaction: each may take two writes (combine), plus the group's guard, U's
+ * member row guard and the delete of the group's `balances` row.
  */
 const SHARES_PER_BATCH = Math.floor((MAX_OPS_PER_DB_TRANSACTION - 3) / 2)
 
-/** What became of the groups whose shares a call looked at. `done`: P has none left there. */
+/**
+ * What became of the groups whose shares a call looked at. `done`: none was put off or cut off.
+ * P's shares stay in a group where U has no joined row, and `stray()` sees them.
+ */
 export type SharesResult = { moved: number; putOff: string[]; done: boolean }
 
 /**

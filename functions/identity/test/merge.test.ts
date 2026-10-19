@@ -115,6 +115,21 @@ describe('markMerged (step 1)', () => {
     expect(log).toHaveBeenCalledWith('merge pP into pU: 1 typed keys deleted')
   })
 
+  it('deletes a phone typed for P when U verified only an email', async () => {
+    const phone = {
+      $id: 'i9',
+      key: 'phone:+61400000009',
+      type: 'phone',
+      personId: 'pP',
+      verified: false,
+    }
+    const claimedThrough = { ...identity(2), verified: false }
+    const store = db([U, P], [phone, claimedThrough])
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(await markMerged(store, 'pP', 'pU', [claimedThrough.key])).toBe(true)
+    expect(store.rows('identities').map((row) => row.$id)).toEqual(['i2'])
+  })
+
   it('counts P as merged when another claim for U deleted the typed key first', async () => {
     const store = db(
       [U, P],
@@ -261,6 +276,8 @@ describe('moveMembers (step 2)', () => {
     name: 'Flat',
     rev: 'r0',
   }))
+  // Step 3 can go on in every group (run-merge checks step 1's dates).
+  const ready = () => true
 
   /** Every group's row and team exist, with nobody in the team yet. */
   function setUp(seed: Parameters<typeof fakes>[0]) {
@@ -306,7 +323,7 @@ describe('moveMembers (step 2)', () => {
       ],
     })
     // U was in g3 already, so only g1 and g2 are new to them.
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
       kept: new Set(),
       joined: ['g1', 'g2'],
       putOff: [],
@@ -326,7 +343,7 @@ describe('moveMembers (step 2)', () => {
       ['g3', 'pU', 'pU', 'joined', NOW.toISOString()],
     ])
     // Nothing points at P any more: a second run is a no-op.
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
       kept: new Set(),
       joined: [],
       putOff: [],
@@ -350,7 +367,7 @@ describe('moveMembers (step 2)', () => {
         activity('a3', 'g2', 'member.joined', '2026-10-12T00:00:00.000Z'),
       ],
     })
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
       kept: new Set(['g1']),
       // U's row in g2 was joined already: P's merges into it, but nothing is new to U.
       joined: [],
@@ -377,12 +394,16 @@ describe('moveMembers (step 2)', () => {
       (operations) => operations.includes('"members"'),
       () => updateRow(services.db, 'members', 'm1', { leftOn: '2026-10-05' }),
     )
-    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
+    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).rejects.toThrow(
+      TRY_AGAIN,
+    )
     expect(members(services)).toEqual([['m1', 'g1', 'pP', 'placeholder', '2026-09-01']])
     expect(services.teams.members('g1')).toEqual([])
     expect(joinedRows(services)).toEqual([])
     // The next claim moves it as it is now.
-    expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).joined).toEqual(['g1'])
+    expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).joined).toEqual([
+      'g1',
+    ])
     expect(members(services)).toEqual([['m1', 'g1', 'pU', 'left', '2026-09-01']])
   })
 
@@ -396,7 +417,9 @@ describe('moveMembers (step 2)', () => {
       { teams: { g1: ['u1'] } },
     )
     beforeCommit(services.db, () => updateRow(services.db, 'members', 'm2', { role: 'admin' }))
-    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
+    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).rejects.toThrow(
+      TRY_AGAIN,
+    )
     expect(members(services).map(([id]) => id)).toEqual(['m1', 'm2'])
     // U's own joined row there keeps them in the team.
     expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u1'])
@@ -408,7 +431,9 @@ describe('moveMembers (step 2)', () => {
       members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
     })
     beforeCommit(services.db, () => removeFromTeam(services.teams, 'g1', 'u1'))
-    expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).joined).toEqual(['g1'])
+    expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).joined).toEqual([
+      'g1',
+    ])
     expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u1'])
   })
 
@@ -426,7 +451,9 @@ describe('moveMembers (step 2)', () => {
     beforeCommit(services.db, () =>
       updateRow(services.db, 'members', 'm2', { status: 'left', leftOn: '2026-10-18' }),
     )
-    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
+    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).rejects.toThrow(
+      TRY_AGAIN,
+    )
     const memberWrites = writes.mock.calls.filter(([params]) =>
       JSON.stringify(params.operations).includes('"members"'),
     )
@@ -453,7 +480,7 @@ describe('moveMembers (step 2)', () => {
         placeholderRow('m5', 'g3', 'pP', CREATED),
       ],
     })
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
       kept: new Set(['g1', 'g2']),
       joined: ['g3'],
       putOff: [],
@@ -514,10 +541,12 @@ describe('moveMembers (step 2)', () => {
         (operations) => operations.includes('"members"'),
         () => leave(services),
       )
-      await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).rejects.toThrow(
+        TRY_AGAIN,
+      )
       expect(services.teams.members('g1')).toEqual([])
       // The next claim sees the leave: g1 is kept, and U stays out.
-      expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).kept).toEqual(
+      expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).kept).toEqual(
         new Set(['g1']),
       )
       expect(services.teams.members('g1')).toEqual([])
@@ -530,7 +559,9 @@ describe('moveMembers (step 2)', () => {
         await leave(services)
         return (await add(params)) as never
       })
-      await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).rejects.toThrow(
+        TRY_AGAIN,
+      )
       expect(services.teams.members('g1')).toEqual([])
     })
 
@@ -546,7 +577,7 @@ describe('moveMembers (step 2)', () => {
         }
         return result
       })
-      await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)
+      await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)
       expect(services.teams.members('g1')).toEqual([])
     })
 
@@ -587,7 +618,7 @@ describe('moveMembers (step 2)', () => {
         return result
       })
       // So it isn't in linkedGroupIds.
-      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toMatchObject({
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toMatchObject({
         joined: [],
         done: true,
       })
@@ -595,12 +626,47 @@ describe('moveMembers (step 2)', () => {
     })
   })
 
+  it('puts off a group step 3 can’t go on in before it writes anything, but never a kept one', async () => {
+    const services = setUp({
+      persons: [U, P],
+      groups: [...GROUP_ROWS.slice(0, 2), { $id: 'g3', type: 'pair', name: 'Sam and Sammy' }],
+      members: [
+        placeholderRow('m1', 'g1', 'pP', CREATED),
+        placeholderRow('m2', 'g2', 'pP', CREATED),
+        placeholderRow('m3', 'g3', 'pP', CREATED),
+        ownRow('m4', 'g3'),
+      ],
+    })
+    const adds = vi.spyOn(services.teams, 'createMembership')
+    const asked: string[] = []
+    const onlyG2 = (groupId: string) => {
+      asked.push(groupId)
+      return groupId === 'g2'
+    }
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, onlyG2)).toEqual({
+      kept: new Set(['g3']),
+      joined: ['g2'],
+      putOff: ['g1'],
+      done: false,
+    })
+    // A kept group is never asked: nothing there moves, so step 3 needs nothing there.
+    expect(asked).toEqual(['g1', 'g2'])
+    expect(members(services)).toEqual([
+      ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],
+      ['m2', 'g2', 'pU', 'active', '2026-09-01'],
+      ['m3', 'g3', 'pP', 'placeholder', '2026-09-01'],
+      ['m4', 'g3', 'pU', 'active', '2026-10-01'],
+    ])
+    expect(adds.mock.calls.map(([params]) => params.teamId)).not.toContain('g1')
+    expect(services.db.rows('groups').find((row) => row.$id === 'g1')?.rev).toBe('r0')
+  })
+
   it('starts no row once the deadline has passed', async () => {
     const services = setUp({
       persons: [U, P],
       members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
     })
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, 0)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, 0, ready)).toEqual({
       kept: new Set(),
       joined: [],
       putOff: [],
@@ -641,7 +707,7 @@ describe('moveMembers (step 2)', () => {
     it('keeps P’s row there, and U out of its team, while the other groups go on', async () => {
       const services = withP([FINALIZING])
       const adds = vi.spyOn(services.teams, 'createMembership')
-      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
         kept: new Set(),
         joined: ['g2'],
         putOff: ['g1'],
@@ -663,7 +729,7 @@ describe('moveMembers (step 2)', () => {
         (operations) => operations.includes('"groups"'),
         () => startFinalize(services),
       )
-      expect(await moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR)).toMatchObject({
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR, ready)).toMatchObject({
         putOff: ['g1'],
         done: false,
       })
@@ -674,10 +740,12 @@ describe('moveMembers (step 2)', () => {
     it('fails its commit when the finalize starts after its check, then puts it off', async () => {
       const services = withP()
       beforeCommit(services.db, () => startFinalize(services))
-      await expect(moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR)).rejects.toThrow(TRY_AGAIN)
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR, ready)).rejects.toThrow(
+        TRY_AGAIN,
+      )
       expect(members(services)[0]).toEqual(['m1', 'g1', 'pP', 'placeholder', '2026-09-01'])
       expect(services.teams.members('g1')).toEqual([])
-      expect(await moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR)).toMatchObject({
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR, ready)).toMatchObject({
         putOff: ['g1'],
       })
     })
@@ -691,7 +759,7 @@ describe('moveMembers (step 2)', () => {
     beforeCommit(services.db, () =>
       updateRow(services.db, 'members', 'm1', { personId: 'pU', status: 'active' }),
     )
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
       kept: new Set(),
       joined: [],
       putOff: [],
@@ -909,36 +977,36 @@ describe('moveShares (step 3)', () => {
     expect(store.rows('balances')).toEqual([])
   })
 
+  // U leaves g1 on their own, as `groups POST /leave` writes it.
+  const uLeaves = [
+    {
+      action: 'update' as const,
+      tableId: 'members' as const,
+      rowId: 'mU-g1',
+      data: { status: 'left', role: 'viewer', leftOn: '2026-10-18' },
+    },
+    {
+      action: 'create' as const,
+      tableId: 'activity' as const,
+      rowId: 'aLeft',
+      data: {
+        groupId: 'g1',
+        action: 'member.left',
+        summary: 'left',
+        at: '2026-10-18T00:00:00.000Z',
+        actorPersonId: 'pU',
+        subjectPersonId: 'pU',
+      },
+    },
+  ]
+
   // #242 D/E: each batch guards U's member row, then checks it as stored.
   it.each([
     [
       'an admin removes U’s row',
       [{ action: 'delete' as const, tableId: 'members' as const, rowId: 'mU-g1' }],
     ],
-    [
-      'U leaves on their own',
-      [
-        {
-          action: 'update' as const,
-          tableId: 'members' as const,
-          rowId: 'mU-g1',
-          data: { status: 'left', role: 'viewer', leftOn: '2026-10-18' },
-        },
-        {
-          action: 'create' as const,
-          tableId: 'activity' as const,
-          rowId: 'aLeft',
-          data: {
-            groupId: 'g1',
-            action: 'member.left',
-            summary: 'left',
-            at: '2026-10-18T00:00:00.000Z',
-            actorPersonId: 'pU',
-            subjectPersonId: 'pU',
-          },
-        },
-      ],
-    ],
+    ['U leaves on their own', uLeaves],
   ])('moves no share onto U when %s just before a batch', async (_, writes) => {
     const store = seed([share('s1', 't1', 'pP', 0, 4500), share('s2', 't1', 'pX', 4500, 0)])
     beforeStaging(
@@ -952,6 +1020,35 @@ describe('moveShares (step 3)', () => {
       done: true,
     })
     // P's share stays P's, and stray() keeps the merge open (run-merge.ts).
+    expect(store.rows('shares').map((row) => row.personId)).toEqual(['pP', 'pX'])
+  })
+
+  it('fails a leave of U’s staged before a batch commits: the guard is a real change to U’s row', async () => {
+    const store = seed([share('s1', 't1', 'pP', 0, 4500), share('s2', 't1', 'pX', 4500, 0)])
+    // The leave stages U's row, a batch commits in between, then the leave commits. Its retry
+    // reads U's new share (groups' own check).
+    await expect(
+      withTransaction(store, async (tx) => {
+        await tx.write(...uLeaves)
+        expect((await moveShares(store, 'pP', 'pU', ['g1'], FAR)).moved).toBe(1)
+      }),
+    ).rejects.toMatchObject({ code: 409, type: 'transaction_conflict' })
+    expect(store.rows('members').find((row) => row.$id === 'mU-g1')?.status).toBe('active')
+    expect(store.rows('shares').map((row) => row.personId)).toEqual(['pU', 'pX'])
+  })
+
+  it('moves nothing when U leaves just before the batch stages U’s row: it checks after staging', async () => {
+    const store = seed([share('s1', 't1', 'pP', 0, 4500), share('s2', 't1', 'pX', 4500, 0)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"members"'),
+      () => withTransaction(store, (tx) => tx.write(...uLeaves)),
+    )
+    expect(await moveShares(store, 'pP', 'pU', ['g1'], FAR)).toEqual({
+      moved: 0,
+      putOff: [],
+      done: true,
+    })
     expect(store.rows('shares').map((row) => row.personId)).toEqual(['pP', 'pX'])
   })
 
