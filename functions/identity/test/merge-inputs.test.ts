@@ -261,6 +261,88 @@ describe('moveInputs (step 3)', () => {
     expect(netsFromShares(replanned)).toEqual(netsFromShares(store.rows('shares') as never))
   })
 
+  it('plans a days item as the members were before the merge, from step 1’s record (B2)', async () => {
+    // X paid a September bill of 75.00, one item split by days: P was there all 30 days, U 15
+    // (from the 16th), X 30, so P 30.00, U 15.00, X 30.00. After step 2, U's kept row starts
+    // when P's did, so an edit would give U only 37.50.
+    const september = { periodStart: '2026-09-01', periodEnd: '2026-09-30' }
+    const bill = transaction(
+      't1',
+      { payers: [{ personId: 'pX', cents: 7500 }], bill: september },
+      { kind: 'bill', totalCents: 7500 },
+    )
+    const share = (id: string, personId: string, given: number, received: number) => ({
+      $id: id,
+      transactionId: 't1',
+      groupId: 'g1',
+      personId,
+      givenCents: given,
+      receivedCents: received,
+    })
+    const store = seed([bill], {
+      items: [
+        {
+          $id: 'i1',
+          transactionId: 't1',
+          position: 0,
+          name: 'Power',
+          quantity: 1,
+          amountCents: 7500,
+          category: null,
+          splitJson: JSON.stringify({ mode: 'days', personIds: ['pP', 'pU', 'pX'] }),
+        },
+      ],
+      shares: [
+        share('s1', 'pX', 7500, 3000),
+        share('s2', 'pP', 0, 3000),
+        share('s3', 'pU', 0, 1500),
+      ],
+      members: ['pU', 'pX'].map((personId) => ({
+        $id: `m${personId}`,
+        groupId: 'g1',
+        personId,
+        status: 'active',
+        joinedOn: '2026-01-01',
+        leftOn: null,
+      })),
+    })
+    const recorded = [
+      {
+        groupId: 'g1',
+        from: { joinedOn: '2026-01-01' as LocalDate, leftOn: null },
+        into: { joinedOn: '2026-09-16' as LocalDate, leftOn: null },
+      },
+    ]
+    await moveInputs(store, merge, ['g1'], NOW, FAR, recorded)
+    expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 4500 },
+        { personId: 'pX', cents: 3000 },
+      ],
+    })
+    // With no record, the item can't be planned as it was, so it's renamed only.
+    const unrecorded = seed([bill], {
+      items: store.rows('items').map((item) => ({
+        ...item,
+        splitJson: JSON.stringify({ mode: 'days', personIds: ['pP', 'pU', 'pX'] }),
+      })),
+      members: ['pU', 'pX'].map((personId) => ({
+        $id: `m${personId}`,
+        groupId: 'g1',
+        personId,
+        status: 'active',
+        joinedOn: '2026-01-01',
+        leftOn: null,
+      })),
+    })
+    await moveInputs(unrecorded, merge, ['g1'], NOW, FAR)
+    expect(JSON.parse(unrecorded.rows('items')[0]?.splitJson as string)).toEqual({
+      mode: 'days',
+      personIds: ['pU', 'pX'],
+    })
+  })
+
   it('voids a payment or loan whose two sides are now both U, as the ledger voids one', async () => {
     const store = seed(
       [

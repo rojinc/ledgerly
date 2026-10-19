@@ -44,15 +44,30 @@ describe('markMerged (step 1)', () => {
       persons: [U, P],
       members: [
         placeholderRow('m1', 'g2', 'pP', NOW.toISOString()),
-        placeholderRow('m2', 'g1', 'pP', NOW.toISOString(), { status: 'left' }),
+        placeholderRow('m2', 'g1', 'pP', NOW.toISOString(), {
+          status: 'left',
+          joinedOn: '2026-02-01',
+          leftOn: '2026-06-30',
+        }),
         placeholderRow('m3', 'g3', 'pU', NOW.toISOString(), { status: 'active' }),
+        placeholderRow('m4', 'g1', 'pU', NOW.toISOString(), {
+          status: 'active',
+          joinedOn: '2026-05-01',
+        }),
       ],
     } as ConstructorParameters<typeof FakeDb>[0])
     expect(await markMerged(store, 'pP', 'pU', [])).toBe(true)
-    expect(store.rows('persons').find((row) => row.$id === 'pP')).toMatchObject({
-      mergedInto: 'pU',
-      mergeGroupIds: ['g1', 'g2'],
-    })
+    const marked = store.rows('persons').find((row) => row.$id === 'pP')
+    expect(marked).toMatchObject({ mergedInto: 'pU', mergeGroupIds: ['g1', 'g2'] })
+    // And the member dates as they were, P's and U's, so step 3 can plan items as before (B2).
+    expect(JSON.parse(marked?.mergeMembersJson as string)).toEqual([
+      {
+        groupId: 'g1',
+        from: { joinedOn: '2026-02-01', leftOn: '2026-06-30' },
+        into: { joinedOn: '2026-05-01', leftOn: null },
+      },
+      { groupId: 'g2', from: { joinedOn: '2026-09-01', leftOn: null }, into: null },
+    ])
   })
 
   it('lists P’s rows once P’s row is staged, so a row added before then is on the list', async () => {

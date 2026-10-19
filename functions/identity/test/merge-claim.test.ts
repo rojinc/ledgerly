@@ -161,6 +161,7 @@ function house(more: Record<string, object[]> = {}): Fakes {
         },
       ],
       statements: more.statements ?? [],
+      items: more.items ?? [],
       // Alex reminded Sammy in g1, before Sam signed up.
       reminders: [
         {
@@ -725,6 +726,79 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: ['t8'] })
     expect(warn).toHaveBeenCalledWith('merge pP into pSam left transaction t8 as it is')
+  })
+
+  it('plans a days item as it was before the merge, with the dates step 1 recorded (B2)', async () => {
+    // In g2, Alex paid a September bill of 76.00, one item split by days: Sammy was there all 30
+    // days, Sam 16 (from the 15th), Alex 30. After the merge, Sam's row starts when Sammy's did.
+    const services = house({
+      members: [
+        placeholderRow('m6', 'g2', 'pX', BEFORE, {
+          status: 'active',
+          displayName: 'Alex',
+          joinedOn: '2026-08-01',
+        }),
+      ],
+      transactions: [
+        {
+          ...transaction(
+            't5',
+            'g2',
+            {
+              payers: [{ personId: 'pX', cents: 7600 }],
+              bill: { periodStart: '2026-09-01', periodEnd: '2026-09-30' },
+            },
+            7600,
+          ),
+          kind: 'bill',
+        },
+      ],
+      items: [
+        {
+          $id: 'i5',
+          transactionId: 't5',
+          position: 0,
+          name: 'Power',
+          quantity: 1,
+          amountCents: 7600,
+          category: null,
+          splitJson: JSON.stringify({ mode: 'days', personIds: ['pP', 'pSam', 'pX'] }),
+        },
+      ],
+      shares: [
+        share('s5', 't5', 'g2', 'pX', 7600, 3000),
+        share('s6', 't5', 'g2', 'pP', 0, 3000),
+        share('s7', 't5', 'g2', 'pSam', 0, 1600),
+      ],
+    })
+    await claim(services)
+    expect(namingSammy(services).identities).toEqual([])
+    // Written out from the parts as they were, so an edit keeps every net.
+    expect(
+      JSON.parse(services.db.rows('items').find((row) => row.$id === 'i5')?.splitJson as string),
+    ).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pSam', cents: 4600 },
+        { personId: 'pX', cents: 3000 },
+      ],
+    })
+  })
+
+  it('carries on with the members as step 2 left them when the recorded dates can’t be read', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const services = house()
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'persons',
+        rowId: 'pP',
+        data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2'], mergeMembersJson: '{' },
+      }),
+    )
+    await claim(services)
+    expect(namingSammy(services).identities).toEqual([])
+    expect(error).toHaveBeenCalledWith('merge pP: its recorded member dates are unreadable')
   })
 
   it('still logs the user in, and joins their own rows, when a merge stops on an error', async () => {

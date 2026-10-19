@@ -1,4 +1,5 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type {
   Balances,
   Groups,
@@ -9,6 +10,7 @@ import type {
   Shares,
   Statements,
 } from '@ledgerly/core/generated/rows'
+import type { MergeMembers } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
@@ -23,6 +25,9 @@ import type { Services } from './services'
 // identity-and-invites.md#merging-two-persons: placeholder P is merged into U in steps that are
 // each safe to repeat. Logs hold IDs and counts only (security-and-privacy.md). Every loop stops
 // once `deadline` (epoch ms) has passed, so a claim never runs into the function's timeout.
+
+/** IDs per query filter (its value cap). */
+const PAGE = 100
 
 /** Thrown inside a transaction when P turned out not to be U's to merge. */
 class NotOurs extends Error {}
@@ -74,11 +79,15 @@ export async function markMerged(
       const rows = await listAll<Members>(db, TABLES.members, [
         Query.equal('personId', placeholderId),
       ])
+      const groupIds = [...new Set(rows.map((row) => row.groupId))].sort()
       await tx.write({
         action: 'update',
         tableId: TABLES.persons,
         rowId: placeholderId,
-        data: { mergeGroupIds: [...new Set(rows.map((row) => row.groupId))].sort() },
+        data: {
+          mergeGroupIds: groupIds,
+          mergeMembersJson: JSON.stringify(await memberDates(db, rows, intoId, groupIds)),
+        },
       })
       const deletes = await typedKeyDeletes(db, placeholderId, verified)
       if (deletes.length > 0) await tx.write(...deletes)
@@ -97,6 +106,37 @@ export async function markMerged(
     }
     throw error
   }
+}
+
+/**
+ * P's member dates in each of P's groups, and U's where U has a row there (#242 B2), so step 3
+ * can plan a posted row's items as the members were before the merge.
+ */
+async function memberDates(
+  db: Db,
+  rows: readonly Members[],
+  intoId: string,
+  groupIds: readonly string[],
+): Promise<MergeMembers> {
+  const own: Members[] = []
+  // In chunks under the query filter's value cap.
+  for (let start = 0; start < groupIds.length; start += PAGE) {
+    own.push(
+      ...(await listAll<Members>(db, TABLES.members, [
+        Query.equal('personId', intoId),
+        Query.equal('groupId', groupIds.slice(start, start + PAGE)),
+      ])),
+    )
+  }
+  const dates = (row: Members) => ({
+    joinedOn: row.joinedOn as LocalDate,
+    leftOn: (row.leftOn ?? null) as LocalDate | null,
+  })
+  return groupIds.map((groupId) => {
+    const theirs = rows.find((row) => row.groupId === groupId) as Members
+    const ours = own.find((row) => row.groupId === groupId)
+    return { groupId, from: dates(theirs), into: ours ? dates(ours) : null }
+  })
 }
 
 /**

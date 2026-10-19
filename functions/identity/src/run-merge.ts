@@ -1,4 +1,5 @@
 import type { Groups, Identities, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
+import { type MergeMembers, mergeMembersSchema } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
@@ -62,6 +63,7 @@ async function runMerge(
   const joined: string[] = []
   const putOff = new Set<string>()
   const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
+  const recorded = memberDatesOf(placeholder)
   let done = true
   // Only P's groups can name P; never U's others, so a merge costs what P had. They're walked in
   // the order step 1 listed them, so a later claim finishes a part-done group before it starts
@@ -94,7 +96,7 @@ async function runMerge(
       putOff.add(groupId)
       continue
     }
-    const inputs = await moveInputs(db, merge, [groupId], now, deadline)
+    const inputs = await moveInputs(db, merge, [groupId], now, deadline, recorded)
     moved.inputs += inputs.rewritten
     moved.voided += inputs.voided
     moved.skipped += inputs.skipped
@@ -173,6 +175,21 @@ async function stray(
     }
   }
   return false
+}
+
+/** The member dates step 1 recorded for P (#242 B2); none if they can't be read. */
+function memberDatesOf(placeholder: Persons): MergeMembers {
+  if (placeholder.mergeMembersJson === null) return []
+  let raw: unknown
+  try {
+    raw = JSON.parse(placeholder.mergeMembersJson)
+  } catch {
+    raw = undefined
+  }
+  const parsed = mergeMembersSchema.safeParse(raw)
+  if (parsed.success) return parsed.data
+  console.error(`merge ${placeholder.$id}: its recorded member dates are unreadable`)
+  return []
 }
 
 /** The persons merged into U. */

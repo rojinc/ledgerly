@@ -8,6 +8,8 @@ import {
   mergeSplit,
 } from '@ledgerly/core/identity/merge-input'
 import type { LedgerContext } from '@ledgerly/core/ledger/build-shares'
+import type { LedgerMember } from '@ledgerly/core/ledger/split-amount'
+import type { MergeMembers } from '@ledgerly/core/schemas/identity'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { splitSpecSchema } from '@ledgerly/core/schemas/split'
 import type { Db } from '@ledgerly/server/appwrite/client'
@@ -67,6 +69,7 @@ export async function moveInputs(
   groupIds: readonly string[],
   now: Date,
   deadline: number,
+  recorded: MergeMembers = [],
 ): Promise<InputsResult> {
   const result: InputsResult = {
     rewritten: 0,
@@ -77,7 +80,8 @@ export async function moveInputs(
     done: true,
   }
   for (const groupId of groupIds) {
-    const outcome = await moveGroupInputs(db, merge, groupId, now, deadline, result)
+    const dates = recorded.find((entry) => entry.groupId === groupId)
+    const outcome = await moveGroupInputs(db, merge, groupId, now, deadline, result, dates)
     if (outcome === 'putOff') result.putOff.push(groupId)
     if (outcome === 'cutOff') {
       result.cutOff = true
@@ -96,6 +100,7 @@ async function moveGroupInputs(
   now: Date,
   deadline: number,
   result: InputsResult,
+  dates: MergeMembers[number] | undefined,
 ): Promise<'done' | 'putOff' | 'cutOff'> {
   // An edit after the merge plans a row with the members as step 2 left them, and as they are
   // after a race: a member change may be what made the batch run again.
@@ -126,6 +131,7 @@ async function moveGroupInputs(
       merge,
       now,
       ctx,
+      ctx && membersBefore(ctx.members, merge, dates),
     )
     try {
       for (const batch of batches(rewrites)) {
@@ -166,6 +172,7 @@ async function planRewrites(
   merge: Merge,
   now: Date,
   ctx: LedgerContext | undefined,
+  before: readonly LedgerMember[] | undefined,
 ): Promise<{ rewrites: Rewrite[]; skipped: string[] }> {
   const items =
     rows.length === 0
@@ -221,10 +228,9 @@ async function planRewrites(
       continue
     }
     // A posted row's items must each plan the same parts after the merge (lead, #242).
+    const period = billPeriod(row)
     const splitCtx =
-      ctx !== undefined && row.status === 'posted'
-        ? { members: ctx.members, period: billPeriod(row) }
-        : undefined
+      ctx !== undefined && row.status === 'posted' ? { members: ctx.members, period } : undefined
     const splits = items
       .filter((item) => item.transactionId === row.$id)
       .map((item) => ({
@@ -233,7 +239,10 @@ async function planRewrites(
           const split = raw as z.infer<typeof splitSpecSchema>
           return {
             input: splitCtx
-              ? mergePostedSplit(split, merge, item.amountCents, splitCtx)
+              ? mergePostedSplit(split, merge, item.amountCents, splitCtx, {
+                  members: before ?? splitCtx.members,
+                  period,
+                })
               : mergeSplit(split, merge),
             voided: false,
           }
@@ -272,6 +281,24 @@ async function planRewrites(
     })
   }
   return { rewrites, skipped }
+}
+
+/**
+ * The members as they were before the merge, for planning a posted row's items (#242 B2): P's and
+ * U's member rows as step 1 recorded them, and everyone else's as they are now. With no record
+ * (a P marked before step 1 kept dates), the members as step 2 left them.
+ */
+function membersBefore(
+  members: readonly LedgerMember[],
+  merge: Merge,
+  dates: MergeMembers[number] | undefined,
+): readonly LedgerMember[] {
+  if (!dates) return members
+  return [
+    ...members.filter((member) => member.personId !== merge.from && member.personId !== merge.into),
+    { personId: merge.from, ...dates.from },
+    ...(dates.into ? [{ personId: merge.into, ...dates.into }] : []),
+  ]
 }
 
 /** A bill's billing period from its stored input, for a `days` split. */
