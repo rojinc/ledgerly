@@ -43,10 +43,10 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `displayName` | varchar(100) | Their own name if registered; otherwise the name used by whoever first added them. |
 | `claimedAt` | datetime? | When the person first got a user account (bootstrap or adopt). Claim joins member rows whose `$createdAt` is strictly before it ([identity](identity-and-invites.md#claim-linking-records-to-a-new-account)). |
 | `mergedInto` | varchar(36)? | Set when this person is merged into another ([identity](identity-and-invites.md#merging-two-persons)). Kept for good: old statements and groups the other person left on their own can still name this one. |
-| `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history. |
+| `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). Set first, as the point of no return; a person with `deletedAt` and `userId` both set has a deletion still to finish. |
 | `rev` | varchar(20)? | A fresh random value on every guard write (invite limits), so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |
 
-Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`.
+Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`, `idx_deletedAt (deletedAt)` (the hourly job finds deletions to finish).
 Permissions: placeholders have none (server only). A registered person's row gets `read("user:<userId>")`.
 
 ## identities
@@ -264,7 +264,7 @@ Permissions: `read("team:<groupId>")`.
 
 ## activity
 
-Append-only. Never updated or deleted, except when anonymising a deleted account.
+Append-only. Never updated. Deleted only with a group purged when a member deletes their account and nobody else is in its team ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -272,8 +272,9 @@ Append-only. Never updated or deleted, except when anonymising a deleted account
 | `actorPersonId` | varchar(36)? | Empty for system jobs |
 | `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized` |
 | `transactionId` | varchar(36)? | |
-| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00` |
-| `changesJson` | text? | `{ before, after }` of the changed fields |
+| `subjectPersonId` | varchar(36)? | The person a `member.*` row is about, so the app shows their current name ("Former member" after deletion) |
+| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member or group row names its person through `subjectPersonId` instead (rows written before #50 keep their text). |
+| `changesJson` | text? | `{ before, after }` of the changed fields; never a display name |
 | `at` | datetime | |
 
 Indexes: `idx_group_at (groupId, at)`.

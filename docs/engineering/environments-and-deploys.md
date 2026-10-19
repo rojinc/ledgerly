@@ -46,7 +46,7 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 | --- | --- | --- | --- | --- |
 | `ledger` | HTTP | `users` | 15 s | `rows.*`, `files.*` (receipt permissions), `teams.read` (whether a `left` member is still in the team, #117) |
 | `groups` | HTTP | `users` | 15 s | `rows.*`, `teams.*` |
-| `identity` | HTTP | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
+| `identity` | HTTP + cron `35 * * * *` | `users` | 900 s (the hourly job finishes account deletions; its HTTP routes stay well inside the 30 s synchronous limit) | `rows.*`, `teams.*`, `users.read` (verified identities, the caller's session age), `users.write` (blocking and deleting a deleted account's user and sessions), `files.*` (a purged group's receipts and statement PDFs) |
 | `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*`, `teams.read` (whether a `left` member is still in the team, #117), `users.read` (reminder emails) |
 | `statements` | HTTP + cron `15 * * * *` | `users` | 300 s | `rows.*`, `files.*` (PDFs), `teams.read` (whether a `left` member is still in the team, #117) |
 

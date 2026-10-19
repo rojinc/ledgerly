@@ -5,6 +5,7 @@ import {
   bootstrapBodySchema,
   businessDetailsSchema,
   createInviteBodySchema,
+  deleteAccountBodySchema,
   hoursCapSchema,
   updateProfileBodySchema,
 } from './identity'
@@ -178,5 +179,16 @@ describe('hoursCapSchema (#53)', () => {
     expect(paths(updateProfileBodySchema, { hoursCap: { minutes: 59, period: 'week' } })).toEqual([
       'hoursCap.minutes',
     ])
+  })
+})
+
+describe('deleteAccountBodySchema (#50)', () => {
+  it('takes only DELETE, typed exactly', () => {
+    expect(paths(deleteAccountBodySchema, { confirm: 'DELETE' })).toEqual([])
+    for (const confirm of ['delete', 'DELETE ', '', undefined, true]) {
+      expect(paths(deleteAccountBodySchema, { confirm })).toEqual(['confirm'])
+    }
+    expect(paths(deleteAccountBodySchema, {})).toEqual(['confirm'])
+    expect(paths(deleteAccountBodySchema, { confirm: 'DELETE', userId: 'u1' })).toEqual([''])
   })
 })

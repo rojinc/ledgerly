@@ -135,10 +135,65 @@ An invite is a convenience: a link that tells someone they've been added and hel
 
 ## Deleting an account (M4)
 
-1. Remove the user from all teams. Delete their profile, identities and personal group (no one else has data there).
-2. Keep the person row so shared history stays correct for everyone else: clear `userId`, set `displayName = "Former member"` and `deletedAt`.
-3. In the groups they joined: set `members.displayName` to "Former member" and `status = left`. Rows they never joined are left exactly as they are. (Accepted risk: deleting their identities means re-adding that email no longer gives `CONFLICT`.)
-4. Delete the Appwrite user.
+`identity POST /account/delete` ([functions API](functions-api.md#identity)), from the delete screen ([#50](https://github.com/rojinc/ledgerly/issues/50)). **Deleting means anonymising.** Shares, statements and balances point at the person ([I-3](ledger.md#invariants)), so the `persons` row stays: `deletedAt` set, `userId` cleared, `displayName` "Former member", and no permissions. Their identities, profile (business details included), the invites they sent and the Appwrite user are deleted. There is no undo or grace period in v1: typing DELETE is the confirmation.
+
+### Each group they joined
+
+For every group where they have an `active` or `left` member row, its team decides:
+
+- **Purge, if nobody else is in the team.** This is always true of the personal group. The team goes, then the group's files (receipts, statement PDFs), then its rows, then any placeholder left with no member row anywhere (its person and identities).
+- **Keep, otherwise.** Their member row becomes "Former member", `left` and `viewer`, with `leftOn` set to today if it's empty, so `days` bills stop counting them. The same transaction writes a `member.left` activity row by them, with `subjectPersonId` = their person and no name, so the row counts as leaving on their own ([leaving](permissions.md#leaving-a-group)). Then they leave the team. Schedules in the group that they created, or whose template names them, are ended today, as `POST /schedules/{id}/end` with `endsOn` = today does: occurrences after today that can still change are removed, so no new occurrence names a deleted person. A kept `employer` or `pair` group where they were the only joined admin is archived.
+
+**A rerun never decides again.** What a group's state says decides how a rerun carries on, never the team as it is by then:
+
+- **The group's team is gone:** a purge was started, so it carries on. Their own member row, deleted last, ends it.
+- **Their member row is already "Former member" and `viewer`, and they're out of the team:** the keep is done, so the group is skipped (even if everyone else has since left the team).
+- **Their member row is "Former member" and `viewer` but they're still in the team:** the keep's team step is retried.
+- Anything else is decided from the team, as above.
+
+**Changes after the checks.** Step 1's checks can be overtaken before a group's turn comes, and a deletion can't be refused after step 2:
+
+- A kept house that would be left with no other joined admin (say a placeholder joined a house they were alone in, or the other admin left meanwhile) is archived, like an employer or pair group.
+- A group with a statement `finalizing` isn't archived or purged until the finalize ends: the group is left for the next run.
+
+Groups where they're a `placeholder` (never joined) are left exactly as they are: changing them would show the other members they had an account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)).
+
+### Refusals
+
+Deleting is refused, with nothing changed, when:
+
+- **The session is old.** The route reads the session ID from the caller's verified JWT and loads that session (`users.listSessions`). If it was created more than 10 minutes ago (`REAUTH_WINDOW_MINUTES`), it answers `FORBIDDEN` with `details: { reason: 'reauth' }`. The app asks them to sign in again (password or email code) and retries. So a stolen session that's been open a while can't delete the account. The check fails closed: a JWT with no session ID, or a session that `users.listSessions` doesn't return, gets the same answer.
+- **A timer is running** in a group that isn't archived: `CONFLICT`. They stop or void it first. A timer left in an archived group can't be stopped, and doesn't block deletion ([timer shifts](scheduling.md#timer-shifts)).
+- **They're the only joined admin of a house someone else is in:** `VALIDATION_FAILED` with `details: { groupIds }`. They make someone else admin first: the rule leaving uses, that another joined admin stays ([leaving](permissions.md#leaving-a-group)). Unlike leaving, deletion refuses only for a house; a kept employer or pair group is archived instead.
+- **The body isn't `{ confirm: 'DELETE' }`:** `VALIDATION_FAILED`.
+
+Non-zero balances don't block it; the delete screen warns about them.
+
+### Order
+
+1. The refusal checks.
+2. Set `persons.deletedAt` and `displayName` "Former member", with a fresh `rev` (a [guard write](ledger.md#concurrency)). **This is the point of no return:** from here every step runs to the end, and none is undone. A call after this skips the checks (apart from the body) and carries on.
+3. Block the Appwrite user and delete their sessions, so an old JWT fails `account.get()` (`UNAUTHENTICATED`).
+4. The groups, one at a time, as above. A purge deletes the team and sets `archivedAt` first, so jobs and writes stop; then files; then rows, in batches of at most 90 writes, each transaction with its shares and items; then orphaned placeholders; their own member row last. A keep is one transaction on their member row, with a fresh group `rev` (and the archive, where the rule says), then the team removal.
+5. Delete their identities, the invites they sent and their profile.
+6. Delete the Appwrite user (a 404 counts as done).
+7. Clear `persons.userId` and the row's `read("user:<userId>")` permission.
+
+Every step can be repeated: a crash after any of them, then a rerun, leaves the same rows. The route works for up to 20 seconds and returns `{ deletedAt, finished }`; the hourly identity job (`POST /`, scheduled only) finishes any person with `deletedAt` set and `userId` still set (`persons.idx_deletedAt`).
+
+### What is kept, and why
+
+- **Final statements, their snapshots and PDFs in kept groups,** as issued, ABN and bank details included: other members already hold these documents ([D-010](decisions.md#d-010-closed-periods-never-change)). Merges don't rewrite them either.
+- **Receipts on kept transactions, and text other people typed** (descriptions, notes, void reasons).
+- **Activity rows already written,** with the text they were written with. New member and group rows name no one: their summaries and `changesJson` hold no display name, and `subjectPersonId` points at the member's person, so the app shows the current name ("Former member" after deletion) without rewriting rows ([activity](data-model.md#activity)). Activity is deleted only with a purged group.
+
+A purged group's invoices go with it, so the delete screen tells users to export first ([data export](security-and-privacy.md#data-export)). Appwrite's backups keep deleted data for their own retention period ([retention](security-and-privacy.md#retention)).
+
+### After deletion
+
+- **Signing up again** with the same email makes a new person. The old one is never linked back: its identities are gone, and `isPlaceholder()` skips persons with `deletedAt`. Claim and join skip a group whose team is gone.
+- **No new record names a deleted person.** The ledger refuses a transaction input that names one (as payer, in a split or in an item) that its stored input didn't already name, and the scheduler refuses a schedule template that names one (`VALIDATION_FAILED`, [functions API](functions-api.md#ledger)). Records that already name them can still be corrected, posted and voided, so a shared expense with a former member stays fixable.
+- Accepted risk: with their identities deleted, adding that email to a group again makes a new placeholder instead of answering `CONFLICT`.
 
 ## Privacy rules
 

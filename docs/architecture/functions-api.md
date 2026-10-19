@@ -149,6 +149,8 @@ On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't 
 
 A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
 
+**Deleted people.** `POST /transactions`, `PATCH` and `/post` refuse, with `VALIDATION_FAILED`, an input that names a person with `deletedAt` (as payer, in the split or in an item's split) whom the stored input didn't already name. So nothing new names them, while a transaction that already did can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). The scheduler's `POST` and `PATCH /schedules` apply the same rule to the template.
+
 **Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
 
 `/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
@@ -188,6 +190,20 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
+| `POST /account/delete` | `{ confirm: 'DELETE' }` | `{ deletedAt, finished }` | the user, signed in within the last 10 minutes |
+
+Cron: `35 * * * *`, sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set). A person calling `POST /` gets `FORBIDDEN`.
+
+**`POST /account/delete`** deletes the caller's account ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). It is synchronous and works for up to 20 seconds; `finished: false` means the hourly job deletes the rest. Refusals change nothing:
+
+| Code | When |
+| --- | --- |
+| `FORBIDDEN`, `details: { reason: 'reauth' }` | The caller's session (from the JWT's session ID, loaded with `users.listSessions`) was created more than `REAUTH_WINDOW_MINUTES` (10) ago, or can't be found. The app asks them to sign in again and retries. |
+| `CONFLICT` | They have a timer running in a group that isn't archived |
+| `VALIDATION_FAILED`, `details: { groupIds }` | They're the only joined admin of a house someone else is in |
+| `VALIDATION_FAILED` | The body isn't `{ confirm: 'DELETE' }` |
+
+A call after `deletedAt` is set skips the checks (apart from the body) and carries on, since the account is already going. In practice the caller's sessions are deleted right after, so a retry from the app gets `UNAUTHENTICATED`: the app treats that as done. The types are `deleteAccountBodySchema`, `DeleteAccountResult` and `DeleteAccountRefusal` in `packages/core/src/schemas/identity.ts`.
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
 
