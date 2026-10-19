@@ -340,9 +340,11 @@ describe('a row deleted meanwhile', () => {
 })
 
 describe('the write budget', () => {
-  it('stays within one transaction when 15 people, 30 items and 20 receipts all change', async () => {
+  it('stays within one transaction when 15 people, 30 items and 20 receipts all change (85 writes)', async () => {
     const people = Array.from({ length: 15 }, (_, index) => `p${String(index).padStart(2, '0')}`)
     const db = seed({
+      // The group's balances row changes too (#49), with a new payer: the worst case.
+      balances: [{ $id: 'house', peopleJson: '[]' }],
       members: [
         ...MEMBERS,
         ...people.map((personId) => ({
@@ -358,11 +360,11 @@ describe('the write budget', () => {
     })
     const files = (name: string) => Array.from({ length: 10 }, (_, index) => `${name}${index}`)
     for (const fileId of [...files('old'), ...files('new')]) filesOf(db).upload(fileId, 'house')
-    const body = (name: string) =>
+    const body = (name: string, payer: string) =>
       expense({
         totalCents: undefined,
         split: undefined,
-        payers: [{ personId: 'p00', cents: 45000 }],
+        payers: [{ personId: payer, cents: 45000 }],
         items: Array.from({ length: 30 }, (_, index) => ({
           name: `${name} ${index}`,
           amountCents: 1500,
@@ -370,16 +372,16 @@ describe('the write budget', () => {
         })),
         receiptFileIds: files(name),
       })
-    const created = await call(db, 'POST', '/transactions', body('old'))
+    const created = await call(db, 'POST', '/transactions', body('old', 'p00'))
     expect(created.body.error).toBeUndefined()
     const staged = vi.spyOn(db, 'createOperations')
-    const response = await call(db, 'PATCH', '/transactions/t1', body('new'))
+    const response = await call(db, 'PATCH', '/transactions/t1', body('new', 'p01'))
     expect(response.status).toBe(200)
     const writes = staged.mock.calls.reduce(
       (sum, [params]) => sum + (params.operations?.length ?? 0),
       0,
     )
-    expect(writes).toBe(84)
+    expect(writes).toBe(85)
     expect(Object.keys(receiptFiles(db))).toHaveLength(20)
   })
 })

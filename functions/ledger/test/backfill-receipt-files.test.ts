@@ -19,6 +19,9 @@ const row = (fileId: string, extra: Partial<ReceiptFiles> = {}) => ({
 })
 
 const NOW = new Date('2026-10-19T06:00:00.000Z')
+// The transactions' group, whose row the backfill guards.
+const fakeDb = (seed: ConstructorParameters<typeof FakeDb>[0] = {}) =>
+  new FakeDb({ groups: [{ $id: 'house', rev: 'r0' }], ...seed })
 const LATER = '2026-10-19T05:30:00.000Z'
 const noFiles = async () => []
 
@@ -45,7 +48,7 @@ const receiptFiles = (db: FakeDb) =>
 
 describe('backfillReceiptFiles', () => {
   it('gives every file no transaction lists, and with no row, a row taken off now', async () => {
-    const db = new FakeDb({
+    const db = fakeDb({
       transactions: [tx('t1', ['listed'])],
       // Taken off after the ledger change: the ledger made its row.
       receiptFiles: [row('detached', { detachedAt: '2026-10-19T05:00:00.000Z' })],
@@ -67,7 +70,7 @@ describe('backfillReceiptFiles', () => {
   })
 
   it('makes the checkpoint that lets step 5 start, last, from when it started', async () => {
-    const db = new FakeDb({ transactions: [tx('t1', ['f1'])] })
+    const db = fakeDb({ transactions: [tx('t1', ['f1'])] })
     let checkpoints: unknown[] | undefined
     const files = async () => {
       // The bucket is read before the checkpoint is written.
@@ -87,13 +90,13 @@ describe('backfillReceiptFiles', () => {
   })
 
   it('reads every page of the bucket', async () => {
-    const db = new FakeDb()
+    const db = fakeDb()
     const fileIds = Array.from({ length: 250 }, (_, index) => `f${String(index).padStart(3, '0')}`)
     expect(await backfillReceiptFiles(db, bucket(...fileIds), NOW)).toMatchObject({ swept: 250 })
   })
 
   it('leaves a file the ledger attaches before the sweep commits', async () => {
-    const db = new FakeDb()
+    const db = fakeDb()
     const update = db.updateTransaction.bind(db)
     let done = false
     vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
@@ -121,7 +124,7 @@ describe('backfillReceiptFiles', () => {
   })
 
   it('only ever creates a row in the sweep, so an attach just before its staging wins', async () => {
-    const db = new FakeDb()
+    const db = fakeDb()
     const stage = db.createOperations.bind(db)
     let done = false
     vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
@@ -150,7 +153,7 @@ describe('backfillReceiptFiles', () => {
   })
 
   it('throws, with no checkpoint, when a file’s row keeps changing', async () => {
-    const db = new FakeDb({
+    const db = fakeDb({
       transactions: [tx('t1', ['f1'])],
       receiptFiles: [row('f1', { detachedAt: '2026-10-19T05:00:00.000Z' })],
     })
@@ -195,7 +198,7 @@ describe('backfillReceiptFiles', () => {
   }
 
   it('counts only files in a list, as isNotNull also matches []', async () => {
-    const db = new FakeDb({ transactions: [tx('t1', [])] })
+    const db = fakeDb({ transactions: [tx('t1', [])] })
     expect(await backfillReceiptFiles(db, bucket('f1'), NOW)).toEqual({
       updated: 0,
       unchanged: 0,
@@ -205,7 +208,7 @@ describe('backfillReceiptFiles', () => {
   })
 
   it('never adds a transaction that dropped the file since the pass read it', async () => {
-    const db = new FakeDb({ transactions: [tx('t1', ['f1'])] })
+    const db = fakeDb({ transactions: [tx('t1', ['f1'])] })
     const list = db.listRows.bind(db)
     let done = false
     vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
@@ -238,7 +241,7 @@ describe('backfillReceiptFiles', () => {
   })
 
   it('starts a file again when a transaction drops it after the staging', async () => {
-    const db = new FakeDb({ transactions: [tx('t1', ['f1'])] })
+    const db = fakeDb({ transactions: [tx('t1', ['f1'])] })
     const stage = db.createOperations.bind(db)
     let done = false
     vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
@@ -271,8 +274,36 @@ describe('backfillReceiptFiles', () => {
     })
   })
 
+  it('never adds a transaction that drops the file just before its commit, the row unchanged', async () => {
+    // f1 was on t1 before the ledger kept rows, and is on t3 now: its row lists t3 only.
+    const db = fakeDb({
+      transactions: [tx('t1', ['f1']), tx('t3', ['f1'])],
+      receiptFiles: [row('f1', { transactionIds: ['t3'] })],
+    })
+    const update = db.updateTransaction.bind(db)
+    let done = false
+    vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
+      if (params.commit && !done) {
+        done = true
+        // The ledger takes f1 off t1. Dropping an ID the row doesn't hold leaves the row as it
+        // was (a no-op, which conflicts with nobody), but its group guard changes the group.
+        await commitNow(
+          db,
+          { action: 'update', tableId: 'transactions', rowId: 't1', data: { receiptFileIds: [] } },
+          { action: 'update', tableId: 'groups', rowId: 'house', data: { rev: 'ledger' } },
+        )
+      }
+      return update(params)
+    })
+    expect(await backfillReceiptFiles(db, bucket('f1'), NOW)).toMatchObject({
+      updated: 0,
+      unchanged: 1,
+    })
+    expect(receiptFiles(db).f1?.transactionIds).toEqual(['t3'])
+  })
+
   it('lists every transaction on each file, and changes nothing when run again', async () => {
-    const db = new FakeDb({
+    const db = fakeDb({
       transactions: [tx('t1', ['f1', 'f2']), tx('t2', ['f1']), tx('t3', null)],
     })
     expect(await backfillReceiptFiles(db, noFiles, NOW)).toEqual({
@@ -295,7 +326,7 @@ describe('backfillReceiptFiles', () => {
   })
 
   it('adds to the rows the new ledger made, and undoes a detach it made without the others', async () => {
-    const db = new FakeDb({
+    const db = fakeDb({
       // f1 was on t1 before the change, then attached to t2 after it; f2 was then taken off t3.
       transactions: [tx('t1', ['f1', 'f2']), tx('t2', ['f1']), tx('t3', null)],
       receiptFiles: [
@@ -320,7 +351,7 @@ describe('backfillReceiptFiles', () => {
       detachedAt: '2026-10-17T00:00:00.000Z',
       deletingAt: '2026-10-18T00:00:00.000Z',
     })
-    const db = new FakeDb({ transactions: [tx('t1', ['f1'])], receiptFiles: [deleting] })
+    const db = fakeDb({ transactions: [tx('t1', ['f1'])], receiptFiles: [deleting] })
     expect(await backfillReceiptFiles(db, noFiles, NOW)).toEqual({
       updated: 0,
       unchanged: 0,
@@ -334,13 +365,13 @@ describe('backfillReceiptFiles', () => {
     const transactions = Array.from({ length: 250 }, (_, index) =>
       tx(`t${String(index).padStart(3, '0')}`, ['f1']),
     )
-    const db = new FakeDb({ transactions })
+    const db = fakeDb({ transactions })
     await backfillReceiptFiles(db, noFiles, NOW)
     expect(receiptFiles(db).f1?.transactionIds).toHaveLength(250)
   })
 
   it('reads a row again when the ledger changes it meanwhile', async () => {
-    const db = new FakeDb({
+    const db = fakeDb({
       transactions: [tx('t1', ['f1'])],
       receiptFiles: [row('f1', { transactionIds: ['t1'], detachedAt: '2026-10-19T00:00:00.000Z' })],
     })

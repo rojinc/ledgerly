@@ -2,6 +2,7 @@ import type { Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { receiptRows, writeReceiptRows } from '@ledgerly/server/ledger/receipt-files'
 import { listAll, Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
@@ -125,7 +126,7 @@ async function addListing(
     // code that took it off has written the row already.
     const listing = await stillListing(db, fileId, transactionIds)
     const stored = row?.transactionIds ?? []
-    const missing = listing.filter((id) => !stored.includes(id))
+    const missing = listing.filter(({ $id }) => !stored.includes($id))
     if (missing.length === 0 && (listing.length === 0 || row?.detachedAt === null)) {
       return 'unchanged'
     }
@@ -133,9 +134,21 @@ async function addListing(
       // Staged, then the row and the transactions read again as committed: never an upsert
       // (data-model.md#receiptfiles).
       await withTransaction(db, async (tx) => {
-        await writeReceiptRows(db, tx, rows, [{ fileId, add: missing }], now)
+        // A guard on each added transaction's group: taking the file off one guards it too, so
+        // that write fails one of the two commits even when it leaves the row as it was.
+        const groupIds = new Set(missing.map(({ groupId }) => groupId))
+        await tx.write(
+          ...[...groupIds].map((groupId) => ({
+            action: 'update' as const,
+            tableId: TABLES.groups,
+            rowId: groupId,
+            data: { rev: randomId() },
+          })),
+        )
+        const add = missing.map(({ $id }) => $id)
+        await writeReceiptRows(db, tx, rows, [{ fileId, add }], now)
         const again = await stillListing(db, fileId, transactionIds)
-        if (again.join() !== listing.join()) throw new Raced()
+        if (ids(again) !== ids(listing)) throw new Raced()
       })
       return 'updated'
     } catch (error) {
@@ -153,12 +166,13 @@ async function stillListing(
   db: Db,
   fileId: string,
   transactionIds: readonly string[],
-): Promise<string[]> {
+): Promise<Transactions[]> {
   const rows = await listAll<Transactions>(db, TABLES.transactions, [
     Query.equal('$id', [...transactionIds]),
   ])
   return rows
     .filter((row) => (row.receiptFileIds ?? []).includes(fileId))
-    .map((row) => row.$id)
-    .sort()
+    .sort((a, b) => (a.$id < b.$id ? -1 : 1))
 }
+
+const ids = (rows: readonly Transactions[]) => rows.map(({ $id }) => $id).join()
