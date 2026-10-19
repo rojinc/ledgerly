@@ -1,6 +1,7 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
-import type { Items, Schedules, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Schedules, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import { type Merge, mergeInput, mergeSplit } from '@ledgerly/core/identity/merge-input'
+import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { splitSpecSchema } from '@ledgerly/core/schemas/split'
 import type { Db } from '@ledgerly/server/appwrite/client'
@@ -80,6 +81,7 @@ async function moveGroupInputs(
   deadline: number,
   result: InputsResult,
 ): Promise<'done' | 'putOff' | 'cutOff'> {
+  const daysByDefault = await billsSplitByDays(db, groupId)
   let cursor: string | undefined
   for (;;) {
     if (Date.now() >= deadline) return 'cutOff'
@@ -101,6 +103,7 @@ async function moveGroupInputs(
       rows.filter((row) => row.status !== 'void'),
       merge,
       now,
+      daysByDefault,
     )
     try {
       for (const batch of batches(rewrites)) {
@@ -137,6 +140,7 @@ async function planRewrites(
   rows: readonly Transactions[],
   merge: Merge,
   now: Date,
+  daysByDefault: boolean,
 ): Promise<{ rewrites: Rewrite[]; skipped: string[] }> {
   const items =
     rows.length === 0
@@ -150,8 +154,10 @@ async function planRewrites(
   const rewrites: Rewrite[] = []
   const skipped: string[] = []
   for (const row of rows) {
+    const itemised = items.some((item) => item.transactionId === row.$id)
+    const splitPeople = itemised ? [] : await defaultSplitPeople(db, row, daysByDefault)
     const input = renamed(row.inputJson, storedInputSchema, (raw) =>
-      mergeInput(raw as StoredInput, row.kind, merge),
+      mergeInput(raw as StoredInput, row.kind, merge, splitPeople),
     )
     if (!input) {
       skipped.push(row.$id)
@@ -217,6 +223,44 @@ async function planRewrites(
  * Undefined when the JSON can't be read, or is no longer valid once renamed (weights that add up
  * past `MAX_WEIGHT`, say): nothing invalid is ever written.
  */
+/**
+ * Who a posted row's default split gave a part (its shares with something received), for
+ * `mergeInput` to write the split out where P and U both had one (lead, #39 Q2). None for a row
+ * with a split of its own, or a house bill split by days by default: a `days` split lists U once,
+ * since presence comes from U's kept member row.
+ */
+async function defaultSplitPeople(
+  db: Db,
+  row: Transactions,
+  daysByDefault: boolean,
+): Promise<string[]> {
+  if (row.status !== 'posted' || !['expense', 'bill', 'loan'].includes(row.kind)) return []
+  const stored = storedInputSchema.safeParse(parsed(row.inputJson))
+  if (!stored.success || stored.data.split !== undefined) return []
+  const period =
+    stored.data.bill?.periodStart !== undefined && stored.data.bill.periodEnd !== undefined
+  if (row.kind === 'bill' && daysByDefault && period) return []
+  const shares = await listShares(db, row.$id)
+  return shares.filter((share) => share.receivedCents !== 0).map((share) => share.personId)
+}
+
+function parsed(text: string): unknown {
+  try {
+    return JSON.parse(text)
+  } catch {
+    return undefined
+  }
+}
+
+/** Whether the group's bills with a billing period split by days when they name no split. */
+async function billsSplitByDays(db: Db, groupId: string): Promise<boolean> {
+  const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+  const settings = groupSettingsSchema.safeParse(parsed(group?.settingsJson ?? ''))
+  return (
+    settings.success && settings.data.type === 'house' && settings.data.defaultBillSplit !== 'equal'
+  )
+}
+
 function renamed(
   text: string,
   schema: z.ZodType,

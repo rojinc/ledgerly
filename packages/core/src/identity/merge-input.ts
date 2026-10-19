@@ -88,14 +88,24 @@ export function mergeSplit(split: SplitSpec, merge: Merge): SplitSpec {
 /** The parts of a stored input or a schedule template that name people. */
 type Named = Pick<TransactionTemplate, 'payers' | 'split' | 'items' | 'payment' | 'adjustment'>
 
+// The kinds that get a default split when they name none (ledger.md#default-split).
+const DEFAULT_SPLIT_KINDS: readonly TransactionKind[] = ['expense', 'bill', 'loan']
+
 /**
  * A transaction's stored input, or a schedule's template, with P renamed to U. `voided` is true
  * for a payment or loan whose two sides would both be U: the merge voids it instead.
+ *
+ * `splitPeople`, for a posted row that names no split and has no items, lists who its default
+ * split gave a part (its shares with something received). Where both P and U had one, the split is
+ * written out as an `equal` split of those people would merge: `weights`, U 2 and everyone else 1.
+ * The default would now count U once, so a later edit would move money between other people. A
+ * row where only one of them had a part keeps the default.
  */
 export function mergeInput<T extends Named>(
   input: T,
   kind: TransactionKind,
   merge: Merge,
+  splitPeople: readonly string[] = [],
 ): { input: T; voided: boolean } {
   const result: T = { ...input }
   if (input.payers) {
@@ -104,7 +114,18 @@ export function mergeInput<T extends Named>(
       cents: a.cents + b.cents,
     }))
   }
-  if (input.split) result.split = mergeSplit(input.split, merge)
+  if (input.split) {
+    result.split = mergeSplit(input.split, merge)
+  } else if (
+    !input.items &&
+    DEFAULT_SPLIT_KINDS.includes(kind) &&
+    splitPeople.includes(merge.from) &&
+    splitPeople.includes(merge.into)
+  ) {
+    // As the default lists them: by personId (ledger.md#default-split).
+    const personIds = [...new Set(splitPeople)].sort((a, b) => (a < b ? -1 : 1))
+    result.split = mergeSplit({ mode: 'equal', personIds }, merge)
+  }
   if (input.items) {
     result.items = input.items.map((item) => ({ ...item, split: mergeSplit(item.split, merge) }))
   }

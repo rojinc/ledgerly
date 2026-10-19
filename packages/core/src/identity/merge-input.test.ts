@@ -234,6 +234,50 @@ describe('mergeInput', () => {
     ).toBe(false)
   })
 
+  it('writes out a default split both P and U had a part of, as weights with U at 2', () => {
+    const groceries: TransactionTemplate = {
+      totalCents: 9000,
+      payers: [{ personId: 'X', cents: 9000 }],
+    }
+    expect(mergeInput(groceries, 'expense', merge, ['X', 'U', 'P', 'X']).input).toEqual({
+      ...groceries,
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'U', weight: 2 },
+          { personId: 'X', weight: 1 },
+        ],
+      },
+    })
+    // A loan's default goes to its borrowers, which is who splitPeople lists.
+    const loan: TransactionTemplate = { totalCents: 100 }
+    expect(mergeInput(loan, 'loan', merge, ['P', 'U']).input.split).toEqual({
+      mode: 'weights',
+      weights: [{ personId: 'U', weight: 2 }],
+    })
+  })
+
+  it('keeps the default where only one of them had a part, or the row has a split or items', () => {
+    const groceries: TransactionTemplate = { totalCents: 9000 }
+    expect(mergeInput(groceries, 'expense', merge, ['X', 'P']).input).toEqual(groceries)
+    expect(mergeInput(groceries, 'expense', merge, ['X', 'U']).input).toEqual(groceries)
+    expect(mergeInput(groceries, 'expense', merge).input).toEqual(groceries)
+    const split: TransactionTemplate = {
+      totalCents: 9000,
+      split: { mode: 'equal', personIds: ['X', 'P'] },
+    }
+    expect(mergeInput(split, 'expense', merge, ['X', 'P', 'U']).input.split).toEqual({
+      mode: 'equal',
+      personIds: ['X', 'U'],
+    })
+    const items: TransactionTemplate = {
+      items: [{ name: 'Milk', amountCents: 300, split: { mode: 'equal', personIds: ['P'] } }],
+    }
+    expect(mergeInput(items, 'expense', merge, ['P', 'U']).input.split).toBeUndefined()
+    // Only expenses, bills and loans have a default split.
+    expect(mergeInput(groceries, 'income', merge, ['P', 'U']).input.split).toBeUndefined()
+  })
+
   it('gives a template the schema accepts', () => {
     const { input } = mergeInput(
       {

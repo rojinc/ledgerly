@@ -1,4 +1,7 @@
 import { MAX_OPS_PER_DB_TRANSACTION as MERGE_BATCH } from '@ledgerly/core/constants/limits'
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
+import { buildShares } from '@ledgerly/core/ledger/build-shares'
+import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -163,6 +166,122 @@ describe('moveInputs (step 3)', () => {
     })
     expect(store.rows('transactions').map((row) => row.status)).toEqual(['posted', 'posted'])
     expect(input(store, 't1')).toEqual({ payers: [{ personId: 'pU', cents: 900 }] })
+  })
+
+  it('writes out a default split P and U both had a part of, so an edit keeps every net', async () => {
+    const share = (
+      id: string,
+      transactionId: string,
+      personId: string,
+      given: number,
+      got: number,
+    ) => ({
+      $id: id,
+      transactionId,
+      personId,
+      givenCents: given,
+      receivedCents: got,
+      groupId: 'g1',
+      date: '2026-10-01',
+      kind: 'expense',
+      category: null,
+    })
+    const paid = { payers: [{ personId: 'pX', cents: 9000 }] }
+    const period = { periodStart: '2026-09-01', periodEnd: '2026-09-30' }
+    const store = seed(
+      [
+        // X paid $90 with no split: X, P and U had $30 each.
+        transaction('t1', paid),
+        // Only X and P had a part.
+        transaction('t2', paid),
+        // A bill for September, which this house splits by days when it names no split.
+        transaction('t3', { ...paid, bill: period }, { kind: 'bill' }),
+        // U lent $90 to P and X: U gave and got nothing back, so U had no part.
+        transaction('t4', { payers: [{ personId: 'pU', cents: 9000 }] }, { kind: 'loan' }),
+        // An itemised receipt: each item has its own split.
+        transaction('t5', paid),
+      ],
+      {
+        groups: [
+          {
+            $id: 'g1',
+            type: 'house',
+            name: 'Flat',
+            rev: 'r0',
+            settingsJson: JSON.stringify({
+              type: 'house',
+              autoFinalize: false,
+              defaultBillSplit: 'days',
+            }),
+          },
+        ],
+        shares: [
+          share('s1', 't1', 'pX', 9000, 3000),
+          share('s2', 't1', 'pP', 0, 3000),
+          share('s3', 't1', 'pU', 0, 3000),
+          share('s4', 't2', 'pX', 9000, 4500),
+          share('s5', 't2', 'pP', 0, 4500),
+          share('s6', 't3', 'pX', 9000, 3000),
+          share('s7', 't3', 'pP', 0, 3000),
+          share('s8', 't3', 'pU', 0, 3000),
+          share('s9', 't4', 'pU', 9000, 0),
+          share('s10', 't4', 'pP', 0, 4500),
+          share('s11', 't4', 'pX', 0, 4500),
+          share('s12', 't5', 'pX', 9000, 3000),
+          share('s13', 't5', 'pP', 0, 3000),
+          share('s14', 't5', 'pU', 0, 3000),
+        ],
+        items: [
+          {
+            $id: 'i1',
+            transactionId: 't5',
+            position: 0,
+            name: 'Food',
+            quantity: 1,
+            amountCents: 9000,
+            category: null,
+            splitJson: JSON.stringify({ mode: 'equal', personIds: ['pP', 'pU', 'pX'] }),
+          },
+        ],
+      },
+    )
+    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    expect(input(store, 't1')).toEqual({
+      ...paid,
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'pU', weight: 2 },
+          { personId: 'pX', weight: 1 },
+        ],
+      },
+    })
+    // U counts once in the default now, which is right where P alone had a part; a days split
+    // lists U once anyway.
+    expect(input(store, 't2')).toEqual(paid)
+    expect(input(store, 't3')).toEqual({ ...paid, bill: period })
+    expect(input(store, 't4')).toEqual({ payers: [{ personId: 'pU', cents: 9000 }] })
+    expect(input(store, 't5')).toEqual(paid)
+
+    // An edit plans the input again with the members as they are after the merge, X and U: every
+    // net is the one the merged shares give (X +6000; P's −3000 and U's −3000 now U's).
+    const { shares } = buildShares(
+      { ...input(store, 't1'), kind: 'expense', date: '2026-10-01', totalCents: 9000 },
+      {
+        groupType: 'house',
+        ownerPersonId: 'pX',
+        callerPersonId: 'pX',
+        members: ['pU', 'pX'].map((personId) => ({
+          personId,
+          joinedOn: '2026-01-01' as LocalDate,
+          leftOn: null,
+        })),
+      },
+    )
+    expect(netsFromShares(shares)).toEqual([
+      { personId: 'pU', netCents: -6000 },
+      { personId: 'pX', netCents: 6000 },
+    ])
   })
 
   it('leaves a row it can’t rename as it is, says so by ID, and isn’t done', async () => {
