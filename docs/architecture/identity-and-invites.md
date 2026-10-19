@@ -169,7 +169,7 @@ The response and the email are the same whether the recipient is a placeholder w
 
 ## Deleting an account (M4)
 
-`account POST /delete` ([functions API](functions-api.md#account)), from the delete screen ([#50](https://github.com/rojinc/ledgerly/issues/50)). Deletion has its own function, `account`, so `identity` (which runs bootstrap for every new user) never holds `users.write` or file access. **Deleting means anonymising.** Shares, statements and balances point at the person ([I-3](ledger.md#invariants)), so the `persons` row stays: `deletedAt` set, `userId` cleared, `displayName` "Former member", and no permissions. Their identities, profile (business details included), the invites they sent and the Appwrite user are deleted. There is no undo or grace period in v1: typing DELETE is the confirmation.
+`account POST /delete` ([functions API](functions-api.md#account)), from the delete screen ([#50](https://github.com/rojinc/ledgerly/issues/50)). Deletion has its own function, `account`, so `identity` (which runs bootstrap for every new user) never holds `users.write` or file access. **Deleting means anonymising.** Shares, statements and balances point at the person ([I-3](ledger.md#invariants)), so the `persons` row stays: `deletedAt` set, `userId` cleared, `displayName` "Former member", and no permissions. Their identities, profile (business details included), the invites and reminders they sent or were sent, and the Appwrite user are deleted ([step 5](#order) has the full list). There is no undo or grace period in v1: typing DELETE is the confirmation.
 
 ### Each group they joined
 

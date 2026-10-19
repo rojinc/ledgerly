@@ -1,4 +1,4 @@
-import { compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
+import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type {
   Groups,
@@ -197,13 +197,22 @@ async function endSchedules(
     if (schedule.createdBy !== personId && !namedIn(schedule).includes(personId)) continue
     const storedEnd = schedule.endsOn as LocalDate | null
     const generated = schedule.generatedThrough as LocalDate | null
-    // Already ended by today and made up to its end, as an end leaves it: nothing to do, so a
-    // rerun doesn't write it again.
+    // Already ended by today, made up to its end and with nothing left for an end to delete:
+    // nothing to do, so a rerun doesn't write it again. An end cut off before its deletes (a
+    // crash, or `Raced`) runs again, as an archive would leave them for good.
     if (
       storedEnd &&
       compareDates(storedEnd, today) <= 0 &&
       generated &&
-      compareDates(generated, storedEnd) >= 0
+      compareDates(generated, storedEnd) >= 0 &&
+      !(await hasOccurrence(db, schedule.$id, [
+        Query.equal('status', ['scheduled', 'due']),
+        Query.equal('overridden', false),
+        Query.greaterThanEqual(
+          'date',
+          compareDates(storedEnd, today) < 0 ? today : addDays(today, 1),
+        ),
+      ]))
     ) {
       continue
     }

@@ -557,13 +557,58 @@ describe('POST /delete: each group they joined', () => {
     ])
   })
 
+  it('ends an ended schedule again only while it has a future occurrence an end would delete', async () => {
+    const services = kept()
+    const ended = { endsOn: '2026-10-10', generatedThrough: '2026-10-10', nextRunAt: null }
+    // Nothing left to delete: a past one waits for the user, and an edited or posted one stays.
+    const done = schedule('sDone', 'h1', 'p1', ['p1'], ended)
+    // Ended today: an occurrence today is past the end's deletes too.
+    const today = schedule('sToday', 'h1', 'p1', ['p1'], {
+      endsOn: TODAY,
+      generatedThrough: TODAY,
+      nextRunAt: null,
+    })
+    // An end cut off before its deletes, as a crash or `Raced` leaves it.
+    const cutOff = schedule('sCutOff', 'h1', 'p1', ['p1'], ended)
+    await insert(services, 'schedules', [done, today, cutOff])
+    await insert(services, 'transactions', [
+      occurrence(done, '2026-10-12'),
+      occurrence(done, '2026-10-26', { overridden: true }),
+      occurrence(done, '2026-11-02', { status: 'posted' }),
+      occurrence(today, TODAY),
+      occurrence(cutOff, '2026-10-26', { status: 'due' }),
+    ])
+    const doneBefore = rowOf(services, 'schedules', 'sDone')
+    const todayBefore = rowOf(services, 'schedules', 'sToday')
+    expect((await remove(services)).finished).toBe(true)
+
+    expect(rowOf(services, 'schedules', 'sDone')).toEqual(doneBefore)
+    expect(rowOf(services, 'schedules', 'sToday')).toEqual(todayBefore)
+    expect(rowOf(services, 'schedules', 'sCutOff')).toMatchObject({
+      endsOn: '2026-10-10',
+      nextRunAt: DELETED_AT,
+    })
+    expect(
+      services.db
+        .rows('transactions')
+        .map((row) => row.$id)
+        .filter((id) => !id.startsWith('sGroceries')),
+    ).toEqual(['sDone_20261012', 'sDone_20261026', 'sDone_20261102', 'sToday_20261019'])
+  })
+
   it('waits with the archive while a statement is being finalized, then finishes on a later run', async () => {
     const services = kept()
-    // A finalize that started after step 1 checked (which refuses one they could finish).
+    // A finalize that started after step 1 checked (which refuses one they could finish). Its
+    // last write was 59 minutes before this run, so it isn't stuck yet.
     beforeStaging(
       services.db,
       (operations) => operations.includes('"deletedAt"'),
-      () => insert(services, 'statements', [finalizing('st1', 'e1')]),
+      async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(NOW.getTime() - 59 * 60 * 1000)
+        await insert(services, 'statements', [finalizing('st1', 'e1')])
+        vi.useRealTimers()
+      },
     )
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
     expect(rowOf(services, 'members', 'e1-p1')).toMatchObject({ status: 'left' })
@@ -954,6 +999,8 @@ describe('POST /delete: steps 5 to 7', () => {
       reminder('rSent', 'p1', 'p2'),
       reminder('rTo', 'p2', 'p1'),
       reminder('rToMerging', 'p2', 'pMerging'),
+      // Found by both queries, and deleted once.
+      reminder('rSentToMerging', 'p1', 'pMerging'),
       reminder('rOther', 'p2', 'p3'),
     ])
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
@@ -1070,6 +1117,18 @@ describe('POST /delete: reruns and the time budget', () => {
           services,
           (tableId, queries) => tableId === 'members' && queries.includes('role'),
           2,
+        ),
+    ],
+    [
+      'ending a schedule, before its deletes',
+      (services) =>
+        crashOnList(
+          services,
+          (tableId, queries) =>
+            tableId === 'transactions' &&
+            queries.includes('scheduleId') &&
+            queries.includes('greaterThanEqual') &&
+            !queries.includes('status'),
         ),
     ],
     ['the archive', (services) => crashOnCall(services.teams, 'deleteMembership')],
