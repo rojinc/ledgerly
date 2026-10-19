@@ -34,7 +34,7 @@ Table-level permissions: **none** on every table. Row security is on everywhere.
 | Edit or void transactions **they created** | ✓ | ✓ | — |
 | Edit or void **anyone's** transactions | ✓ | — | — |
 | Create and edit schedules | ✓ | own only | — |
-| Add members and send invites | ✓ | house only | — |
+| Add members and send invites (invites need a verified email) | ✓ | house only | — |
 | Remove members, change roles, change settings | ✓ | — | — |
 | Finalize, send or void statements | ✓ | — | — |
 | Archive the group | ✓ | — | — |

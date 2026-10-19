@@ -184,7 +184,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /bootstrap` | `{ timezone }` | `{ profile, personId, personalGroupId, linkedGroupIds }` | the user; idempotent |
 | `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency? }` | `profile` | the user |
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
-| `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | see [permissions](permissions.md) |
+| `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
