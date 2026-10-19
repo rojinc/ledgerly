@@ -1,7 +1,10 @@
 import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { formatMoney } from '@ledgerly/core/money/format'
+import { fontRuns, missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
-import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces'
+import type { Content, ContentText, TDocumentDefinitions } from 'pdfmake/interfaces'
+import { logProblem } from '../http/log'
+import { loadFonts } from './fonts'
 import {
   field,
   footer,
@@ -38,6 +41,18 @@ export async function renderInvoicePdf(
   const money = (cents: number) => formatMoney(cents, snapshot.group.currency, LOCALE)
   const dueOn = addDays(details.issuedOn, invoice.paymentTermsDays)
   const business = issuer.business
+  // pdfmake would leave out what its font can't draw, so every text from the snapshot or the
+  // profile prints as fontRuns() splits it, each run in its own font, and a character no font has
+  // as �. A font's file is read the first time a run needs it.
+  let replaced = 0
+  const print = (text: string): ContentText[] => {
+    replaced += missingGlyphs(text).length
+    const runs = fontRuns(text)
+    loadFonts(runs.map((run) => run.font))
+    return runs
+  }
+  const paragraph = (text: string): ContentText => ({ text: print(text) })
+  const number = print(details.displayNumber)
   const worker = snapshot.people.find((person) => person.personId === issuer.personId)
   const openingCents = worker?.openingCents ?? 0
 
@@ -55,14 +70,14 @@ export async function renderInvoicePdf(
     {
       columns: [
         [
-          { text: business.businessName ?? issuer.name, style: 'issuer' },
+          { text: print(business.businessName ?? issuer.name), style: 'issuer' },
           ...present([
             business.abn &&
               `ABN ${business.abn.replace(/^(\d{2})(\d{3})(\d{3})(\d{3})$/, '$1 $2 $3 $4')}`,
             business.address,
             business.email,
             business.phone,
-          ]),
+          ]).map(paragraph),
         ],
         {
           width: 'auto',
@@ -72,7 +87,7 @@ export async function renderInvoicePdf(
               layout: 'noBorders',
               table: {
                 body: [
-                  field('Number', details.displayNumber),
+                  field('Number', number),
                   field('Issued', formatDate(details.issuedOn)),
                   field('Due', formatDate(dueOn)),
                   field(
@@ -87,8 +102,8 @@ export async function renderInvoicePdf(
       ],
     },
     heading('Bill to'),
-    { text: recipient.name, bold: true },
-    ...recipient.emails,
+    { text: print(recipient.name), bold: true },
+    ...recipient.emails.map(paragraph),
     amountLine('Opening balance (from the previous invoice)', money(openingCents)),
   ]
 
@@ -100,7 +115,7 @@ export async function renderInvoicePdf(
         ['Date', 'Description', 'Hours', 'Rate', 'Amount'],
         charges.map((line) => [
           formatDate(line.date),
-          lineText(line),
+          paragraph(lineText(line)),
           line.shift ? hoursText(line.shift.minutes) : '',
           line.shift ? `${money(line.shift.rateCents)}/h` : '',
           money(owed(line)),
@@ -115,7 +130,11 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        credits.map((line) => [formatDate(line.date), lineText(line), money(owed(line))]),
+        credits.map((line) => [
+          formatDate(line.date),
+          paragraph(lineText(line)),
+          money(owed(line)),
+        ]),
         { total: ['Total payments and deductions', money(total(credits))] },
       ),
     )
@@ -137,7 +156,11 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        records.map((line) => [formatDate(line.date), lineText(line), money(line.totalCents)]),
+        records.map((line) => [
+          formatDate(line.date),
+          paragraph(lineText(line)),
+          money(line.totalCents),
+        ]),
       ),
     )
   }
@@ -151,20 +174,28 @@ export async function renderInvoicePdf(
           business.bank &&
             `Bank transfer: ${business.bank.accountName}, BSB ${business.bank.bsb.replace(/^(\d{3})(\d{3})$/, '$1-$2')}, account ${business.bank.accountNumber}`,
           business.payId && `PayID: ${business.payId}`,
-          `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with ${details.displayNumber} as the reference.`,
-        ]),
+        ]).map(paragraph),
+        {
+          text: [
+            `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with `,
+            ...number,
+            ' as the reference.',
+          ],
+        },
       ],
     })
   }
   if (business.invoiceNotes) {
     // Not unbreakable: notes taller than a page would be dropped, heading and all.
-    content.push(heading('Notes'), business.invoiceNotes)
+    content.push(heading('Notes'), paragraph(business.invoiceNotes))
   }
+  // The count only, never the text (security-and-privacy.md#personal-data).
+  if (replaced > 0) logProblem('pdf_characters_replaced', { count: replaced })
 
   const doc: TDocumentDefinitions = {
     ...PAGE,
     info: { title: `Invoice ${details.displayNumber}`, creator: 'Ledgerly', producer: 'Ledgerly' },
-    footer: footer(details.displayNumber),
+    footer: footer(number),
     content,
   }
   return pdfmake.createPdf(doc).getBuffer()

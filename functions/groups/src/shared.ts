@@ -1,13 +1,20 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
 import { closeAtFor, localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Shares } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
+import type { MergingRefusal } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
+import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import {
+  type PersonInput,
+  type ResolvedPerson,
+  resolvePerson,
+} from '@ledgerly/server/identity/resolve-person'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
 
 // Small helpers shared by the groups routes. identity has copies of the first few
@@ -37,6 +44,35 @@ export function invalid(message: string): AppError {
 /** A write clashed with another request's; the app can simply send it again. */
 export function tryAgain(): AppError {
   return new AppError('CONFLICT', 'Something else changed this at the same time. Try again.')
+}
+
+/**
+ * `resolvePerson` in `tx`, for an add (identity-and-invites.md#adding-someone-to-a-group): a
+ * person it finds gets a guard write on `persons.rev`, then the keys are read again. A claim
+ * that adopts or merges that person writes their row too, so one that commits after the guard
+ * fails this commit, and one that committed before it and moved or removed the key is seen by
+ * the second read: CONFLICT, and trying again finds who the key belongs to now. One-key
+ * placeholders make this rarer, but it still covers placeholders made before them.
+ * Throws resolvePerson's RangeError for an invalid email or phone.
+ */
+export async function resolveGuarded(
+  tx: Tx,
+  db: Db,
+  input: PersonInput,
+  region: string,
+): Promise<ResolvedPerson> {
+  const resolved = await resolvePerson(db, input, region, tx.id)
+  // A new placeholder needs none: another add of the same key fails on identities.key.
+  if (resolved.writes.length > 0) return resolved
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: resolved.personId,
+    data: { rev: randomId() },
+  })
+  const again = await resolvePerson(db, input, region, tx.id)
+  if (again.personId !== resolved.personId) throw tryAgain()
+  return resolved
 }
 
 export function isAppwriteError(error: unknown, code: number): boolean {
@@ -132,14 +168,21 @@ export function teamRead(groupId: string): string[] {
   return [Permission.read(Role.team(groupId))]
 }
 
-/** An `activity` row (data-model.md#activity). `changes` is `{ before, after }`. */
+/**
+ * An `activity` row (data-model.md#activity). Neither `summary` nor `changes` (`{ before, after }`)
+ * ever holds a name: a `member.*` row names its person through `subjectPersonId`, and the app
+ * shows their current name before the summary ("joined", "was removed").
+ */
 export function activityWrite(
   groupId: string,
   actorPersonId: string,
   action: string,
   summary: string,
   now: Date,
-  changes?: { before: object; after: object },
+  {
+    subjectPersonId,
+    changes,
+  }: { subjectPersonId?: string; changes?: { before: object; after: object } } = {},
 ): Write {
   return {
     action: 'create',
@@ -149,12 +192,21 @@ export function activityWrite(
       groupId,
       actorPersonId,
       action,
+      ...(subjectPersonId ? { subjectPersonId } : {}),
       summary: summary.slice(0, 255),
-      ...(changes ? { changesJson: JSON.stringify(changes) } : {}),
+      // A change only to a name has nothing else to show, so no empty diff.
+      ...(changes && (Object.keys(changes.before).length || Object.keys(changes.after).length)
+        ? { changesJson: JSON.stringify(changes) }
+        : {}),
       at: now.toISOString(),
     },
     permissions: teamRead(groupId),
   }
+}
+
+/** "an admin", "a member" or "a viewer", for a summary. */
+export function aRole(role: Members['role']): string {
+  return role === 'admin' ? 'an admin' : `a ${role}`
 }
 
 /**
@@ -190,6 +242,57 @@ export async function hasShares(db: Db, groupId: string, personId: string): Prom
     Query.equal('personId', personId),
   ])
   return share !== undefined
+}
+
+/**
+ * Refuses, with CONFLICT and `merging`, while a merge into the person is open in the group
+ * (identity-and-invites.md#while-a-merge-is-open-in-a-group): a P merged into them
+ * (`idx_mergedInto`) lists the group in `mergeGroupIds`, has no member row here any more while
+ * theirs is joined (step 2 gave P's place to them), and is still `named` here, which a leave or a
+ * removal would count as someone else's. Per group, so a merge stuck elsewhere doesn't hold this one.
+ *
+ * Inside the transaction (`tx`), call it after staging the member row and before reading the
+ * balance or shares: when such a P exists it stages a guard write on the group's row first, which
+ * every merge batch also writes, so a batch that moves P's shares meanwhile fails one of the two
+ * commits. Without `tx`, it's the early check only.
+ */
+export async function requireNoOpenMerge(
+  db: Db,
+  tx: Tx | undefined,
+  groupId: string,
+  personId: string,
+  named: (placeholderId: string) => Promise<boolean>,
+): Promise<void> {
+  const merged = await allRows<Persons>(db, TABLES.persons, [Query.equal('mergedInto', personId)])
+  const listing = merged.filter((placeholder) => placeholder.mergeGroupIds?.includes(groupId))
+  if (listing.length === 0) return
+  // Step 2 always leaves their row joined: a placeholder row of theirs isn't P's place (D-016).
+  const own = await findFirst<Members>(db, TABLES.members, [
+    Query.equal('groupId', groupId),
+    Query.equal('personId', personId),
+  ])
+  if (!own || own.status === 'placeholder') return
+  await tx?.write({
+    action: 'update',
+    tableId: TABLES.groups,
+    rowId: groupId,
+    data: { rev: randomId() },
+  })
+  for (const placeholder of listing) {
+    // P still has its place here: a kept group, or one step 2 hasn't reached.
+    const row = await findFirst<Members>(db, TABLES.members, [
+      Query.equal('groupId', groupId),
+      Query.equal('personId', placeholder.$id),
+    ])
+    if (row) continue
+    if (!(await named(placeholder.$id))) continue
+    const details: MergingRefusal = { reason: 'merging' }
+    throw new AppError(
+      'CONFLICT',
+      "Some of this group's records are still being updated. Try again shortly.",
+      details,
+    )
+  }
 }
 
 /** Admins who have joined (status active): leaving or demoting must keep at least one. */

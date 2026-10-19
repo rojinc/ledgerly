@@ -22,6 +22,7 @@
 * [Functions API](architecture/functions-api.md)
 * [Scaling](architecture/scaling.md)
 * [Security and privacy](architecture/security-and-privacy.md)
+* [Billing](architecture/billing.md)
 * [Decision log](architecture/decisions.md)
 
 ## Engineering
@@ -42,3 +43,4 @@
 ## Planning
 
 * [Roadmap](planning/roadmap.md)
+* [Mobile spike](planning/mobile-spike.md)

@@ -1,5 +1,5 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatNet } from '@ledgerly/core/money/format'
 import { useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { Button } from '../../ui/button'
@@ -136,7 +136,7 @@ function Balance({ group }: { group: Groups }) {
     )
   }
   const net = balances.data.people.find((person) => person.personId === personId)?.netCents ?? 0
-  const amount = formatMoney(Math.abs(net), group.currency)
+  const amount = formatNet(Math.abs(net), group.currency)
   const text = net > 0 ? `Owed ${amount}` : net < 0 ? `You owe ${amount}` : 'Settled'
   return <span className="shrink-0 text-sm font-medium">{text}</span>
 }

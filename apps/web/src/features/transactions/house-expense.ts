@@ -5,13 +5,14 @@ import {
   MAX_WEIGHT,
 } from '@ledgerly/core/constants/limits'
 import { isLocalDate, type LocalDate } from '@ledgerly/core/dates/local-date'
-import type { Groups, Members } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { buildShares, type Share } from '@ledgerly/core/ledger/build-shares'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import type { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
-import { amountExample, cents } from './presets'
+import { centsToText } from '../groups/employer-form'
+import { amountExample, cents, readStored } from './presets'
 
 /** How an expense is split (ledger.md#splits): the house form's choices (#181). */
 export type SplitMode = 'equal' | 'exact' | 'percent' | 'weights'
@@ -230,7 +231,8 @@ export function splitProblems(
   totalCents: number,
 ): SplitProblems {
   const problems: SplitProblems = { paid: {}, parts: {} }
-  const money = (amount: number) => formatMoney(amount, currency)
+  // A sum of typed amounts can pass the cap: it's checked, not formatted, against it.
+  const money = (amount: number) => formatNet(amount, currency)
   const totalKnown = Number.isInteger(totalCents) && totalCents > 0
   if (values.severalPaid) {
     const payers = toPayers(values, currency, totalCents)
@@ -385,5 +387,189 @@ export function previewShares(
       return { error: error.message }
     }
     throw error
+  }
+}
+
+/** The split as stored (`transactions.inputJson`), each mode's list by its own name. */
+type StoredSplit = {
+  mode?: unknown
+  personIds?: unknown
+  amounts?: unknown
+  percents?: unknown
+  weights?: unknown
+}
+
+/** `[personId, value]` pairs from a stored list, or undefined when it isn't one. */
+function pairs(list: unknown, key: 'cents' | 'basisPoints' | 'weight') {
+  if (!Array.isArray(list)) return undefined
+  const read = list.map((entry: Record<string, unknown> | null) => [entry?.personId, entry?.[key]])
+  return read.every(([id, value]) => typeof id === 'string' && Number.isInteger(value))
+    ? (read as [string, number][])
+    : undefined
+}
+
+/** In `personId` order, each once: the order the form sends, so a round trip is exact. */
+const inOrder = (ids: readonly string[]) =>
+  ids.every((id, i) => i === 0 || (ids[i - 1] as string) < id)
+
+/** An item row as the form reads it back. */
+type StoredItem = Pick<Items, 'name' | 'quantity' | 'amountCents' | 'category' | 'splitJson'>
+
+/**
+ * The item rows as the form's items (#225 decision 1), with who's sharing the receipt: everyone
+ * in any item's split. Undefined for an item the form can't show (decision 2): a split other
+ * than `equal` or `weights`, a `quantity` other than 1, nobody, someone who isn't `known`, or
+ * anything the form would refuse or change on save. A negative amount reads back with its minus.
+ */
+function toItemValues(
+  items: readonly StoredItem[],
+  known: (ids: readonly string[]) => boolean,
+  currency: string,
+): { sharing: string[]; items: ItemValues[] } | undefined {
+  const read: { people: string[]; item: ItemValues }[] = []
+  for (const item of items) {
+    if (item.quantity !== 1 || item.amountCents === 0) return undefined
+    const split = readStored(item.splitJson) as StoredSplit
+    let people: string[]
+    let shares: Record<string, string> = {}
+    if (split.mode === 'equal' && Array.isArray(split.personIds)) {
+      // `known` refuses anything that isn't a member's ID.
+      people = split.personIds
+    } else if (split.mode === 'weights') {
+      const weights = pairs(split.weights, 'weight')
+      if (!weights?.every(([, weight]) => parseShares(String(weight)) === weight)) return undefined
+      people = weights.map(([id]) => id)
+      shares = Object.fromEntries(weights.map(([id, weight]) => [id, String(weight)]))
+    } else {
+      return undefined
+    }
+    if (people.length === 0 || !known(people) || !inOrder(people)) return undefined
+    read.push({
+      people,
+      item: {
+        name: item.name,
+        amount: centsToText(item.amountCents, currency),
+        discount: false,
+        category: (item.category ?? '') as Category | '',
+        mode: split.mode,
+        excluded: [],
+        shares,
+      },
+    })
+  }
+  const sharing = sortedIds(read.flatMap(({ people }) => people))
+  return {
+    sharing,
+    items: read.map(({ people, item }) => ({
+      ...item,
+      excluded: sharing.filter((id) => !people.includes(id)),
+    })),
+  }
+}
+
+/**
+ * The house expense form's values for a posted expense (#202), or undefined when its stored
+ * input is one the form can't show (decision 4): a `days` split or none, an empty note, or
+ * someone who isn't a member. With its item rows, in `position` order, it's itemised (#225), and
+ * may be a refund. `toHouseExpenseBody()` of the result gives the stored input back.
+ */
+export function toHouseExpenseValues(
+  row: Pick<
+    Transactions,
+    'kind' | 'totalCents' | 'date' | 'description' | 'category' | 'inputJson'
+  >,
+  members: readonly Pick<Members, 'personId'>[],
+  currency: string,
+  items: readonly StoredItem[] = [],
+): HouseExpenseValues | undefined {
+  // Only items can make a refund (#42 decision 4); a total of 0 is never saved.
+  if (row.kind !== 'expense' || (items.length === 0 ? row.totalCents <= 0 : row.totalCents === 0)) {
+    return undefined
+  }
+  const stored = readStored(row.inputJson) as {
+    payers?: unknown
+    split?: StoredSplit
+    note?: unknown
+  }
+  if (stored.note === '' || (stored.note !== undefined && typeof stored.note !== 'string')) {
+    return undefined
+  }
+  const known = new Set(members.map((member) => member.personId))
+  const everyone = (ids: readonly string[]) => ids.every((id) => known.has(id))
+
+  const payers = pairs(stored.payers, 'cents')
+  if (!payers || payers.length === 0) return undefined
+  const payerIds = payers.map(([id]) => id)
+  if (!everyone(payerIds) || !inOrder(payerIds)) return undefined
+  const [first] = payers
+  const onePayer = payers.length === 1 && first?.[1] === row.totalCents
+  // Several people paid: each amount above 0, as the form asks for.
+  if (!onePayer && payers.some(([, paid]) => paid <= 0)) return undefined
+  const common = {
+    date: row.date,
+    description: row.description,
+    category: (row.category ?? '') as Category | '',
+    paidBy: first?.[0] ?? '',
+    severalPaid: !onePayer,
+    paid: onePayer
+      ? {}
+      : Object.fromEntries(payers.map(([id, paid]) => [id, centsToText(paid, currency)])),
+    note: typeof stored.note === 'string' ? stored.note : '',
+  }
+
+  if (items.length > 0) {
+    // The items carry the splits: an input with its own can't be sent back.
+    const read = stored.split === undefined ? toItemValues(items, everyone, currency) : undefined
+    if (!read) return undefined
+    // Items replace the amount, and the split mode and parts.
+    return {
+      ...common,
+      amount: '',
+      splitMode: 'equal',
+      splitBetween: read.sharing,
+      parts: {},
+      itemised: true,
+      items: read.items,
+    }
+  }
+
+  const split = stored.split
+  let splitMode: SplitMode
+  let ids: string[]
+  let parts: Record<string, string> = {}
+  if (split?.mode === 'equal') {
+    if (!Array.isArray(split.personIds) || !split.personIds.every((id) => typeof id === 'string')) {
+      return undefined
+    }
+    splitMode = 'equal'
+    ids = split.personIds as string[]
+  } else {
+    const read =
+      split?.mode === 'exact'
+        ? pairs(split.amounts, 'cents')?.map(([id, value]) => [id, centsToText(value, currency)])
+        : split?.mode === 'percent'
+          ? pairs(split.percents, 'basisPoints')?.map(([id, value]) => [
+              id,
+              percentText(value).replace('%', ''),
+            ])
+          : split?.mode === 'weights'
+            ? pairs(split.weights, 'weight')?.map(([id, value]) => [id, String(value)])
+            : undefined
+    if (!read) return undefined
+    splitMode = split?.mode as SplitMode
+    ids = read.map(([id]) => id as string)
+    parts = Object.fromEntries(read)
+  }
+  if (ids.length === 0 || !everyone(ids) || !inOrder(ids)) return undefined
+
+  return {
+    ...common,
+    amount: centsToText(row.totalCents, currency),
+    splitMode,
+    splitBetween: ids,
+    parts,
+    // Plain, and it stays so (#225 decision 3); one empty item is ready, as on a new expense.
+    itemised: false,
+    items: [{ ...NEW_ITEM, excluded: [], shares: {} }],
   }
 }

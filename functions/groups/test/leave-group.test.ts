@@ -84,7 +84,8 @@ describe('POST /groups/{id}/leave', () => {
         groupId: 'g1',
         actorPersonId: 'p2',
         action: 'member.left',
-        summary: 'Member m2 left',
+        subjectPersonId: 'p2',
+        summary: 'left',
         at: NOW.toISOString(),
       }),
     ])
@@ -271,7 +272,7 @@ describe('POST /groups/{id}/leave', () => {
     expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', leftOn: '2026-10-10' })
     expect(memberRow(services, 'm2')?.rev).toEqual(expect.any(String))
     expect(services.db.rows('activity')).toMatchObject([
-      { action: 'member.left', actorPersonId: 'p2', summary: 'Member m2 left' },
+      { action: 'member.left', actorPersonId: 'p2', subjectPersonId: 'p2', summary: 'left' },
     ])
     expect(
       await failure(services, 'PATCH', '/groups/g1/members/m2', { leftOn: null }, 'u1'),

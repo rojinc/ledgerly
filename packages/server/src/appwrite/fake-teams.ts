@@ -2,15 +2,21 @@ import { AppwriteException } from 'node-appwrite'
 import type { TeamsApi } from './teams'
 
 type Membership = { $id: string; userId: string; roles: string[] }
+
+// Seeded memberships were made long before any test's clock.
+const SEEDED_AT = '2026-01-01T00:00:00.000Z'
 type Query = { method: string; attribute?: string; values?: unknown[] }
 
 /**
  * In-memory Teams for tests, with Appwrite's errors: 409 for a team that already exists or a
  * user who is already a member, 404 for a missing team or membership. Seed it with
  * `{ teamId: [userId, ...] }`. Only adds users by ID, as functions do with the server key.
+ * `listMemberships` gives each membership's `$createdAt`: `SEEDED_AT` for a seeded one, and the
+ * clock's time for one added since.
  */
 export class FakeTeams implements TeamsApi {
   private teams = new Map<string, { name: string; memberships: Membership[] }>()
+  private createdAt = new Map<string, string>()
   private sequence = 0
 
   constructor(seed: Record<string, string[]> = {}) {
@@ -52,6 +58,7 @@ export class FakeTeams implements TeamsApi {
       throw new AppwriteException('User is already a member', 409, 'membership_already_confirmed')
     }
     const membership = this.membership(userId, params.roles)
+    this.createdAt.set(membership.$id, new Date().toISOString())
     team.memberships.push(membership)
     return structuredClone(membership)
   }
@@ -59,9 +66,10 @@ export class FakeTeams implements TeamsApi {
   async listMemberships(params: {
     teamId: string
     queries?: string[]
-  }): Promise<{ total: number; memberships: Membership[] }> {
+  }): Promise<{ total: number; memberships: (Membership & { $createdAt: string })[] }> {
     let memberships = this.team(params.teamId).memberships
     let limit = 25
+    let offset = 0
     for (const { method, attribute, values = [] } of (params.queries ?? []).map(
       (query) => JSON.parse(query) as Query,
     )) {
@@ -69,13 +77,18 @@ export class FakeTeams implements TeamsApi {
         memberships = memberships.filter((membership) => values.includes(membership.userId))
       } else if (method === 'limit') {
         limit = Number(values[0])
+      } else if (method === 'offset') {
+        offset = Number(values[0])
       } else {
         throw new Error(`FakeTeams does not support the "${method}" query`)
       }
     }
     return {
       total: memberships.length,
-      memberships: memberships.slice(0, limit).map((membership) => structuredClone(membership)),
+      memberships: memberships.slice(offset, offset + limit).map((membership) => ({
+        ...structuredClone(membership),
+        $createdAt: this.createdAt.get(membership.$id) ?? SEEDED_AT,
+      })),
     }
   }
 
@@ -86,6 +99,12 @@ export class FakeTeams implements TeamsApi {
       throw new AppwriteException('Membership not found', 404, 'membership_not_found')
     }
     team.memberships.splice(index, 1)
+    return {}
+  }
+
+  async delete(params: { teamId: string }): Promise<object> {
+    this.team(params.teamId)
+    this.teams.delete(params.teamId)
     return {}
   }
 

@@ -14,6 +14,8 @@ import { EntryForm as PairEntryForm } from '../people/pair-page'
 import { toPairValues } from '../people/pair-values'
 import { ReceiptsSection } from '../receipts/receipts-section'
 import { KIND_LABEL, STATUS_LABEL } from './history-page'
+import { toHouseExpenseValues } from './house-expense'
+import { HouseExpenseForm } from './house-expense-form'
 import { EntryForm } from './new-transaction-page'
 import { toEntryValues } from './presets'
 import {
@@ -337,8 +339,9 @@ type EditState = {
 }
 
 /**
- * How the row is changed, for someone who may change it (#184): a posted employer or lend &
- * borrow entry here, with the form it was made with; a personal bill or a shift on its own page.
+ * How the row is changed, for someone who may change it (#184): a posted employer, lend &
+ * borrow or house entry here (#202), with the form it was made with; a personal bill or a shift
+ * on its own page.
  */
 function Change({
   row,
@@ -377,7 +380,8 @@ function Change({
   if (row.status !== 'posted') return null
   const employer = group.type === 'employer' && (row.kind === 'expense' || row.kind === 'payment')
   const pair = group.type === 'pair' && (row.kind === 'loan' || row.kind === 'payment')
-  if (!employer && !pair) return null
+  const house = group.type === 'house' && row.kind === 'expense'
+  if (!employer && !pair && !house) return null
   // As on create, only the worker: the presets are worded from their side.
   if (employer && group.ownerPersonId !== personId) {
     return <Message>Only the person this group pays changes expenses and payments here.</Message>
@@ -387,7 +391,7 @@ function Change({
 
 const UNMATCHED = 'This entry can’t be changed here. Void it and add it again.'
 
-/** Edit, swapping in the entry's form. Itemised rows (#42) get none yet. */
+/** Edit, swapping in the entry's form. Itemised rows get it in a house only (#225). */
 function EditEntry({
   row,
   group,
@@ -401,12 +405,24 @@ function EditEntry({
   personId: string
   edit: EditState
 }) {
-  // Only an expense can have items (ledger.md#items), and an itemised one gets no Edit yet
-  // (#42). The page reads them too, and says so if it can't.
+  // Only an expense can have items (ledger.md#items). Edit waits for them; the page reads them
+  // too, and says so if it can't. Only the house form has items (#225).
   const items = useItems(row.$id, row.kind === 'expense')
-  if (!members || (row.kind === 'expense' && items.data?.length !== 0)) return null
+  if (!members || (row.kind === 'expense' && items.data === undefined)) return null
+  if (group.type !== 'house' && (items.data?.length ?? 0) > 0) return null
   let form: ReactNode
-  if (group.type === 'employer') {
+  if (group.type === 'house') {
+    const values = toHouseExpenseValues(row, members, group.currency, items.data)
+    if (!values) return <Message>{UNMATCHED}</Message>
+    form = (
+      <HouseExpenseForm
+        group={group}
+        members={members}
+        personId={personId}
+        edit={{ row, values, heading: swap.heading, save, onDone: swap.close }}
+      />
+    )
+  } else if (group.type === 'employer') {
     const people = employerPeople(group, members)
     const values = people && toEntryValues(row, people, group.currency)
     if (!people || !values) return <Message>{UNMATCHED}</Message>

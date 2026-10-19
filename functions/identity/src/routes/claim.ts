@@ -6,17 +6,20 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { ID, Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
+import { markMerged } from '../merge'
 import { parseBody } from '../parse-body'
 import {
   conflictAsTryAgain,
   findIdentity,
   findPersonOfUser,
-  getRowOrNull,
+  guardPerson,
   isAppwriteError,
   SET_UP_FIRST,
 } from '../rows'
+import { finishMerges, MERGE_BUDGET_MS } from '../run-merge'
 import type { AccountUser, Services } from '../services'
 
 export type VerifiedIdentity = { type: IdentitiesType; key: string }
@@ -52,7 +55,7 @@ export function verifiedIdentities(user: AccountUser): VerifiedIdentity[] {
       identities.push({ type, key: identityKey(type, value) })
     } catch (error) {
       if (!(error instanceof RangeError)) throw error
-      console.warn(`skipped an unusable verified ${type}`)
+      logProblem('claim_identity_unusable', { identityType: type })
     }
   }
   return identities
@@ -69,21 +72,48 @@ export async function claim(
   identities: VerifiedIdentity[],
 ): Promise<string[]> {
   const person = await findPersonOfUser(services.db, userId)
-  if (!person) throw new AppError('NOT_FOUND', SET_UP_FIRST)
+  // A person with deletedAt is never resolved from a userId (identity-and-invites.md#order).
+  // Each write below checks again (guardPerson).
+  if (!person || person.deletedAt) throw setUpFirst()
+  const deadline = Date.now() + MERGE_BUDGET_MS
+  await claimIdentities(services, person.$id, identities)
+  // Every merge into this person that isn't finished: one just marked, or one cut off before.
+  // A merge that fails is left for the next claim, so it never stops a login.
+  const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
+    logProblem('merge_stopped', { intoPersonId: person.$id, error })
+    return { joined: [], finished: 0 }
+  })
+  // A finished merge moved P's identities here, the claimed one too: it's verified now.
+  if (merges.finished > 0) await claimIdentities(services, person.$id, identities)
+  const linked = new Set(merges.joined)
+  for (const member of await rowsToJoin(services.db, person)) {
+    if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
+      linked.add(member.groupId)
+    }
+  }
+  return [...linked]
+}
+
+// Step 2, for each verified identity.
+async function claimIdentities(
+  services: Services,
+  personId: string,
+  identities: VerifiedIdentity[],
+): Promise<void> {
+  const verified = identities.map((identity) => identity.key)
   for (const identity of identities) {
     try {
-      await claimIdentity(services, person.$id, identity)
+      await claimIdentity(services, personId, identity, verified)
     } catch (error) {
       if (!isAppwriteError(error, 409)) throw error
       // Another claim created the same key first (`key` is unique), so look again.
-      await conflictAsTryAgain(() => claimIdentity(services, person.$id, identity))
+      await conflictAsTryAgain(() => claimIdentity(services, personId, identity, verified))
     }
   }
-  const linked: string[] = []
-  for (const member of await rowsToJoin(services.db, person)) {
-    if (await joinGroup(services, userId, person.$id, member)) linked.push(member.groupId)
-  }
-  return linked
+}
+
+function setUpFirst(): AppError {
+  return new AppError('NOT_FOUND', SET_UP_FIRST)
 }
 
 // Step 2, for one verified identity.
@@ -91,37 +121,40 @@ async function claimIdentity(
   { db, now }: Services,
   personId: string,
   { type, key }: VerifiedIdentity,
+  verified: readonly string[],
 ): Promise<void> {
   const identity = await findIdentity(db, key)
   if (!identity) {
-    await withTransaction(db, (tx) =>
-      tx.write({
+    await withTransaction(db, async (tx) => {
+      await tx.write({
         action: 'create',
         tableId: TABLES.identities,
         rowId: ID.unique(),
         data: { key, type, personId, verified: true, verifiedAt: now.toISOString() },
         permissions: [],
-      }),
-    )
+      })
+      await guardPerson(tx, db, personId, setUpFirst)
+    })
     return
   }
   if (identity.personId === personId) {
     if (identity.verified && identity.verifiedAt) return
-    await withTransaction(db, (tx) =>
-      tx.write({
+    await withTransaction(db, async (tx) => {
+      await tx.write({
         action: 'update',
         tableId: TABLES.identities,
         rowId: identity.$id,
         data: { verified: true, verifiedAt: identity.verifiedAt ?? now.toISOString() },
-      }),
-    )
+      })
+      await guardPerson(tx, db, personId, setUpFirst)
+    })
     return
   }
-  // Someone else's: a registered person keeps it. A placeholder would have to be merged into
-  // the caller's person, which is #39; until then it stays where it is. The log is a fixed
-  // line, never the key (security-and-privacy.md).
-  const owner = await getRowOrNull<Persons>(db, TABLES.persons, identity.personId)
-  if (owner && !owner.userId) console.warn('claim needs a merge; skipped')
+  // Someone else's: a registered person keeps it. A placeholder is the same human as the
+  // caller, so it's merged into the caller's person: step 1 marks it here, and the claim
+  // carries the merge on (`finishMerges`). markMerged leaves alone a person with an account,
+  // or one another adoption or merge got first. Only the keys the user verified move to them.
+  await markMerged(db, identity.personId, personId, verified)
 }
 
 // Step 3: the person's `placeholder` rows added strictly before `claimedAt`, while they had no

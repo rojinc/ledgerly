@@ -114,6 +114,13 @@ export const InvitesChannel = {
 
 export type InvitesChannel = (typeof InvitesChannel)[keyof typeof InvitesChannel];
 
+export const RemindersChannel = {
+    EMAIL: "email",
+    SMS: "sms"
+} as const;
+
+export type RemindersChannel = (typeof RemindersChannel)[keyof typeof RemindersChannel];
+
 export type Persons = Models.Row & {
     userId: string | null;
     displayName: string;
@@ -121,6 +128,9 @@ export type Persons = Models.Row & {
     mergedInto: string | null;
     deletedAt: string | null;
     rev: string | null;
+    mergeGroupIds: string[] | null;
+    mergeMembersJson: string | null;
+    mergeCursorsJson: string | null;
 }
 
 export type Identities = Models.Row & {
@@ -156,6 +166,7 @@ export type Groups = Models.Row & {
     statementCycle: GroupsStatementCycle;
     cycleAnchor: string | null;
     nextCloseAt: string | null;
+    nextCheckAt: string | null;
     settingsJson: string;
     archivedAt: string | null;
     rev: string | null;
@@ -214,6 +225,20 @@ export type Items = Models.Row & {
     splitJson: string;
 }
 
+export type Balances = Models.Row & {
+    peopleJson: string;
+}
+
+export type ReceiptFiles = Models.Row & {
+    transactionIds: string[] | null;
+    detachedAt: string | null;
+    deletingAt: string | null;
+}
+
+export type Checkpoints = Models.Row & {
+    through: string;
+}
+
 export type Schedules = Models.Row & {
     groupId: string;
     kind: SchedulesKind;
@@ -268,4 +293,12 @@ export type Invites = Models.Row & {
     sentAt: string;
     expiresAt: string;
     acceptedAt: string | null;
+}
+
+export type Reminders = Models.Row & {
+    groupId: string;
+    sentBy: string;
+    toPersonId: string;
+    channel: RemindersChannel;
+    sentAt: string;
 }

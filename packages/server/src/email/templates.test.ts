@@ -3,9 +3,15 @@ import { describe, expect, it } from 'vitest'
 import {
   divideEmail,
   type EmailContent,
+  emailChangedEmail,
+  inviteEmail,
   invoiceEmail,
+  passwordChangedEmail,
+  phoneChangedEmail,
+  reminderEmail,
   shiftToConfirmEmail,
   statementReadyEmail,
+  summaryEmail,
   timerRunningEmail,
 } from './templates'
 
@@ -283,6 +289,309 @@ describe('timerRunningEmail', () => {
   })
 })
 
+describe('inviteEmail', () => {
+  const LINK = 'https://app.example/invite#Qx3_kz-9AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+
+  const invite = (inviterName: string, groupName: string) =>
+    inviteEmail({ inviterName, groupName, url: LINK })
+
+  it('names the inviter and the group, and links to the invite', () => {
+    const content = invite('Ann Cho', 'Flat 2')
+    expectWellFormed(content)
+    expect(content.subject).toBe("You've been invited to a group on Ledgerly")
+    expect(content.text).toContain(
+      'Ann Cho added you to the group “Flat 2” on Ledgerly and invited you to join.',
+    )
+    expect(content.text).toContain(`Accept the invite: ${LINK}`)
+    expect(content.html).toContain(`<a href="${LINK}">Accept the invite</a>`)
+  })
+
+  it('holds no amounts', () => {
+    const content = invite('Ann Cho', 'Flat 2')
+    for (const part of [content.subject, content.text, content.html]) {
+      expect(part).not.toMatch(/\$|AUD|\d[\d,]*\.\d{2}\b|\bcents?\b|\bowe/i)
+    }
+  })
+
+  it('keeps both names out of the subject, puts each on one line and escapes them', () => {
+    const content = invite(
+      `<b>Ann & "Jo"</b>\r\nBcc: x@example.com`,
+      `Tom's <i>Flat</i>\n\tPay here`,
+    )
+    expect(content.subject).toBe("You've been invited to a group on Ledgerly")
+    expect(content.subject).not.toMatch(/Ann|Jo|Bcc|Tom|Flat|Pay|</)
+    expect(content.text).toContain(
+      `<b>Ann & "Jo"</b> Bcc: x@example.com added you to the group “Tom's <i>Flat</i> Pay here” on`,
+    )
+    expect(content.html).toContain(
+      '&lt;b&gt;Ann &amp; &quot;Jo&quot;&lt;/b&gt; Bcc: x@example.com added you to the group “Tom&#39;s &lt;i&gt;Flat&lt;/i&gt; Pay here” on',
+    )
+    expect(content.html).not.toMatch(/<b>|<i>/)
+  })
+
+  it('cuts each name past 40 characters, by character, as a reminder cuts its sender', () => {
+    // A family emoji is 5 code points but one character: as the 39th, it is kept whole, not split.
+    const family = '👩‍👩‍👧'
+    const edge = `${'a'.repeat(38)}${family}bb`
+    const cut = `${'a'.repeat(38)}${family}…`
+    expect(invite(edge, 'Flat 2').text).toContain(`${cut} added you to the group “Flat 2”`)
+    expect(invite('Ann', edge).text).toContain(`Ann added you to the group “${cut}” on`)
+    // 40 characters (44 code points) stay whole.
+    const whole = `${'b'.repeat(39)}${family}`
+    expect(invite(whole, whole).text).toContain(`${whole} added you to the group “${whole}” on`)
+  })
+
+  it('removes bidi controls from both names, as a reminder does from its sender', () => {
+    const [override, pop, isolate, popIsolate, mark] = [0x202e, 0x202c, 0x2067, 0x2069, 0x200f].map(
+      (code) => String.fromCodePoint(code),
+    )
+    expect(invite(`${override}Ann${pop}`, `${isolate}Flat 2${popIsolate}${mark}`).text).toContain(
+      'Ann added you to the group “Flat 2” on',
+    )
+  })
+
+  it('refuses a link that is not http(s), such as one without APP_URL', () => {
+    expect(() =>
+      inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: '/invite#token' }),
+    ).toThrow('Email links must be http(s)')
+  })
+})
+
+describe('passwordChangedEmail', () => {
+  const notice = (changedAt: string, timeZone = 'Australia/Sydney') =>
+    passwordChangedEmail({ changedAt, timeZone, url: 'https://app.example/login' })
+
+  it("says when, on the wall clock of the profile's time zone, and links only to the sign-in page", () => {
+    // 21:02 UTC is 08:02 the next morning in Sydney (AEDT, UTC+11).
+    const content = notice('2026-10-15T21:02:00.000Z')
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your Ledgerly password was changed')
+    expect(content.text).toContain(
+      'The password for your Ledgerly account was set or changed on Friday 16 October, 8:02 am (Australia/Sydney time).',
+    )
+    expect(content.text).toContain("If this wasn't you, reset your password now.")
+    expect(content.text).toContain('Go to Ledgerly: https://app.example/login')
+    expect(content.html.match(/href=/g)).toHaveLength(1)
+  })
+
+  it('names UTC when there is no profile', () => {
+    expect(notice('2026-10-15T21:02:00.000Z', 'UTC').text).toContain(
+      'on Thursday 15 October, 9:02 pm (UTC time).',
+    )
+  })
+
+  it.each(['2026-10-16', 'not a time', '2026-10-16T10:00:00.000'])('refuses %j', (changedAt) => {
+    expect(() => notice(changedAt)).toThrow('changedAt must be an ISO date and time')
+  })
+})
+
+describe('emailChangedEmail and phoneChangedEmail', () => {
+  const url = 'https://app.example/login'
+  const emailNotice = (newEmail: string, supportEmail = '') =>
+    emailChangedEmail({ newEmail, supportEmail, url })
+  const phoneNotice = (newPhone: string, supportEmail = '') =>
+    phoneChangedEmail({ newPhone, supportEmail, url })
+
+  it('shows the new email only masked, in a subject that holds no address', () => {
+    const content = emailNotice('jo.attacker@example.com')
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your Ledgerly email address was changed')
+    expect(content.text).toContain(
+      'The email address for your Ledgerly account was changed to j***@example.com.',
+    )
+    expect(`${content.subject} ${content.html} ${content.text}`).not.toContain('attacker')
+  })
+
+  it.each([
+    // The address as Appwrite holds it: not lowercased, the last @ starting the domain.
+    ['Jo@Example.COM', 'J***@Example.COM'],
+    ['"a@b"@example.com', '"***@example.com'],
+    ['éva@example.com', 'é***@example.com'],
+    ['😀x@example.com', '😀***@example.com'],
+    ['', '***'],
+  ])('masks %j as %j', (newEmail, masked) => {
+    expect(emailNotice(newEmail).text).toContain(`was changed to ${masked}.`)
+  })
+
+  it('HTML-escapes the masked address, whose domain the changer chose', () => {
+    const content = emailNotice('j@<b>"x\'&.example')
+    expect(content.html).toContain('changed to j***@&lt;b&gt;&quot;x&#39;&amp;.example.')
+    expect(content.html).not.toContain('<b>')
+  })
+
+  it.each([
+    ['+61412345678', 'was changed to one ending in 678.'],
+    ['+1 (555) 010-0199', 'was changed to one ending in 199.'],
+    ['', 'The phone number was removed from your Ledgerly account.'],
+  ])('names the new phone %j only by its last 3 digits', (newPhone, line) => {
+    const content = phoneNotice(newPhone)
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your Ledgerly phone number was changed')
+    expect(content.text).toContain(line)
+    expect(`${content.subject} ${content.html} ${content.text}`).not.toMatch(/412|555|010/)
+  })
+
+  it.each([
+    ['email', emailNotice('j@example.com', ' help@ledgerly.example ')],
+    ['phone', phoneNotice('+61412345678', ' help@ledgerly.example ')],
+  ])('tells the %s notice’s reader to write to SUPPORT_EMAIL, as plain text', (_, content) => {
+    expect(content.text).toContain(
+      "If this wasn't you, write to help@ledgerly.example from this address right away.",
+    )
+    expect(content.html).toContain(
+      'write to help@ledgerly.example from this address right away.</p>',
+    )
+    // One link, the sign-in page: the support address is not one.
+    expect(content.html.match(/href=/g)).toEqual(['href='])
+    expect(content.html).toContain(`<a href="${url}">Go to Ledgerly</a>`)
+    expect(content.html).not.toContain('mailto:')
+    expect(content.text).toContain(`Go to Ledgerly: ${url}`)
+  })
+
+  it.each([
+    ['email', emailNotice('j@example.com')],
+    ['phone', phoneNotice('')],
+    ['email (blank SUPPORT_EMAIL)', emailNotice('j@example.com', '  ')],
+  ])('says “reply to this email” in the %s notice without SUPPORT_EMAIL', (_, content) => {
+    expect(content.text).toContain("If this wasn't you, reply to this email right away.")
+    expect(content.text).not.toContain('write to')
+  })
+
+  it('escapes SUPPORT_EMAIL in the HTML', () => {
+    const content = emailNotice('j@example.com', '<a href="x">help</a>')
+    expect(content.html).toContain('write to &lt;a href=&quot;x&quot;&gt;help&lt;/a&gt; from')
+    expect(content.html.match(/<a /g)).toEqual(['<a '])
+  })
+})
+
+describe('summaryEmail', () => {
+  const report = (currency: string, extra: object = {}) => ({
+    currency,
+    spendingCents: 0,
+    spendingByCategory: {},
+    earningsCents: 0,
+    moneyReceivedCents: 0,
+    incomeCents: 0,
+    paidOutCents: 0,
+    personalIncomeCents: 0,
+    ...extra,
+  })
+  const summary = (input: Partial<Parameters<typeof summaryEmail>[0]> = {}) =>
+    summaryEmail({
+      periodStart: day('2026-10-12'),
+      periodEnd: day('2026-10-18'),
+      reports: [],
+      balances: [],
+      url: 'https://app.example/',
+      profileUrl: 'https://app.example/profile',
+      ...input,
+    })
+
+  it('gives spending by category, biggest first, income and balances', () => {
+    const content = summary({
+      reports: [
+        report('AUD', {
+          spendingCents: 12_345,
+          spendingByCategory: { food: 2_345, groceries: 8_000, none: 2_000 },
+          incomeCents: 150_000,
+        }),
+      ],
+      balances: [
+        { groupName: 'Elm St', currency: 'AUD', cents: -2_050 },
+        { groupName: 'Acme', currency: 'AUD', cents: 50_000 },
+        { groupName: 'Pine Rd', currency: 'AUD', cents: -9_000 },
+        { groupName: 'Birch Ln', currency: 'AUD', cents: 50_000 },
+      ],
+    })
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your 12–18 October summary')
+    expect(content.text).toBe(
+      [
+        'Here is your summary for 12–18 October.',
+        'You spent $123.45.',
+        '- Groceries: $80.00\n- Food: $23.45\n- No category: $20.00',
+        'Your income was $1,500.00.',
+        'Owed to you:',
+        '- Acme: $500.00\n- Birch Ln: $500.00',
+        'You owe:',
+        '- Pine Rd: $90.00\n- Elm St: $20.50',
+        'You can turn these emails off, or change how often they come, in your profile.',
+        'Open Ledgerly: https://app.example/',
+        'Change your summary emails: https://app.example/profile',
+        '--\nSent with Ledgerly.',
+      ].join('\n\n'),
+    )
+    expect(content.html).toContain(
+      '<ul><li>Groceries: $80.00</li><li>Food: $23.45</li><li>No category: $20.00</li></ul>',
+    )
+    expect(content.html).toContain(
+      '<a href="https://app.example/profile">Change your summary emails</a>',
+    )
+  })
+
+  it('names a whole month, and gives refunds as negative spending', () => {
+    const content = summary({
+      periodStart: day('2026-10-01'),
+      periodEnd: day('2026-10-31'),
+      reports: [report('AUD', { spendingCents: -500, spendingByCategory: { household: -500 } })],
+    })
+    expect(content.subject).toBe('Your October summary')
+    expect(content.text).toContain('You spent -$5.00.')
+    expect(content.text).toContain('- Household: -$5.00')
+    expect(content.text).not.toContain('Owed to you')
+    expect(content.text).not.toContain('You owe')
+  })
+
+  it('gives each currency its own section, with only what it has', () => {
+    const content = summary({
+      reports: [report('AUD', { spendingCents: 1_000, spendingByCategory: { food: 1_000 } })],
+      balances: [{ groupName: 'Bob', currency: 'USD', cents: 2_000 }],
+    })
+    const text = content.text
+    expect(text.indexOf('In AUD:')).toBeLessThan(text.indexOf('You spent $10.00.'))
+    expect(text.indexOf('You spent $10.00.')).toBeLessThan(text.indexOf('In USD:'))
+    // USD has a balance but no shares in the period, so no spending or income line.
+    expect(text.slice(text.indexOf('In USD:'))).not.toContain('You spent')
+    expect(text).toMatch(/In USD:\n\nOwed to you:\n\n- Bob: USD\s20\.00/)
+    expect(text.match(/Your income was/g)).toHaveLength(1)
+  })
+
+  it('orders currencies, and categories and groups of the same size by name', () => {
+    const content = summary({
+      reports: [
+        report('USD', { spendingCents: 200, spendingByCategory: { food: 100, bills: 100 } }),
+        report('AUD'),
+      ],
+      balances: [
+        { groupName: 'Pine Rd', currency: 'AUD', cents: 500 },
+        { groupName: 'Elm St', currency: 'AUD', cents: 500 },
+      ],
+    })
+    const text = content.text
+    expect(text.indexOf('In AUD:')).toBeLessThan(text.indexOf('In USD:'))
+    expect(text).toMatch(/- Bills: USD\s1\.00\n- Food: USD\s1\.00/)
+    expect(text).toContain('- Elm St: $5.00\n- Pine Rd: $5.00')
+  })
+
+  it('leaves out categories and balances at 0, and empty lists', () => {
+    const content = summary({
+      reports: [report('AUD', { incomeCents: 100, spendingByCategory: { groceries: 0 } })],
+      balances: [{ groupName: 'Elm St', currency: 'AUD', cents: 0 }],
+    })
+    expect(content.text).toContain('You spent $0.00.\n\nYour income was $1.00.')
+    expect(content.text).not.toMatch(/Groceries|Elm St|Owed to you|You owe/)
+    expect(content.html).not.toContain('<ul>')
+  })
+
+  it('escapes group names in the HTML', () => {
+    const content = summary({
+      balances: [{ groupName: '<b>Tom & Jo</b>', currency: 'AUD', cents: 100 }],
+    })
+    expect(content.html).toContain('<li>&lt;b&gt;Tom &amp; Jo&lt;/b&gt;: $1.00</li>')
+    expect(content.html).not.toContain('<b>')
+  })
+})
+
 describe('user-typed text', () => {
   it('is escaped in the HTML and kept on one line in the subject', () => {
     const content = statementReadyEmail({
@@ -310,4 +619,86 @@ describe('user-typed text', () => {
       ).toThrow('Email links must be http(s)')
     },
   )
+
+  it('checks every link, not only the first', () => {
+    expect(() =>
+      summaryEmail({
+        periodStart: day('2026-10-12'),
+        periodEnd: day('2026-10-18'),
+        reports: [],
+        balances: [],
+        url: 'https://app.example/',
+        profileUrl: 'javascript:alert(1)',
+      }),
+    ).toThrow('Email links must be http(s)')
+  })
+})
+
+describe('reminderEmail', () => {
+  const reminder = (senderName = 'Sam', amountCents = 4550, currency = 'AUD') =>
+    reminderEmail({ senderName, amountCents, currency, url: 'https://app.example' })
+
+  it('has a fixed subject, names the sender and the amount, and links only to the app', () => {
+    const content = reminder()
+    expectWellFormed(content)
+    expect(content.subject).toBe('You have a payment reminder')
+    expect(content.text).toContain('Sam sent you a reminder that you owe them $45.50.')
+    expect(content.text).toContain("If you've already paid, let them know so they can record it.")
+    expect(content.text).toContain('Open Ledgerly: https://app.example')
+    expect(content.html.match(/<a /g)).toHaveLength(1)
+  })
+
+  it('escapes the name, keeps it out of the subject, and uses the currency’s digits', () => {
+    const content = reminder('<b>Sam</b> & co', 1234, 'JPY')
+    expect(content.subject).toBe('You have a payment reminder')
+    expect(content.html).toContain('&lt;b&gt;Sam&lt;/b&gt; &amp; co sent you a reminder')
+    expect(content.html).not.toContain('<b>Sam')
+    expect(content.text).toMatch(/owe them JPY\s1,234\./)
+  })
+
+  it('writes a balance past the amount cap', () => {
+    expect(reminder('Sam', 20_000_000_000).text).toContain('owe them $200,000,000.00.')
+  })
+
+  it('cuts a name past 40 characters, by character', () => {
+    expect(reminder('a'.repeat(40)).text).toContain(`${'a'.repeat(40)} sent you`)
+    expect(reminder('a'.repeat(41)).text).toContain(`${'a'.repeat(39)}… sent you`)
+    expect(reminder('𠀀'.repeat(41)).text).toContain(`${'𠀀'.repeat(39)}… sent you`)
+    // A family emoji is 5 code points but one character, and isn't split.
+    const family = '👩‍👩‍👧'
+    expect(reminder(`${'a'.repeat(38)}${family}bb`).text).toContain(
+      `${'a'.repeat(38)}${family}… sent you`,
+    )
+    expect(reminder(`${'a'.repeat(39)}${family}`).text).toContain(`${'a'.repeat(39)}${family} sent`)
+  })
+
+  it('puts a name with line breaks on one line', () => {
+    const content = reminder('Sam\n\nPay at https://evil.example\t now')
+    expect(content.text).toContain('Sam Pay at https://evil.example now sent you a reminder')
+    expect(content.html).toContain('Sam Pay at https://evil.example now sent you a reminder')
+  })
+
+  // Embeddings and overrides (U+202A–U+202E), isolates (U+2066–U+2069) and the two marks.
+  const BIDI = [
+    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f,
+  ]
+  it.each(BIDI.map((code) => [code.toString(16).toUpperCase(), code]))(
+    'removes the bidi control U+%s from a name, before cutting it',
+    (_hex, code) => {
+      const control = String.fromCodePoint(code)
+      const content = reminder(`${control}Sam${control} Lee`)
+      expect(content.text).toContain('Sam Lee sent you')
+      expect(content.html).toContain('Sam Lee sent you')
+      // 40 characters once it's gone, so nothing is cut.
+      const forty = `${'a'.repeat(20)}${control}${'b'.repeat(20)}`
+      expect(reminder(forty).text).toContain(`${'a'.repeat(20)}${'b'.repeat(20)} sent you`)
+    },
+  )
+
+  it('keeps the zero-width joiners that hold an emoji sequence together', () => {
+    const family = '👩‍👩‍👧'
+    expect(family).toContain(String.fromCodePoint(0x200d))
+    const [override, pop] = [0x202e, 0x202c].map((code) => String.fromCodePoint(code))
+    expect(reminder(`${override}Sam ${family}${pop}`).text).toContain(`Sam ${family} sent you`)
+  })
 })

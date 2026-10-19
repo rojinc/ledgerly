@@ -10,8 +10,9 @@ export interface TeamsApi {
   listMemberships(params: {
     teamId: string
     queries?: string[]
-  }): Promise<{ memberships: Array<Pick<Models.Membership, '$id' | 'userId'>> }>
+  }): Promise<{ memberships: Array<Pick<Models.Membership, '$id' | 'userId' | '$createdAt'>> }>
   deleteMembership(params: { teamId: string; membershipId: string }): Promise<unknown>
+  delete(params: { teamId: string }): Promise<unknown>
 }
 
 // Memberships never get a team role, `owner` least of all: an owner could manage the team from
@@ -24,7 +25,11 @@ export async function ensureTeam(teams: TeamsApi, teamId: string, name: string):
 }
 
 /** Adds the user to the team. "Already a member" counts as done, so a retry is safe. */
-export async function addToTeam(teams: TeamsApi, teamId: string, userId: string): Promise<void> {
+export async function addToTeam(
+  teams: Pick<TeamsApi, 'createMembership'>,
+  teamId: string,
+  userId: string,
+): Promise<void> {
   await doneIfExists(teams.createMembership({ teamId, userId, roles: NO_ROLES }))
 }
 
@@ -50,6 +55,15 @@ export async function removeFromTeam(
   }
 }
 
+/** Deletes the team, and with it every membership. A team that's already gone counts as done. */
+export async function deleteTeam(teams: Pick<TeamsApi, 'delete'>, teamId: string): Promise<void> {
+  try {
+    await teams.delete({ teamId })
+  } catch (error) {
+    if (!(error instanceof AppwriteException && error.code === 404)) throw error
+  }
+}
+
 /**
  * Whether the user is in the team (team ID = group ID, D-004). A team that's gone has no one.
  * Matches the user ID itself too, not only through the query filter.
@@ -67,6 +81,24 @@ export async function isInTeam(
     return memberships.some((membership) => membership.userId === userId)
   } catch (error) {
     if (error instanceof AppwriteException && error.code === 404) return false
+    throw error
+  }
+}
+
+/**
+ * Whether anyone but the user is in the team, or null when the team is gone. A user has one
+ * membership at most, so of any two memberships, one is someone else's.
+ */
+export async function othersInTeam(
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  teamId: string,
+  userId: string,
+): Promise<boolean | null> {
+  try {
+    const { memberships } = await teams.listMemberships({ teamId, queries: [Query.limit(2)] })
+    return memberships.some((membership) => membership.userId !== userId)
+  } catch (error) {
+    if (error instanceof AppwriteException && error.code === 404) return null
     throw error
   }
 }

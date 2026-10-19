@@ -120,6 +120,19 @@ export const acceptInviteBodySchema = z.strictObject({ token: z.string().max(128
 export type AcceptInviteBody = z.infer<typeof acceptInviteBodySchema>
 
 /**
+ * `POST /reminders` (F-63, identity-and-invites.md#reminders): sent only to the address the caller
+ * typed, which must already be stored for the other member. `id` is the retry key. Email only
+ * until SMS reminders (#40).
+ */
+export const sendReminderBodySchema = z.strictObject({
+  id: idSchema,
+  groupId: idSchema,
+  email: emailSchema,
+})
+
+export type SendReminderBody = z.infer<typeof sendReminderBodySchema>
+
+/**
  * `account POST /delete` (#50, identity-and-invites.md#deleting-an-account-m4). Typing DELETE is
  * the confirmation; there is no undo.
  */
@@ -129,6 +142,9 @@ export type DeleteAccountBody = z.infer<typeof deleteAccountBodySchema>
 
 // Responses (functions-api.md#identity), shared by the function and the web app. `PATCH /profile`
 // returns the profile row itself.
+
+/** `POST /reminders` */
+export type SendReminderResult = { sentAt: string }
 
 /** `POST /bootstrap` */
 export type BootstrapResult = {
@@ -172,3 +188,39 @@ export type DeleteAccountResult = { deletedAt: string; finished: boolean }
 export type DeleteAccountRefusal =
   | { reason: 'reauth' | 'recent_password_change' }
   | { groupIds: string[] }
+
+const memberDatesSchema = z.strictObject({
+  joinedOn: localDateSchema,
+  leftOn: localDateSchema.nullable(),
+})
+
+/**
+ * `persons.mergeMembersJson` (data-model.md#persons): for each of P's groups, P's member dates
+ * there and U's, or `null` where U had no row, as merge step 1 found them. Step 3 plans a posted
+ * row's items with them (identity-and-invites.md#merging-two-persons).
+ */
+export const mergeMembersSchema = z.array(
+  z.strictObject({
+    groupId: idSchema,
+    from: memberDatesSchema,
+    into: memberDatesSchema.nullable(),
+  }),
+)
+
+export type MergeMembers = z.infer<typeof mergeMembersSchema>
+
+/**
+ * `persons.mergeCursorsJson` (data-model.md#persons): where merge step 3's input scan has got to
+ * in each of P's groups, so a later run carries on there (#242 G): the `$id` of the last
+ * transaction scanned (`after`), and the transactions left as they are behind it (`left`), which
+ * keep the merge open (identity-and-invites.md#merging-two-persons).
+ */
+export const mergeCursorsSchema = z.array(
+  z.strictObject({
+    groupId: idSchema,
+    after: idSchema,
+    left: z.array(idSchema),
+  }),
+)
+
+export type MergeCursors = z.infer<typeof mergeCursorsSchema>

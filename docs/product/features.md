@@ -6,7 +6,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 
 | ID | Feature | Milestone |
 | --- | --- | --- |
-| F-01 | Sign up and log in with email + password or email code (OTP). Google sign-in later. Set a password on Profile (an account made with an email code has none) or change it with the current one. | M0 |
+| F-01 | Sign up and log in with email + password or email code (OTP). Google sign-in later. Set a password on Profile (an account made with an email code has none) or change it with the current one. Sign out every other device from Profile. Reset a forgotten password with an emailed link; signing in after a reset signs out every other device too. | M0 |
 | F-02 | Email verification. Required before you can invite people or claim records made with your email. | M0 |
 | F-03 | Profile: display name, timezone, holiday region (e.g. `AU-NSW`), default currency. | M1 |
 | F-04 | Business details printed on invoices: business name, ABN, address, contact email, bank details (account name, BSB, account number) and PayID. | M1 |
@@ -95,6 +95,6 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 - Receipt scanning (photo → line items) with an AI vision model.
 - Mobile apps (Expo / React Native).
 - Employer portal, where an employer logs in to see statements.
-- Subscription billing for the SaaS.
+- Subscription billing for the SaaS. Free at launch; one paid plan when the owner decides to charge, as designed in [billing](../architecture/billing.md) ([D-019](../architecture/decisions.md#d-019-free-at-launch-one-paid-plan-later-pulled-from-stripe), proposed).
 - More currencies and countries.
 - Per-friend totals across all groups.

@@ -153,7 +153,12 @@ function archive(services: Fakes, groupId = 'acme') {
   )
 }
 
-function setRow(services: Fakes, tableId: 'transactions' | 'members', rowId: string, data: object) {
+function setRow(
+  services: Fakes,
+  tableId: 'transactions' | 'members' | 'persons',
+  rowId: string,
+  data: object,
+) {
   return withTransaction(services.db, (tx) =>
     tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
   )
@@ -1361,5 +1366,198 @@ describe('DELETE /schedules/{id}', () => {
     expect(await ok(services, 'DELETE', `/schedules/${ID}`)).toEqual({})
     expect(services.db.rows('schedules')).toEqual([])
     expect(services.db.rows('transactions')).toEqual([])
+  })
+
+  describe('receipts', () => {
+    // A receiptFiles row as the ledger keeps it (data-model.md#receiptfiles).
+    const receiptRow = (services: Fakes, fileId: string, transactionIds: string[]) =>
+      withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'create',
+          tableId: 'receiptFiles',
+          rowId: fileId,
+          data: { transactionIds, detachedAt: null, deletingAt: null },
+          permissions: [],
+        }),
+      )
+    const receiptFile = (services: Fakes, fileId: string) =>
+      services.db.rows('receiptFiles').find((row) => row.$id === fileId)
+    const edited = `${ID}_20261022`
+    const voided = `${ID}_20261029`
+
+    it('takes the receipts of its edited and voided occurrences off, one write per file', async () => {
+      const services = seeded()
+      await create(services, thursdays)
+      await setRow(services, 'transactions', edited, {
+        overridden: true,
+        receiptFileIds: ['r1', 'r2'],
+      })
+      await setRow(services, 'transactions', voided, {
+        status: 'void',
+        voidReason: 'Sick',
+        receiptFileIds: ['r2'],
+      })
+      await receiptRow(services, 'r1', [edited])
+      await receiptRow(services, 'r2', [edited, voided, 'elsewhere0000000001'])
+      const staged = vi.spyOn(services.db, 'createOperations')
+      expect(await ok(services, 'DELETE', `/schedules/${ID}`)).toEqual({})
+      const receiptWrites = staged.mock.calls
+        .flatMap(([params]) => (params.operations ?? []) as { tableId: string; rowId: string }[])
+        .filter((operation) => operation.tableId === 'receiptFiles')
+      expect(receiptWrites.map((operation) => operation.rowId).sort()).toEqual(['r1', 'r2'])
+      expect(receiptFile(services, 'r1')).toMatchObject({
+        transactionIds: null,
+        detachedAt: NOW.toISOString(),
+        deletingAt: null,
+      })
+      // Another transaction still lists it.
+      expect(receiptFile(services, 'r2')).toMatchObject({
+        transactionIds: ['elsewhere0000000001'],
+        detachedAt: null,
+      })
+      expect(occurrences(services)).toEqual([])
+    })
+
+    it('takes off a receipt added to an occurrence just before its deletes are staged', async () => {
+      const services = seeded()
+      await create(services, thursdays)
+      await setRow(services, 'transactions', edited, { overridden: true, receiptFileIds: ['r1'] })
+      await receiptRow(services, 'r1', [edited])
+      // Someone attaches r3 to the edited shift, as the ledger does: the list and its row.
+      beforeStaging(
+        services.db,
+        (operations) =>
+          operations.includes('"action":"delete"') &&
+          operations.includes('"tableId":"transactions"'),
+        async () => {
+          await setRow(services, 'transactions', edited, { receiptFileIds: ['r1', 'r3'] })
+          await receiptRow(services, 'r3', [edited])
+        },
+      )
+      expect(await ok(services, 'DELETE', `/schedules/${ID}`)).toEqual({})
+      for (const fileId of ['r1', 'r3']) {
+        expect(receiptFile(services, fileId)).toMatchObject({
+          transactionIds: null,
+          detachedAt: NOW.toISOString(),
+        })
+      }
+    })
+
+    it('counts the receipt rows in its batches of at most 90 writes', async () => {
+      const services = seeded()
+      await create(services, groceries)
+      // 20 edited occurrences with 10 receipts each: 13 writes apiece with their 2 items.
+      const edits = occurrences(services, groceries.id).slice(0, 20)
+      for (const [at, row] of edits.entries()) {
+        await setRow(services, 'transactions', row.$id, {
+          overridden: true,
+          receiptFileIds: Array.from({ length: 10 }, (_, index) => `g${at}r${index}`),
+        })
+      }
+      const staged = vi.spyOn(services.db, 'createOperations')
+      expect(await ok(services, 'DELETE', `/schedules/${groceries.id}`)).toEqual({})
+      const writes = new Map<string, number>()
+      for (const [params] of staged.mock.calls) {
+        const count = writes.get(params.transactionId) ?? 0
+        writes.set(params.transactionId, count + (params.operations?.length ?? 0))
+      }
+      expect(Math.max(...writes.values())).toBeLessThanOrEqual(90)
+      expect(services.db.rows('receiptFiles')).toHaveLength(200)
+      expect(occurrences(services, groceries.id)).toEqual([])
+    })
+  })
+})
+
+// functions-api.md#ledger ("Deleted people"): the same rule as the ledger's, for templates.
+describe('a person who deleted their account, in a group they had joined', () => {
+  const deleteAccount = (services: Fakes) =>
+    setRow(services, 'persons', 'pAlex', { deletedAt: '2026-10-17T00:00:00.000Z' })
+
+  const refused = { status: 400, code: 'VALIDATION_FAILED' }
+
+  it('can’t be named in a new schedule', async () => {
+    const services = seeded()
+    await deleteAccount(services)
+    expect(await failure(services, 'POST', '/schedules', { body: rent })).toEqual(refused)
+    expect(services.db.rows('schedules')).toEqual([])
+  })
+
+  it('can’t be added to a template, or kept in one, so an ended schedule doesn’t start again', async () => {
+    const services = seeded()
+    const samOnly = {
+      ...rent,
+      id: 'rentElmSam0000000002',
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, rent)
+    await create(services, samOnly)
+    // Deleting the account ends the schedules that name them (identity-and-invites.md).
+    await ok(services, 'POST', `/schedules/${rent.id}/end`, { body: { endsOn: '2026-11-01' } })
+    await deleteAccount(services)
+    const before = services.db.rows('transactions').length
+    // An edit form opened before the deletion sends no end date.
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: rent })).toEqual(
+      refused,
+    )
+    expect(
+      await failure(services, 'PATCH', `/schedules/${samOnly.id}`, {
+        body: { ...samOnly, template: rent.template },
+      }),
+    ).toEqual(refused)
+    expect(services.db.rows('transactions')).toHaveLength(before)
+    expect(services.db.rows('schedules').find((row) => row.$id === rent.id)?.endsOn).toBe(
+      '2026-11-01',
+    )
+  })
+
+  it('is refused when the deletion commits just before the schedule guards them', async () => {
+    const services = seeded()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"persons"'),
+      () => deleteAccount(services),
+    )
+    expect(await failure(services, 'POST', '/schedules', { body: rent })).toEqual(refused)
+    expect(services.db.rows('schedules')).toEqual([])
+  })
+
+  it.each([
+    ['a new schedule', 'POST'],
+    ['an edit', 'PATCH'],
+  ])(
+    'fails %s whose commit comes after the deletion, and refuses it when run again',
+    async (_, method) => {
+      const services = seeded()
+      if (method === 'PATCH') {
+        await create(services, {
+          ...rent,
+          template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+        })
+      }
+      // After the guard on pAlex's row is staged: the deletion's write fails the commit (409).
+      beforeCommit(services.db, () => deleteAccount(services))
+      const path = method === 'POST' ? '/schedules' : `/schedules/${rent.id}`
+      expect(await failure(services, method, path, { body: rent })).toEqual(refused)
+      const stored = scheduleRow(services, rent.id)
+      if (method === 'POST') expect(stored).toBeUndefined()
+      else expect(JSON.parse(stored?.templateJson ?? '{}').split.personIds).toEqual(['pSam'])
+    },
+  )
+
+  it('is refused when the deletion commits just before an edit guards them', async () => {
+    const services = seeded()
+    const samOnly = {
+      ...rent,
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, samOnly)
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"persons"'),
+      () => deleteAccount(services),
+    )
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: rent })).toEqual(
+      refused,
+    )
   })
 })

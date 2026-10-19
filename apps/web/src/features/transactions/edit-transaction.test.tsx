@@ -154,7 +154,10 @@ function patched() {
 
 /** Opens the form and waits for focus on its heading. */
 async function openForm() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+  // The file's first test starts cold: wait for Edit by text, then find its role once. Polling
+  // the first role query by name used up findByRole's 1 s under load.
+  await screen.findByText('Edit', { selector: 'button' }, { timeout: 3000 })
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
   const heading = screen.getByRole('heading', { name: 'Change this entry' })
   expect(document.activeElement).toBe(heading)
   return heading
@@ -553,7 +556,6 @@ describe('TransactionPage, who sees Edit', () => {
     { payers: [{ personId: 'pw', cents: 4000 }], split: { mode: 'equal', personIds: ['pf'] } },
     { groupId: 'g2', kind: 'loan', category: null },
   )
-  const house = { ...acme, $id: 'g3', type: 'house', name: 'The flat' } as Groups
 
   it.each([
     ['an admin', reimbursable, {}, true],
@@ -592,7 +594,6 @@ describe('TransactionPage, who sees Edit', () => {
       },
       false,
     ],
-    ['a house expense (part 2)', { ...reimbursable, groupId: 'g3' }, { group: house }, false],
     ['a loan in an employer group', { ...lent, groupId: 'g1' }, {}, false],
     [
       'an expense in a pair group',
@@ -705,5 +706,512 @@ describe('TransactionPage, bills and shifts', () => {
     expect(details).toBeTruthy()
     expect(screen.queryByRole('link', { name: /^Change this/ })).toBeNull()
     expect(within(document.body).queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+})
+
+// #202: changing a posted house expense with the house expense form.
+describe('Edit a house expense (#202)', () => {
+  const flat = {
+    ...acme,
+    $id: 'g3',
+    type: 'house',
+    name: 'The flat',
+    ownerPersonId: 'pc',
+  } as Groups
+  const HOUSE_MEMBERS = [
+    { personId: 'pw', displayName: 'Sam', joinedOn: '2026-01-01' },
+    { personId: 'pa', displayName: 'Alice', joinedOn: '2026-01-01' },
+    // Cara moved in on 1 March: a date before that wouldn't tick her by default.
+    { personId: 'pc', displayName: 'Cara', joinedOn: '2026-03-01' },
+  ].map(
+    (member, n) =>
+      ({ $id: `h${n}`, groupId: 'g3', role: 'member', leftOn: null, ...member }) as Members,
+  )
+  // Sam paid 90.00; Alice 60.00 and Sam and Cara 15.00 each, as amounts.
+  const groceries = row(
+    {
+      payers: [{ personId: 'pw', cents: 9000 }],
+      split: {
+        mode: 'exact',
+        amounts: [
+          { personId: 'pa', cents: 6000 },
+          { personId: 'pc', cents: 1500 },
+          { personId: 'pw', cents: 1500 },
+        ],
+      },
+      note: 'Market',
+    },
+    { groupId: 'g3', description: 'Groceries', category: 'groceries', totalCents: 9000 },
+  )
+  const house = (stored = groceries, role: Members['role'] = 'admin', extra = {}) =>
+    mock(stored, { group: flat, members: HOUSE_MEMBERS, role, ...extra })
+
+  async function openHouseForm() {
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+    const heading = screen.getByRole('heading', { name: 'Change this expense' })
+    expect(document.activeElement).toBe(heading)
+  }
+
+  const ticked = (name: string) =>
+    (screen.getByRole('checkbox', { name: new RegExp(`^${name}`) }) as HTMLInputElement).checked
+
+  it('fills the form from the row and sends it back exactly when saved unchanged', async () => {
+    house()
+    call.mockImplementation(saves(groceries))
+    renderPage()
+    await openHouseForm()
+    expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('90.00')
+    expect((screen.getByLabelText('Paid by') as HTMLSelectElement).value).toBe('pw')
+    expect((screen.getByRole('radio', { name: 'By amounts' }) as HTMLInputElement).checked).toBe(
+      true,
+    )
+    expect((screen.getByLabelText('Alice’s amount (AUD)') as HTMLInputElement).value).toBe('60.00')
+    expect((screen.getByLabelText('Note (optional)') as HTMLInputElement).value).toBe('Market')
+    // A change can't itemise it (decision 1).
+    expect(screen.queryByLabelText('Itemise this receipt')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(patched()).toStrictEqual(sameBody(groceries))
+    // The page stays, and focus goes back to Edit (decision 3).
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' })),
+    )
+  })
+
+  it('sends a changed amount and split, with the row’s own id', async () => {
+    house()
+    call.mockImplementation(saves(groceries))
+    renderPage()
+    await openHouseForm()
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '100' } })
+    fireEvent.change(screen.getByLabelText('Alice’s amount (AUD)'), { target: { value: '70' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(patched()).toMatchObject({
+      id: 't1',
+      totalCents: 10000,
+      payers: [{ personId: 'pw', cents: 10000 }],
+      split: {
+        mode: 'exact',
+        amounts: [
+          { personId: 'pa', cents: 7000 },
+          { personId: 'pc', cents: 1500 },
+          { personId: 'pw', cents: 1500 },
+        ],
+      },
+    })
+  })
+
+  it('keeps who shares it when the date changes (decision 2)', async () => {
+    house()
+    renderPage()
+    await openHouseForm()
+    expect(ticked('Cara')).toBe(true)
+    // Before Cara moved in: a new expense would untick her.
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-02-01' } })
+    expect(ticked('Cara')).toBe(true)
+  })
+
+  it('shows the function’s own CONFLICT message, never the duplicate warning', async () => {
+    house()
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'Someone else changed it. Reload and try again.' },
+    })
+    renderPage()
+    await openHouseForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Someone else changed it. Reload and try again.')).toBeTruthy()
+    expect(screen.queryByText(/may already have been saved/)).toBeNull()
+  })
+
+  it('keeps Save and Cancel from acting while it saves, and Cancel sends nothing', async () => {
+    house()
+    let answer!: (value: Result<unknown>) => void
+    call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    renderPage()
+    await openHouseForm()
+    const save = screen.getByRole('button', { name: 'Save' })
+    fireEvent.click(save)
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const busy = screen.getByRole('button', { name: 'Saving…' })
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(busy)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('heading', { name: 'Change this expense' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Void' })).toBeNull()
+    await act(async () => answer(ok({ transaction: groceries, shares: [] })))
+    expect(call).toHaveBeenCalledTimes(1)
+    cleanup()
+    call.mockClear()
+    house()
+    renderPage()
+    await openHouseForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }))
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['an admin', groceries, 'admin', {}, true],
+    ['the member who added it', groceries, 'member', {}, true],
+    ['a member who didn’t add it', { ...groceries, createdBy: 'pa' }, 'member', {}, false],
+    ['a viewer', groceries, 'viewer', {}, false],
+    ['a locked row', { ...groceries, statementId: 'st1' }, 'admin', {}, false],
+    ['a void row', { ...groceries, status: 'void' }, 'admin', {}, false],
+    ['a paid house bill', { ...groceries, kind: 'bill' }, 'admin', {}, false],
+    ['a house payment', { ...groceries, kind: 'payment' }, 'admin', {}, false],
+    [
+      'an archived house',
+      groceries,
+      'admin',
+      { group: { ...flat, archivedAt: '2026-10-01T00:00:00Z' } },
+      false,
+    ],
+  ] as const)('%s: Edit shown is %s', async (_, stored, role, extra, shown) => {
+    house(stored as Transactions, role, extra)
+    const { queryClient } = renderPage()
+    await settled(queryClient)
+    if (shown) expect(await screen.findByRole('button', { name: 'Edit' })).toBeTruthy()
+    else expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.queryByText(/can’t be changed here/)).toBeNull()
+  })
+
+  it.each([
+    ['LOCKED', 'It’s on a final invoice.', 'It’s on a final invoice.'],
+    [
+      'ARCHIVED',
+      'Archived.',
+      'This group has been archived, so it can’t be changed any more. Reload the page to see it as it is now.',
+    ],
+    ['FORBIDDEN', 'Only an admin can change this.', 'Only an admin can change this.'],
+    ['NOT_FOUND', 'Not found.', 'Not found.'],
+    ['VALIDATION_FAILED', 'The date is too far ahead.', 'The date is too far ahead.'],
+  ] as const)(
+    'shows %s next to the house form, re-reading as #211 does',
+    async (code, message, shown) => {
+      house()
+      call.mockResolvedValue({ ok: false, error: { code, message } })
+      const { queryClient } = renderPage()
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      await openHouseForm()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(alerts().map((alert) => alert.textContent)).toEqual([shown]))
+      expect(screen.getByRole('heading', { name: 'Change this expense' })).toBeTruthy()
+      const reread = ['LOCKED', 'ARCHIVED', 'FORBIDDEN'].includes(code)
+      expect(invalidate).toHaveBeenCalledTimes(reread ? 4 : 0)
+      if (reread) {
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 't1'], exact: true })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g3'] })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member', 'g3'] })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['members', 'g3'] })
+      }
+    },
+  )
+
+  it('keeps a LOCKED refusal, with focus on it, once the re-read hides the house form', async () => {
+    house()
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'LOCKED', message: 'It’s on a final invoice.' },
+    })
+    renderPage()
+    await openHouseForm()
+    getRow.mockResolvedValue({ ...groceries, statementId: 'st1' } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Change this expense' })).toBeNull(),
+    )
+    const [alert, ...more] = alerts()
+    expect(more).toEqual([])
+    expect(alert?.textContent).toBe('It’s on a final invoice.')
+    expect(document.activeElement).toBe(alert)
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+
+  it('says a stored input it can’t show can’t be changed here (decision 4)', async () => {
+    house(
+      row(
+        { payers: [{ personId: 'pw', cents: 4000 }], split: { mode: 'days' } },
+        { groupId: 'g3' },
+      ),
+    )
+    const { queryClient } = renderPage()
+    await settled(queryClient)
+    expect(
+      await screen.findByText('This entry can’t be changed here. Void it and add it again.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+
+  describe('itemised (#225)', () => {
+    const everyone = { mode: 'equal', personIds: ['pa', 'pc', 'pw'] }
+    type Item = { name: string; amountCents: number; category?: string; split: object }
+    // User flow 7 in this house: Sam pays; milk, bread and the discount for everyone, beer for Sam.
+    const FLOW_7: Item[] = [
+      { name: 'Milk', amountCents: 450, category: 'groceries', split: everyone },
+      { name: 'Bread', amountCents: 600, split: everyone },
+      { name: 'Beer', amountCents: 2000, split: { mode: 'equal', personIds: ['pw'] } },
+      { name: 'Discount', amountCents: -150, split: everyone },
+    ]
+    /** The `items` rows the ledger keeps (data-model.md#items), in `position` order. */
+    const itemRows = (items: readonly Item[], quantity = 1) =>
+      items.map(({ split, category, ...item }, position) => ({
+        $id: `i${position}`,
+        transactionId: 't1',
+        position,
+        quantity,
+        category: category ?? null,
+        splitJson: JSON.stringify(split),
+        ...item,
+      }))
+    const sum = (items: readonly Item[]) =>
+      items.reduce((total, item) => total + item.amountCents, 0)
+    const receipt = (items: readonly Item[], payers = [{ personId: 'pw', cents: sum(items) }]) =>
+      row(
+        { payers, note: 'Corner shop' },
+        { groupId: 'g3', description: 'Shop', category: 'groceries', totalCents: sum(items) },
+      )
+    const shop = receipt(FLOW_7)
+    const itemised = (
+      stored = shop,
+      items: readonly Item[] = FLOW_7,
+      role: Members['role'] = 'admin',
+    ) => house(stored, role, { items: itemRows(items) })
+
+    /** The ledger's answer to a PATCH with items: their rows, and the total they add up to. */
+    function savesItems(stored: Transactions) {
+      return (async (
+        _fn: string,
+        _method: string,
+        _path: string,
+        body: Record<string, unknown>,
+      ) => {
+        const { id, groupId, kind, date, description, category, items, ...input } = body
+        const sent = items as Item[]
+        return ok({
+          transaction: {
+            ...stored,
+            date,
+            description,
+            category: category ?? null,
+            totalCents: sum(sent),
+            inputJson: JSON.stringify(input),
+          },
+          shares: [],
+          items: itemRows(sent),
+        })
+      }) as never
+    }
+
+    const field = (label: string) => screen.getByLabelText(label) as HTMLInputElement
+    const forItem = (item: number, name: string) =>
+      within(screen.getByRole('group', { name: `Who item ${item} is for` })).getByRole('checkbox', {
+        name,
+      }) as HTMLInputElement
+
+    it('fills the items from their rows and sends them back exactly when saved unchanged', async () => {
+      itemised()
+      call.mockImplementation(savesItems(shop))
+      renderPage()
+      await openHouseForm()
+      // It stays itemised (decision 3).
+      expect(screen.queryByRole('checkbox', { name: 'Itemise this receipt' })).toBeNull()
+      expect(screen.queryByLabelText('Amount (AUD)')).toBeNull()
+      expect([1, 2, 3, 4].map((n) => field(`Item ${n} name`).value)).toEqual([
+        'Milk',
+        'Bread',
+        'Beer',
+        'Discount',
+      ])
+      // A discount reads back with its minus, Discount unticked (decision 1).
+      expect(field('Item 4 amount (AUD)').value).toBe('-1.50')
+      expect(field('Item 4 is a discount').checked).toBe(false)
+      expect((screen.getByLabelText('Item 1 category') as HTMLSelectElement).value).toBe(
+        'groceries',
+      )
+      expect(['Alice', 'Cara', 'Sam'].map((name) => forItem(3, name).checked)).toEqual([
+        false,
+        false,
+        true,
+      ])
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      expect(patched()).toStrictEqual({
+        id: 't1',
+        groupId: 'g3',
+        kind: 'expense',
+        date: '2026-10-18',
+        description: 'Shop',
+        category: 'groceries',
+        note: 'Corner shop',
+        payers: [{ personId: 'pw', cents: 2900 }],
+        items: FLOW_7,
+      })
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' })),
+      )
+    })
+
+    it('sends changed items, then shows them on the page', async () => {
+      itemised()
+      call.mockImplementation(savesItems(shop))
+      renderPage()
+      await openHouseForm()
+      // The milk isn't Alice's any more, the bread and the discount go, and eggs come in by
+      // shares.
+      fireEvent.click(forItem(1, 'Alice'))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove item 2' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove item 3' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Add item' }))
+      fireEvent.change(field('Item 3 name'), { target: { value: 'Eggs' } })
+      fireEvent.change(field('Item 3 amount (AUD)'), { target: { value: '6' } })
+      fireEvent.click(
+        within(screen.getByRole('group', { name: 'How to split item 3' })).getByRole('radio', {
+          name: 'By shares',
+        }),
+      )
+      fireEvent.change(field('Alice’s shares of item 3'), { target: { value: '1' } })
+      fireEvent.change(field('Cara’s shares of item 3'), { target: { value: '1' } })
+      fireEvent.change(field('Sam’s shares of item 3'), { target: { value: '2' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      const sent = [
+        {
+          name: 'Milk',
+          amountCents: 450,
+          category: 'groceries',
+          split: { mode: 'equal', personIds: ['pc', 'pw'] },
+        },
+        FLOW_7[2],
+        {
+          name: 'Eggs',
+          amountCents: 600,
+          split: {
+            mode: 'weights',
+            weights: [
+              { personId: 'pa', weight: 1 },
+              { personId: 'pc', weight: 1 },
+              { personId: 'pw', weight: 2 },
+            ],
+          },
+        },
+      ]
+      expect(patched()).toMatchObject({ payers: [{ personId: 'pw', cents: 3050 }], items: sent })
+      expect(patched()).not.toHaveProperty('totalCents')
+      expect(patched()).not.toHaveProperty('split')
+      // The Items section and the Split row show what was saved.
+      const list = await screen.findByRole('region', { name: 'Items' })
+      expect(within(list).getByText(/^Eggs:/)).toBeTruthy()
+      expect(within(list).queryByText(/^Bread:/)).toBeNull()
+      expect(within(list).queryByText(/^Discount:/)).toBeNull()
+      expect(screen.getByText('Itemised (3 items)')).toBeTruthy()
+    })
+
+    it('puts someone newly sharing the receipt in every item (Q2)', async () => {
+      // Cara is in no item, so she isn't sharing until she's ticked.
+      const noCara: Item[] = [
+        { name: 'Milk', amountCents: 450, split: { mode: 'equal', personIds: ['pa', 'pw'] } },
+        FLOW_7[2] as Item,
+      ]
+      const stored = receipt(noCara)
+      itemised(stored, noCara)
+      call.mockImplementation(savesItems(stored))
+      renderPage()
+      await openHouseForm()
+      const sharing = within(screen.getByRole('group', { name: 'Who’s sharing this receipt' }))
+      expect((sharing.getByRole('checkbox', { name: /^Cara/ }) as HTMLInputElement).checked).toBe(
+        false,
+      )
+      fireEvent.click(sharing.getByRole('checkbox', { name: /^Cara/ }))
+      expect([forItem(1, 'Cara').checked, forItem(2, 'Cara').checked]).toEqual([true, true])
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      expect(patched()).toMatchObject({
+        items: [
+          { name: 'Milk', split: { mode: 'equal', personIds: ['pa', 'pc', 'pw'] } },
+          { name: 'Beer', split: { mode: 'equal', personIds: ['pc', 'pw'] } },
+        ],
+      })
+    })
+
+    it('refuses a discount that takes someone below 0 (I-4), as on create', async () => {
+      itemised()
+      renderPage()
+      await openHouseForm()
+      fireEvent.change(field('Item 4 amount (AUD)'), { target: { value: '-20' } })
+      expect(
+        await screen.findByText('A discount can’t make anyone’s part go below zero.'),
+      ).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(alerts().length).toBeGreaterThan(0))
+      expect(call).not.toHaveBeenCalled()
+    })
+
+    it('keeps a refund a refund (decision 4)', async () => {
+      const back: Item[] = [
+        {
+          name: 'Kettle back',
+          amountCents: -3000,
+          split: { mode: 'equal', personIds: ['pa', 'pw'] },
+        },
+      ]
+      const refund = receipt(back)
+      itemised(refund, back)
+      call.mockImplementation(savesItems(refund))
+      renderPage()
+      await openHouseForm()
+      expect((screen.getByLabelText('Refunded to') as HTMLSelectElement).value).toBe('pw')
+      expect(screen.queryByRole('checkbox', { name: 'Several people paid' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      expect(patched()).toMatchObject({ payers: [{ personId: 'pw', cents: -3000 }], items: back })
+    })
+
+    it('keeps one Items heading per id, the form’s a level down', async () => {
+      itemised()
+      renderPage()
+      await openHouseForm()
+      expect(document.querySelectorAll('[id="items-heading"]')).toHaveLength(1)
+      const items = within(screen.getByRole('region', { name: 'Change this expense' }))
+      expect(items.getByRole('heading', { name: 'Items' }).tagName).toBe('H3')
+    })
+
+    it.each([
+      ['an admin', 'admin', true],
+      ['the member who added it', 'member', true],
+      ['a viewer', 'viewer', false],
+    ] as const)('%s: Edit shown is %s', async (_, role, shown) => {
+      itemised(shop, FLOW_7, role)
+      const { queryClient } = renderPage()
+      await settled(queryClient)
+      if (shown) expect(await screen.findByRole('button', { name: 'Edit' })).toBeTruthy()
+      else expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    })
+
+    it('offers no Edit when the items can’t be read, and says so', async () => {
+      itemised()
+      listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+        if (tableId === 'items') throw new Error('offline')
+        const rows = tableId === 'members' ? HOUSE_MEMBERS : []
+        return { total: rows.length, rows }
+      }) as never)
+      const { queryClient } = renderPage()
+      await settled(queryClient)
+      expect(await screen.findByText(/We couldn’t load this expense’s items/)).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+      // Not read as a plain expense meanwhile.
+      expect(screen.queryByText(/can’t be changed here/)).toBeNull()
+    })
+
+    it('says an item it can’t show can’t be changed here (decision 2)', async () => {
+      house(shop, 'admin', { items: itemRows(FLOW_7, 2) })
+      const { queryClient } = renderPage()
+      await settled(queryClient)
+      expect(
+        await screen.findByText('This entry can’t be changed here. Void it and add it again.'),
+      ).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    })
   })
 })

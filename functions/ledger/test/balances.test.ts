@@ -1,4 +1,5 @@
 import type { Balances } from '@ledgerly/core/schemas/ledger'
+import { balancesFromShares } from '@ledgerly/core/settle/balances'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { call, expense, GROUPS, leftOnTheirOwn, NOW, seed } from './harness'
@@ -74,9 +75,34 @@ function ledgerWrite(db: Db, ...operations: object[]) {
   return commitNow(db, [...operations, { ...guard, data: { rev: `rev${++revs}` } }])
 }
 
-describe('GET /groups/{groupId}/balances', () => {
+// Every group starts with an empty `balances` row, which every write keeps (ledger.md#balances),
+// or with none, so the shares are summed: the answers are the same.
+const ROWS = [
+  { $id: 'house', peopleJson: '[]' },
+  { $id: 'job', peopleJson: '[]' },
+]
+
+describe.each([
+  { from: 'the shares', rows: [] },
+  { from: 'the balances row', rows: ROWS },
+])('GET /groups/{groupId}/balances, from $from', ({ rows }) => {
+  let current: Db | undefined
+  const start = () => {
+    current = seed({ balances: rows })
+    return current
+  }
+
+  // Every write kept each row: it is what a fresh sum of the group's shares builds.
+  afterEach(() => {
+    for (const { $id } of rows) {
+      const shares = current?.rows('shares').filter((share) => share.groupId === $id) ?? []
+      const row = current?.rows('balances').find((balances) => balances.$id === $id)
+      expect(JSON.parse(String(row?.peopleJson))).toEqual(balancesFromShares(shares as never))
+    }
+  })
+
   it('nets each person’s shares and suggests the transfers that settle them', async () => {
-    const db = seed()
+    const db = start()
     // Alice pays $90 for three; Bob pays $30 for two.
     await call(
       db,
@@ -111,7 +137,7 @@ describe('GET /groups/{groupId}/balances', () => {
   })
 
   it('leaves out voided transactions and other groups', async () => {
-    const db = seed()
+    const db = start()
     await call(db, 'POST', '/transactions', expense())
     await call(db, 'POST', '/transactions', expense({ id: 't2' }))
     await call(db, 'POST', '/transactions/t2/void', { reason: 'Duplicate' })
@@ -138,7 +164,7 @@ describe('GET /groups/{groupId}/balances', () => {
   })
 
   it('lists someone whose shares cancel out at 0, with no transfer', async () => {
-    const db = seed()
+    const db = start()
     await call(db, 'POST', '/transactions', expense())
     const repaid = {
       id: 'p1',
@@ -160,7 +186,7 @@ describe('GET /groups/{groupId}/balances', () => {
   })
 
   it('is for someone who moved out, not someone who left on their own', async () => {
-    const db = seed()
+    const db = start()
     // Lee moved out: a left viewer, still in the team.
     expect((await balances(db, 'house', 'u-lee')).status).toBe(200)
     leftOnTheirOwn(db, 'u-lee')
@@ -168,7 +194,42 @@ describe('GET /groups/{groupId}/balances', () => {
   })
 
   it('is empty for a group with no shares', async () => {
-    expect((await balances(seed())).body.data).toEqual({ people: [], transfers: [] })
+    expect((await balances(start())).body.data).toEqual({ people: [], transfers: [] })
+  })
+})
+
+describe('GET /groups/{groupId}/balances', () => {
+  it('reads the group’s balances row, not its shares', async () => {
+    const people = [
+      { personId: 'alice', netCents: 2500, shares: 1 },
+      { personId: 'bob', netCents: -2500, shares: 1 },
+    ]
+    const db = seed({ balances: [{ $id: 'house', peopleJson: JSON.stringify(people) }] })
+    const spy = vi.spyOn(db, 'listRows')
+    expect((await balances(db)).body.data).toEqual({
+      people: [
+        { personId: 'alice', netCents: 2500 },
+        { personId: 'bob', netCents: -2500 },
+      ],
+      transfers: [{ fromPersonId: 'bob', toPersonId: 'alice', cents: 2500 }],
+    })
+    expect(spy.mock.calls.filter(([params]) => params.tableId === 'shares')).toEqual([])
+  })
+
+  it.each([
+    ['doesn’t add up', JSON.stringify([{ personId: 'alice', netCents: 100, shares: 1 }])],
+    ['can’t be read', '{'],
+  ])('sums the shares when the row %s, and logs it', async (_, peopleJson) => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const db = seed({ balances: [{ $id: 'house', peopleJson }], shares: manyShares() })
+    expect((await balances(db)).body.data?.people).toEqual([
+      { personId: 'alice', netCents: -5100 },
+      { personId: 'bob', netCents: 5100 },
+    ])
+    expect(error.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      expect.objectContaining({ event: 'balances_row_unusable', groupId: 'house' }),
+    ])
+    error.mockRestore()
   })
 
   it('reads all the shares, a page at a time', async () => {

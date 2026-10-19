@@ -2,6 +2,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import type { Email } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { vi } from 'vitest'
 import { identityRoutes } from '../src/main'
@@ -12,10 +13,17 @@ export const NOW = new Date('2026-10-18T20:00:00.000Z')
 export const BEFORE = '2026-10-01T00:00:00.000Z'
 export const AFTER = '2026-10-19T00:00:00.000Z'
 export const TRY_AGAIN = 'Something else changed this at the same time. Try again.'
+export const APP_URL = 'https://app.example'
 
 type Seed = ConstructorParameters<typeof FakeDb>[0]
 
-export type Fakes = Services & { db: FakeDb; teams: FakeTeams; account: AccountUser }
+/** `sent` holds every email the fake `sendEmail` was given, in order. */
+export type Fakes = Services & {
+  db: FakeDb
+  teams: FakeTeams
+  account: AccountUser
+  sent: Email[]
+}
 
 /** An account with a verified email and nothing else, as `users.get` returns it. */
 export function account(overrides: Partial<AccountUser> = {}): AccountUser {
@@ -26,6 +34,9 @@ export function account(overrides: Partial<AccountUser> = {}): AccountUser {
     emailVerification: true,
     phone: '',
     phoneVerification: false,
+    labels: [],
+    passwordUpdate: '',
+    $updatedAt: '2026-10-18T19:58:00.000+00:00',
     ...overrides,
   }
 }
@@ -35,12 +46,21 @@ export function fakes(
   options: { account?: AccountUser; teams?: Record<string, string[]> } = {},
 ): Fakes {
   const user = options.account ?? account()
+  const sent: Email[] = []
   return {
     db: new FakeDb(seed),
     teams: new FakeTeams(options.teams),
     users: { get: async () => user },
+    // A mock, so tests can read its calls, that also records each email in `sent`.
+    sendEmail: vi.fn(async (email: Email) => {
+      sent.push(email)
+      return { id: `email-${sent.length}` }
+    }),
     now: NOW,
+    appUrl: APP_URL,
+    supportEmail: '',
     account: user,
+    sent,
   }
 }
 
@@ -55,6 +75,7 @@ export async function call(
   path: string,
   body?: unknown,
   userId: string | null = 'u1',
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; body: Envelope; logs: string[] }> {
   const handler = createHandler(
     identityRoutes(() => services),
@@ -67,7 +88,10 @@ export async function call(
     req: {
       method,
       path,
-      headers: userId === null ? {} : { 'x-appwrite-user-jwt': `jwt-${userId}` },
+      headers: {
+        ...(userId === null ? {} : { 'x-appwrite-user-jwt': `jwt-${userId}` }),
+        ...headers,
+      },
       bodyText: body === undefined ? '' : JSON.stringify(body),
     },
     res: {

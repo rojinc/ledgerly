@@ -24,6 +24,7 @@ import {
   joinedAdmins,
   keepAnotherAdmin,
   parseBody,
+  requireNoOpenMerge,
   tryAgain,
 } from '../shared'
 
@@ -53,7 +54,12 @@ export async function deleteMember(
   if (group.type === 'employer' || group.type === 'pair') throw invalid(TWO_MEMBERS)
   if (group.type === 'personal') throw invalid('A personal group always keeps its only member.')
   const member = await getMemberOf(db, groupId, memberId)
-  // Checked early so a refusal leaves the team alone; checked again in the transaction.
+  // Checked early so a refusal leaves the team alone; checked again in the transaction, in the
+  // same order. A merge into them is open here while P still has a share, or is named in an
+  // unposted transaction or a template, here: what would stop P's own removal.
+  const named = async (personId: string) =>
+    (await hasShares(db, groupId, personId)) || (await isNamed(db, groupId, personId))
+  await requireNoOpenMerge(db, undefined, groupId, member.personId, named)
   if (await hasShares(db, groupId, member.personId)) throw invalid(HAS_SHARES)
   if (await isNamed(db, groupId, member.personId)) throw invalid(IS_NAMED)
   const joinedAdmin = member.role === 'admin' && member.status === 'active'
@@ -71,6 +77,10 @@ export async function deleteMember(
         await tx.write({ action: 'delete', tableId: TABLES.members, rowId: memberId })
         // Stage, then check (conventions.md): from here on, any change to the row fails the
         // commit. Read the stored row, not this transaction's view, where it is gone.
+        // The merge check first: it may guard the group row, which the reads below rely on, and
+        // it reads what names P before what names them, so a merge batch moving P's part onto
+        // them meanwhile is seen by one of the two reads.
+        await requireNoOpenMerge(db, tx, groupId, member.personId, named)
         if (await hasShares(db, groupId, member.personId)) throw invalid(HAS_SHARES)
         if (await isNamed(db, groupId, member.personId)) throw invalid(IS_NAMED)
         // A placeholder who joined after the first read gets CONFLICT; the retry sees them
@@ -79,13 +89,9 @@ export async function deleteMember(
         if (current?.status !== member.status || current.role !== member.role) throw tryAgain()
         if (joinedAdmin) await keepAnotherAdmin(db, tx, groupId, memberId, NEEDS_ADMIN)
         await tx.write(
-          activityWrite(
-            groupId,
-            caller.$id,
-            'member.removed',
-            `${member.displayName} was removed`,
-            now,
-          ),
+          activityWrite(groupId, caller.$id, 'member.removed', 'was removed', now, {
+            subjectPersonId: current.personId,
+          }),
         )
       }),
     )

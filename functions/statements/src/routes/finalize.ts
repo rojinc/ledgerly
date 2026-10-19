@@ -14,6 +14,7 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { renderDividePdf } from '@ledgerly/server/pdf/divide-pdf'
 import { renderInvoicePdf } from '@ledgerly/server/pdf/invoice-pdf'
 import { Query } from 'node-appwrite'
@@ -206,8 +207,7 @@ async function lockAndIssue(
     // would have stored issuedOn, and its locks must stay. That's checked before anything is
     // unlocked, and a draft's leftover locks are this statement's again on its next finalize.
     await unlock(db, await updateStatement(db, statement, { status: 'draft', issuedOn: null }))
-    // IDs and problem names only (security-and-privacy.md).
-    console.error(`statements: statement ${statement.$id} failed its check: ${problems.join(', ')}`)
+    logProblem('snapshot_check_failed', { statementId: statement.$id, problems })
     throw new AppError(
       'INVARIANT_VIOLATION',
       'The statement didn’t add up, so it wasn’t finalized. It is a draft again.',

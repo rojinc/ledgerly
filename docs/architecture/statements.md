@@ -41,7 +41,7 @@ The job's period ends on the group's local date 12 hours before the stored `next
                          └── discard ──► (deleted)
 ```
 
-### 1. Draft (statements job, hourly at :15)
+### 1. Draft (statements job, hourly)
 
 Appwrite runs the job as `POST /` on the `statements` function; nobody else can call it. For each group where `nextCloseAt <= now` and that isn't archived, in **one database transaction**:
 
@@ -84,7 +84,7 @@ The finalized, sent, voided and discarded summaries in `activity` name an invoic
 
 ### 4. Void (`POST /statements/{id}/void`)
 
-Admin only, and only for the **latest** final statement in the group, so openings never break. It stages `void` with a guard write to the group row (a fresh `rev`), then checks the stored rows: no statement of the group `finalizing` (`CONFLICT`), and still the latest final. The finalizing check comes first because finalize's last step doesn't write the group row: a statement turning final between the two reads is seen by one of them. Reissue reads them in the same order. Then it unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
+Admin only, and only for the **latest** final statement in the group, so openings never break. It stages `void` with a guard write to the group row (a fresh `rev`), then checks the stored rows: no statement of the group `finalizing` (`CONFLICT`), and still the latest final. The finalizing check comes first because finalize's last step doesn't write the group row: a statement turning final between the two reads is seen by one of them. Reissue reads them in the same order. Then it unlocks its transactions in batches; calling it again on a void statement finishes an interrupted unlock. A merge renames merged persons in locked rows too ([merging](identity-and-invites.md#merging-two-persons), step 3), so the rows a void unlocks can be edited as they are, apart from two kinds that keep naming P: a payment between the two, and a row the merge couldn't read. The reason goes in the `statement.voided` activity row. The snapshot and PDF are kept for history. The next statement's opening comes from the last final statement that isn't void.
 
 To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, periodEnd }`. This creates a new draft for that range without changing `nextCloseAt`. Once finalized, an invoice gets a new number; the void statement keeps its own. While that draft is unfinished, asking again returns it.
 
@@ -157,6 +157,15 @@ type StatementSnapshot = {
 7. **For your records:** purchases made on the employer's card for work (net 0), listed but not charged.
 8. **How to pay:** bank details and/or PayID, and payment terms.
 9. Notes (`invoiceNotes`).
+
+**Fonts (#270):** the PDF prints in the Roboto that pdfmake bundles (Latin with accents, Greek and Cyrillic), then Noto Sans CJK SC (Chinese, Japanese and Korean), then Noto Emoji (monochrome). `fontRuns()` (`packages/core/src/pdf/pdf-glyphs.ts`) splits every text the invoice prints into runs: each character, or whole emoji sequence, goes to the first font that has it, and pdfmake gets one text per run in its font.
+
+- **Regular only.** Bold Chinese, Japanese, Korean and emoji print regular: bold CJK files would double the deployment.
+- **One pan-CJK font,** so Han characters take Simplified Chinese shapes, in a Japanese or Korean name too.
+- **Read when needed.** The Noto files are too big to bundle, so they sit in the function's `dist/fonts/` ([deploys](../engineering/environments-and-deploys.md#function-settings)). A file is read the first time a text needs its font and kept while the instance is warm, so a Latin invoice reads none.
+- **Licence:** both fonts are under the SIL Open Font License 1.1 (`packages/server/fonts/NotoSansCJK-OFL.txt`; Noto Emoji's ships in its npm package).
+
+**Characters no font has:** Thai, Hebrew, Arabic and other scripts, and emoji that Noto Emoji lacks. pdfmake would leave those out without a trace, so each prints as `�` (`missingGlyphs()` and `printable()` mean "no font of the PDF has it"). The text is composed (Unicode NFC) first: Roboto has the accented letters but few combining marks, so decomposed text, as macOS paste and some Vietnamese input methods give it, would otherwise lose its accents. A letter Roboto has only as base and mark, such as `ṣ` or `ὰ`, prints from those parts. The render logs only how many characters print as `�` (`pdf_characters_replaced`), never the text, and the draft page warns before finalize when the snapshot has any.
 
 **GST:** v1 does not calculate GST and must not label the PDF a "tax invoice". GST support needs its own design and tax advice before it's built.
 

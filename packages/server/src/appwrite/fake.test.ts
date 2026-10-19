@@ -119,6 +119,14 @@ describe('FakeDb reads', () => {
       db.listRows({ ...DB, queries: [Query.contains('description', 'rent')] }),
     ).rejects.toThrow('FakeDb does not support the "contains" query')
   })
+
+  it('refuses an `equal` with no values, as Appwrite does', async () => {
+    const db = transactions()
+    await expect(db.listRows({ ...DB, queries: [Query.equal('$id', [])] })).rejects.toMatchObject({
+      code: 400,
+      type: 'general_query_invalid',
+    })
+  })
 })
 
 const AT = '2026-10-18T00:00:00.000Z'
@@ -241,10 +249,58 @@ describe('FakeDb transactions', () => {
     await expect(
       commit(db, [
         op('create', 'activity', 'a2', rowsFor.activity()),
-        op('update', 'activity', 'missing', { summary: 'x' }),
+        // Missing its required columns: assumed to fail at the commit, as the fake does.
+        op('create', 'activity', 'a3', {}),
       ]),
-    ).rejects.toMatchObject({ code: 404, type: 'row_not_found' })
+    ).rejects.toMatchObject({ code: 400, type: 'document_invalid_structure' })
     expect(db.rows('activity').map((row) => row.$id)).toEqual(['a1'])
+  })
+
+  // Checked on ledgerly-dev for an update (#238): a row deleted before the update is staged
+  // fails the staging, not the commit. A delete, and staging nothing, are assumed the same.
+  describe('staging an update or delete of a row that is not there', () => {
+    it.each([
+      ['an update', op('update', 'activity', 'gone', { summary: 'x' })],
+      ['a delete', op('delete', 'activity', 'gone')],
+    ])('refuses %s at once with 404, staging nothing of the request', async (_, missing) => {
+      const db = new FakeDb({ activity: [{ $id: 'a1', ...rowsFor.activity() }] })
+      const { $id } = await db.createTransaction()
+      const staging = db.createOperations({
+        transactionId: $id,
+        operations: [op('update', 'activity', 'a1', { summary: 'y' }), missing],
+      })
+      await expect(staging).rejects.toMatchObject({ code: 404, type: 'row_not_found' })
+      expect(await db.createOperations({ transactionId: $id, operations: [] })).toMatchObject({
+        operations: 0,
+      })
+    })
+
+    it('sees rows this transaction created or deleted, in this request or an earlier one', async () => {
+      const db = new FakeDb({ activity: [{ $id: 'a1', ...rowsFor.activity() }] })
+      const { $id } = await db.createTransaction()
+      await db.createOperations({
+        transactionId: $id,
+        operations: [op('create', 'activity', 'a2', rowsFor.activity())],
+      })
+      await db.createOperations({
+        transactionId: $id,
+        operations: [
+          op('update', 'activity', 'a2', { summary: 'x' }),
+          op('create', 'activity', 'a3', rowsFor.activity()),
+          op('delete', 'activity', 'a3'),
+        ],
+      })
+      await expect(
+        db.createOperations({ transactionId: $id, operations: [op('delete', 'activity', 'a3')] }),
+      ).rejects.toMatchObject({ code: 404, type: 'row_not_found' })
+      await db.createOperations({
+        transactionId: $id,
+        operations: [
+          op('delete', 'activity', 'a1'),
+          op('create', 'activity', 'a1', rowsFor.activity()),
+        ],
+      })
+    })
   })
 
   it('sets permissions from $permissions and refuses unknown operations', async () => {

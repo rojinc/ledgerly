@@ -48,11 +48,14 @@ To fix a posted entry, the worker opens it and taps **Edit**, which shows the sa
 3. Alice pays it on 10 Oct and marks it paid → `ledger POST /transactions/{id}/post`, with payer Alice.
 4. The default split is **days present**. Cara moved in on 1 Aug, so she pays for 61 of the 92 days.
 
+A posted house expense is fixed the same way as an employer entry: its creator or an admin opens it and taps **Edit**, which shows the house expense form filled in → `ledger PATCH /transactions/{id}`. Who paid, the split and the people sharing it can all change; a new date doesn't change who shares it. One the form can't show has no Edit: void it and add it again.
+
 ## 7. Itemised grocery receipt
 
 1. Bob photographs the receipt; the app compresses the image and uploads it to the `receipts` bucket.
 2. Bob adds the items: milk $4 (everyone), bread $5 (everyone), beer $20 (Bob only), discount −$2 (everyone).
 3. `ledger POST /transactions` with `items`. Each person's share is the sum of their parts of each item.
+4. To fix it, Bob opens it and taps **Edit**, which shows the same items, filled in → `ledger PATCH /transactions/{id}` with every item. Items can be added, removed or changed, and so can who each one is for. It stays itemised, and whether it's a refund follows the items' sum, as when it was added.
 
 ## 8. Settle up and monthly divide
 

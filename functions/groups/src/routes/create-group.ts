@@ -9,7 +9,7 @@ import {
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, removeFromTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
-import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import {
   type PersonInput,
@@ -20,6 +20,7 @@ import { ID, Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
   activityWrite,
+  aRole,
   checkRegion,
   conflictAsTryAgain,
   findFirst,
@@ -28,6 +29,7 @@ import {
   isAppwriteError,
   nextCloseAtFor,
   parseBody,
+  resolveGuarded,
   teamRead,
   today,
 } from '../shared'
@@ -50,7 +52,10 @@ export async function createGroup(
   const input = parseBody(createGroupBodySchema, body)
   const profile = await getRowOrNull<Profiles>(db, TABLES.profiles, userId)
   const creator = profile && (await getRowOrNull<Persons>(db, TABLES.persons, profile.personId))
-  if (!profile || !creator) throw new AppError('NOT_FOUND', 'Set up your account first.')
+  // A person being deleted is no person (identity-and-invites.md#deleting-an-account-m4).
+  if (!profile || !creator || creator.deletedAt) {
+    throw new AppError('NOT_FOUND', 'Set up your account first.')
+  }
 
   // functions-api.md#idempotency: the client chose the ID, so a retry finds the group. It is
   // the caller's only while they own it, are still in it, and asked for the same group.
@@ -135,42 +140,43 @@ export async function createGroup(
             permissions,
           },
         ]
-        if (counterpartInput) {
+        // No names in activity rows (data-model.md#activity), not even the group's: a pair
+        // group's is what its creator calls the other person.
+        writes.push(activityWrite(input.id, creator.$id, 'group.created', 'Created the group', now))
+        // Both are set for employer and pair groups; checking both narrows the role's type.
+        if (counterpartInput && counterpartRole) {
           const counterpart = await resolveCounterpart(
             db,
             counterpartInput,
             region,
             creator.$id,
-            tx.id,
+            tx,
           )
-          writes.push(...counterpart.writes, {
-            action: 'create',
-            tableId: TABLES.members,
-            rowId: ID.unique(),
-            data: {
-              groupId: input.id,
-              personId: counterpart.personId,
-              displayName: counterpartInput.displayName,
-              role: counterpartRole,
-              // Even a registered person: they join the group themselves (D-016).
-              status: 'placeholder',
-              joinedOn,
-            },
-            permissions,
-          })
-        }
-        writes.push(
-          activityWrite(input.id, creator.$id, 'group.created', `Created ${input.name}`, now),
-        )
-        if (counterpartInput) {
-          // identity-and-invites.md#adding-someone-to-a-group, step 5: the counterpart is added too.
           writes.push(
+            ...counterpart.writes,
+            {
+              action: 'create',
+              tableId: TABLES.members,
+              rowId: ID.unique(),
+              data: {
+                groupId: input.id,
+                personId: counterpart.personId,
+                displayName: counterpartInput.displayName,
+                role: counterpartRole,
+                // Even a registered person: they join the group themselves (D-016).
+                status: 'placeholder',
+                joinedOn,
+              },
+              permissions,
+            },
+            // identity-and-invites.md#adding-someone-to-a-group, step 5: the counterpart is added too.
             activityWrite(
               input.id,
               creator.$id,
               'member.added',
-              `${counterpartInput.displayName} was added`,
+              `was added as ${aRole(counterpartRole)}`,
               now,
+              { subjectPersonId: counterpart.personId },
             ),
           )
         }
@@ -255,11 +261,14 @@ async function resolveCounterpart(
   input: PersonInput,
   region: string,
   creatorId: string,
-  txId?: string,
+  // In the group's transaction, guarded; without one, only to check the input first.
+  tx?: Tx,
 ) {
   let resolved: ResolvedPerson
   try {
-    resolved = await resolvePerson(db, input, region, txId)
+    resolved = tx
+      ? await resolveGuarded(tx, db, input, region)
+      : await resolvePerson(db, input, region)
   } catch (error) {
     if (error instanceof RangeError) throw invalid('The email or phone number is not valid.')
     throw error

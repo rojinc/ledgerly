@@ -1,7 +1,7 @@
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeTeams } from './fake-teams'
-import { addToTeam, ensureTeam, isInTeam, removeFromTeam } from './teams'
+import { addToTeam, deleteTeam, ensureTeam, isInTeam, othersInTeam, removeFromTeam } from './teams'
 
 describe('ensureTeam', () => {
   it('creates the team with no roles, and counts one that already exists as done', async () => {
@@ -70,6 +70,22 @@ describe('removeFromTeam', () => {
   })
 })
 
+describe('deleteTeam', () => {
+  it('deletes the team with its memberships, and counts a team that is already gone as done', async () => {
+    const teams = new FakeTeams({ g1: ['u1', 'u2'], g2: ['u1'] })
+    await deleteTeam(teams, 'g1')
+    await deleteTeam(teams, 'g1')
+    expect(teams.teamIds()).toEqual(['g2'])
+    expect(teams.members('g1')).toBeUndefined()
+  })
+
+  it('rethrows any other error', async () => {
+    const teams = new FakeTeams({ g1: ['u1'] })
+    vi.spyOn(teams, 'delete').mockRejectedValue(new AppwriteException('Down', 503))
+    await expect(deleteTeam(teams, 'g1')).rejects.toMatchObject({ code: 503 })
+  })
+})
+
 describe('FakeTeams', () => {
   it('refuses what it does not model, and 404s for a missing membership', async () => {
     const teams = new FakeTeams({ g1: ['u1'] })
@@ -93,7 +109,11 @@ describe('isInTeam', () => {
 
   it("checks the user ID itself, not only the query's filter (#121)", async () => {
     // As if the filter were dropped: Teams answers with someone else's membership.
-    const teams = { listMemberships: async () => ({ memberships: [{ $id: 'x', userId: 'u2' }] }) }
+    const teams = {
+      listMemberships: async () => ({
+        memberships: [{ $id: 'x', userId: 'u2', $createdAt: '2026-01-01T00:00:00.000Z' }],
+      }),
+    }
     expect(await isInTeam(teams, 'g1', 'u1')).toBe(false)
   })
 
@@ -104,5 +124,25 @@ describe('isInTeam', () => {
       },
     }
     await expect(isInTeam(teams, 'g1', 'u1')).rejects.toMatchObject({ code: 500 })
+  })
+})
+
+describe('othersInTeam', () => {
+  it('says whether anyone but the user is in the team, and null for a team that is gone', async () => {
+    const teams = new FakeTeams({ alone: ['u1'], shared: ['u1', 'u2'], others: ['u2', 'u3'] })
+    expect(await othersInTeam(teams, 'alone', 'u1')).toBe(false)
+    expect(await othersInTeam(teams, 'shared', 'u1')).toBe(true)
+    expect(await othersInTeam(teams, 'others', 'u1')).toBe(true)
+    expect(await othersInTeam(new FakeTeams({ empty: [] }), 'empty', 'u1')).toBe(false)
+    expect(await othersInTeam(teams, 'gone', 'u1')).toBeNull()
+  })
+
+  it('rethrows any other error', async () => {
+    const teams = {
+      listMemberships: async () => {
+        throw new AppwriteException('Server error', 500)
+      },
+    }
+    await expect(othersInTeam(teams, 'g1', 'u1')).rejects.toMatchObject({ code: 500 })
   })
 })

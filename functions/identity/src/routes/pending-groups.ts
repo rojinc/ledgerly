@@ -28,7 +28,8 @@ export async function listPendingGroups(
   userId: string,
 ): Promise<PendingGroupsResult> {
   const person = await findPersonOfUser(db, userId)
-  if (!person) throw new AppError('NOT_FOUND', SET_UP_FIRST)
+  // A person with deletedAt is never resolved from a userId (identity-and-invites.md#order).
+  if (!person || person.deletedAt) throw new AppError('NOT_FOUND', SET_UP_FIRST)
   const groupIds = (await placeholderRows(db, person.$id)).map((member) => member.groupId)
   const groups: PendingGroup[] = []
   for (let start = 0; start < groupIds.length; start += PAGE_SIZE) {
@@ -99,7 +100,9 @@ export async function joinPendingGroup(
 ): Promise<JoinGroupResult> {
   parseBody(emptyBodySchema, body ?? {})
   const { db } = services
-  const person = await findPersonOfUser(db, userId)
+  const found = await findPersonOfUser(db, userId)
+  // Never a deleted account's person (identity-and-invites.md#order).
+  const person = found?.deletedAt ? undefined : found
   let member = person ? await ownMemberRow(db, groupId, person.$id) : undefined
   if (!person || !member) throw notAMember()
   // Someone who left on their own is out of the team, and coming back isn't supported in v1;
@@ -112,7 +115,7 @@ export async function joinPendingGroup(
   const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
   if (!group) throw notAMember()
   if (member.status === 'placeholder') {
-    await joinGroup(services, userId, person.$id, member)
+    await joinGroup(services, userId, person.$id, member, notAMember)
     // Joined now, or by a claim at the same time; gone or someone else's (removed or merged
     // meanwhile) means not a member, and joinGroup has taken back the team membership.
     member = await ownMemberRow(db, groupId, person.$id)
@@ -126,7 +129,7 @@ function notAMember(): AppError {
 }
 
 // One row per person and group (members.uniq_group_person).
-async function ownMemberRow(
+export async function ownMemberRow(
   db: Db,
   groupId: string,
   personId: string,
