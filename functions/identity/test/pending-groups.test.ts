@@ -172,12 +172,44 @@ describe('POST /groups/{id}/join', () => {
         groupId: 'g1',
         actorPersonId: 'pSam',
         action: 'member.joined',
+        subjectPersonId: 'pSam',
+        summary: 'joined',
         $permissions: ['read("team:g1")'],
       }),
     ])
     // Not pending any more.
     const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups.map((g) => g.id)).toEqual(['g2', 'g5'])
+  })
+
+  it('names no one in its member.joined row: no member, person or group name', async () => {
+    const services = fakes(
+      {
+        persons: [SAM],
+        groups: [group('g1', 'Vexwood Pairname')],
+        members: [
+          placeholderRow('m1', 'g1', 'pSam', BEFORE, { displayName: 'Quorra Membername' }),
+          placeholderRow('a1', 'g1', 'pZed', BEFORE, {
+            displayName: 'Zeffo Creatorname',
+            status: 'active',
+          }),
+        ],
+      },
+      { teams: { g1: ['uAdmin'] } },
+    )
+    await ok<Joined>(services, 'POST', '/groups/g1/join')
+    const names = [
+      ...services.db.rows('persons').map((row) => row.displayName),
+      ...services.db.rows('members').map((row) => row.displayName),
+      ...services.db.rows('groups').map((row) => row.name),
+    ]
+    const rows = services.db.rows('activity')
+    expect(rows).toHaveLength(1)
+    for (const row of rows) {
+      for (const name of names) {
+        expect(`${row.summary} ${row.changesJson ?? ''}`).not.toContain(String(name))
+      }
+    }
   })
 
   it('joins an archived group', async () => {

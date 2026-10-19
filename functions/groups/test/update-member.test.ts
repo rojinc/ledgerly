@@ -46,6 +46,11 @@ function changesOf(services: Fakes) {
   return services.db.rows('activity').map((row) => JSON.parse(String(row.changesJson)))
 }
 
+/** Who each activity row is about, and what it says about them. */
+function summariesOf(services: Fakes) {
+  return services.db.rows('activity').map((row) => [row.subjectPersonId, row.summary])
+}
+
 describe('PATCH /groups/{id}/members/{memberId}', () => {
   it('changes the fields given, and records only what changed', async () => {
     const services = house()
@@ -67,16 +72,31 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
         groupId: 'g1',
         actorPersonId: 'p1',
         action: 'member.updated',
-        summary: "Alex's membership was changed",
+        subjectPersonId: 'p2',
+        summary: 'was renamed and moved in on 2026-08-15',
         at: NOW.toISOString(),
       }),
     ])
+    // Never the name, old or new: the summary says they were renamed.
     expect(changesOf(services)).toEqual([
-      {
-        before: { displayName: 'Member m2', joinedOn: '2026-09-01' },
-        after: { displayName: 'Alex', joinedOn: '2026-08-15' },
-      },
+      { before: { joinedOn: '2026-09-01' }, after: { joinedOn: '2026-08-15' } },
     ])
+  })
+
+  it.each([
+    [{ displayName: 'Alex' }, 'was renamed'],
+    [{ role: 'admin' }, 'was made an admin'],
+    [{ joinedOn: '2026-08-15' }, 'moved in on 2026-08-15'],
+    // Moving out makes them a viewer, which the summary doesn't repeat.
+    [{ leftOn: '2026-10-19' }, 'moved out on 2026-10-19'],
+    [
+      { displayName: 'Alex', joinedOn: '2026-08-15', role: 'viewer' },
+      'was renamed, moved in on 2026-08-15 and was made a viewer',
+    ],
+  ])('says what %j changed, about their person, with no name', async (body, summary) => {
+    const services = house()
+    await patch(services, 'm2', body)
+    expect(summariesOf(services)).toEqual([['p2', summary]])
   })
 
   it('writes nothing when nothing changes', async () => {
@@ -126,6 +146,7 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
     expect(changesOf(services)).toEqual([
       { before: { role: 'admin', leftOn: null }, after: { role: 'viewer', leftOn: '2026-10-19' } },
     ])
+    expect(summariesOf(services)).toEqual([['p9', 'moved out on 2026-10-19']])
   })
 
   it('refuses any role but viewer when moving someone out', async () => {
@@ -338,6 +359,7 @@ describe('PATCH /groups/{id}/members/{memberId} with leftOn: null (moving back i
         after: { status: 'active', leftOn: null },
       },
     ])
+    expect(summariesOf(services)).toEqual([['p4', 'moved back in']])
     expect(services.teams.members('g1')?.map((m) => m.userId)).toEqual(['u1', 'u4'])
   })
 
@@ -347,6 +369,7 @@ describe('PATCH /groups/{id}/members/{memberId} with leftOn: null (moving back i
       status: 'active',
       role: 'member',
     })
+    expect(summariesOf(services)).toEqual([['p4', 'moved back in and was made a member']])
   })
 
   it('counts a member.joined after an earlier member.left as a fresh membership', async () => {

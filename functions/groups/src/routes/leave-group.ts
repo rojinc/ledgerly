@@ -60,7 +60,9 @@ export async function leaveGroup(
           if (current?.personId !== person.$id || current.status !== 'left') throw tryAgain()
           await requireSettled(db, groupId, person.$id)
           await tx.write(
-            activityWrite(groupId, person.$id, 'member.left', `${current.displayName} left`, now),
+            activityWrite(groupId, person.$id, 'member.left', 'left', now, {
+              subjectPersonId: person.$id,
+            }),
           )
         }),
       )
@@ -103,7 +105,9 @@ export async function leaveGroup(
           )
         }
         await tx.write(
-          activityWrite(groupId, person.$id, 'member.left', `${current.displayName} left`, now),
+          activityWrite(groupId, person.$id, 'member.left', 'left', now, {
+            subjectPersonId: person.$id,
+          }),
         )
       }),
     )
