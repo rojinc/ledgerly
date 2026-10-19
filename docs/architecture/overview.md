@@ -13,7 +13,7 @@
 │ Auth        users, sessions, email/phone verification                 │
 │ TablesDB    persons, identities, profiles, groups, members,           │
 │             transactions, shares, items, schedules, statements,       │
-│             activity, invites                                         │
+│             activity, invites, receiptFiles                           │
 │ Teams       one team per group, which gives members read access       │
 │ Storage     receipts, statements (PDFs)                               │
 │ Realtime    live updates to rows the user can read                    │
@@ -22,7 +22,7 @@
 │             identity    bootstrap, profile, claim, merge, invites,    │
 │                         join                                          │
 │             scheduler   cron: schedules, auto-post, reminders,        │
-│                         summaries                                     │
+│                         summaries, receipt clean-up                   │
 │             statements  cron + HTTP: invoices, monthly divides, PDFs  │
 └───────────────────────────────────────────────────────────────────────┘
         │                                 │

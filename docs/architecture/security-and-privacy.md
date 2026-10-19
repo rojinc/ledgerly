@@ -15,7 +15,7 @@ We store people's money records, contact details and bank details. Treat every c
 | Invite spam or SMS cost abuse | Rate limits: 20 invites per inviter in the last 24 hours, 3 per identity in the last 7 days (rolling), guarded so parallel requests can't pass them together. Tokens are hashed, single-use and expire in 14 days. |
 | Edited history | Final statements lock transactions; activity is append-only and written only by functions. |
 | Leaked secrets | No secrets in git. Function secrets are Appwrite project variables. CI secrets are GitHub Actions secrets. `.env*` files are git-ignored except `.env.example`. |
-| Malicious uploads | `receipts` accepts only images and PDFs up to 10 MB, from verified users only. Files are only shown as images or downloaded, never run. When a file is attached, the ledger limits it to its group's team ([permissions](permissions.md#storage)). Files that no transaction lists are deleted by the scheduler ([step 5](scheduling.md#step-5-receipt-clean-up)): a file that was never attached 24 hours after its upload, and a file taken off its last transaction 24 hours after that, so a removal can be undone for a day. Until then a file that's never attached keeps its uploader's permissions, `read("any")` included, so an upload can't be used to host a file for long. |
+| Malicious uploads | `receipts` accepts only images and PDFs up to 10 MB, from verified users only. Files are only shown as images or downloaded, never run. When a file is attached, the ledger limits it to its group's team ([permissions](permissions.md#storage)). Files that no transaction lists are deleted by the scheduler ([step 5](scheduling.md#step-5-receipt-clean-up)): a file that was never attached about 24 hours after its upload, and a file taken off its last transaction about 24 hours after that, so a removal can be undone for a day. So an upload can't be used to host a file for long, though until it's deleted a never-attached file keeps its uploader's permissions, `read("any")` included. Accepted risk: an upload the scheduler doesn't reach within 72 hours (an outage or backlog of more than 48 hours) is kept. |
 | Injection | Appwrite queries are parameterised; no raw query strings from users. PDFs are built from data, not HTML. |
 
 ### Membership privacy
@@ -38,7 +38,7 @@ Keep the user ID visible; everything else is hidden.
 | Emails, phone numbers | `identities` | Server only. The owner sees their own in Appwrite Auth. |
 | Names | `members.displayName` (what the group calls them) | Members of the shared group. `persons.displayName` is readable only by that user, so a registered person's own name never shows before they join. |
 | Bank details, ABN, address | `profiles.businessJson` | The owner; printed on invoices they send |
-| Receipts | `receipts` bucket | Members of the group. A receipt taken off its last transaction is deleted 24 hours later. |
+| Receipts | `receipts` bucket | Members of the group. A receipt taken off its last transaction is deleted about 24 hours later. |
 | Money records | ledger tables | Members of the group |
 
 Rules:

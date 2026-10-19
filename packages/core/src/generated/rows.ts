@@ -215,7 +215,6 @@ export type Items = Models.Row & {
 }
 
 export type ReceiptFiles = Models.Row & {
-    groupId: string | null;
     transactionIds: string[] | null;
     detachedAt: string | null;
     deletingAt: string | null;

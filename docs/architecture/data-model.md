@@ -226,17 +226,17 @@ Which transactions list each file in the `receipts` bucket, so the scheduler can
 
 | Column | Type | Notes |
 | --- | --- | --- |
-| `groupId` | varchar(36)? | The group of the transactions that list it. Empty only on a row the scheduler made for a file that was never attached. |
 | `transactionIds` | varchar(36)[]? | The transactions that list the file now. Empty or `null` means none. |
 | `detachedAt` | datetime? | When the last transaction stopped listing the file; empty while one lists it. On a row the scheduler made for a never-attached file, the file's `$createdAt`. |
-| `deletingAt` | datetime? | Set by the scheduler, in a transaction, just before it deletes the file. From then on an attach is refused ([permissions](permissions.md#storage)). |
+| `deletingAt` | datetime? | Set by the scheduler, in a database transaction, before it deletes the file. From then on an attach is refused ([permissions](permissions.md#storage)). |
 
-- **The ledger** writes the row of every file it adds to or takes off a transaction's `receiptFileIds`, in the same database transaction as the list:
-  - **adding a file:** it creates the row, or adds the transaction ID, clears `detachedAt` and sets `groupId`;
-  - **taking a file off:** it drops the transaction ID, and sets `detachedAt` once none is left.
+- **The ledger** writes the row of every file it adds to or takes off a transaction's `receiptFileIds`, in the same database transaction as the list ([concurrency](ledger.md#concurrency)):
+  - **adding a file:** it creates the row, or adds the transaction ID and clears `detachedAt`;
+  - **taking a file off:** it drops the transaction ID, and sets `detachedAt` once none is left. A file with no row (attached before these rows existed) gets one, with no transaction listed.
 - **Void** keeps a transaction's `receiptFileIds`, so its files stay listed.
-- **Deleting a transaction row:** code that deletes one that lists receipts must take them off in the same transaction. Today nothing does: a non-`overridden` occurrence never has receipts.
-- **The scheduler** sets `deletingAt`, makes the row for a file that was never attached, and deletes the row once the file is gone.
+- **Deleting a transaction row:** code that deletes one that lists receipts must take them off in the same database transaction, for example when deleting an account purges a group ([deleting an account](identity-and-invites.md#each-group-they-joined)). Today nothing deletes one: a non-`overridden` occurrence never has receipts.
+- **The scheduler** sets `deletingAt`, makes the row for a file that was never attached, and deletes the row at least an hour after the file. Until then the row refuses any attach of that ID, including one that read the rows before the scheduler made this one.
+- **Backfill:** `scripts/backfill-receipt-files.mjs` adds every transaction that lists a file to its row, making the row if needed and clearing `detachedAt`. It's for files attached before the ledger wrote these rows, and runs once in each environment before step 5 ships there.
 
 Indexes: `idx_detachedAt (detachedAt)`.
 Permissions: none (server only).
@@ -338,7 +338,7 @@ Each item below has exactly one writer and can be rebuilt from its source. Nothi
 | `shares.groupId/date/kind/category` | the transaction | rebuilt with the shares |
 | `statements.snapshotJson`, PDFs | transactions and shares at finalize time | `statements` (an intentional historical snapshot) |
 | `balances` table (M4) | shares | `ledger`, inside the same transaction |
-| `receiptFiles` rows | `transactions.receiptFileIds` | `ledger`, inside the same transaction. The `scheduler` only sets `deletingAt`, makes the row for a never-attached file, and deletes it with the file. |
+| `receiptFiles.transactionIds` | `transactions.receiptFileIds` | `ledger`, inside the same transaction. The backfill script rebuilds them. `detachedAt`, `deletingAt` and the rows of never-attached files are the scheduler's clean-up state, not a copy. |
 
 ## Categories
 
