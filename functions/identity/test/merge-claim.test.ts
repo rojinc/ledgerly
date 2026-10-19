@@ -764,9 +764,16 @@ describe('POST /claim, merging a placeholder', () => {
     )
     await claim(services)
     // Sam has no row in g3, so Sammy's share stays there (I-3), logged by ID, and the phone
-    // waits. The input names Sam now: it named a non-member before, so nothing changes there.
+    // waits. The input stays on Sammy too (#347): renamed, it would name Sam in a group Sam
+    // never joined.
     expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
-    expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: [] })
+    expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: ['t9'] })
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_inputs',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      groupId: 'g3',
+    })
     // Sam isn't joined there, so the activity stays on Sammy too, logged by ID (#338).
     expect(services.db.rows('activity').find((row) => row.$id === 'aG3')?.subjectPersonId).toBe(
       'pP',
@@ -821,56 +828,112 @@ describe('POST /claim, merging a placeholder', () => {
       { members: [placeholderRow('m9', 'g3', 'pSam', BEFORE)], activity: [] },
     ],
     ['a row they left on their own', leftOnTheirOwn],
-  ])('leaves Sammy’s activity in a group where Sam has %s, and still finishes', async (_, more) => {
-    const services = house({
-      groups: [group('g3')],
-      members: more.members,
-      activity: [
-        ...more.activity,
-        {
-          $id: 'aG3',
-          $createdAt: BEFORE,
-          at: BEFORE,
-          groupId: 'g3',
-          actorPersonId: 'pX',
-          action: 'member.added',
-          subjectPersonId: 'pP',
-          summary: 'was added',
-        },
-      ],
-    })
-    // Sammy's row in g3 was removed after step 1 listed it.
-    await withTransaction(services.db, (tx) =>
-      tx.write({
-        action: 'update',
-        tableId: 'persons',
-        rowId: 'pP',
-        data: {
-          mergedInto: 'pSam',
-          mergeGroupIds: ['g1', 'g2', 'g3'],
-          mergeMembersJson: recorded(services, ['g1', 'g2', 'g3']),
-        },
-      }),
-    )
-    await claim(services)
-    expect(namingSammy(services)).toEqual({
-      identities: [],
-      members: [],
-      shares: [],
-      transactions: [],
-      schedules: [],
-      reminders: [],
-      activity: ['aG3'],
-    })
-    expect(events(warn)).toContainEqual({
-      event: 'merge_left_subjects',
-      personId: 'pP',
-      intoPersonId: 'pSam',
-      groupId: 'g3',
-      count: 1,
-    })
-    expect(events(log)).toContainEqual(expect.objectContaining({ event: 'merge_finished' }))
-  })
+  ])(
+    'leaves Sammy’s activity and inputs in a group where Sam has %s, and still finishes',
+    async (_, more) => {
+      const services = house({
+        groups: [group('g3')],
+        members: more.members,
+        // Posted, with Sammy at 0 basis points, so Sammy has no share in it (#347).
+        transactions: [
+          transaction(
+            'tG3',
+            'g3',
+            {
+              payers: [{ personId: 'pX', cents: 2000 }],
+              split: {
+                mode: 'percent',
+                percents: [
+                  { personId: 'pX', basisPoints: 10000 },
+                  { personId: 'pP', basisPoints: 0 },
+                ],
+              },
+            },
+            2000,
+          ),
+        ],
+        shares: [share('sG3', 'tG3', 'g3', 'pX', 2000, 2000)],
+        activity: [
+          ...more.activity,
+          {
+            $id: 'aG3',
+            $createdAt: BEFORE,
+            at: BEFORE,
+            groupId: 'g3',
+            actorPersonId: 'pX',
+            action: 'member.added',
+            subjectPersonId: 'pP',
+            summary: 'was added',
+          },
+        ],
+      })
+      // And a schedule in g3 that names Sammy.
+      await withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'create',
+          tableId: 'schedules',
+          rowId: 'scG3',
+          data: {
+            groupId: 'g3',
+            kind: 'expense',
+            description: 'Internet',
+            createdBy: 'pX',
+            templateJson: JSON.stringify({
+              totalCents: 3000,
+              payers: [{ personId: 'pX', cents: 3000 }],
+              split: { mode: 'equal', personIds: ['pP', 'pX'] },
+            }),
+            rrule: 'FREQ=MONTHLY',
+            startsOn: '2026-10-01',
+            endsOn: null,
+            exdates: null,
+            skipPublicHolidays: false,
+            autoPost: false,
+            horizonDays: 56,
+            generatedThrough: '2026-11-30',
+            nextRunAt: '2026-11-01T00:00:00.000Z',
+          },
+        }),
+      )
+      // Sammy's row in g3 was removed after step 1 listed it.
+      await withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pP',
+          data: {
+            mergedInto: 'pSam',
+            mergeGroupIds: ['g1', 'g2', 'g3'],
+            mergeMembersJson: recorded(services, ['g1', 'g2', 'g3']),
+          },
+        }),
+      )
+      await claim(services)
+      expect(namingSammy(services)).toEqual({
+        identities: [],
+        members: [],
+        shares: [],
+        transactions: ['tG3'],
+        schedules: ['scG3'],
+        reminders: [],
+        activity: ['aG3'],
+      })
+      expect(events(warn)).toContainEqual({
+        event: 'merge_left_inputs',
+        personId: 'pP',
+        intoPersonId: 'pSam',
+        groupId: 'g3',
+      })
+      expect(events(warn)).toContainEqual({
+        event: 'merge_left_subjects',
+        personId: 'pP',
+        intoPersonId: 'pSam',
+        groupId: 'g3',
+        count: 1,
+      })
+      expect(events(log)).toContainEqual(expect.objectContaining({ event: 'merge_finished' }))
+    },
+  )
 
   // Two claims cut off in turn: the second finishes the group the first left part done before
   // it starts another, since both walk Sammy's groups in step 1's order.

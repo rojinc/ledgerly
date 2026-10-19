@@ -144,6 +144,7 @@ group('logProblem', () => {
     logProblem('merge_left_schedule', { ...merge, scheduleId: 's1' })
     logProblem('merge_left_stray_row', { ...merge, table: 'shares', rowId: 'r1' })
     logProblem('merge_left_subjects', { ...merge, groupId: 'g1', count: 2 })
+    logProblem('merge_left_inputs', { ...merge, groupId: 'g1' })
     logProblem('merge_stopped', { intoPersonId: 'pU', error: new Error('x') })
     logProblem('merge_no_member_dates', { personId: 'pP', groupId: 'g1' })
     logProblem('merge_member_dates_unreadable', { personId: 'pP' })
@@ -166,6 +167,7 @@ group('logProblem', () => {
       'log',
       'log',
       'log',
+      'warn',
       'warn',
       'warn',
       'warn',

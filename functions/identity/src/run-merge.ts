@@ -125,47 +125,47 @@ async function runSteps(
       done = false
       break
     }
-    // Templates first, so an expansion from now on names U.
-    const templates = await moveTemplates(db, merge, [groupId], deadline)
-    moved.inputs += templates.rewritten
-    moved.skipped += templates.skipped
-    if (templates.putOff.length > 0) {
-      putOff.add(groupId)
-      continue
-    }
-    const inputs = await moveInputs(db, merge, [groupId], now, deadline, recorded, cursors)
-    moved.inputs += inputs.rewritten
-    moved.voided += inputs.voided
-    moved.skipped += inputs.skipped
-    if (inputs.putOff.length > 0) {
-      putOff.add(groupId)
-      continue
-    }
-    if (templates.cutOff || inputs.cutOff) {
-      done = false
-      break
-    }
-    // Rows left as they are keep the merge open, but their group's shares can still move.
-    if (!templates.done || !inputs.done) done = false
-    // Activity rows about P are about U from now on (#257): the feed names U, not "A former member".
-    // Only where U is joined, as share batches check (#338). Elsewhere a row the team reads would
-    // link the placeholder to U's account (D-016), so they stay on P and don't hold the merge open.
-    if (await joinedHere(db, groupId, intoId)) {
+    // Inputs, templates and activity rows come to name U only where U is joined (#338, #347).
+    // Elsewhere they'd link the placeholder to U's account (D-016), so they stay on P, logged by
+    // ID, and don't hold the merge open; P's shares there still do (`stray()`).
+    if (!(await joinedHere(db, groupId, intoId))) {
+      logProblem('merge_left_inputs', { ...ids, groupId })
+      const left = await subjectsOf(db, fromId, groupId)
+      if (left > 0) logProblem('merge_left_subjects', { ...ids, groupId, count: left })
+    } else {
+      // Templates first, so an expansion from now on names U.
+      const templates = await moveTemplates(db, merge, [groupId], deadline)
+      moved.inputs += templates.rewritten
+      moved.skipped += templates.skipped
+      if (templates.putOff.length > 0) {
+        putOff.add(groupId)
+        continue
+      }
+      const inputs = await moveInputs(db, merge, [groupId], now, deadline, recorded, cursors)
+      moved.inputs += inputs.rewritten
+      moved.voided += inputs.voided
+      moved.skipped += inputs.skipped
+      if (inputs.putOff.length > 0) {
+        putOff.add(groupId)
+        continue
+      }
+      if (templates.cutOff || inputs.cutOff) {
+        done = false
+        break
+      }
+      // Rows left as they are keep the merge open, but their group's shares can still move.
+      if (!templates.done || !inputs.done) done = false
+      // Activity rows about P are about U from now on (#257): the feed names U, not "A former
+      // member".
       const subjects = await moveSubjects(db, fromId, intoId, [groupId], deadline)
       moved.subjects += subjects.moved
       if (!subjects.done) {
         done = false
         break
       }
-    } else {
-      const left = await subjectsOf(db, fromId, groupId)
-      if (left > 0) {
-        logProblem('merge_left_subjects', { ...ids, groupId, count: left })
-      }
     }
     // Neither has a row here (U's, once P's, was removed since): a share moved to U would be one
     // with no member row (I-3), so P's stay, and `stray()` keeps the merge open while one is left.
-    // An input naming P names a non-member already, so renaming it changed nothing there.
     if (!(await memberOf(db, groupId, intoId))) continue
     // Shares last: the rule for a posted row needs P's share to tell the row was P's.
     const shares = await moveShares(db, fromId, intoId, [groupId], deadline)
