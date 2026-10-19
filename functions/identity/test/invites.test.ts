@@ -507,6 +507,66 @@ describe('POST /invites', () => {
     })
   })
 
+  // Merge step 1 marked Kim's placeholder as merged into Sam, who has an account. The merge is
+  // unfinished, so Kim's row in g1 and kim@example.com are still on pKim, and the address is Sam's.
+  describe('to a placeholder being merged into someone', () => {
+    async function merging(): Promise<Fakes> {
+      const services = fixture({ samUserId: 'u9' })
+      await updateRow(services.db, 'persons', 'pKim', { mergedInto: 'pSam' })
+      return services
+    }
+
+    // As for the person invited: deletion step 2, the identities kept until step 5.
+    const deleting = (services: Fakes) => () =>
+      updateRow(services.db, 'persons', 'pSam', { deletedAt: ago(1000), rev: 'deleting' })
+
+    const wrongAddress = { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL }
+
+    function expectNothingDone(services: Fakes) {
+      expect(services.db.rows('invites')).toEqual([])
+      expect(revs(services)).toEqual({ ...UNTOUCHED, pSam: 'deleting' })
+      expect(services.sent).toEqual([])
+    }
+
+    it('sends, with a guard on the person it ends at as well', async () => {
+      const services = await merging()
+      await sends(services, TO_KIM)
+      expect(services.sent).toHaveLength(1)
+      const guarded = expect.any(String)
+      expect(revs(services)).toEqual({ ...UNTOUCHED, pAnn: guarded, pSam: guarded, pKim: guarded })
+    })
+
+    it('refuses once that person has started deleting their account, as a wrong address', async () => {
+      const services = await merging()
+      await deleting(services)()
+      expect(await refused(services, TO_KIM)).toEqual(wrongAddress)
+      expectNothingDone(services)
+    })
+
+    it('refuses when that deletion commits just before the guards are staged', async () => {
+      const services = await merging()
+      const raced = beforeStaging(
+        services.db,
+        (operations) => operations.includes('"tableId":"persons"'),
+        deleting(services),
+      )
+      expect(await refused(services, TO_KIM)).toEqual(wrongAddress)
+      expect(raced).toHaveBeenCalled()
+      expectNothingDone(services)
+    })
+
+    it('fails the commit when that deletion commits just after the guards, and the retry refuses', async () => {
+      const services = await merging()
+      const raced = beforeCommit(services.db, deleting(services))
+      expect(await refused(services, TO_KIM)).toEqual(wrongAddress)
+      const commits = raced.mock.calls.flatMap(([params], index) =>
+        params.commit ? [raced.mock.settledResults[index]?.type] : [],
+      )
+      expect(commits).toEqual(['rejected', 'fulfilled'])
+      expectNothingDone(services)
+    })
+  })
+
   describe('rate limits', () => {
     it('refuses the 21st invite by one inviter in 24 hours, before anything is committed', async () => {
       const services = fixture({ invites: sentInvites('a', 20, { invitedBy: 'pAnn' }) })

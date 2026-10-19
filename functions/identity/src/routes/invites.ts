@@ -9,6 +9,7 @@ import { requireMember } from '@ledgerly/server/auth/require-member'
 import { inviteEmail } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import { mergedTarget } from '@ledgerly/server/identity/resolve-person'
 import { ID, type Models, Query } from 'node-appwrite'
 import { parseBody } from '../parse-body'
 import { conflictAsTryAgain, findIdentity, getRowOrNull, isAppwriteError } from '../rows'
@@ -97,9 +98,9 @@ export async function createInvite(
     await commit()
   } catch (error) {
     if (!isAppwriteError(error, 409)) throw error
-    // Another invite by this inviter, or to this person, or a deletion of either, committed after
-    // this one's guard was staged: check again, once, so it is refused if that invite took the
-    // last place or that deletion has started.
+    // Another invite by this inviter, or to this person, or a deletion of one it guarded,
+    // committed after this one's guard was staged: check again, once, so it is refused if that
+    // invite took the last place or that deletion has started.
     await conflictAsTryAgain(commit)
   }
 
@@ -109,12 +110,12 @@ export async function createInvite(
 }
 
 /**
- * Step 3: commits the invite row unless either person's account deletion has started or a limit
- * is reached, with nothing committed otherwise. A guard write (a fresh `rev`) on the inviter's
- * and the target's persons rows is staged before reading them and counting
- * (conventions.md#functions), so an invite by the same inviter, or to the same person, or a
- * deletion of either, that commits after that fails this commit: a burst can't pass the count
- * together, and the retry sees the deletion.
+ * Step 3: commits the invite row unless the account deletion of the inviter, the target, or the
+ * person the target ends at after merges has started, or a limit is reached, with nothing
+ * committed otherwise. A guard write (a fresh `rev`) on each of their persons rows is staged
+ * before reading them and counting (conventions.md#functions), so an invite by the same inviter,
+ * or to the same person, or a deletion of any of them, that commits after that fails this
+ * commit: a burst can't pass the count together, and the retry sees the deletion.
  */
 async function commitWithinLimits(
   db: Db,
@@ -125,13 +126,22 @@ async function commitWithinLimits(
 ): Promise<void> {
   await withTransaction(db, async (tx) => {
     await tx.write(guard(row.invitedBy), guard(targetPersonId))
+    // A placeholder mid-merge holds only keys the person it ends at verified, until the merge
+    // moves them, last, so the address is that person's. Read after the target's guard: a merge
+    // that marks it later fails this commit.
+    const invited = [targetPersonId]
+    const end = await mergedTarget(db, targetPersonId)
+    if (end !== targetPersonId && end !== row.invitedBy) {
+      await tx.write(guard(end))
+      invited.push(end)
+    }
     // The stored rows, not this transaction's view: an account deletion may have started.
-    if ((await getRowOrNull<Persons>(db, TABLES.persons, row.invitedBy))?.deletedAt !== null) {
+    if (await isDeleted(db, row.invitedBy)) {
       throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
     }
     // As a wrong address, so the answer doesn't show the deletion.
-    if ((await getRowOrNull<Persons>(db, TABLES.persons, targetPersonId))?.deletedAt !== null) {
-      throw invalid(NOT_THEIR_EMAIL)
+    for (const personId of invited) {
+      if (await isDeleted(db, personId)) throw invalid(NOT_THEIR_EMAIL)
     }
     if (
       (await reached(db, PER_INVITER, row.invitedBy, now)) ||
@@ -151,6 +161,11 @@ async function commitWithinLimits(
 
 function guard(personId: string): Write {
   return { action: 'update', tableId: TABLES.persons, rowId: personId, data: { rev: randomId() } }
+}
+
+// A missing row counts as deleted, so it refuses too.
+async function isDeleted(db: Db, personId: string): Promise<boolean> {
+  return (await getRowOrNull<Persons>(db, TABLES.persons, personId))?.deletedAt !== null
 }
 
 // Whether `max` invites were already sent within the window: an invite sent exactly
