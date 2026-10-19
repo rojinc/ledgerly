@@ -93,7 +93,11 @@ describe('isInTeam', () => {
 
   it("checks the user ID itself, not only the query's filter (#121)", async () => {
     // As if the filter were dropped: Teams answers with someone else's membership.
-    const teams = { listMemberships: async () => ({ memberships: [{ $id: 'x', userId: 'u2' }] }) }
+    const teams = {
+      listMemberships: async () => ({
+        memberships: [{ $id: 'x', userId: 'u2', $createdAt: '2026-01-01T00:00:00.000Z' }],
+      }),
+    }
     expect(await isInTeam(teams, 'g1', 'u1')).toBe(false)
   })
 
