@@ -25,7 +25,7 @@ Every email or phone number goes through `normalizeEmail()` or `normalizePhone()
 
 1. If a profile already exists for this user, skip to step 3, so an interrupted claim always gets finished.
 2. Otherwise, create the personal group's team and add the user to it ("already exists" counts as done). Like every team membership, it has no team role, never `owner`, so the user can't manage the team from the client. Then, in one database transaction:
-   - Find or create the user's **person**. If one of the user's verified emails or phones matches an identity row that points at a placeholder, reuse that person (see Claim). Placeholder identity rows are never `verified` themselves, so match on the key, not the flag. Set the person's `userId` and `claimedAt` (now), and delete the placeholder's identities whose key the user hasn't verified ([only verified keys move](#only-verified-keys-move)).
+   - Find or create the user's **person**. If one of the user's verified emails or phones matches an identity row that points at a placeholder, reuse that person (see Claim). Placeholder identity rows are never `verified` themselves, so match on the key, not the flag. Set the person's `userId` and `claimedAt` (now), and delete the placeholder's identities whose key the user hasn't verified ([only verified keys move](#only-verified-keys-move)): the verified keys come from bootstrap's own read of the user, through the same `verifiedIdentities()` as Claim step 1.
    - Create the **profile** (row ID = user ID) with defaults: timezone from the browser, region and currency from the timezone. An Australian time zone gives its state (`Australia/Perth` → `AU-WA`); any other gives `AU-NSW`. The currency is `AUD`. The user can change all of them in their profile.
    - Create the **personal group** and the user's `admin` member row.
 
@@ -34,13 +34,13 @@ Every email or phone number goes through `normalizeEmail()` or `normalizePhone()
 
 ## Adding someone to a group
 
-`groups POST /groups/{id}/members` with `{ displayName, email?, phone? }`:
+`groups POST /groups/{id}/members` with `{ displayName, email?, phone? }` (and an employer or pair group's counterpart at `POST /groups`, the same way):
 
 1. Normalise the email and phone.
 2. Look up each identity key.
-   - **Found:** use that person.
+   - **Found:** use that person. Stage a guard write on that person's `rev`, then read the keys again: a key that moved to another person, or was removed, meanwhile (an adoption or a merge's step 1 writes the person) answers `CONFLICT`, and the add is tried again.
    - **Only one of two keys found:** use the found person and don't store the other key. Unverified data is never attached to an existing person, so a stranger's typo can't land on someone else.
-   - **Not found:** create a placeholder person plus unverified identity rows. Person IDs are random, with no timestamp ([data model](data-model.md#persons)), so a new person's ID doesn't show that the email or phone was unknown.
+   - **Not found:** create a placeholder person plus **one** unverified identity row: the email if one was given, otherwise the phone (none for a name alone). The other key is still validated but not stored, so a placeholder can only ever be claimed through one key ([only verified keys move](#only-verified-keys-move)). The add form says which key is used. Person IDs are random, with no timestamp ([data model](data-model.md#persons)), so a new person's ID doesn't show that the email or phone was unknown.
    - If the email and phone point at **two different persons**, use the email's person, whether or not either has an account. Do **not** merge: unverified data must never join two people.
 3. Create the `members` row. If one already exists for that person in this group, return `CONFLICT`.
 4. Set status `placeholder`, even if the person already has an account ([D-016](decisions.md)). The `groups` function never adds anyone except the group's creator to a team; people join themselves (see [Joining a group](#joining-a-group)).
@@ -51,7 +51,7 @@ Because of steps 2 and 4, the member row looks the same whether or not the perso
 Accepted risks, none of which shows whether someone has an account:
 
 - A person has the same ID in every group, so someone who shares a group with them can add a guessed email to another group and see whether the IDs match. `CONFLICT` on adding someone twice tells the same thing within one group.
-- An unknown email takes slightly longer to add than a known one (rows are created). Known emails include placeholders others added, so it shows only that someone has used the email before.
+- Known and unknown keys take different times to add: an unknown one creates rows, and a known one costs a guard write and a second lookup. Known keys include placeholders others added, and the guard runs the same way for placeholders and registered people, so it shows only that someone has used the key before.
 - An invite to an address that isn't the member's gets `VALIDATION_FAILED` ([invites](#invites), step 2), so an inviter can test guesses at a placeholder's email or phone, within the invite limits. It's the same kind of leak as `CONFLICT` above.
 
 ## Claim (linking records to a new account)
@@ -66,6 +66,7 @@ Claiming is what lets "Sam" see the $50 you lent them when Sam finally signs up.
 2. For each verified identity key:
    - **No identity row:** create one pointing at the user's person, with `verified = true`.
    - **Points at the user's own person:** set `verified = true`.
+   - **Points at a person being merged into the user's person** (`mergedInto` names it, mid-merge): skip it; the merge moves it to them last.
    - **Points at a placeholder person P:**
      - If the user's person is brand new and has no data (bootstrap just made it), **adopt P**: in one database transaction, set `P.userId` to the user and `P.claimedAt` to now, and delete P's identities whose key the user hasn't verified ([below](#only-verified-keys-move)). Use P as their person.
      - Otherwise **merge P into the user's person** (next section).
@@ -77,9 +78,11 @@ Claiming is what lets "Sam" see the $50 you lent them when Sam finally signs up.
 A placeholder's identities were typed by whoever added it, and nobody has verified them. When a user claims placeholder P, by adopting it or merging it, **only the keys that user has verified move to their person**. P's other identities are deleted, in the same transaction that marks P: the adoption's (which sets `userId`) or the merge's step 1 (which sets `mergedInto`). So `resolvePerson()` can never follow one of them to the user, even mid-merge.
 
 - **A verified key** is the key of an email or phone that Appwrite Auth shows as verified on the user's own account (`emailVerification`, `phoneVerification`), as read in Claim step 1. The key the claim came through is always one of them.
-- **Why:** otherwise someone could add `{ email: victim@x, phone: <their own phone> }` to their own group, verify the phone, and claim. `email:victim@x` would then point at them: every group that later adds the victim would add them instead, and the victim could never claim the address. With this rule, the next add of `victim@x` finds no identity and makes a new placeholder.
+- **One typed key per placeholder.** Adding someone stores one key for a new placeholder ([adding someone](#adding-someone-to-a-group)), so the person who verifies that key is the only one who can claim it. With two keys, whoever verified *either* could take the placeholder, and with it the rows other groups had already added under the other key.
+- **Why both rules:** otherwise someone could add `{ email: victim@x, phone: <their own phone> }` to their own group, verify the phone, and claim: `email:victim@x` would then point at them, every group that later adds the victim would add them instead, and the victim could never claim the address. Or they could add `{ phone: <the victim's>, email: <one of their own> }`, wait for other groups to add the victim by phone, then sign up with the email and take those groups. With one key per placeholder and only verified keys moving, neither works: a later add of the victim's key finds no identity and makes a new placeholder.
 - **The trade-off:** a typed key the user hasn't verified is dropped, even when it really is theirs. A later add by that key makes a new placeholder, which is merged into them once they verify it ([#176](https://github.com/rojinc/ledgerly/issues/176) for phones).
-- **Rows from before this rule:** adoptions before [#247](https://github.com/rojinc/ledgerly/issues/247) kept every identity of P. So Claim step 2 also deletes any identity of the user's own person that has `verified = false` and whose key isn't one of their verified keys. Nothing else writes such a row: adding someone never attaches a key to an existing person.
+- **Logs:** a claim's deleted identities are logged as IDs and counts, never keys.
+- **Accepted risk, for later:** sign-in providers (Google, when OAuth comes) must be enabled only where they confirm the email is verified, or a provider account could claim someone's email.
 
 So every identity of a person with an account holds a key they verified.
 
@@ -184,7 +187,7 @@ Non-zero balances don't block it; the delete screen warns about them.
 2. Set `persons.deletedAt` and `displayName` "Former member", with a fresh `rev` (a [guard write](ledger.md#concurrency)). **This is the point of no return:** from here every step runs to the end, and none is undone. A call after this skips the checks (apart from the body) and carries on.
 3. Label the Appwrite user `deleted` (`users.updateLabels`), block them and delete their sessions, so an old JWT fails `account.get()` (`UNAUTHENTICATED`). A 404 counts as done.
 4. The groups, one at a time, as above.
-5. Only once **every** group is done: delete their identities, the invites they sent and their profile.
+5. Only once **every** group is done: delete their identities, the identities of any person still being merged into them (`mergedInto` = theirs, `idx_mergedInto`: a merge moves identities last, so an unfinished one leaves their verified key there), the invites they sent and their profile.
 6. Clear `persons.userId` and the row's `read("user:<userId>")` permission.
 7. Delete the Appwrite user (a 404 counts as done).
 
