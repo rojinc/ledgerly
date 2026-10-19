@@ -10,6 +10,7 @@ import { ID, Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
   activityWrite,
+  aRole,
   conflictAsTryAgain,
   findFirst,
   invalid,
@@ -45,6 +46,7 @@ export async function addMember(
   }
 
   const memberId = ID.unique()
+  const newRole = role ?? 'member'
   await conflictAsTryAgain(() =>
     withTransaction(db, async (tx) => {
       const resolved = await resolveOrInvalid(db, input, group.region, tx.id)
@@ -65,15 +67,18 @@ export async function addMember(
             groupId,
             personId: resolved.personId,
             displayName: input.displayName,
-            role: role ?? 'member',
+            role: newRole,
             status: 'placeholder',
             joinedOn: joinedOn ?? today(group, now),
             leftOn: null,
           },
           permissions: teamRead(groupId),
         },
-        // The name the group uses, never the email or phone (security-and-privacy.md).
-        activityWrite(groupId, caller.$id, 'member.added', `${input.displayName} was added`, now),
+        // No name, email or phone (security-and-privacy.md): the app shows the name the group
+        // uses, from subjectPersonId.
+        activityWrite(groupId, caller.$id, 'member.added', `was added as ${aRole(newRole)}`, now, {
+          subjectPersonId: resolved.personId,
+        }),
       )
     }),
   )

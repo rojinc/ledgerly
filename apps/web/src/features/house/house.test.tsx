@@ -321,6 +321,10 @@ describe('HousePage', () => {
       expect(screen.queryByRole('button', { name: 'Moved back in' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+      // Everyone can read the house's divides (#166).
+      expect(screen.getByRole('link', { name: 'Statements' }).getAttribute('href')).toBe(
+        '/groups/g1/statements',
+      )
       // The history is for everyone who can open the house (#183).
       const history = screen.getByRole('region', { name: 'History' })
       expect(await within(history).findByText('No expenses yet.')).toBeTruthy()

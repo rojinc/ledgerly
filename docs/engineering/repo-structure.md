@@ -17,7 +17,6 @@ ledgerly/
 ├── .env.example               names of every env var, no values
 ├── .gitbook.yaml              GitBook Git Sync → docs/
 ├── appwrite.config.json       Appwrite CLI config (dev); includes files from appwrite/
-├── appwrite.config.prod.json  same resources, prod project
 │
 ├── .github/
 │   ├── workflows/             ci.yml, deploy.yml

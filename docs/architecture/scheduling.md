@@ -62,7 +62,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
+The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up (step 5, [#163](https://github.com/rojinc/ledgerly/issues/163)), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -99,28 +99,30 @@ An edit, another run, a member removed or an occurrence changed meanwhile makes 
 
 ### Step 2: auto-post
 
-- **Shifts:** status `scheduled`, kind `shift`, `date < localToday`, and the schedule has `autoPost` → post. Shares are built with the same `buildShares()` the `ledger` function uses.
+- **Shifts:** status `scheduled`, kind `shift`, `date < localToday`, and the schedule has `autoPost` → post. Shares are built with the same `buildShares()` the `ledger` function uses, and the group's `balances` row is kept the same way ([balances](ledger.md#balances)).
 - **Autopay bills:** status `due`, `dueOn <= localToday`, and the schedule has `autoPost` → post with the template's payers, `date = dueOn`.
 - **Other `scheduled` kinds** (expense, income): post when `date <= localToday` and `autoPost` is set.
 - Edited (`overridden`) occurrences auto-post too, with the edited values. Voided ones never do.
 - **Never one made after its own day** (the date of its `$createdAt` in the group's timezone later than its `date`, or a bill's `dueOn`): a run that came late after an edit, or a new schedule that starts in the past, makes past occurrences, and those wait for the user like any past occurrence that wasn't posted. So a run that comes late after an edit never posts a moved week twice (Thursday posted, then Friday made on Saturday). One made on or before its day still posts: an edit on Friday that moves Thursday's posted shift to Fridays makes Friday's, which the user voids if the week is already paid.
+- **Never one already reminded about** (`remindedAt` set by step 3's "Shift to confirm"): the owner was asked to confirm it, so it waits for them, also when `autoPost` is turned on later. Turning `autoPost` on posts the past 7 days' occurrences nobody has been reminded about.
+- **Not when its creator would pay but is no longer an active member:** an expense or bill whose input names no payers (its template's, unless the occurrence was edited) is paid by the schedule's creator. Once they have moved out or left, step 2 leaves it as it is, for an admin to post with the right payers. This is checked on the row as first read, and again once the row and the creator's member row are guarded.
 
-Query with `idx_status_date` (autopay bills: `idx_status_dueOn`) for dates from 7 days ago up to the UTC date plus one day (some timezones are ahead), then check each group's local date before posting. Skip transactions in archived groups; they stay as they are. The 7-day floor matters: shifts waiting for manual confirmation stay `scheduled` for as long as the user ignores them, and without a floor every run would re-read all of them. An auto-post occurrence missed by more than 7 days (a long outage) waits for the user.
+Query with `idx_status_date`, leaving out `scheduled` rows already reminded about (autopay bills: `idx_status_dueOn`, whose "Bill due soon" reminder never holds them), for dates from 7 days ago up to the UTC date plus one day (some timezones are ahead), then check each group's local date before posting. Skip transactions in archived groups; they stay as they are. The 7-day floor matters: shifts waiting for manual confirmation stay `scheduled` for as long as the user ignores them, and without a floor every run would re-read all of them. An auto-post occurrence missed by more than 7 days (a long outage) waits for the user.
 
-A schedule whose `nextRunAt` has come is left for now: step 1 hasn't brought its occurrences in line yet (it ran out of time, or failed on it), and a later run posts them once it has. Each occurrence is read again first, and checked again once its row is guarded, so one a person posted, voided or moved to a later day meanwhile is left alone; an edited one posts with its edited values. It is posted with the ledger's own post (`postInTransaction` in `packages/server`, the same guards and writes as `POST /transactions/{id}/post`) as the schedule's creator: they pay when the template names no payers, and they are its `updatedBy`. The activity row has no actor ([data model](data-model.md#activity)). One a finalizing statement covers (`LOCKED`) is skipped until a later run. One that breaks a ledger rule now (a member removed after it was made) is counted as failed, logged with its ID and error code only, and stays `scheduled` for the user. The run's result counts `posted`, `skipped` and `failed`.
+A schedule whose `nextRunAt` has come is left for now: step 1 hasn't brought its occurrences in line yet (it ran out of time, or failed on it), and a later run posts them once it has. Each occurrence is read again first, and checked again once its row is guarded, so one a person posted, voided or moved to a later day meanwhile is left alone; an edited one posts with its edited values. It is posted with the ledger's own post (`postInTransaction` in `packages/server`, the same guards and writes as `POST /transactions/{id}/post`) as the schedule's creator: they pay when the occurrence names no payers (unless they're no longer active, above), and they are its `updatedBy`. The activity row has no actor ([data model](data-model.md#activity)). One a finalizing statement covers (`LOCKED`) is skipped until a later run. One that breaks a ledger rule now (a member removed after it was made) is counted as failed, logged with its ID and error code only, and stays `scheduled` for the user. The run's result counts `posted`, `skipped` and `failed`.
 
 ### Step 3: reminders
 
 | Reminder | Condition | Sent to |
 | --- | --- | --- |
 | Bill due soon | status `due`, `dueOn` within 2 days, `remindedAt` empty | joined admins with an account (personal: the owner) |
-| Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost` or the shift was made after its day (step 2 never posts it), `remindedAt` empty | group owner |
+| Shift to confirm | status `scheduled`, `date < today`, `remindedAt` empty, whether or not its schedule has `autoPost` | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
 Each reminder goes out once. In one database transaction, `remindedAt` is staged first, then the stored row is checked: still the same status, date or `startedAt`, not locked and not reminded. Only then is the email sent, with Resend's idempotency key `reminder-<transactionId>`, before the commit. A row that changed after the page was read gets nothing. One that changes after staging fails the commit, and the next run looks at it again; if the email had gone out, Resend doesn't deliver it twice within 24 hours. A failed send leaves `remindedAt` empty, so the next run tries again, except for an email Resend will never take (a bad address, or the same key with different content), which is marked. Any other failure on one row is counted, and the run carries on. Bill reminders add `dueOn` to the key: a new due date clears `remindedAt` and needs its own reminder.
 
 - **Who gets it:** only an active member with an account and a verified email (`users.get`, so the function has the `users.read` scope). With nobody to send to, `remindedAt` is still set, so the row isn't read every hour.
-- **Shift to confirm:** also for a `scheduled` shift that has no schedule, since nothing will post it. The shift's date must be before today in the group's timezone. The query uses the same 7-day floor as step 2.
+- **Shift to confirm:** for every `scheduled` shift dated before today in the group's timezone: one with no schedule (nothing posts it), one whose schedule doesn't auto-post, and an auto-post one that step 2 couldn't post by 07:00 (a template a member change broke, a schedule step 1 can't finish, a statement that stayed `finalizing` all night, or one made after its day), so none drops out of the 7-day window unseen. Once reminded, it waits for the owner (step 2). An auto-post shift step 2 can post is posted before any reminder: every hourly run does step 2 before step 3, from the first run after local midnight, and reminders wait until 07:00. The query uses the same 7-day floor as step 2. An auto-post expense or income that step 2 can't post has no reminder of its own; it stays on the calendar for the user.
 - **When:** only once it is 07:00 or later in the group's timezone, so nobody gets one in the middle of the night; a later run picks up the rest. Archived groups get none: their rows are marked without an email, since a timer there can't be stopped.
 - **Link:** `<APP_URL>/groups/<groupId>/transactions/<transactionId>`.
 
@@ -141,6 +143,32 @@ Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a 
 - Core's `nextSummaryAt(frequency, timeZone, now, previous?)` and `summaryPeriod(frequency, D)` implement this, so `identity` and the scheduler agree.
 
 The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
+
+### Step 6: nightly check
+
+Runs last, in what's left of the run's budget. It takes groups where `nextCheckAt` is empty or `<= now` (`idx_nextCheckAt`), in pages of 100 by `$id` as step 1 does, until the budget is used. Archived groups are checked too. A group whose team is gone (a [purge](identity-and-invites.md#deleting-an-account-m4) in progress) is skipped. A check reads, apart from the two repairs below and its `nextCheckAt`: it never writes shares, transactions or members, and it doesn't finish merges (a lead decision for v1: only `/claim` carries a merge on).
+
+**Reading a group whole.** It reads the group's `rev`, then the group's members, posted transactions (`idx_group_status_date`), shares and `balances` row, then `rev` again. Every write of shares changes `rev` ([concurrency](ledger.md#concurrency)), so the same value means nothing changed in between. Otherwise it reads again, up to 3 times, then leaves the group for the next run (counted as `busy`).
+
+**Checks.** Each finding is one error log line with the event, the `groupId`, and the `transactionId`, `membershipId` or rule. IDs only ([personal data](security-and-privacy.md#personal-data)).
+- The `balances` row, if the group has one, equals the one built fresh from the shares (core `balancesFromShares()`).
+- Every posted transaction passes `assertShareInvariants()` (I-1, I-2, I-4, I-5), with each of its shares' persons counted as a member, so I-3 below doesn't stop the other checks.
+- Every share's person has a member row in the group (I-3). A share of a person whose merge isn't finished (`mergedInto` set, and the person still has an identity) counts as `merging`, not as broken: a merge cut off partway leaves shares on P ([merging](identity-and-invites.md#merging-two-persons)). Once P has no identity, a share left on P is broken.
+- Every share belongs to a posted transaction of this group (I-6).
+
+Broken shares or transactions are reported, never fixed. They're fixed by hand, with adjustments.
+
+**Repairing the `balances` row.** A missing row (the backfill, or one deleted since) or a wrong one is rewritten in one database transaction: stage the group's guard write, sum the shares after it, then write the row. A wrong row also logs an error. A write of shares that lands meanwhile fails one of the two commits.
+
+**The team.** A team membership is removed when all of these hold:
+- The user's person has no `active` or `left` member row in the group, or only a `left` row they left on their own since that member row was created (`leftOnTheirOwn()`: their own `member.left` is the newest of their `member.left` and `member.joined` rows, [leaving](permissions.md#leaving-a-group)).
+- The person isn't being deleted (`deletedAt` empty): [account deletion](identity-and-invites.md#deleting-an-account-m4) leaves the team as its own last step for each group, and decides a rerun from it.
+- The membership is more than 1 hour old, because joining and merging add the team membership before the member row ([joining](identity-and-invites.md#joining-a-group)).
+- Reading the member rows again just before removing still shows this.
+
+After removing it, the check reads the member rows once more, and adds the membership back if a join or a merge made the person a joined member meanwhile. This catches a join, a merge or a leave that stopped between its Teams call and its database transaction. A membership that's already gone counts as removed. These are the scheduler's only team writes (the `teams.write` scope), and no route that people call reaches them.
+
+**When it's done.** A group whose check finished gets `nextCheckAt` = 03:00 tomorrow in the group's time zone, worked out as a local date and then converted to UTC, as for summaries. So does a group the budget cut off, with its ID logged: tomorrow's check starts it again from the start, and it can't hold up the groups after it on every run. A group left as `busy` gets `nextCheckAt` one hour later, so a later run tries it again soon. Writing `nextCheckAt` changes the group row, so a ledger write that overlaps it runs once more. Runs that overlap are safe: the checks only read, the repairs are guarded, and the run returns counts only. Until alerting exists, the error lines are the alert.
 
 ## Schedule routes
 

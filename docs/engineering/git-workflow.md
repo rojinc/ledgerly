@@ -50,9 +50,10 @@ Refs #17
 
 ## Releases
 
-- Every merge to `main` deploys to the **dev** environment.
-- A release is a git tag `vMAJOR.MINOR.PATCH` on `main`. Pushing the tag deploys to **prod**. Notes are generated from the conventional commits.
-- Hotfix: branch from `main`, PR, merge, tag a patch release.
+- Every merge to `main` deploys to `ledgerly-dev`.
+- There's one environment, `ledgerly-dev`, and it has real users. There are no release tags or separate prod deploys for now. A person can redeploy `main`'s latest commit with **Run workflow** on the Deploy workflow.
+- Agents never create tags and never run a deploy by hand.
+- Hotfix: branch from `main`, PR, merge.
 
 See [Environments and deploys](environments-and-deploys.md).
 

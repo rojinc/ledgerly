@@ -305,6 +305,48 @@ describe('withTransaction', () => {
     await expect(edit).rejects.toMatchObject({ code: 409, type: 'transaction_conflict' })
   })
 
+  it('reports staging an update of a row deleted since it was read (404) as a conflict (409)', async () => {
+    const db = seeded()
+    const stage = vi.spyOn(db, 'createOperations')
+    const commit = vi.spyOn(db, 'updateTransaction')
+    // Another request deletes t1 after this one read it, before it stages its update (#238).
+    await withTransaction(db, (other) =>
+      other.write({ action: 'delete', tableId: 'transactions', rowId: 't1' }),
+    )
+    const edit = withTransaction(db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't1',
+        data: { description: 'Rent (Oct)' },
+      }),
+    )
+    await expect(edit).rejects.toBeInstanceOf(AppwriteException)
+    await expect(edit).rejects.toMatchObject({ code: 409, type: 'transaction_conflict' })
+    expect(stage).toHaveBeenCalledTimes(2)
+    expect(commit.mock.calls.map(([params]) => Object.keys(params).at(-1))).toEqual([
+      'commit',
+      'rollback',
+    ])
+  })
+
+  it('keeps any other 404 at staging, such as an expired transaction, as it is', async () => {
+    const db = seeded()
+    vi.spyOn(db, 'createOperations').mockRejectedValueOnce(
+      new AppwriteException('Transaction not found.', 404, 'transaction_not_found'),
+    )
+    const edit = withTransaction(db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't1',
+        data: { description: 'Rent (Oct)' },
+      }),
+    )
+    await expect(edit).rejects.toMatchObject({ code: 404, type: 'transaction_not_found' })
+    expect(db.rows('transactions')[0]).toMatchObject({ description: 'Rent' })
+  })
+
   it('does not see a change made before the write was staged, so checks come after staging', async () => {
     const db = seeded()
     await withTransaction(db, async (tx) => {
