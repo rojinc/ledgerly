@@ -3,7 +3,16 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
 import type { ScheduleResult } from '../src/routes/create-schedule'
 import type { RunResult } from '../src/routes/run'
-import { beforeStaging, type Fakes, fakes, group, member, ok, person } from './harness'
+import {
+  beforeCommit,
+  beforeStaging,
+  type Fakes,
+  fakes,
+  group,
+  member,
+  ok,
+  person,
+} from './harness'
 
 // NOW is 07:00 on Monday 19 October in Sydney, still Sunday 18 October in UTC. Step 2 looks at
 // occurrences dated from 11 October (7 days before the UTC date) to 19 October.
@@ -58,8 +67,8 @@ const groceries = {
   autoPost: true,
 }
 
-function create(services: Fakes, body: object) {
-  return ok<ScheduleResult>(services, 'POST', '/schedules', { body, userId: 'u1' })
+function create(services: Fakes, body: object, userId = 'u1') {
+  return ok<ScheduleResult>(services, 'POST', '/schedules', { body, userId })
 }
 
 function runCron(services: Fakes) {
@@ -116,17 +125,31 @@ describe('step 2: auto-post', () => {
     expect(row(services, `${ID}_20261022`).status).toBe('scheduled')
   })
 
-  it('posts expenses on their own day, with the creator paying', async () => {
+  it('posts expenses on their own day, with the creator paying, not the owner', async () => {
+    // Alex, a member of Sam's house, made the schedule.
     const services = seeded()
-    await create(services, groceries)
+    await create(services, groceries, 'u2')
     expect((await runCron(services)).posted.posted).toBe(2)
     for (const date of ['20261012', '20261019']) {
       const id = `${groceries.id}_${date}`
-      expect(row(services, id).status).toBe('posted')
+      expect(row(services, id)).toMatchObject({ status: 'posted', updatedBy: 'pAlex' })
       expect(JSON.parse(row(services, id).inputJson).payers).toEqual([
-        { personId: 'pSam', cents: 6_000 },
+        { personId: 'pAlex', cents: 6_000 },
       ])
     }
+  })
+
+  it('looks back 7 days from the UTC date, and no further', async () => {
+    const services = seeded()
+    await create(services, {
+      ...thursdays,
+      rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU',
+      startsOn: '2026-10-10',
+    })
+    // 11 to 18 October.
+    expect((await runCron(services)).posted.posted).toBe(8)
+    expect(row(services, `${ID}_20261011`).status).toBe('posted')
+    expect(row(services, `${ID}_20261010`).status).toBe('scheduled')
   })
 
   it('leaves a shift on today until the day is over', async () => {
@@ -222,6 +245,7 @@ describe('step 2: auto-post', () => {
   it('counts an occurrence a member change has broken, and leaves it for the user', async () => {
     const services = seeded()
     await create(services, thursdays)
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
     // The employer's member row is gone, so the shift has nobody to pay it.
     await withTransaction(services.db, (tx) =>
       tx.write({ action: 'delete', tableId: 'members', rowId: 'acme-pAcme' }),
@@ -229,6 +253,38 @@ describe('step 2: auto-post', () => {
     expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 1 })
     expect(row(services, `${ID}_20261015`).status).toBe('scheduled')
     expect(services.db.rows('shares')).toEqual([])
+    // IDs and codes only.
+    expect(log).toHaveBeenCalledWith(
+      `scheduler: auto-post failed for transaction ${ID}_20261015: AppError INVARIANT_VIOLATION`,
+    )
+  })
+
+  it('can’t give a share to a member removed while the post commits', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    beforeCommit(services.db, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write({ action: 'delete', tableId: 'members', rowId: 'acme-pAcme' }),
+      ),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 1 })
+    expect(row(services, `${ID}_20261015`).status).toBe('scheduled')
+    expect(services.db.rows('shares')).toEqual([])
+  })
+
+  it('doesn’t post an occurrence moved to a later day just before its guard', async () => {
+    const services = seeded()
+    await create(services, groceries)
+    const moved = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(moved),
+      () => update(services, 'transactions', moved, { date: '2026-10-30', overridden: true }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
+    expect(row(services, moved)).toMatchObject({ status: 'scheduled', date: '2026-10-30' })
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('posted')
   })
 
   it('leaves an occurrence a person posted after the page was read', async () => {

@@ -5,13 +5,8 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { postInTransaction } from '@ledgerly/server/ledger/post'
-import {
-  findTransaction,
-  ledgerRoute,
-  loadGroupLedger,
-  Unchanged,
-} from '@ledgerly/server/ledger/transactions'
-import { Query } from 'node-appwrite'
+import { findTransaction, ledgerRoute, loadGroupLedger } from '@ledgerly/server/ledger/transactions'
+import { AppwriteException, Query } from 'node-appwrite'
 import { pages } from '../pages'
 import { findSchedule } from '../schedule-rows'
 import type { Services } from '../services'
@@ -41,8 +36,12 @@ export async function autoPost(services: Services): Promise<PostCounts> {
     try {
       if (await post(services, $id)) counts.posted += 1
     } catch (error) {
-      if (error instanceof AppError && error.code === 'LOCKED') counts.skipped += 1
-      else counts.failed += 1
+      if (error instanceof AppError && error.code === 'LOCKED') {
+        counts.skipped += 1
+      } else {
+        counts.failed += 1
+        console.error(`scheduler: auto-post failed for transaction ${$id}: ${describe(error)}`)
+      }
     }
   }
   return counts
@@ -58,7 +57,7 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
   return ledgerRoute(async () => {
     // As it is now: a person, or a rerun after a race, may find it changed.
     const row = await findTransaction(db, rowId)
-    if (row?.status !== 'scheduled' || !row.scheduleId) return false
+    if (!row?.scheduleId) return false
     const schedule = await findSchedule(db, row.scheduleId)
     if (!schedule?.autoPost) return false
     const group = await db.getRow<Groups>({
@@ -66,27 +65,37 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
       tableId: TABLES.groups,
       rowId: row.groupId,
     })
-    if (group.archivedAt) return false
-    const day = compareDates(row.date as LocalDate, localToday(group.timezone, now))
-    // A shift posts once its day is over; an expense or income on its day.
-    if (row.kind === 'shift' ? day >= 0 : day > 0) return false
+    if (group.archivedAt || !isDue(row, group, now)) return false
     const ledger = await loadGroupLedger(db, group, schedule.createdBy)
-    try {
-      await withTransaction(db, (tx) =>
-        postInTransaction(tx, db, {
-          rowId,
-          group,
-          ledger,
-          actorPersonId: null,
-          updatedBy: schedule.createdBy,
-          changes: {},
-          now,
-        }),
-      )
-    } catch (error) {
-      if (error instanceof Unchanged) return false
-      throw error
-    }
+    await withTransaction(db, (tx) =>
+      postInTransaction(tx, db, {
+        rowId,
+        group,
+        ledger,
+        actorPersonId: null,
+        updatedBy: schedule.createdBy,
+        changes: {},
+        now,
+        // Moved, posted or voided since it was read: run again, which reads it again.
+        ready: (staged) => isDue(staged, group, now),
+      }),
+    )
     return true
   })
+}
+
+// Still `scheduled`, and its day has come in the group's time zone: a shift's once it's over,
+// an expense's or income's on the day.
+function isDue(row: Transactions, group: Groups, now: Date): boolean {
+  if (row.status !== 'scheduled') return false
+  const day = compareDates(row.date as LocalDate, localToday(group.timezone, now))
+  return row.kind === 'shift' ? day < 0 : day <= 0
+}
+
+// An error's name and code, never its message, which can quote stored text
+// (security-and-privacy.md).
+function describe(error: unknown): string {
+  if (error instanceof AppError) return `AppError ${error.code}`
+  if (error instanceof AppwriteException) return `AppwriteException ${error.code} ${error.type}`
+  return error instanceof Error ? error.name : typeof error
 }

@@ -1,6 +1,6 @@
 import type { TransactionKind } from '@ledgerly/core/constants/domain'
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
-import type { Groups } from '@ledgerly/core/generated/rows'
+import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import {
   checkKindRules,
   type PostTransactionBody,
@@ -21,6 +21,7 @@ import {
   money,
   parseBody,
   plan,
+  Raced,
   replaceRows,
   requireNotFinalizing,
   requireNotTooFarAhead,
@@ -40,7 +41,8 @@ const kindRules = (kind: TransactionKind) =>
  * its stored input as they are now, plans it (`ledger`'s caller pays when the input names no
  * payers), guards the group and the people it names, and writes the shares and an activity
  * row by `actorPersonId` (null for a system job). A retry of a post that went through throws
- * `Unchanged`.
+ * `Unchanged`. `ready`, if given, must hold for the row as guarded, or it throws `Raced` so the
+ * caller reads it again: the scheduler's check that the row is still due to post.
  */
 export async function postInTransaction(
   tx: Tx,
@@ -53,6 +55,7 @@ export async function postInTransaction(
     updatedBy,
     changes,
     now,
+    ready,
   }: {
     rowId: string
     group: Groups
@@ -61,10 +64,12 @@ export async function postInTransaction(
     updatedBy: string
     changes: PostTransactionBody
     now: Date
+    ready?: (staged: Transactions) => boolean
   },
 ): Promise<void> {
   // Everything below reads the row, its items and stored input as they are now.
   const existing = await guardTransaction(tx, db, rowId, updatedBy, ['scheduled', 'due', 'posted'])
+  if (ready && !ready(existing)) throw new Raced()
   const date = (changes.date ?? existing.date) as LocalDate
   requireNotTooFarAhead(date, group, now)
   const stored = await storedInput(db, existing)
