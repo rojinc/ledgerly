@@ -336,7 +336,7 @@ async function planRewrites(
             totalCents: row.totalCents,
             shares: shares.filter((share) => share.transactionId === row.$id),
             ctx,
-            // As an edit has it: without payers, whoever posted it pays.
+            // As an edit has it: without payers, its creator pays.
             payer: row.createdBy,
           }
         : undefined
