@@ -145,6 +145,29 @@ describe('GroupsPage', () => {
     expect(screen.queryByText('Sam')).toBeNull()
   })
 
+  it('sorts a lend & borrow group by the other member’s name (#147 O11)', async () => {
+    listTeams.mockResolvedValue({ total: 2, teams: [{ $id: 'g4' }, { $id: 'g2' }] } as never)
+    // Zoe created it and named it after the viewer, Abby (p1).
+    const members = [
+      { $id: 'm1', groupId: 'g4', personId: 'p1', displayName: 'Abby' },
+      { $id: 'm2', groupId: 'g4', personId: 'p2', displayName: 'Zoe' },
+    ]
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+      const rows =
+        tableId === 'members'
+          ? members
+          : [group('g4', 'pair', 'Abby'), group('g2', 'house', 'Flat')]
+      return { total: rows.length, rows }
+    }) as never)
+    call.mockResolvedValue({ ok: true, data: { people: [], transfers: [] } })
+    renderPage()
+    await screen.findByRole('link', { name: 'Zoe' })
+    const names = screen
+      .getAllByRole('listitem')
+      .map((item) => item.querySelector('.font-medium')?.textContent)
+    expect(names).toEqual(['Flat', 'Zoe'])
+  })
+
   it('shows the group’s own name until the viewer’s person is known', async () => {
     mockPersonId = ''
     listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g4' }] } as never)

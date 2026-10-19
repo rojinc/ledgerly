@@ -2,9 +2,8 @@ import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Statements } from '@ledgerly/core/generated/rows'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { requireMember } from '@ledgerly/server/auth/require-member'
 import type { Services } from '../services'
-import { conflictAsTryAgain, getRowOrNull, getStatement, invalid } from '../shared'
+import { conflictAsTryAgain, getRowOrNull, getStatement, invalid, requireMemberOf } from '../shared'
 import { computeSnapshot } from '../snapshot'
 
 const DRAFTS_ONLY = 'Only a draft statement can be refreshed.'
@@ -19,7 +18,7 @@ export async function refreshStatement(
   statementId: string,
 ): Promise<Statements> {
   const statement = await getStatement(db, statementId)
-  const { group } = await requireMember(db, teams, userId, statement.groupId)
+  const { group } = await requireMemberOf(db, teams, userId, statement)
   if (statement.status !== 'draft') throw invalid(DRAFTS_ONLY)
   const period = {
     start: statement.periodStart as LocalDate,

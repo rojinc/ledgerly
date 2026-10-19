@@ -4,11 +4,14 @@ import { LoginPage } from './features/auth/login-page'
 import { RedirectIfSignedIn, RequireAuth } from './features/auth/route-guards'
 import { SignupPage } from './features/auth/signup-page'
 import { VerifyEmailPage } from './features/auth/verify-email-page'
+import { billRoutes } from './features/bills/routes'
 import { CalendarPage } from './features/calendar/calendar-page'
 import { DashboardPage } from './features/dashboard/dashboard-page'
 import { groupRoutes } from './features/groups/routes'
 import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
+import { shiftRoutes } from './features/shifts/routes'
+import { statementRoutes } from './features/statements/routes'
 import { transactionRoutes } from './features/transactions/routes'
 
 export const routes: RouteObject[] = [
@@ -32,7 +35,10 @@ export const routes: RouteObject[] = [
           groupRoutes,
           { path: 'calendar', element: <CalendarPage /> },
           transactionRoutes,
+          statementRoutes,
           peopleRoutes,
+          shiftRoutes,
+          billRoutes,
         ],
       },
     ],

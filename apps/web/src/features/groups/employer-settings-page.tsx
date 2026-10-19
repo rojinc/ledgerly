@@ -2,7 +2,7 @@ import type { Groups } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema, type UpdateGroupBody } from '@ledgerly/core/schemas/groups'
 import { useQueryClient } from '@tanstack/react-query'
 import { type ReactNode, useEffect, useRef } from 'react'
-import { useParams } from 'react-router'
+import { Link, useParams } from 'react-router'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -101,6 +101,12 @@ export function EmployerSettingsPage() {
     content = (
       <>
         {!isAdmin && <Message>Only an admin can change these settings.</Message>}
+        <Link
+          to={`/groups/${group.data.$id}/statements`}
+          className="self-start text-sm underline underline-offset-4"
+        >
+          Invoices
+        </Link>
         <EmployerForm
           mode="settings"
           currency={group.data.currency}

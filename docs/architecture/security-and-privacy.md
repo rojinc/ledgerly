@@ -11,12 +11,25 @@ We store people's money records, contact details and bank details. Treat every c
 | A client pretends to be another user when calling a function | Functions get the caller only from a JWT that Appwrite verifies (`account.get()`), never from `x-appwrite-user-id`, which a client can forge with a mixed-case header. Functions are `users`-only (never `any` or `guests`), so their domains aren't served, and no user is an impersonator ([permissions](permissions.md#function-execute-permissions)). |
 | Someone claims another person's history | Claims need an identity **verified** by Appwrite Auth. Unverified data never merges persons. |
 | Finding out who is a user by adding them to a group (enumeration) | Members added by someone else always start as placeholders, only the person can join, and person IDs carry no timestamp, so adding someone never reveals whether the email or phone has an account ([D-016](decisions.md)). Accepted: Appwrite's own sign-up says when an email is already registered. |
-| Teammates seeing each other's account emails | Appwrite's membership privacy setting hides account email, phone, name, MFA status and last access from team members; only the user ID is shown. Project settings aren't pushed by deploys: the lead set it on `ledgerly-dev` through the Appwrite MCP, and it must be set on prod when prod is created. |
+| Teammates seeing each other's account emails | Appwrite's membership privacy setting hides account email, phone, name, MFA status and last access from team members; only the user ID is shown. Project settings aren't pushed by deploys: the lead set it on `ledgerly-dev` through the Appwrite MCP, and it must be set on prod when prod is created ([how](#membership-privacy)). |
 | Invite spam or SMS cost abuse | Rate limits: 20 invites per inviter per day, 3 per identity per week. Tokens are hashed, single-use and expire in 14 days. |
 | Edited history | Final statements lock transactions; activity is append-only and written only by functions. |
 | Leaked secrets | No secrets in git. Function secrets are Appwrite project variables. CI secrets are GitHub Actions secrets. `.env*` files are git-ignored except `.env.example`. |
 | Malicious uploads | `receipts` accepts only images and PDFs up to 10 MB. Files are only shown as images or downloaded, never run. |
 | Injection | Appwrite queries are parameterised; no raw query strings from users. PDFs are built from data, not HTML. |
+
+### Membership privacy
+
+Set it with this command (an API key works), then read it back:
+
+```bash
+appwrite project update-membership-privacy-policy --user-id=true --user-name=false --user-email=false --user-phone=false --user-mfa=false --user-accessed-at=false
+appwrite project get-policy --policy-id membership-privacy
+```
+
+Keep the user ID visible; everything else is hidden.
+
+**Don't put it in `appwrite.config.json`.** Appwrite CLI 28.7.0 ignores `membershipsUserName`, `membershipsUserEmail` and `membershipsMfa` under `settings.auth.security`. `appwrite push settings` reports them as applied but sends nothing, so the config would claim a setting that was never made. `push settings` also needs a console login and refuses API keys.
 
 ## Personal data
 

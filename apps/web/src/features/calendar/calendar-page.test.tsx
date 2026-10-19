@@ -10,6 +10,7 @@ import { CalendarPage, groupColours } from './calendar-page'
 
 vi.mock('../../lib/appwrite', () => ({ DATABASE_ID: 'main', tablesDB: { listRows: vi.fn() } }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
+vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'p1' } }) }))
 vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn() }))
 vi.mock('../groups/use-groups', () => ({ useGroups: vi.fn() }))
 
@@ -168,6 +169,30 @@ describe('CalendarPage', () => {
     expect(links[2]?.textContent).toMatch(/Taxi.*Personal · Void.*20\.50/)
     fireEvent.click(day(/(October 2|2 October), 0 items/))
     expect(screen.getByText('Nothing on this day.')).toBeTruthy()
+  })
+
+  it('names a pair group by its other member, in the legend and the day list (#149)', async () => {
+    // Alex added the viewer, so the group's own name is the viewer's.
+    groupsHook.mockReturnValue({
+      data: [{ $id: 'g3', name: 'Sam', type: 'pair', currency: 'AUD' }],
+      isError: false,
+    } as ReturnType<typeof useGroups>)
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) =>
+      tableId === 'members'
+        ? {
+            total: 2,
+            rows: [
+              { $id: 'm1', groupId: 'g3', personId: 'p2', displayName: 'Alex' },
+              { $id: 'm2', groupId: 'g3', personId: 'p1', displayName: 'Sam' },
+            ],
+          }
+        : { total: 1, rows: [{ ...ITEMS[2], groupId: 'g3', description: 'Dinner' }] }) as never)
+    renderAt('/calendar?month=2026-10&day=2026-10-08')
+    const legend = within(await screen.findByRole('list', { name: 'Groups' }))
+    expect(await legend.findByText('Alex')).toBeTruthy()
+    const list = within(screen.getByRole('region', { name: /Thursday.*2026/ }))
+    expect((await list.findByRole('link')).textContent).toMatch(/Dinner.*Alex · Due/)
+    expect(screen.queryByText(/Sam/)).toBeNull()
   })
 
   it('moves between months and back to today', async () => {

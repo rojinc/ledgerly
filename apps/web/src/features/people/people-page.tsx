@@ -3,14 +3,14 @@ import { Link } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { useGroupName, useSortedByName } from '../groups/use-group-name'
 import { useBalances, useGroups } from '../groups/use-groups'
-import { useMembers } from '../transactions/use-transactions'
 import { balanceText } from './pair-values'
 
 /** `/people`: everyone the user lends to or borrows from, with the balance (#34). */
 export function PeoplePage() {
   const groups = useGroups()
-  const pairs = groups.data?.filter((group) => group.type === 'pair')
+  const pairs = useSortedByName(groups.data?.filter((group) => group.type === 'pair') ?? [])
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -22,7 +22,7 @@ export function PeoplePage() {
           New lend & borrow
         </Link>
       </div>
-      {pairs ? (
+      {groups.data ? (
         pairs.length === 0 ? (
           <p className="text-muted-foreground">
             No one yet. Record money you lend or borrow with “New lend & borrow”.
@@ -56,12 +56,8 @@ function PairRow({ group }: { group: Groups }) {
   const userId = useCurrentUser().data?.$id ?? ''
   const personId = useBootstrap(userId).data?.personId ?? ''
   const balances = useBalances(group.$id)
-  // The other person's name: the group's name is what its creator called them, which is the
-  // viewer's own name when the viewer is that person.
-  const members = useMembers(group.$id)
-  // Until the viewer's person is known, either member could be the other one.
-  const them = personId ? members.data?.find((member) => member.personId !== personId) : undefined
-  const name = them?.displayName ?? group.name
+  // The other person's name, not the group's (#145).
+  const name = useGroupName(group)
   const net = personId
     ? (balances.data?.people.find((person) => person.personId === personId)?.netCents ?? 0)
     : undefined
