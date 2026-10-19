@@ -517,6 +517,24 @@ describe('identity POST /reminders', () => {
     expect(services.db.rows('reminders')).toEqual([])
   })
 
+  it('asks to try again when a merge marks the recipient meanwhile, and the retry reminds who they became', async () => {
+    const alexNow = { ...SAM, $id: 'pAlexU', userId: 'u2', displayName: 'Alex' }
+    const services = fixture({ persons: [SAM, ALEX, alexNow] })
+    // Merge step 1, committed after the recipient was found and before the guards.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('persons'),
+      () => updateRow(services.db, 'persons', 'pAlex', { mergedInto: 'pAlexU' }),
+    )
+    expect((await failure(services, 'POST', '/reminders', BODY)).code).toBe('CONFLICT')
+    expect(services.sendEmail).not.toHaveBeenCalled()
+    expect(services.db.rows('reminders')).toEqual([])
+    expect(services.db.rows('activity')).toEqual([])
+    await ok(services, 'POST', '/reminders', BODY)
+    expect(services.db.rows('reminders')[0]?.toPersonId).toBe('pAlexU')
+    expect(services.db.rows('activity')[0]?.subjectPersonId).toBe('pAlexU')
+  })
+
   it('finds the other member past a row of someone merged into the sender', async () => {
     const services = fixture({
       persons: [SAM, ALEX, { ...ALEX, $id: 'pOld', mergedInto: 'pSam' }],

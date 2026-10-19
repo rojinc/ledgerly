@@ -160,9 +160,11 @@ async function commitReminder(
       if ((await getRowOrNull<Persons>(db, TABLES.persons, sender))?.deletedAt !== null) {
         throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
       }
-      if ((await getRowOrNull<Persons>(db, TABLES.persons, recipient))?.deletedAt !== null) {
-        throw new AppError('VALIDATION_FAILED', WRONG_ADDRESS)
-      }
+      const to = await getRowOrNull<Persons>(db, TABLES.persons, recipient)
+      if (to?.deletedAt !== null) throw new AppError('VALIDATION_FAILED', WRONG_ADDRESS)
+      // A merge's step 1 marked the recipient meanwhile: the retry resolves to who they became,
+      // so no reminder or activity row names a person the merge has already moved past.
+      if (to.mergedInto) throw tryAgain()
       await checkLimits(db, { sentBy: sender, toPersonId: recipient, groupId }, now)
       await tx.write(
         {
