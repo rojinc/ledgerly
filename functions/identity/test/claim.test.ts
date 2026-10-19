@@ -70,11 +70,29 @@ async function claimed(services: Fakes) {
   return (await ok<{ linkedGroupIds: string[] }>(services, 'POST', '/claim')).linkedGroupIds
 }
 
-let warn: ReturnType<typeof vi.spyOn>
+// Every line written, with its level (log.ts LEVELS): a claim warns, a finished merge logs.
+let logged: Array<{ level: string; line: string }>
 beforeEach(() => {
-  warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  logged = []
+  for (const level of ['log', 'warn', 'error'] as const) {
+    vi.spyOn(console, level).mockImplementation((line: unknown) => {
+      logged.push({ level, line: String(line) })
+    })
+  }
 })
-afterEach(() => warn.mockRestore())
+afterEach(() => {
+  // No personal data in logs: no email, phone number or name.
+  for (const { line } of logged) expect(line).not.toMatch(/@|\d{6,}|Sam Lee/)
+  vi.restoreAllMocks()
+})
+// The logProblem lines written at a level, without `fn`.
+const lines = (level: string) =>
+  logged
+    .filter((written) => written.level === level)
+    .map(({ line }) => {
+      const { fn: _fn, ...event } = JSON.parse(line) as Record<string, unknown>
+      return event
+    })
 
 describe('POST /claim', () => {
   it('joins only placeholder rows added strictly before claimedAt', async () => {
@@ -163,7 +181,6 @@ describe('POST /claim', () => {
       ],
     })
     services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     expect(await claimed(services)).toEqual(['g1'])
     const other = services.db.rows('persons').find((row) => row.$id === 'pOther')
     expect(other).toMatchObject({ userId: null, mergedInto: 'pSam' })
@@ -173,13 +190,11 @@ describe('POST /claim', () => {
       expect.objectContaining({ $id: 'm1', personId: 'pSam', status: 'active' }),
     ])
     expect(teamUsers(services, 'g1')).toEqual(['uAdmin', 'u1'])
-    expect(warn).not.toHaveBeenCalled()
-    expect(log).toHaveBeenCalledTimes(1)
-    for (const args of log.mock.calls) expect(String(args)).not.toMatch(/@|\d{6,}|Sam Lee/)
+    expect(lines('warn')).toEqual([])
+    expect(lines('log')).toHaveLength(1)
     // Finished: the next claim leaves P alone.
     expect(await claimed(services)).toEqual([])
-    expect(log).toHaveBeenCalledTimes(1)
-    log.mockRestore()
+    expect(lines('log')).toHaveLength(1)
   })
 
   it('silently leaves an identity that belongs to another registered person', async () => {
@@ -189,7 +204,7 @@ describe('POST /claim', () => {
     })
     services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
     await claimed(services)
-    expect(warn).not.toHaveBeenCalled()
+    expect(logged).toEqual([])
     expect(services.db.rows('identities')[1]).toMatchObject({ personId: 'pOther' })
   })
 
@@ -254,6 +269,43 @@ describe('POST /claim', () => {
     expect(services.db.rows('activity')).toEqual([
       expect.objectContaining({ subjectPersonId: 'pSam', summary: 'joined' }),
     ])
+  })
+
+  // #322: an account deletion purging a group deletes its team first and its rows last.
+  it('skips a row whose team is gone, a group being purged, and joins the others', async () => {
+    const services = claimFixture([
+      placeholderRow('m1', 'g1', 'pSam', BEFORE),
+      // Listed first, so the claim must go on past it.
+      placeholderRow('m9', 'g9', 'pSam', '2026-09-01T00:00:00.000Z'),
+    ])
+    expect(await claimed(services)).toEqual(['g1'])
+    expect(statusOf(services, 'm9')).toBe('placeholder')
+    expect(services.db.rows('activity').map((row) => row.groupId)).toEqual(['g1'])
+  })
+
+  it('leaves out a group whose team goes just after its row joined', async () => {
+    const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+    const add = services.teams.createMembership.bind(services.teams)
+    let calls = 0
+    vi.spyOn(services.teams, 'createMembership').mockImplementation(async (params) => {
+      calls += 1
+      if (calls === 2) throw new AppwriteException('Team not found', 404, 'team_not_found')
+      return (await add(params)) as never
+    })
+    expect(await claimed(services)).toEqual([])
+    expect(calls).toBe(2)
+    // Joined already: the purge deletes the row with the others.
+    expect(statusOf(services, 'm1')).toBe('active')
+  })
+
+  it('still fails the claim for any other team error', async () => {
+    const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+    vi.spyOn(services.teams, 'createMembership').mockRejectedValue(
+      // Another 404, so only `team_not_found` counts as a purge.
+      new AppwriteException('User not found', 404, 'user_not_found'),
+    )
+    expect((await call(services, 'POST', '/claim')).status).toBe(500)
+    expect(statusOf(services, 'm1')).toBe('placeholder')
   })
 
   it('takes back the team membership when an admin removed the row meanwhile', async () => {

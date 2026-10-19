@@ -4,6 +4,7 @@ import { AppwriteException } from 'node-appwrite'
 import { z } from 'zod'
 import { callerFromJwt, type Db, dbFromRequest } from '../appwrite/client'
 import { AppError } from './app-error'
+import { describe } from './log'
 
 /** The parts of the context Appwrite's Node runtime passes to a function that we use. */
 export type AppwriteContext = {
@@ -239,13 +240,4 @@ function parseBody(text: string): unknown {
   } catch {
     throw new AppError('VALIDATION_FAILED', 'The request body is not valid JSON.')
   }
-}
-
-// Names the error behind a 5xx for the log line, never its message: messages can quote input
-// (JSON.parse puts the text it failed on in its message), and logs hold no personal data.
-function describe(thrown: unknown): string {
-  if (thrown instanceof AppwriteException) {
-    return `AppwriteException ${thrown.code} ${thrown.type}`
-  }
-  return thrown instanceof Error ? thrown.name : typeof thrown
 }

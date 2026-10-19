@@ -13,12 +13,14 @@ import type {
 import type { MergeMembers } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
+import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
+import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { listAll, Raced } from '@ledgerly/server/ledger/transactions'
-import { AppwriteException, ID, Permission, Query, Role } from 'node-appwrite'
+import { ID, Permission, Query, Role } from 'node-appwrite'
+import { joinTeam } from './join-group'
 import { getRowOrNull, isAppwriteError, tryAgain, typedKeyDeletes } from './rows'
 import type { Services } from './services'
 
@@ -121,7 +123,13 @@ export async function markMerged(
       return deletes.length
     })
     // After the commit, so a rolled-back try logs nothing.
-    if (typed > 0) console.log(`merge ${placeholderId} into ${intoId}: ${typed} typed keys deleted`)
+    if (typed > 0) {
+      logProblem('merge_typed_keys_deleted', {
+        personId: placeholderId,
+        intoPersonId: intoId,
+        count: typed,
+      })
+    }
     return true
   } catch (error) {
     if (error instanceof NotOurs) return false
@@ -349,20 +357,6 @@ async function moveMember(
     return false
   }
   return true
-}
-
-/**
- * Adds the user to the group's team; false if the team is gone: an account deletion is purging
- * the group, its rows last (#334, as join-group.ts does for a claim).
- */
-async function joinTeam(teams: Services['teams'], groupId: string, userId: string) {
-  try {
-    await addToTeam(teams, groupId, userId)
-    return true
-  } catch (error) {
-    if (error instanceof AppwriteException && error.type === 'team_not_found') return false
-    throw error
-  }
 }
 
 /** Whether the person has a joined row in the group (`active` or `left`) they didn't leave on their own. */

@@ -6,6 +6,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { ID, Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
 import { markMerged } from '../merge'
@@ -54,7 +55,7 @@ export function verifiedIdentities(user: AccountUser): VerifiedIdentity[] {
       identities.push({ type, key: identityKey(type, value) })
     } catch (error) {
       if (!(error instanceof RangeError)) throw error
-      console.warn(`skipped an unusable verified ${type}`)
+      logProblem('claim_identity_unusable', { identityType: type })
     }
   }
   return identities
@@ -79,7 +80,7 @@ export async function claim(
   // Every merge into this person that isn't finished: one just marked, or one cut off before.
   // A merge that fails is left for the next claim, so it never stops a login.
   const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
-    console.warn(`merge into ${person.$id} stopped: ${errorName(error)}`)
+    logProblem('merge_stopped', { intoPersonId: person.$id, error })
     return { joined: [], finished: 0 }
   })
   // A finished merge moved P's identities here, the claimed one too: it's verified now.
@@ -183,11 +184,4 @@ async function rowsToJoin(db: Db, person: Persons): Promise<Members[]> {
     if (page.length < PAGE_SIZE) return rows
     cursor = page.at(-1)?.$id
   }
-}
-
-/** An error's code or class name, never its message, which may quote stored data. */
-function errorName(error: unknown): string {
-  if (error instanceof AppError) return error.code
-  if (isAppwriteError(error, 409)) return 'conflict'
-  return error instanceof Error ? error.name : 'unknown'
 }

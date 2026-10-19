@@ -404,7 +404,9 @@ describe('POST /statements/{id}/finalize', () => {
     expect(stored(services)).toMatchObject({ status: 'draft', number: 10, issuedOn: null })
     expect(locks(services)).toEqual({ s1: null })
     expect(services.files.stored.size).toBe(0)
-    expect(errors).toEqual(['statements: statement st1 failed its check: fresh'])
+    expect(errors.map((line) => JSON.parse(line))).toEqual([
+      { fn: 'unknown', event: 'snapshot_check_failed', statementId: 'st1', problems: ['fresh'] },
+    ])
   })
 
   it('takes the next number when another invoice took this one meanwhile', async () => {

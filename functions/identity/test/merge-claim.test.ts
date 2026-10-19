@@ -281,9 +281,17 @@ function recorded(services: Fakes, groupIds: string[]): string {
   )
 }
 
+/** The logProblem lines a spy saw, without `fn`. */
+function events(spy: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+  return spy.mock.calls.map(([line]: unknown[]) => {
+    const { fn: _fn, ...event } = JSON.parse(String(line)) as Record<string, unknown>
+    return event
+  })
+}
+
 /** The merges that stopped on an error: none, unless a test makes one. */
 function stopped() {
-  return warn.mock.calls.filter(([line]: unknown[]) => /stopped/.test(String(line)))
+  return events(warn).filter(({ event }) => event === 'merge_stopped')
 }
 
 describe('POST /claim, merging a placeholder', () => {
@@ -706,9 +714,14 @@ describe('POST /claim, merging a placeholder', () => {
     // waits. The input names Sam now: it named a non-member before, so nothing changes there.
     expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: [] })
-    expect(warn).toHaveBeenCalledWith(
-      'merge pP into pSam left shares row s10 in group g3 for a later claim',
-    )
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_stray_row',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      groupId: 'g3',
+      table: 'shares',
+      rowId: 's10',
+    })
   })
 
   // Two claims cut off in turn: the second finishes the group the first left part done before
@@ -826,16 +839,25 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     expect(added).toBe(true)
     expect(namingSammy(services).identities).toEqual(['iPhone'])
-    expect(warn).toHaveBeenCalledWith(
-      'merge pP into pSam left members row m9 in group g9 for a later claim',
-    )
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_stray_row',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      groupId: 'g9',
+      table: 'members',
+      rowId: 'm9',
+    })
     // The next claim walks Sammy's rows too, but step 1 recorded no dates for g9, so the group
     // waits whole (#301) and the merge stays open, logged.
     vi.mocked(services.db.listRows).mockRestore()
     await claim(services)
     expect(namingSammy(services).identities).toEqual(['iPhone'])
     expect(services.db.rows('members').find((member) => member.$id === 'm9')?.personId).toBe('pP')
-    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g9')
+    expect(events(error)).toContainEqual({
+      event: 'merge_no_member_dates',
+      personId: 'pP',
+      groupId: 'g9',
+    })
   })
 
   it('moves nothing in a group whose finalize ends just after step 2 put it off', async () => {
@@ -876,7 +898,12 @@ describe('POST /claim, merging a placeholder', () => {
     const services = house({ transactions: [unreadable] })
     await claim(services)
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: ['t8'] })
-    expect(warn).toHaveBeenCalledWith('merge pP into pSam left transaction t8 as it is')
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_transaction',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      transactionId: 't8',
+    })
   })
 
   it('plans a days item as it was before the merge, with the dates step 1 recorded (B2)', async () => {
@@ -950,8 +977,12 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     // Nothing moved: Sammy keeps both rows, the shares and the key.
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], members: ['m1', 'm3'] })
-    expect(error).toHaveBeenCalledWith('merge pP: its recorded member dates are unreadable')
-    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
+    expect(events(error)).toContainEqual({ event: 'merge_member_dates_unreadable', personId: 'pP' })
+    expect(events(error)).toContainEqual({
+      event: 'merge_no_member_dates',
+      personId: 'pP',
+      groupId: 'g1',
+    })
   })
 
   it('carries each group’s input scan on from its own resume point (#242 G)', async () => {
@@ -1019,7 +1050,11 @@ describe('POST /claim, merging a placeholder', () => {
       shares: ['s2'],
       transactions: ['t1'],
     })
-    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
+    expect(events(error)).toContainEqual({
+      event: 'merge_no_member_dates',
+      personId: 'pP',
+      groupId: 'g1',
+    })
     expect(stopped()).toEqual([])
   })
 
@@ -1046,7 +1081,7 @@ describe('POST /claim, merging a placeholder', () => {
     const { status, body } = await claim(services)
     expect(status).toBe(200)
     expect(body).toEqual({ ok: true, data: { linkedGroupIds: expect.arrayContaining(['g9']) } })
-    expect(stopped()).toEqual([['merge into pSam stopped: Error']])
+    expect(stopped()).toEqual([{ event: 'merge_stopped', intoPersonId: 'pSam', cause: 'Error' }])
     // The next claim carries on with the merge.
     vi.mocked(services.db.listRows).mockRestore()
     warn.mockClear()
@@ -1107,7 +1142,11 @@ describe('POST /claim, merging a placeholder', () => {
     // Sammy's rows stay Sammy's, and Sam was taken out of g1's team again.
     expect(services.db.rows('members').find((row) => row.$id === 'm1')?.personId).toBe('pP')
     expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u2'])
-    expect(log).toHaveBeenCalledWith('merge pP into pSam stopped: that account is being deleted')
+    expect(events(log)).toContainEqual({
+      event: 'merge_stopped_into_deleted',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+    })
   })
 
   it('stops every merge into an account being deleted, ones with only their identities left too', async () => {
