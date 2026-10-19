@@ -26,7 +26,8 @@ export function formatDate(date: string): string {
   }).format(Date.UTC(year, month - 1, day))
 }
 
-function lineText(line: Line): string {
+/** A line as the PDF names it: its description, or its kind. */
+export function lineText(line: Line): string {
   return line.description || KIND_LABELS[line.kind] || line.kind
 }
 

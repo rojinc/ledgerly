@@ -122,6 +122,13 @@ function House({
           Add expense
         </Link>
       )}
+      {/* #166: the house's monthly divides, for everyone in it. */}
+      <Link
+        to={`/groups/${group.$id}/statements`}
+        className="self-start text-sm underline underline-offset-4"
+      >
+        Statements
+      </Link>
       {/* #44: every role reads the house's bills. */}
       <Link
         to={`/bills?groupId=${group.$id}`}
