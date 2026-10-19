@@ -543,3 +543,155 @@ describe('PeoplePage', () => {
     expect(screen.getByText(/No one yet/)).toBeTruthy()
   })
 })
+
+describe('PairPage: send a reminder (#266)', () => {
+  const button = () => screen.queryByRole('button', { name: 'Send a reminder' })
+
+  async function openForm() {
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Send a reminder' }))
+    const heading = screen.getByRole('heading', { name: 'Remind Sam what they owe' })
+    expect(document.activeElement).toBe(heading)
+  }
+
+  function refused(code: string, message: string): Result<unknown> {
+    return { ok: false, error: { code, message } } as Result<unknown>
+  }
+
+  it.each([
+    ['nothing is owed', () => mockGroup(0)],
+    ['you owe them', () => mockGroup(-5000)],
+    ['the group is archived', () => mockGroup(5000, { archivedAt: '2026-10-01T00:00:00.000Z' })],
+    ['you’re a viewer', () => mockGroup(5000, {}, 'viewer')],
+  ])('isn’t offered when %s', async (_case, setUp) => {
+    setUp()
+    mockRows()
+    renderAt('/people/g1')
+    await screen.findByText('History')
+    expect(button()).toBeNull()
+  })
+
+  it('sends to the address typed, which starts empty, then says so and closes', async () => {
+    mockGroup(5000)
+    mockRows()
+    call.mockResolvedValue(ok({ sentAt: NOW.toISOString() }))
+    await openForm()
+    const field = input('Their email address')
+    expect(field.value).toBe('')
+    expect(document.getElementById(field.getAttribute('aria-describedby') ?? '')?.textContent).toBe(
+      'Use an address you added them with.',
+    )
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(await screen.findByText('Reminder sent.')).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('identity', 'POST', '/reminders', {
+      id: expect.any(String),
+      groupId: 'g1',
+      email: 'sam@example.com',
+    })
+    expect(screen.queryByLabelText('Their email address')).toBeNull()
+    expect(document.activeElement).toBe(button())
+  })
+
+  it('keeps the id across a retry after an error, and makes a new one after a success', async () => {
+    mockGroup(5000)
+    mockRows()
+    call
+      .mockResolvedValueOnce(refused('INTERNAL', 'We couldn’t send the reminder. Try again later.'))
+      .mockResolvedValueOnce(ok({ sentAt: NOW.toISOString() }))
+      .mockResolvedValueOnce(ok({ sentAt: NOW.toISOString() }))
+    await openForm()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'We couldn’t send the reminder. Try again later.',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByText('Reminder sent.')
+    fireEvent.click(screen.getByRole('button', { name: 'Send a reminder' }))
+    // A new reminder: the last one's news goes.
+    expect(screen.queryByText('Reminder sent.')).toBeNull()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(3))
+    const ids = call.mock.calls.map(([, , , body]) => (body as { id: string }).id)
+    expect(ids[1]).toBe(ids[0])
+    expect(ids[2]).not.toBe(ids[0])
+  })
+
+  it.each([
+    [
+      'RATE_LIMITED',
+      'Too many reminders.',
+      'alert',
+      'You’ve sent a reminder recently. Try again in a few days.',
+    ],
+    [
+      'FORBIDDEN',
+      'Verify your email address before sending reminders.',
+      'alert',
+      /^Verify your email address before sending reminders\. .*banner at the top of the page/,
+    ],
+    ['INTERNAL', 'Something went wrong.', 'alert', 'Something went wrong.'],
+    [
+      'VALIDATION_FAILED',
+      "That isn't an address this group has for them. Use one you added them with.",
+      'field',
+      "That isn't an address this group has for them. Use one you added them with.",
+    ],
+  ])('shows %s, and keeps the form open', async (code, message, where, shown) => {
+    mockGroup(5000)
+    mockRows()
+    call.mockResolvedValue(refused(code, message))
+    await openForm()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    if (where === 'alert') {
+      expect((await screen.findByRole('alert')).textContent).toMatch(shown)
+    } else {
+      await waitFor(() =>
+        expect(input('Their email address').getAttribute('aria-invalid')).toBe('true'),
+      )
+      expect(document.getElementById('reminderEmail-error')?.textContent).toBe(shown)
+    }
+    expect(screen.getByLabelText('Their email address')).toBeTruthy()
+    expect(screen.queryByText('Reminder sent.')).toBeNull()
+  })
+
+  it('checks the address before sending, and sends once while busy', async () => {
+    mockGroup(5000)
+    mockRows()
+    let answer!: (result: Result<unknown>) => void
+    call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
+      'Enter their email address',
+    )
+    type('Their email address', 'sam')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
+      'Enter an email address like name@example.com',
+    )
+    expect(call).not.toHaveBeenCalled()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    const busy = await screen.findByRole('button', { name: 'Sending…' })
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(busy)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(screen.getByLabelText('Their email address')).toBeTruthy()
+    answer(ok({ sentAt: NOW.toISOString() }))
+    await screen.findByText('Reminder sent.')
+  })
+
+  it('closes on Cancel, with focus back on the button', async () => {
+    mockGroup(5000)
+    mockRows()
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByLabelText('Their email address')).toBeNull()
+    expect(document.activeElement).toBe(button())
+  })
+})
