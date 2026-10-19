@@ -11,7 +11,12 @@ import type {
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { businessDetailsSchema } from '@ledgerly/core/schemas/identity'
 import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/schemas/statements'
-import { buildStatementSnapshot } from '@ledgerly/core/statements/snapshot'
+import { type Net, netsFromShares } from '@ledgerly/core/settle/nets'
+import {
+  buildStatementSnapshot,
+  mergedClosings,
+  mergedShares,
+} from '@ledgerly/core/statements/snapshot'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
@@ -19,6 +24,15 @@ import { z } from 'zod'
 import { chunks, getRowOrNull, invalid, listAll } from './shared'
 
 type Line = StatementSnapshot['lines'][number]
+
+/**
+ * Who has a member row in the group, and who each merged person with none was merged into, as
+ * one snapshot read them (statements.md#core-rules, rule 2).
+ */
+export type Membership = {
+  inGroup: ReadonlySet<string>
+  mergedInto: ReadonlyMap<string, string | null>
+}
 
 // A shift's stored input keeps its minutes and rate (ledger.md#shifts).
 const storedShiftSchema = z.looseObject({
@@ -37,7 +51,8 @@ export function statementTypeOf(group: Groups): Statements['type'] {
  * locked and is dated on or before the period end, plus those already locked to `statementId`
  * (an interrupted finalize, step 3). The opening is the closing of the latest final statement
  * that ends before this period does. Also returns the IDs of the transactions not locked yet,
- * which finalize step 4 locks.
+ * which finalize step 4 locks, and the membership it used, so finalize's check (step 5) counts
+ * people the same way even if a merge changes a member row meanwhile.
  */
 export async function computeSnapshot(
   db: Db,
@@ -45,7 +60,7 @@ export async function computeSnapshot(
   period: DateRange,
   now: Date,
   statementId?: string,
-): Promise<{ snapshot: StatementSnapshot; unlockedIds: string[] }> {
+): Promise<{ snapshot: StatementSnapshot; unlockedIds: string[]; membership: Membership }> {
   const type = statementTypeOf(group)
   const [members, unlocked, locked, previous] = await Promise.all([
     listAll<Members>(db, TABLES.members, [Query.equal('groupId', group.$id)]),
@@ -67,6 +82,20 @@ export async function computeSnapshot(
   // both: it counts once.
   const transactions = [...new Map([...unlocked, ...locked].map((row) => [row.$id, row])).values()]
   const shares = await sharesOf(db, transactions)
+  // Rule 2: a merged person with no member row counts as the person they were merged into.
+  const closings = (previous?.people ?? []).map((person) => ({
+    personId: person.personId,
+    netCents: person.closingCents,
+  }))
+  const inGroup = new Set(members.map((member) => member.personId))
+  const mergedInto = await mergedIntoOf(
+    db,
+    [
+      ...closings.map((net) => net.personId),
+      ...[...shares.values()].flat().map((share) => share.personId),
+    ],
+    inGroup,
+  )
   const snapshot = buildStatementSnapshot({
     group: {
       id: group.$id,
@@ -77,17 +106,73 @@ export async function computeSnapshot(
     },
     period,
     people: members.map((member) => ({ personId: member.personId, name: member.displayName })),
-    previousClosing: previous
-      ? previous.people.map((person) => ({
-          personId: person.personId,
-          netCents: person.closingCents,
-        }))
-      : [],
-    lines: transactions.map((row) => lineOf(row, shares.get(row.$id) ?? [])),
+    previousClosing: previous ? mergedClosings(closings, inGroup, mergedInto) : [],
+    lines: transactions.map((row) =>
+      lineOf(row, mergedShares(shares.get(row.$id) ?? [], inGroup, mergedInto)),
+    ),
     ...(type === 'invoice' ? await invoiceParties(db, group, members) : {}),
     generatedAt: now.toISOString(),
   })
-  return { snapshot, unlockedIds: unlocked.map((row) => row.$id) }
+  return {
+    snapshot,
+    unlockedIds: unlocked.map((row) => row.$id),
+    membership: { inGroup, mergedInto },
+  }
+}
+
+/**
+ * `known` plus `mergedInto` for every other person in `personIds` with no member row in the
+ * group, following each chain once (statements.md#core-rules, rule 2). Reads `persons` only for
+ * those, which is rare: a merge in progress, or a closing from before one.
+ */
+async function mergedIntoOf(
+  db: Db,
+  personIds: readonly string[],
+  inGroup: ReadonlySet<string>,
+  known: ReadonlyMap<string, string | null> = new Map(),
+): Promise<Map<string, string | null>> {
+  const mergedInto = new Map(known)
+  let unread = [...new Set(personIds)].filter((id) => !inGroup.has(id) && !mergedInto.has(id))
+  while (unread.length > 0) {
+    for (const id of unread) mergedInto.set(id, null)
+    const rows = (
+      await Promise.all(
+        chunks(unread).map((ids) =>
+          listAll<Persons>(db, TABLES.persons, [Query.equal('$id', ids)]),
+        ),
+      )
+    ).flat()
+    for (const row of rows) mergedInto.set(row.$id, row.mergedInto)
+    unread = [
+      ...new Set(
+        rows.flatMap((row) =>
+          row.mergedInto && !inGroup.has(row.mergedInto) && !mergedInto.has(row.mergedInto)
+            ? [row.mergedInto]
+            : [],
+        ),
+      ),
+    ]
+  }
+  return mergedInto
+}
+
+/**
+ * `shares` with a merged person who has no member row counted as the person they were merged
+ * into (rule 2), for finalize's fresh sum (step 5). It uses the snapshot's `membership`, reading
+ * `persons` only for people the snapshot didn't name.
+ */
+export async function sharesInGroup(
+  db: Db,
+  { inGroup, mergedInto }: Membership,
+  shares: readonly Shares[],
+): Promise<Net[]> {
+  const all = await mergedIntoOf(
+    db,
+    shares.map((share) => share.personId),
+    inGroup,
+    mergedInto,
+  )
+  return netsFromShares(mergedShares(shares, inGroup, all))
 }
 
 /** The snapshot of the latest final statement ending before `period` does, if there is one. */
@@ -131,7 +216,7 @@ export async function sharesOf(
   return byTransaction
 }
 
-function lineOf(row: Transactions, shares: readonly Shares[]): Line {
+function lineOf(row: Transactions, shares: readonly Line['shares'][number][]): Line {
   const { shift } = storedShiftSchema.parse(JSON.parse(row.inputJson))
   return {
     transactionId: row.$id,
