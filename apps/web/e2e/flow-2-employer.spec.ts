@@ -1,7 +1,7 @@
 import { addDays, type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
-import { expect, test } from '@playwright/test'
+import { expect, type Page, test } from '@playwright/test'
 import { runId, testEmail } from './dev-project'
 import { logIn, setupUser } from './users'
 
@@ -26,17 +26,25 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   await page.getByLabel('Invoice cycle').selectOption({ label: 'Monthly' })
   await page.getByLabel('Payment terms (days)').fill('14')
   await page.getByRole('button', { name: 'Create employer' }).click()
+  // Its settings, as saved.
   await expect(page.getByRole('heading', { level: 1, name: employer })).toBeVisible()
+  await expect(page.getByLabel('Billing emails')).toHaveValue(testEmail('acme-billing'))
+  await expect(page.getByLabel('Default hourly rate (AUD)')).toHaveValue('25.00')
+  await expect(page.getByLabel('Invoice cycle')).toHaveValue('monthly')
+  await expect(page.getByLabel('Payment terms (days)')).toHaveValue('14')
   const groupId = /\/groups\/([^/]+)\/settings/.exec(page.url())?.[1]
   expect(groupId).toBeTruthy()
 
   // Step 2: every Thursday, 5 hours at the employer's $25/h, from today, skipping NSW holidays.
+  // It ends with the horizon, so runs don't leave schedules in dev that go on for ever.
   const today = localToday(ZONE, new Date())
   await page.goto(`/schedules/new?groupId=${groupId}`)
   await page.getByLabel('Paid hours per shift').fill('5')
   await expect(page.getByLabel('Hourly rate (AUD)')).toHaveValue('25.00')
   await page.getByLabel('Thursday', { exact: true }).check()
   await page.getByLabel('Starts on').fill(today)
+  await page.getByLabel('On a date').check()
+  await page.getByLabel('Last date').fill(addDays(today, HORIZON_DAYS))
   await page.getByLabel('Skip public holidays (AU-NSW)').check()
   await page.getByRole('button', { name: 'Create schedule' }).click()
   await expect(page.getByText(/^Every Thursday/)).toBeVisible()
@@ -48,21 +56,30 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   for (const month of months) {
     await page.goto(`/calendar?month=${month}`)
     for (const day of days.filter((date) => date.startsWith(month))) {
-      const shift = dayButton(page, day).locator('.border-dashed', { hasText: 'Shift' })
+      const button = await dayButton(page, day)
+      // The grid renders once the month's shifts are read: a count of 0 means nothing before.
+      await expect(button, day).toBeVisible()
       const expected = weekdayOf(day) === THURSDAY && !isHoliday(day)
-      await expect(shift, day).toHaveCount(expected ? 1 : 0)
+      await expect(button.locator('.border-dashed', { hasText: 'Shift' }), day).toHaveCount(
+        expected ? 1 : 0,
+      )
     }
   }
 })
 
-/** A calendar day's button, named by its date ("Thursday 22 October, 1 item"). */
-function dayButton(page: import('@playwright/test').Page, day: LocalDate) {
-  const [year, month, date] = day.split('-').map(Number) as [number, number, number]
-  const label = new Intl.DateTimeFormat('en-AU', {
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
-    timeZone: 'UTC',
-  }).format(Date.UTC(year, month - 1, date))
-  return page.getByRole('button', { name: new RegExp(`^${label},`) })
+/**
+ * A calendar day's button, named by its date ("Thursday 22 October, 1 item"). The date is
+ * worded in the browser, as the calendar words it.
+ */
+async function dayButton(page: Page, day: LocalDate) {
+  const label = await page.evaluate((date) => {
+    const [year, month, dayOfMonth] = date.split('-').map(Number) as [number, number, number]
+    return new Intl.DateTimeFormat(undefined, {
+      weekday: 'long',
+      day: 'numeric',
+      month: 'long',
+      timeZone: 'UTC',
+    }).format(Date.UTC(year, month - 1, dayOfMonth))
+  }, day)
+  return page.getByRole('button', { name: new RegExp(`^${label}, \\d+ items?$`) })
 }

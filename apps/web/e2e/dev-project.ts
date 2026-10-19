@@ -89,18 +89,22 @@ export async function userIdByEmail(email: string): Promise<string> {
   return user.$id
 }
 
+/** A run ID as global setup makes it: nothing else is ever used to pick users to delete. */
+export const RUN_ID = /^e2e[a-z0-9]{10,}$/
+
 /**
- * Deletes every user this run made, through the API or the app: those registered since it
- * started whose address carries its ID. Never anyone else.
+ * Deletes every user the run made, through the API or the app: those whose address starts with
+ * its mark. The server does the filtering, so no other user of dev is ever read, let alone
+ * deleted. One failed delete doesn't stop the others; any failure is thrown at the end.
  */
-export async function deleteRunUsers(since: string): Promise<number> {
-  const mark = `+${runId()}-`
-  const ours: string[] = []
+export async function deleteRunUsers(id: string): Promise<number> {
+  if (!RUN_ID.test(id)) throw new Error('Not a run ID: nothing deleted')
+  const ours: { $id: string; email: string }[] = []
   // All of them first: a deleted user can't be the next page's cursor.
   let cursor: string | undefined
   for (;;) {
     const page = [
-      query('greaterThanEqual', [since], 'registration'),
+      query('startsWith', [`delivered+${id}-`], 'email'),
       query('limit', [100]),
       ...(cursor ? [query('cursorAfter', [cursor])] : []),
     ].join('&')
@@ -108,10 +112,16 @@ export async function deleteRunUsers(since: string): Promise<number> {
       'GET',
       `/users?${page}`,
     )
-    ours.push(...users.filter((user) => user.email.includes(mark)).map((user) => user.$id))
+    ours.push(...users)
     if (users.length < 100) break
     cursor = users.at(-1)?.$id
   }
-  for (const id of ours) await api('DELETE', `/users/${id}`)
+  const failed: string[] = []
+  for (const user of ours) {
+    // Checked here too: only this run's addresses, whatever the server answered.
+    if (!user.email.startsWith(`delivered+${id}-`)) continue
+    await api('DELETE', `/users/${user.$id}`).catch((error: Error) => failed.push(error.message))
+  }
+  if (failed.length > 0) throw new Error(`${failed.length} users not deleted: ${failed.join('; ')}`)
   return ours.length
 }

@@ -20,10 +20,12 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
   timeout: 60_000,
+  // The whole suite, within #38's 10 minutes.
+  globalTimeout: 10 * 60_000,
   expect: { timeout: 15_000 },
   reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
+  // It returns the teardown, which deletes the run's users.
   globalSetup: './e2e/global-setup.ts',
-  globalTeardown: './e2e/global-teardown.ts',
   use: {
     baseURL: `http://localhost:${PORT}`,
     // Not the runner's zone, so a date that slips a day shows up.
@@ -35,6 +37,7 @@ export default defineConfig({
   webServer: {
     command: `npm run dev -- --port ${PORT} --strictPort`,
     url: `http://localhost:${PORT}`,
-    reuseExistingServer: !process.env.CI,
+    // Always this checkout's code: a server already on the port (another worktree's) is an error.
+    reuseExistingServer: false,
   },
 })
