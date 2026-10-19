@@ -120,12 +120,13 @@ async function deleteFile(files: FilesApi, bucketId: string, fileId: string, gro
 }
 
 // Every row of the group but its member rows and the group row, with the invites to its member
-// rows, in transactions of at most 90 writes: each transaction with its shares and items, and its receipts taken off, never split,
-// and the balances row with the first, so the cache never disagrees with the shares. Each batch
-// also gives the group row a fresh `rev`, as every other writer of shares does
-// (ledger.md#concurrency), so a nightly check reading the group meanwhile sees it change, and
-// its repair fails rather than build the balances row again. The `receiptFiles` rows stay, the
-// deleted files' rows detached: scheduler step 5 deletes them (data-model.md#receiptfiles).
+// rows, in transactions of at most 90 writes: each transaction with its shares and items, and its
+// receipts taken off, never split, and the balances row with the first, so the cache never
+// disagrees with the shares. Each batch also gives the group row a fresh `rev`, as every other
+// writer of shares does (ledger.md#concurrency), so a nightly check reading the group meanwhile
+// sees it change, and its repair fails rather than build the balances row again. The `receiptFiles`
+// rows stay, the deleted files' rows detached: scheduler step 5 deletes them
+// (data-model.md#receiptfiles).
 async function deleteRows(services: Services, groupId: string): Promise<boolean> {
   const { db, now } = services
   let batch: Write[] = []
