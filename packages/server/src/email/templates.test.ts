@@ -4,6 +4,7 @@ import {
   divideEmail,
   type EmailContent,
   emailChangedEmail,
+  inviteEmail,
   invoiceEmail,
   passwordChangedEmail,
   phoneChangedEmail,
@@ -285,6 +286,74 @@ describe('timerRunningEmail', () => {
     '2026-10-16T10:00:00.000',
   ])('refuses %j', (startedAt) => {
     expect(() => timer(startedAt)).toThrow('startedAt must be an ISO date and time')
+  })
+})
+
+describe('inviteEmail', () => {
+  const LINK = 'https://app.example/invite#Qx3_kz-9AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+
+  const invite = (inviterName: string, groupName: string) =>
+    inviteEmail({ inviterName, groupName, url: LINK })
+
+  it('names the inviter and the group, and links to the invite', () => {
+    const content = invite('Ann Cho', 'Flat 2')
+    expectWellFormed(content)
+    expect(content.subject).toBe("You've been invited to a group on Ledgerly")
+    expect(content.text).toContain(
+      'Ann Cho added you to the group “Flat 2” on Ledgerly and invited you to join.',
+    )
+    expect(content.text).toContain(`Accept the invite: ${LINK}`)
+    expect(content.html).toContain(`<a href="${LINK}">Accept the invite</a>`)
+  })
+
+  it('holds no amounts', () => {
+    const content = invite('Ann Cho', 'Flat 2')
+    for (const part of [content.subject, content.text, content.html]) {
+      expect(part).not.toMatch(/\$|AUD|\d[\d,]*\.\d{2}\b|\bcents?\b|\bowe/i)
+    }
+  })
+
+  it('keeps both names out of the subject, puts each on one line and escapes them', () => {
+    const content = invite(
+      `<b>Ann & "Jo"</b>\r\nBcc: x@example.com`,
+      `Tom's <i>Flat</i>\n\tPay here`,
+    )
+    expect(content.subject).toBe("You've been invited to a group on Ledgerly")
+    expect(content.subject).not.toMatch(/Ann|Jo|Bcc|Tom|Flat|Pay|</)
+    expect(content.text).toContain(
+      `<b>Ann & "Jo"</b> Bcc: x@example.com added you to the group “Tom's <i>Flat</i> Pay here” on`,
+    )
+    expect(content.html).toContain(
+      '&lt;b&gt;Ann &amp; &quot;Jo&quot;&lt;/b&gt; Bcc: x@example.com added you to the group “Tom&#39;s &lt;i&gt;Flat&lt;/i&gt; Pay here” on',
+    )
+    expect(content.html).not.toMatch(/<b>|<i>/)
+  })
+
+  it('cuts each name past 40 characters, by character, as a reminder cuts its sender', () => {
+    // A family emoji is 5 code points but one character: as the 39th, it is kept whole, not split.
+    const family = '👩‍👩‍👧'
+    const edge = `${'a'.repeat(38)}${family}bb`
+    const cut = `${'a'.repeat(38)}${family}…`
+    expect(invite(edge, 'Flat 2').text).toContain(`${cut} added you to the group “Flat 2”`)
+    expect(invite('Ann', edge).text).toContain(`Ann added you to the group “${cut}” on`)
+    // 40 characters (44 code points) stay whole.
+    const whole = `${'b'.repeat(39)}${family}`
+    expect(invite(whole, whole).text).toContain(`${whole} added you to the group “${whole}” on`)
+  })
+
+  it('removes bidi controls from both names, as a reminder does from its sender', () => {
+    const [override, pop, isolate, popIsolate, mark] = [0x202e, 0x202c, 0x2067, 0x2069, 0x200f].map(
+      (code) => String.fromCodePoint(code),
+    )
+    expect(invite(`${override}Ann${pop}`, `${isolate}Flat 2${popIsolate}${mark}`).text).toContain(
+      'Ann added you to the group “Flat 2” on',
+    )
+  })
+
+  it('refuses a link that is not http(s), such as one without APP_URL', () => {
+    expect(() =>
+      inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: '/invite#token' }),
+    ).toThrow('Email links must be http(s)')
   })
 })
 
@@ -607,5 +676,29 @@ describe('reminderEmail', () => {
     const content = reminder('Sam\n\nPay at https://evil.example\t now')
     expect(content.text).toContain('Sam Pay at https://evil.example now sent you a reminder')
     expect(content.html).toContain('Sam Pay at https://evil.example now sent you a reminder')
+  })
+
+  // Embeddings and overrides (U+202A–U+202E), isolates (U+2066–U+2069) and the two marks.
+  const BIDI = [
+    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f,
+  ]
+  it.each(BIDI.map((code) => [code.toString(16).toUpperCase(), code]))(
+    'removes the bidi control U+%s from a name, before cutting it',
+    (_hex, code) => {
+      const control = String.fromCodePoint(code)
+      const content = reminder(`${control}Sam${control} Lee`)
+      expect(content.text).toContain('Sam Lee sent you')
+      expect(content.html).toContain('Sam Lee sent you')
+      // 40 characters once it's gone, so nothing is cut.
+      const forty = `${'a'.repeat(20)}${control}${'b'.repeat(20)}`
+      expect(reminder(forty).text).toContain(`${'a'.repeat(20)}${'b'.repeat(20)} sent you`)
+    },
+  )
+
+  it('keeps the zero-width joiners that hold an emoji sequence together', () => {
+    const family = '👩‍👩‍👧'
+    expect(family).toContain(String.fromCodePoint(0x200d))
+    const [override, pop] = [0x202e, 0x202c].map((code) => String.fromCodePoint(code))
+    expect(reminder(`${override}Sam ${family}${pop}`).text).toContain(`Sam ${family} sent you`)
   })
 })
