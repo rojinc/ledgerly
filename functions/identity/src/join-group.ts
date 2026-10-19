@@ -3,15 +3,17 @@ import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { ID, Permission, Role } from 'node-appwrite'
+import { AppwriteException, ID, Permission, Role } from 'node-appwrite'
 import { getRowOrNull, guardPerson, isAppwriteError, tryAgain } from './rows'
 import type { Services } from './services'
 
 /**
  * identity-and-invites.md#joining-a-group: joins the person's `placeholder` member row, in an
  * order a retry can always finish. True if this call joined it; false if the row is gone or
- * no longer pending (another claim running at the same time joined it). Throws `deleted()` once
- * the person's account is being deleted, as their lookup would have.
+ * no longer pending (another claim running at the same time joined it), or if the group's team
+ * is gone: an account deletion is purging the group, its rows last (#322). A team gone just
+ * after the commit is false too, with the row joined; the purge deletes it. Throws `deleted()`
+ * once the person's account is being deleted, as their lookup would have.
  */
 export async function joinGroup(
   { db, teams, now }: Services,
@@ -21,7 +23,7 @@ export async function joinGroup(
   deleted: () => AppError,
 ): Promise<boolean> {
   // Step 1: the team first ("already a member" counts as done), so a retry finds it done.
-  await addToTeam(teams, member.groupId, userId)
+  if (!(await joinTeam(teams, member.groupId, userId))) return false
   try {
     // Step 2: the status and one member.joined row, together.
     await withTransaction(db, async (tx) => {
@@ -69,8 +71,18 @@ export async function joinGroup(
   }
   // A parallel join that failed while the row was still pending may have taken back the
   // membership from step 1 just before this commit; the row is joined now, so add it again.
-  await addToTeam(teams, member.groupId, userId)
-  return true
+  return joinTeam(teams, member.groupId, userId)
+}
+
+/** Adds the user to the group's team; false if the team is gone (a purge is deleting it). */
+async function joinTeam(teams: Services['teams'], groupId: string, userId: string) {
+  try {
+    await addToTeam(teams, groupId, userId)
+    return true
+  } catch (error) {
+    if (error instanceof AppwriteException && error.type === 'team_not_found') return false
+    throw error
+  }
 }
 
 // Narrows to a placeholder row only, so a row that fails the check can still be another row.
