@@ -940,6 +940,44 @@ describe('POST /delete: each group they joined', () => {
     expect(rowOf(services, 'transactions', 'sPosted_20261109')).toBeUndefined()
   })
 
+  it('takes the receipts off the edited and voided occurrences of a schedule it deletes (#248)', async () => {
+    const services = kept()
+    const later = schedule('sLater', 'h1', 'p1', ['p1', 'p2'], { startsOn: '2026-11-02' })
+    await insert(services, 'schedules', [later])
+    await insert(services, 'transactions', [
+      occurrence(later, '2026-11-02', { overridden: true, receiptFileIds: ['r1', 'r2'] }),
+      occurrence(later, '2026-11-09', {
+        status: 'void',
+        voidReason: 'Away',
+        receiptFileIds: ['r2'],
+      }),
+    ])
+    const receipt = (transactionIds: string[]) => ({
+      transactionIds,
+      detachedAt: null,
+      deletingAt: null,
+    })
+    await insert(services, 'receiptFiles', [
+      { $id: 'r1', ...receipt(['sLater_20261102']) },
+      { $id: 'r2', ...receipt(['sLater_20261102', 'sLater_20261109', 'tElsewhere000000001']) },
+    ])
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'schedules', 'sLater')).toBeUndefined()
+    expect(rowOf(services, 'transactions', 'sLater_20261102')).toBeUndefined()
+    expect(rowOf(services, 'transactions', 'sLater_20261109')).toBeUndefined()
+    // Listed nowhere else, so detached now; scheduler step 5 deletes the file later.
+    expect(rowOf(services, 'receiptFiles', 'r1')).toMatchObject({
+      transactionIds: null,
+      detachedAt: DELETED_AT,
+      deletingAt: null,
+    })
+    // Another transaction still lists it.
+    expect(rowOf(services, 'receiptFiles', 'r2')).toMatchObject({
+      transactionIds: ['tElsewhere000000001'],
+      detachedAt: null,
+    })
+  })
+
   it('skips a template that can’t be read, logging its ID: their own schedule still ends', async () => {
     const services = kept()
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
