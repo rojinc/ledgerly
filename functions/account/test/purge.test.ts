@@ -317,6 +317,27 @@ function stagedByTransaction(services: Fakes): Map<string, string[]> {
   return staged
 }
 
+// Runs `change` just before the commit of the first transaction whose writes include `text`.
+function beforeCommitOf(services: Fakes, text: string, change: () => Promise<unknown>) {
+  const stage = services.db.createOperations.bind(services.db)
+  const commit = services.db.updateTransaction.bind(services.db)
+  let target: string | undefined
+  let done = false
+  vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+    if (target === undefined && JSON.stringify(params.operations).includes(text)) {
+      target = params.transactionId
+    }
+    return stage(params)
+  })
+  vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+    if (!done && params.commit && params.transactionId === target) {
+      done = true
+      await change()
+    }
+    return commit(params)
+  })
+}
+
 function deleteRow(services: Fakes, tableId: TableId, rowId: string) {
   return withTransaction(services.db, (tx) => tx.write({ action: 'delete', tableId, rowId }))
 }
@@ -630,10 +651,75 @@ describe('POST /delete: purging a group nobody else is in', () => {
         services.files.upload('statements', 'st3', [team('h2')])
       },
     )
+    // The purge archives it first all the same, so nothing can start in it once the team is gone.
+    const archivedAt: Record<string, unknown> = {}
+    const deleteTeam = services.teams.delete.bind(services.teams)
+    vi.spyOn(services.teams, 'delete').mockImplementation(async (params) => {
+      archivedAt[params.teamId] = rowOf(services, 'groups', params.teamId)?.archivedAt
+      await deleteTeam(params)
+      return {}
+    })
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(archivedAt.h2).toBe(DELETED_AT)
     expect(leftOf(services, PURGED)).toEqual([])
     expect(services.files.ids()).not.toContain('statements/st3')
   })
+
+  it('fails, deleting no row, when a bucket is missing: only a missing file counts as done', async () => {
+    const services = world()
+    services.files.removeBucket('receipts')
+    const { status, logs } = await call(services)
+    expect(status).toBe(500)
+    expect(logs.join('\n')).not.toMatch(/Sam|Kim|@/)
+    expect(rowOf(services, 'transactions', 't3')).toBeDefined()
+    expect(services.files.ids()).toContain('receipts/r2')
+  })
+
+  it('deletes a share whose transaction is gone, before the member rows (I-3)', async () => {
+    const services = world()
+    await insert(services, 'shares', [share('tGone', 'h2', 'pKim', 0, 500)])
+    const staged = stagedByTransaction(services)
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'shares', 'tGone-pKim')).toBeUndefined()
+    expect(leftOf(services, PURGED)).toEqual([])
+    const writes = [...staged.values()].flat()
+    expect(writes.indexOf('shares/tGone-pKim')).toBeGreaterThan(-1)
+    expect(writes.indexOf('members/h2-pKim')).toBeGreaterThan(writes.indexOf('shares/tGone-pKim'))
+  })
+
+  it.each([
+    ['before the other stages', 'staging'],
+    ['between the other’s staging and its commit', 'commit'],
+  ])(
+    'leaves no placeholder without a member row when two purges delete its last two, %s',
+    async (_, when) => {
+      const services = world()
+      // Alex purges h1, where Lee is a placeholder too, as Sam's purge deletes Lee's row in h2.
+      let alex: unknown
+      const alexPurges = async () => {
+        const own = rowOf(services, 'members', 'h1-p2') as unknown as Members
+        alex = await purge(services, own).catch((error: unknown) => error)
+      }
+      if (when === 'staging') {
+        beforeStaging(
+          services.db,
+          (operations) => operations.includes('"rowId":"h2-pLee"'),
+          alexPurges,
+        )
+      } else {
+        beforeCommitOf(services, '"rowId":"h2-pLee"', alexPurges)
+      }
+      // Sam's transaction loses, so h2 waits for the next run, which finds Lee's last row.
+      expect((await remove(services)).finished).toBe(false)
+      expect(alex).toBe(true)
+      expect(rowOf(services, 'members', 'h2-pLee')).toBeDefined()
+      vi.restoreAllMocks()
+      expect((await remove(services)).finished).toBe(true)
+      expect(services.db.rows('members').filter((row) => row.personId === 'pLee')).toEqual([])
+      expect(rowOf(services, 'persons', 'pLee')).toBeUndefined()
+      expect(rowOf(services, 'identities', 'iLee')).toBeUndefined()
+    },
+  )
 
   it('doesn’t wait for a timer someone else left running: it goes with the group', async () => {
     const services = world()

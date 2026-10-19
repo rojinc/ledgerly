@@ -208,6 +208,12 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
       (row.receiptFileIds ?? []).map((fileId) => ({ fileId, remove: [row.$id] })),
     )
   }
+  // Any share whose transaction is gone (I-6 allows none), which would break I-3 once the member
+  // rows go. Read once the batches above are in, so none is found twice. idx_group_person_date
+  await flush()
+  for await (const share of pages<Shares>(services, TABLES.shares, ofGroup)) {
+    await add([remove(TABLES.shares, share.$id)])
+  }
   // idx_groupId, idx_group_period, idx_group_at, idx_groupId
   for (const tableId of [TABLES.schedules, TABLES.statements, TABLES.activity, TABLES.reminders]) {
     for await (const row of pages<Models.Row>(services, tableId, ofGroup)) {
@@ -233,9 +239,11 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
 
 // Every other member row, once no share is left (I-3), each in a transaction of its own with
 // its person and identities when that person is a placeholder no other member row names. So a
-// crash never leaves a placeholder that a rerun can't find. The person goes only after a staged
-// write, and only if, checked again after it, that still holds: a merged person is kept. A row
-// that another deletion under way purges the group from itself is left to it (ownPurgeEnds).
+// crash never leaves a placeholder that a rerun can't find. A placeholder's person always gets a
+// staged write, deleted or given a fresh `rev`, then whether it's the last row is checked again:
+// a merged person is kept, and two purges deleting its last two rows at once fail one commit
+// rather than leave it with none. A row that another deletion under way purges the group from
+// itself is left to it (ownPurgeEnds).
 async function deleteMembers(services: Services, own: Members): Promise<boolean> {
   const { db } = services
   // idx_groupId
@@ -243,20 +251,31 @@ async function deleteMembers(services: Services, own: Members): Promise<boolean>
     Query.equal('groupId', own.groupId),
   ])) {
     if (member.$id === own.$id || (await ownPurgeEnds(db, member))) continue
-    const alone = await isLonePlaceholder(db, member)
+    const person = await getRowOrNull<Persons>(db, TABLES.persons, member.personId)
+    const placeholder = person !== null && isPlaceholder(person)
+    const alone = placeholder && (await isLonePlaceholder(db, member))
     await withTransaction(db, async (tx) => {
       await tx.write(remove(TABLES.members, member.$id))
-      if (!alone) return
-      // idx_personId
-      const identities = await allRows<Identities>(db, TABLES.identities, [
-        Query.equal('personId', member.personId),
-      ])
-      await tx.write(
-        ...identities.map((row) => remove(TABLES.identities, row.$id)),
-        remove(TABLES.persons, member.personId),
-      )
+      if (!placeholder) return
+      if (alone) {
+        // idx_personId
+        const identities = await allRows<Identities>(db, TABLES.identities, [
+          Query.equal('personId', member.personId),
+        ])
+        await tx.write(
+          ...identities.map((row) => remove(TABLES.identities, row.$id)),
+          remove(TABLES.persons, member.personId),
+        )
+      } else {
+        await tx.write({
+          action: 'update',
+          tableId: TABLES.persons,
+          rowId: member.personId,
+          data: { rev: randomId() },
+        })
+      }
       // Stage, then check: the stored rows, not this transaction's view.
-      if (!(await isLonePlaceholder(db, member))) throw new Raced()
+      if ((await isLonePlaceholder(db, member)) !== alone) throw new Raced()
     })
   }
   return !services.outOfTime()
