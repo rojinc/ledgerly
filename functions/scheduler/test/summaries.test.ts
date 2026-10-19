@@ -430,10 +430,16 @@ describe('step 4: summary emails', () => {
     const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 1 })
     expect(storedProfile(services).nextSummaryAt).toBe(nextSummaryAt)
-    // IDs and codes only.
-    expect(quiet).toHaveBeenCalledWith(
-      `scheduler: summary failed for profile u1: AppwriteException ${code} general_query`,
-    )
+    // IDs and codes only. Step 6 reads the shares too, and logs its own failures.
+    const lines = quiet.mock.calls.map(([line]) => JSON.parse(String(line)))
+    expect(lines.filter(({ event }) => event === 'summary_failed')).toEqual([
+      {
+        fn: 'unknown',
+        event: 'summary_failed',
+        profileId: 'u1',
+        cause: `AppwriteException ${code} general_query`,
+      },
+    ])
     quiet.mockRestore()
   })
 

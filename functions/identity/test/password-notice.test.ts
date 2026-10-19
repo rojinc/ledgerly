@@ -20,6 +20,14 @@ function fire(services: Fakes, body: unknown = userBody(), headers: Record<strin
   return call(services, 'POST', '/', body, null, { ...EVENT, ...headers })
 }
 
+// The logProblem lines a spy saw, without `fn`.
+function notices(spy: { mock: { calls: unknown[][] } }) {
+  return spy.mock.calls.map(([line]) => {
+    const { fn: _fn, ...event } = JSON.parse(String(line)) as Record<string, unknown>
+    return event
+  })
+}
+
 function sent(services: Fakes) {
   return vi.mocked(services.sendEmail).mock.calls.map(([email]) => email)
 }
@@ -73,7 +81,7 @@ describe('POST / (the users.*.update.password event)', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     expect((await fire(services)).body).toEqual({ ok: true, data: {} })
     expect(services.sendEmail).not.toHaveBeenCalled()
-    expect(log.mock.calls).toEqual([[`identity: password notice for user u1: ${outcome}`]])
+    expect(notices(log)).toEqual([{ event: 'password_notice', userId: 'u1', outcome }])
   })
 
   it('sends nothing for a user who is gone', async () => {
@@ -86,7 +94,7 @@ describe('POST / (the users.*.update.password event)', () => {
     }
     await fire(services)
     expect(services.sendEmail).not.toHaveBeenCalled()
-    expect(log.mock.calls).toEqual([['identity: password notice for user u1: gone']])
+    expect(notices(log)).toEqual([{ event: 'password_notice', userId: 'u1', outcome: 'gone' }])
   })
 
   it('takes the user ID from the event name over the body, and nothing else from the body', async () => {
@@ -160,14 +168,21 @@ describe('POST / (the users.*.update.password event)', () => {
     expect(sent(services)).toHaveLength(2)
   })
 
-  it('logs a failed send and fails the run, which Appwrite won’t retry', async () => {
+  it('logs a failed send as an error and fails the run, which Appwrite won’t retry', async () => {
     const services = changed()
-    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
     services.sendEmail = vi.fn(async () => {
       throw new EmailError('Resend answered 503 unknown', 'unknown', 503)
     })
     expect((await fire(services)).status).toBe(500)
-    expect(log.mock.calls).toEqual([['identity: password notice for user u1: failed (unknown)']])
+    expect(notices(log)).toEqual([
+      {
+        event: 'password_notice',
+        userId: 'u1',
+        outcome: 'failed',
+        cause: 'EmailError unknown 503',
+      },
+    ])
   })
 
   it('never logs the body, the address or the name', async () => {
@@ -176,7 +191,7 @@ describe('POST / (the users.*.update.password event)', () => {
     const result = await fire(services)
     const logged = [...result.logs, ...log.mock.calls.flat()].join('\n')
     expect(logged).not.toMatch(/SECRET|sam@example|Sam Lee/)
-    expect(log.mock.calls).toEqual([['identity: password notice for user u1: sent']])
+    expect(notices(log)).toEqual([{ event: 'password_notice', userId: 'u1', outcome: 'sent' }])
   })
 
   it('refuses a person, even with a forged event trigger', async () => {
