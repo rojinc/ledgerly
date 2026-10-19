@@ -47,15 +47,17 @@ ledgerly/
 │   │       └── generated/     row types from `appwrite types` (never edit by hand)
 │   └── server/                @ledgerly/server: helpers for functions only
 │       └── src/
-│           ├── appwrite/      client from function context, table IDs, transaction helper
+│           ├── appwrite/      client from function context, table IDs, transaction helper, paging
 │           ├── http/          createHandler, AppError, envelope
 │           ├── auth/          requireMember, roles
 │           ├── identity/      resolvePerson, claim, merge
 │           ├── email/         Resend wrapper + templates
 │           ├── ledger/        transaction plan, guards and row helpers (ledger, scheduler)
+│           ├── scheduler/     endScheduleOn (scheduler, account)
 │           └── pdf/           pdfmake documents
 │
 ├── functions/                 one folder per Appwrite Function
+│   ├── account/               account deletion (#50)
 │   ├── ledger/
 │   ├── groups/
 │   ├── identity/
