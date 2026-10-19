@@ -322,6 +322,9 @@ describe('EmployerSettingsPage', () => {
     }
     call.mockResolvedValue({ ok: true, data: saved })
     const { queryClient } = renderAt('/groups/g1/settings')
+    expect(screen.getByRole('link', { name: 'Invoices' }).getAttribute('href')).toBe(
+      '/groups/g1/statements',
+    )
     expect(input('Group name').value).toBe('Acme Cafe')
     expect(input('Billing emails').value).toBe('pay@acme.test\nboss@acme.test')
     expect(input(/Default hourly rate/).value).toBe('25.50')

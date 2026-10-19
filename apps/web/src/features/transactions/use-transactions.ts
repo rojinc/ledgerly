@@ -164,7 +164,8 @@ export function useVoidTransaction(id: string) {
       ledger<TransactionView>('POST', `/transactions/${id}/void`, body),
     onMutate: async (body) => {
       const key = queryKeys.transaction(id)
-      await queryClient.cancelQueries({ queryKey: key })
+      // Only this row: the shares query under the same prefix keeps loading.
+      await queryClient.cancelQueries({ queryKey: key, exact: true })
       const before = queryClient.getQueryData<Transactions>(key)
       if (before)
         queryClient.setQueryData(key, { ...before, status: 'void', voidReason: body.reason })
