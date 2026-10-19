@@ -60,14 +60,15 @@ export async function balanceWrite(
   return [{ action: 'update', tableId: TABLES.balances, rowId: groupId, data: { peopleJson } }]
 }
 
-/** `applyShares`, or undefined when the row doesn't fit the shares. */
+/** `applyShares`, or undefined when the row doesn't fit the shares, a net past a safe integer included. */
 function fitted(
   people: BalancesPeople,
   before: readonly ShareAmounts[],
   after: readonly ShareAmounts[],
 ): BalancesPeople | undefined {
   try {
-    return applyShares(people, before, after)
+    const next = applyShares(people, before, after)
+    return balancesPeopleSchema.safeParse(next).success ? next : undefined
   } catch (error) {
     if (error instanceof LedgerError) return undefined
     throw error

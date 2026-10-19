@@ -221,10 +221,31 @@ describe('step 5: nightly check', () => {
         members: [member('elm', 'pSam'), member('elm', 'pAlex', { role: 'member' })],
         transactions: [transaction('t1', 6000)],
         shares: [share('s1', 't1', 'pSam', 6000, 3000), share('s2', 't1', 'pPat', 0, 3000)],
+        // A merge moves P's identities last, so Pat still having one means it isn't finished.
+        identities: [
+          {
+            $id: 'i1',
+            key: 'email:pat@example.com',
+            type: 'email',
+            personId: 'pPat',
+            verified: true,
+            verifiedAt: null,
+          },
+        ],
       },
       { elm: ['u1', 'u2'] },
     )
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, findings: 0, merging: 1 })
+
+    // Once the merge is finished (no identity left on Pat), a share left on Pat is broken.
+    await withTransaction(services.db, (tx) =>
+      tx.write(
+        { action: 'delete', tableId: 'identities', rowId: 'i1' },
+        { action: 'update', tableId: 'groups', rowId: 'elm', data: { nextCheckAt: null } },
+      ),
+    )
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, findings: 1, merging: 0 })
+    expect(logged()).toEqual(['scheduler: nightly check of group elm: transaction t1 breaks I-3'])
   })
 
   it('reads a group again when a write of shares lands while it is read', async () => {
@@ -263,7 +284,8 @@ describe('step 5: nightly check', () => {
     })
     expect(await nightlyCheck(services)).toMatchObject({ checked: 0, busy: 1 })
     expect(rev).toBe(3)
-    expect(groupRow(services).nextCheckAt ?? null).toBeNull()
+    // An hour on, so the next run starts with the groups after it.
+    expect(groupRow(services).nextCheckAt).toBe(new Date(NOW.getTime() + HOUR).toISOString())
     expect(stored(services)).toBeUndefined()
   })
 
@@ -291,9 +313,11 @@ describe('step 5: nightly check', () => {
     // The budget runs out while the group is checked: after the page is read and the group
     // taken from it.
     services.outOfTime = () => ++calls > 2
-    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, repaired: 1 })
-    expect(groupRow(services).nextCheckAt ?? null).toBeNull()
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, busy: 0, repaired: 1 })
+    expect(groupRow(services).nextCheckAt).toBe(new Date(NOW.getTime() + HOUR).toISOString())
+    // An hour later, a run checks it from the start.
     services.outOfTime = () => false
+    services.now = new Date(NOW.getTime() + HOUR)
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, repaired: 0 })
   })
 
@@ -420,6 +444,54 @@ describe('step 5: nightly check', () => {
       expect((await nightlyCheck(services)).removed).toBe(1)
       const left = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
       expect(left.map((membership) => membership.userId)).toEqual(['u1', 'u3'])
+    })
+
+    it('leaves alone the membership of someone whose account is being deleted', async () => {
+      // Pat's deletion is between its member transaction and its team step.
+      const services = seeded(
+        {
+          persons: [
+            person('pSam', 'u1'),
+            person('pAlex', 'u2'),
+            { ...person('pPat', 'u9'), deletedAt: '2026-10-18T19:00:00.000Z' },
+            person('pLee', 'u3'),
+          ],
+        },
+        { elm: ['u1', 'u2', 'u3', 'u9'] },
+      )
+      expect((await nightlyCheck(services)).removed).toBe(0)
+      const memberships = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
+      expect(memberships.map((membership) => membership.userId)).toContain('u9')
+    })
+
+    it('puts a membership back when a join lands while it is removed', async () => {
+      const services = seeded(
+        {
+          persons: [
+            person('pSam', 'u1'),
+            person('pAlex', 'u2'),
+            person('pPat', 'u9'),
+            person('pLee', 'u3'),
+          ],
+        },
+        { elm: ['u1', 'u2', 'u3', 'u9'] },
+      )
+      const remove = services.teams.deleteMembership.bind(services.teams)
+      vi.spyOn(services.teams, 'deleteMembership').mockImplementation(async (params) => {
+        // Pat's join commits just as the membership goes.
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'members',
+            rowId: 'elm-pPat',
+            data: { status: 'active' },
+          }),
+        )
+        return (await remove(params)) as object
+      })
+      expect(await nightlyCheck(services)).toMatchObject({ removed: 0, findings: 0 })
+      const memberships = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
+      expect(memberships.map((membership) => membership.userId)).toContain('u9')
     })
 
     it('counts a membership already gone as removed', async () => {
