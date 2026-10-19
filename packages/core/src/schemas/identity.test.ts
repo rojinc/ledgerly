@@ -7,6 +7,7 @@ import {
   createInviteBodySchema,
   deleteAccountBodySchema,
   hoursCapSchema,
+  mergeMembersSchema,
   sendReminderBodySchema,
   updateProfileBodySchema,
 } from './identity'
@@ -210,5 +211,30 @@ describe('deleteAccountBodySchema (#50)', () => {
     }
     expect(paths(deleteAccountBodySchema, {})).toEqual(['confirm'])
     expect(paths(deleteAccountBodySchema, { confirm: 'DELETE', userId: 'u1' })).toEqual([''])
+  })
+})
+
+describe('mergeMembersSchema', () => {
+  const entry = {
+    groupId: 'g1',
+    from: { joinedOn: '2026-01-05', leftOn: null },
+    into: { joinedOn: '2026-02-01', leftOn: '2026-03-31' },
+  }
+
+  it('takes P dates with or without U dates', () => {
+    expect(mergeMembersSchema.parse([entry, { ...entry, groupId: 'g2', into: null }])).toHaveLength(
+      2,
+    )
+    expect(mergeMembersSchema.parse([])).toEqual([])
+  })
+
+  it('refuses a missing date, a date that is not one, or another key', () => {
+    expect(paths(mergeMembersSchema, [{ ...entry, from: { leftOn: null } }])).toEqual([
+      '0.from.joinedOn',
+    ])
+    expect(
+      paths(mergeMembersSchema, [{ ...entry, into: { joinedOn: '2026-02-30', leftOn: null } }]),
+    ).toEqual(['0.into.joinedOn'])
+    expect(paths(mergeMembersSchema, [{ ...entry, personId: 'p1' }])).toEqual(['0'])
   })
 })

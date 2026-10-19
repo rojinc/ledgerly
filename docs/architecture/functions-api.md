@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again) |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again), a merge into one of the people is still open in the group (`details: { reason: 'merging' }`; try again shortly, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
@@ -152,6 +152,8 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 
 **Deleted people.** `POST /transactions`, `PATCH` and `/post` refuse, with `VALIDATION_FAILED`, an input whose people (`everyPersonId()`: payers, the split, items) include a person with `deletedAt` whom the stored input didn't already name, **in a group where that person's member row isn't `placeholder`**. Payments and adjustments are exempt, so balances with a former member can still be settled. Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). The scheduler's `POST` and `PATCH /schedules` apply the same rule to the template, and `PATCH` checks the whole template, people the stored one named included: deleting an account ends the schedules that name them, and an edit could start one again.
 
+**Merges still open.** `PATCH` and `/post` refuse with `CONFLICT` (`details: { reason: 'merging' }`) a row whose stored shares, input or item splits name a person whose merge is still open in the group ([merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)). The app asks to try again shortly.
+
 **Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
 
 `/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
@@ -171,8 +173,8 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 | `POST /groups/{id}/archive` | none | `group` | admin |
 | `POST /groups/{id}/members` | `{ displayName, email?, phone?, role?, joinedOn? }` | `member` | admin (house: member too) |
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn?: LocalDate \| null }` | `member` | admin; `leftOn: null` moves someone who moved out back in ([leaving](permissions.md#leaving-a-group)) |
-| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares, aren't named in an unposted transaction or a schedule template, and didn't create a schedule whose template names no payers (`VALIDATION_FAILED`). Also removes any team membership. |
-| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin, except a retry of their own leave cut off before the team step, which finishes anyway ([leaving](permissions.md#leaving-a-group)). Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
+| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares, aren't named in an unposted transaction or a schedule template, and didn't create a schedule whose template names no payers (`VALIDATION_FAILED`); not while a merge into them is open in the group (`CONFLICT`). Also removes any team membership. |
+| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0, they aren't the last joined admin and no merge into them is open in the group (`CONFLICT`), except a retry of their own leave cut off before the team step, which finishes anyway ([leaving](permissions.md#leaving-a-group)). Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. Removing one with `DELETE /groups/{id}/members/{memberId}` also returns `VALIDATION_FAILED`; archive the group instead. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
@@ -192,6 +194,8 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
+
+Hourly (`interval: 60`), sent as `POST /` with the `schedule` trigger: it carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`. A person calling `POST /` gets `FORBIDDEN`.
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
 
