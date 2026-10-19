@@ -236,7 +236,7 @@
       },
       {
         "key": "hoursCapStartsOn",
-        "type": "string",
+        "type": "varchar",
         "size": 10,
         "required": false,
         "array": false,
@@ -1291,6 +1291,76 @@
         "type": "key",
         "columns": ["identityKey", "sentAt"],
         "orders": ["ASC", "ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "reminders",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "reminders",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "sentBy",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "toPersonId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "channel",
+        "type": "string",
+        "format": "enum",
+        "elements": ["email", "sms"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "sentAt",
+        "type": "datetime",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_sentBy_sentAt",
+        "type": "key",
+        "columns": ["sentBy", "sentAt"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_toPerson_sentAt",
+        "type": "key",
+        "columns": ["toPersonId", "sentAt"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_groupId",
+        "type": "key",
+        "columns": ["groupId"],
+        "orders": ["ASC"]
       }
     ]
   }

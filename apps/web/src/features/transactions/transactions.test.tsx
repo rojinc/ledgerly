@@ -1063,6 +1063,8 @@ describe('HistoryPage', () => {
     [71500, /^Acme owes you .*715\.00$/],
     [-2050, /^You owe Acme .*20\.50$/],
     [0, /^All square$/],
+    // A balance can pass the amount cap.
+    [20_000_000_000, /^Acme owes you .*200,000,000\.00$/],
   ])('words a net of %i from the viewer’s side', async (net, text) => {
     mockGroups(acme, 'admin', net)
     mockRows()

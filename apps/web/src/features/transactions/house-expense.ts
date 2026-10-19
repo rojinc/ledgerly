@@ -8,7 +8,7 @@ import { isLocalDate, type LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Items, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { buildShares, type Share } from '@ledgerly/core/ledger/build-shares'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import type { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
 import { centsToText } from '../groups/employer-form'
@@ -231,7 +231,8 @@ export function splitProblems(
   totalCents: number,
 ): SplitProblems {
   const problems: SplitProblems = { paid: {}, parts: {} }
-  const money = (amount: number) => formatMoney(amount, currency)
+  // A sum of typed amounts can pass the cap: it's checked, not formatted, against it.
+  const money = (amount: number) => formatNet(amount, currency)
   const totalKnown = Number.isInteger(totalCents) && totalCents > 0
   if (values.severalPaid) {
     const payers = toPayers(values, currency, totalCents)

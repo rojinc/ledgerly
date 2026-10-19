@@ -298,6 +298,17 @@ describe('splitProblems', () => {
     ).toEqual({ paid: {}, parts: {} })
   })
 
+  it('words sums past the amount cap instead of throwing', () => {
+    // Each at the cap (100,000,000.00), so they add up past it.
+    const atCap = { alice: '100000000', bob: '100000000' }
+    expect(problems({ severalPaid: true, paid: atCap }).paidTotal).toMatch(
+      /^The amounts paid add up to .*200,000,000\.00, but the total is .*90\.00\.$/,
+    )
+    expect(
+      problems({ splitBetween: ['alice', 'bob'], splitMode: 'exact', parts: atCap }).partsTotal,
+    ).toMatch(/^The amounts add up to .*200,000,000\.00, but the total is .*90\.00\.$/)
+  })
+
   it('checks exact parts against the total only once the total reads', () => {
     expect(
       problems({ splitBetween: ['alice'], splitMode: 'exact', parts: { alice: '5' } }, Number.NaN),
