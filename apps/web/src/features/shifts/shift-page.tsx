@@ -3,16 +3,19 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
+import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
 import { type ReactNode, useRef, useState } from 'react'
-import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router'
+import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
+import { queryKeys } from '../../lib/query-keys'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { centsToText } from '../groups/employer-form'
 import { useGroup, useGroups, useMyMember } from '../groups/use-groups'
-import { useTransaction } from '../transactions/use-transactions'
+import { LedgerError, useTransaction } from '../transactions/use-transactions'
 import { ShiftForm } from './shift-form'
 import { type ShiftValues, toShiftValues } from './shift-values'
 import { useConfirmShift, useMyRoles, useSaveShift, useVoidShift } from './use-shifts'
@@ -59,9 +62,23 @@ export function NewShiftPage() {
   const roles = useMyRoles(open, personId)
   const [params] = useSearchParams()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const save = useSaveShift()
   // One ID per visit, so retrying after an error can't add the shift twice.
   const [id] = useState(() => ID.unique())
+
+  // The same ID again with different content: an earlier try was saved although its answer was
+  // lost, and the form changed since. Open the shift as saved, rather than refusing forever.
+  async function openSaved(error: unknown) {
+    if (!(error instanceof LedgerError && error.code === 'CONFLICT')) throw error
+    const row = await tablesDB
+      .getRow<Transactions>({ databaseId: DATABASE_ID, tableId: 'transactions', rowId: id })
+      .catch(() => {
+        throw error
+      })
+    queryClient.setQueryData(queryKeys.transaction(id), row)
+    navigate(`/shifts/${id}`, { replace: true, state: { alreadySaved: true } })
+  }
 
   let content: ReactNode
   if (!open || !roles.data) {
@@ -111,8 +128,12 @@ export function NewShiftPage() {
           rateFor={defaultRate}
           dateFor={fixedDate ? undefined : todayFor}
           onSave={async (body) => {
-            const view = await save.mutateAsync({ body, isNew: true })
-            navigate(`/shifts/${view.transaction.$id}`, { replace: true })
+            try {
+              const view = await save.mutateAsync({ body, isNew: true })
+              navigate(`/shifts/${view.transaction.$id}`, { replace: true })
+            } catch (error) {
+              await openSaved(error)
+            }
           }}
         />
       )
@@ -138,6 +159,7 @@ const STATUS: Record<Transactions['status'], string> = {
 export function ShiftPage() {
   const id = useParams().shiftId ?? ''
   const transaction = useTransaction(id)
+  const alreadySaved = (useLocation().state as { alreadySaved?: boolean } | null)?.alreadySaved
   // Confirm and Void go away once the shift changes: focus moves here, and the status line below
   // reads out the new status.
   const heading = useRef<HTMLHeadingElement>(null)
@@ -146,6 +168,12 @@ export function ShiftPage() {
       <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
         {transaction.data?.description ?? 'Shift'}
       </h1>
+      {alreadySaved && (
+        <Message>
+          This shift was already added by an earlier try. Here it is as saved: change it here if you
+          need to.
+        </Message>
+      )}
       {transaction.data ? (
         <ShiftDetails row={transaction.data} onAction={() => heading.current?.focus()} />
       ) : transaction.isError ? (

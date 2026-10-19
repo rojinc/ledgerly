@@ -408,11 +408,13 @@ describe('NewShiftPage', () => {
   })
 
   it('shows the function error and retries with the same id', async () => {
+    // A CONFLICT from a write that clashed with another: nothing was saved with this ID.
     call.mockResolvedValueOnce(failure('The ledger is busy.'))
     call.mockImplementationOnce(async (_fn, _method, _path, body) =>
       view(shiftRow({ $id: (body as { id: string }).id })),
     )
     mockRow(shiftRow())
+    getRow.mockRejectedValueOnce(new Error('Not found'))
     const { router } = await renderNew('/shifts/new')
     type('Start', '09:00')
     type('End', '17:00')
@@ -423,6 +425,50 @@ describe('NewShiftPage', () => {
     await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
     expect(sentBody(1).id).toBe(sentBody(0).id)
     await waitFor(() => expect(router.state.location.pathname).toBe(`/shifts/${sentBody(0).id}`))
+  })
+
+  it('opens the shift saved by an earlier try when a retry with changes gets CONFLICT (#147 O9)', async () => {
+    // The first answer was lost, and the form changed before the retry.
+    call.mockResolvedValue(failure('A different transaction already has this ID.'))
+    const { router } = await renderNew('/shifts/new')
+    getRow.mockImplementation((async ({ rowId }: { rowId: string }) =>
+      shiftRow({ $id: rowId, description: 'As first sent' })) as never)
+    type('Start', '09:00')
+    type('End', '17:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/shifts/${sentBody().id}`))
+    expect(getRow).toHaveBeenCalledWith({
+      databaseId: 'main',
+      tableId: 'transactions',
+      rowId: sentBody().id,
+    })
+    expect(await screen.findByRole('heading', { name: 'As first sent' })).toBeTruthy()
+    expect(screen.getByText(/already added by an earlier try/)).toBeTruthy()
+  })
+
+  it('shows a CONFLICT when no shift was saved with the ID', async () => {
+    call.mockResolvedValue(failure('Someone else changed this at the same time. Try again.'))
+    getRow.mockRejectedValue(new Error('Not found'))
+    const { router } = await renderNew('/shifts/new')
+    type('Start', '09:00')
+    type('End', '17:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Someone else changed this at the same time. Try again.',
+    )
+    expect(router.state.location.pathname).toBe('/shifts/new')
+  })
+
+  it('only looks for a saved shift on CONFLICT', async () => {
+    call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Server error.' } })
+    mockRow(shiftRow())
+    const { router } = await renderNew('/shifts/new')
+    type('Start', '09:00')
+    type('End', '17:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Server error.')
+    expect(getRow).not.toHaveBeenCalled()
+    expect(router.state.location.pathname).toBe('/shifts/new')
   })
 
   it('links to a new employer when the user has no employer groups', async () => {
