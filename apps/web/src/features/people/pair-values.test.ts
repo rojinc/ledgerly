@@ -218,7 +218,8 @@ describe('toPairValues', () => {
       'loan',
       { ...LOAN, split: { mode: 'exact', amounts: [{ personId: 'p2', cents: 5000 }] } },
     ],
-    ['a loan to both', 'loan', { ...LOAN, split: { mode: 'equal', personIds: ['p1', 'p2'] } }],
+    // The other person first, so only the head count refuses it.
+    ['a loan to both', 'loan', { ...LOAN, split: { mode: 'equal', personIds: ['p2', 'p1'] } }],
     ['a loan to the lender', 'loan', { ...LOAN, split: { mode: 'equal', personIds: ['p1'] } }],
     [
       'a loan from someone else',
