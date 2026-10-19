@@ -22,7 +22,7 @@
 │             identity    bootstrap, profile, claim, merge, invites,    │
 │                         join                                          │
 │             scheduler   cron: schedules, auto-post, reminders,        │
-│                         summaries, receipt clean-up                   │
+│                         summaries, receipt clean-up, nightly check    │
 │             statements  cron + HTTP: invoices, monthly divides, PDFs  │
 └───────────────────────────────────────────────────────────────────────┘
         │                                 │
@@ -61,7 +61,7 @@
 
 | Job | Trigger | What it does |
 | --- | --- | --- |
-| `scheduler` | cron, hourly | Creates occurrences for due schedules, auto-posts past shifts and autopay bills, sends reminders and summary emails |
+| `scheduler` | cron, hourly | Creates occurrences for due schedules, auto-posts past shifts and autopay bills, sends reminders and summary emails, and runs the nightly check (balances row, ledger invariants, team memberships) |
 | `statements` | cron, hourly | Drafts statements for periods that ended, and auto-finalizes where enabled |
 
 All jobs are **idempotent**: running them twice does no harm. They use deterministic row IDs and conflict-checked transactions. → [Scheduling](scheduling.md)

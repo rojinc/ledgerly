@@ -132,14 +132,21 @@ export function teamRead(groupId: string): string[] {
   return [Permission.read(Role.team(groupId))]
 }
 
-/** An `activity` row (data-model.md#activity). `changes` is `{ before, after }`. */
+/**
+ * An `activity` row (data-model.md#activity). Neither `summary` nor `changes` (`{ before, after }`)
+ * ever holds a name: a `member.*` row names its person through `subjectPersonId`, and the app
+ * shows their current name before the summary ("joined", "was removed").
+ */
 export function activityWrite(
   groupId: string,
   actorPersonId: string,
   action: string,
   summary: string,
   now: Date,
-  changes?: { before: object; after: object },
+  {
+    subjectPersonId,
+    changes,
+  }: { subjectPersonId?: string; changes?: { before: object; after: object } } = {},
 ): Write {
   return {
     action: 'create',
@@ -149,12 +156,21 @@ export function activityWrite(
       groupId,
       actorPersonId,
       action,
+      ...(subjectPersonId ? { subjectPersonId } : {}),
       summary: summary.slice(0, 255),
-      ...(changes ? { changesJson: JSON.stringify(changes) } : {}),
+      // A change only to a name has nothing else to show, so no empty diff.
+      ...(changes && (Object.keys(changes.before).length || Object.keys(changes.after).length)
+        ? { changesJson: JSON.stringify(changes) }
+        : {}),
       at: now.toISOString(),
     },
     permissions: teamRead(groupId),
   }
+}
+
+/** "an admin", "a member" or "a viewer", for a summary. */
+export function aRole(role: Members['role']): string {
+  return role === 'admin' ? 'an admin' : `a ${role}`
 }
 
 /**

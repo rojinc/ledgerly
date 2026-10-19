@@ -91,21 +91,26 @@ describe('POST /groups/{id}/members', () => {
     expect(services.teams.members('g1')?.map((m) => m.userId)).toEqual(['u1', 'u2', 'u3'])
   })
 
-  it('writes member.added, naming the person but never their email or phone', async () => {
+  it('writes member.added about the person, never naming them or their email or phone', async () => {
     const services = house()
-    await add(services, { displayName: 'Sam', email: 'sam@example.com', phone: '0412345678' })
+    const row = await add(services, {
+      displayName: 'Sam',
+      email: 'sam@example.com',
+      phone: '0412345678',
+    })
     const [activity] = services.db.rows('activity')
     expect(activity).toMatchObject({
       groupId: 'g1',
       actorPersonId: 'p1',
       action: 'member.added',
-      summary: 'Sam was added',
+      subjectPersonId: row.personId,
+      summary: 'was added as a member',
       at: NOW.toISOString(),
       $permissions: ['read("team:g1")'],
     })
     // Only the text fields can carry them; $id and $createdAt are random, so leave them out.
     const text = `${activity?.summary} ${activity?.changesJson ?? ''}`
-    expect(text).not.toMatch(/example\.com|412\s?345\s?678/)
+    expect(text).not.toMatch(/Sam|example\.com|412\s?345\s?678/)
   })
 
   it('adds a registered person as a placeholder, outside the team, looking like anyone else', async () => {
@@ -113,6 +118,10 @@ describe('POST /groups/{id}/members', () => {
     const registered = await add(services, { displayName: 'Robin', email: 'reg@example.com' })
     expect(registered).toMatchObject({ personId: 'p9', status: 'placeholder' })
     expect(services.teams.members('g1')?.map((m) => m.userId)).not.toContain('u9')
+    // The row is about the person found, not the one adding them (data-model.md#activity).
+    expect(services.db.rows('activity')).toEqual([
+      expect.objectContaining({ action: 'member.added', subjectPersonId: 'p9' }),
+    ])
 
     const unknown = await add(services, { displayName: 'Robin', email: 'new@example.com' })
     expect(unknown.personId).not.toBe('p9')
@@ -135,6 +144,7 @@ describe('POST /groups/{id}/members', () => {
     const services = house()
     const row = await add(services, { displayName: 'Sam', role: 'viewer', joinedOn: '2026-08-01' })
     expect(row).toMatchObject({ role: 'viewer', joinedOn: '2026-08-01' })
+    expect(services.db.rows('activity')[0]?.summary).toBe('was added as a viewer')
   })
 
   it('joinedOn defaults to today in the group time zone', async () => {

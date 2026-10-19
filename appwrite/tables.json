@@ -334,6 +334,13 @@
         "default": null
       },
       {
+        "key": "nextCheckAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
         "key": "settingsJson",
         "type": "text",
         "required": true,
@@ -361,6 +368,12 @@
         "key": "idx_nextCloseAt",
         "type": "key",
         "columns": ["nextCloseAt"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_nextCheckAt",
+        "type": "key",
+        "columns": ["nextCheckAt"],
         "orders": ["ASC"]
       },
       {
@@ -823,6 +836,24 @@
         "orders": ["ASC", "ASC"]
       }
     ]
+  },
+  {
+    "$id": "balances",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "balances",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "peopleJson",
+        "type": "mediumtext",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": []
   },
   {
     "$id": "receiptFiles",

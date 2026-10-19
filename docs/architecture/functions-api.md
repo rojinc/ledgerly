@@ -141,7 +141,7 @@ What every write does, in **one TablesDB transaction**:
 
 On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use. The scheduler's `PATCH /schedules/{id}`, `/end` and `DELETE` do the same for a schedule's group.
 
-`/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
+`/balances` is a function, not a client-side sum, so the `balances` cache changes no client. It reads the group's `balances` row ([ledger](ledger.md#balances)): one read. A group with no row, or whose row can't be read, fails `balancesPeopleSchema` or has nets that don't add up to 0 (each logged as an error), is summed from its shares, reading again until the group's `rev` is the same before and after. The response is the same either way, and a sum that doesn't add up to 0 is `INVARIANT_VIOLATION`.
 
 - `people` has one entry per person with shares in the group, sorted by `personId`. Anyone else is at 0.
 - It reads the shares a page at a time, then the group row again. Every write of shares writes a fresh `rev` to the group row ([concurrency](ledger.md#concurrency)). So if `rev` changed, or a page's cursor row was deleted, a write committed during the read, and it reads again. After 3 reads like that, it gives `CONFLICT`.

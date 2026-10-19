@@ -91,10 +91,18 @@ export function planOccurrence(
   return { input, planned: plan(input, status, ledger, schedule.createdBy) }
 }
 
-/** The next 00:05 in `timeZone` after `today`, as UTC (scheduling.md, step 1). */
+/**
+ * The next 00:05 in `timeZone` after `today`, as UTC (scheduling.md, step 1). Where the clocks
+ * skip midnight west of UTC (Santiago, Havana and the Azores on their DST day), 00:05 would land
+ * the evening before, so it is 01:05, just after the day starts. East of UTC (Beirut, Cairo) it
+ * already moves on to 01:05. Where midnight happens twice, it is the first 00:05.
+ */
 export function nextRunAt(today: LocalDate, timeZone: string): string {
-  const midnight = Date.parse(localTimeToUtc(addDays(today, 1), 0, timeZone))
-  return new Date(midnight + 5 * MS_PER_MINUTE).toISOString()
+  const tomorrow = addDays(today, 1)
+  const at = (hour: number) =>
+    new Date(Date.parse(localTimeToUtc(tomorrow, hour, timeZone)) + 5 * MS_PER_MINUTE)
+  const run = at(0)
+  return (localToday(timeZone, run) === tomorrow ? run : at(1)).toISOString()
 }
 
 /** What an expansion did: occurrences it created, changed in place, and deleted as stale. */

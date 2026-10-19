@@ -102,7 +102,7 @@ export async function updateGroup(
           'group.updated',
           `Changed the group's ${changed.join(', ')}`,
           now,
-          { before, after },
+          { changes: { before: withoutName(before), after: withoutName(after) } },
         ),
       )
     }),
@@ -112,6 +112,14 @@ export async function updateGroup(
 
 function storedAnchor(group: Groups): LocalDate | null {
   return group.cycleAnchor === null ? null : parseLocalDate(group.cycleAnchor)
+}
+
+/**
+ * The changes for the activity row, which never holds a name (data-model.md#activity): a pair
+ * group's name is what its creator calls the other person. The summary still says it changed.
+ */
+function withoutName({ name: _, ...fields }: Record<string, unknown>): object {
+  return fields
 }
 
 /** Employer settings with `recipients` as a count, for the activity row. */

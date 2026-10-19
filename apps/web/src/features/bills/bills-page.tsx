@@ -309,7 +309,7 @@ function RecurringBill({
   // The rule's own last date is in its words already; a stop's earlier end date isn't.
   const last =
     schedule.endsOn && lastDue(schedule) === schedule.endsOn ? schedule.endsOn : undefined
-  // Not started: Stop removes it, as nothing of it can have been paid.
+  // Not started: Stop removes it, except a first bill already paid early, which ends it there.
   const notStarted = today < schedule.startsOn
   const details = [
     repeat ? describeRepeat(repeat, formatDate) : undefined,
@@ -349,7 +349,7 @@ function RecurringBill({
         >
           <p id={`stop-${schedule.$id}`} className="text-sm">
             {notStarted
-              ? `Remove ${schedule.description}? It hasn’t started yet, so no bills are kept.`
+              ? `Remove ${schedule.description}? It hasn’t started yet, so its bills are removed, except any you’ve already paid.`
               : `Stop ${schedule.description} from today? No more bills are made after today. Bills already made stay, so you can still pay or skip them.`}
           </p>
           {stop.isError && <Message alert>{stop.error.message}</Message>}

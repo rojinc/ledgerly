@@ -7,7 +7,7 @@ Step-by-step journeys through the product. Each step names the function route it
 1. The user signs up with an email and verifies it (Appwrite Auth).
 2. The app calls `identity POST /bootstrap`. This creates their **person**, **profile** and **personal group**. It is safe to call on every login.
 3. If records were already made for their email (for example a friend lent them money), `identity POST /claim` links those records to the new account. The user sees that history straight away.
-4. The user lands on the dashboard. Until they've recorded something, it shows a getting-started guide (F-07): first **What do you want to track first?** (an employer, a lend & borrow, or bills), with any groups waiting for them to join and the time zone, holiday region and currency bootstrap guessed; then, once they've joined another group, **Record your first entry** with a link for each group they can add to. It goes for good once any of their groups has a transaction, and **Hide** removes it on that device.
+4. The user lands on the dashboard. Until they've recorded something, it shows a getting-started guide (F-07): first **What do you want to track first?** (an employer, a lend & borrow, or bills), with any groups waiting for them to join and the time zone, holiday region and currency bootstrap guessed; then, once they've joined another group, **Record your first entry** with a link for each group they can add to. It goes for good once any of their groups has a transaction, and that device stops checking. **Hide** removes the guide on that device, but not the groups waiting for them to join.
 
 ## 2. Set up an employer with a weekly shift
 
@@ -47,6 +47,8 @@ To fix a posted entry, the worker opens it and taps **Edit**, which shows the sa
 2. Alice adds the electricity bill: $270, period 1 Jul–30 Sep, due 15 Oct, not paid yet → `ledger POST /transactions` with `kind: bill`, status `due`.
 3. Alice pays it on 10 Oct and marks it paid → `ledger POST /transactions/{id}/post`, with payer Alice.
 4. The default split is **days present**. Cara moved in on 1 Aug, so she pays for 61 of the 92 days.
+
+A posted house expense is fixed the same way as an employer entry: its creator or an admin opens it and taps **Edit**, which shows the house expense form filled in → `ledger PATCH /transactions/{id}`. Who paid, the split and the people sharing it can all change; a new date doesn't change who shares it. An expense with items, or one the form can't show, has no Edit: void it and add it again.
 
 ## 7. Itemised grocery receipt
 

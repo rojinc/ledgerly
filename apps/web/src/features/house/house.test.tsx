@@ -321,6 +321,10 @@ describe('HousePage', () => {
       expect(screen.queryByRole('button', { name: 'Moved back in' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+      // Everyone can read the house's divides (#166).
+      expect(screen.getByRole('link', { name: 'Statements' }).getAttribute('href')).toBe(
+        '/groups/g1/statements',
+      )
       // The history is for everyone who can open the house (#183).
       const history = screen.getByRole('region', { name: 'History' })
       expect(await within(history).findByText('No expenses yet.')).toBeTruthy()
@@ -336,6 +340,32 @@ describe('HousePage', () => {
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
       const history = screen.getByRole('region', { name: 'History' })
       expect(await within(history).findByText('No expenses yet.')).toBeTruthy()
+    })
+
+    it('names a housemate who moved out as the payer in the history (#183)', async () => {
+      const members = listRows.getMockImplementation() as (params: unknown) => Promise<unknown>
+      listRows.mockImplementation((async (params: { tableId: string }) => {
+        if (params.tableId === 'transactions') {
+          const power = {
+            $id: 't1',
+            groupId: 'g1',
+            kind: 'expense',
+            status: 'posted',
+            date: '2026-09-15',
+            description: 'Power',
+            totalCents: 9000,
+          }
+          return { total: 1, rows: [power] }
+        }
+        // Jo paid it, then moved out on 30 September.
+        if (params.tableId === 'shares') {
+          return { total: 1, rows: [{ $id: 's1', transactionId: 't1', personId: 'p2' }] }
+        }
+        return members(params)
+      }) as never)
+      renderAt('/groups/g1')
+      const history = await screen.findByRole('region', { name: 'History' })
+      expect(await within(history).findByText(/Paid by Jo/)).toBeTruthy()
     })
   })
 

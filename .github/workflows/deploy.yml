@@ -1,0 +1,130 @@
+name: Deploy
+
+# Every push to main deploys to ledgerly-dev, the one Appwrite project, which has real users.
+# "Run workflow" redeploys main's latest commit; only a person runs it, never an agent
+# (AGENTS.md, docs/engineering/environments-and-deploys.md#cicd-github-actions).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time, and never cancelled half-way through a push.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# An explicit bash adds `-o pipefail`, so a failing command before a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The API key is passed only to the steps that need it, never to npm or the build.
+    env:
+      CONFIG: appwrite.config.json
+      APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+      PROJECT_ID: ${{ secrets.APPWRITE_DEV_PROJECT_ID }}
+    steps:
+      # Until the owner adds the secrets (#3), a deploy is skipped with a warning. One with only
+      # some of them fails instead.
+      - name: Check the secrets
+        id: secrets
+        env:
+          API_KEY: ${{ secrets.APPWRITE_DEV_API_KEY }}
+        run: |
+          if [ -n "$APPWRITE_ENDPOINT" ] && [ -n "$PROJECT_ID" ] && [ -n "$API_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$APPWRITE_ENDPOINT$PROJECT_ID$API_KEY" ]; then
+            echo "::error::Only some of the APPWRITE_* deploy secrets are set."
+            exit 1
+          else
+            echo "::warning::Deploy skipped: the APPWRITE_* secrets aren't set yet (#3)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+          # Every branch, so this commit can be checked against main's latest.
+          fetch-depth: 0
+
+      # `push table --force` makes the database match this commit's tables.json, so deploying
+      # an older commit (re-running an old run) would drop columns added since, with their data.
+      # Only main's latest commit deploys; a newer one's own run deploys that.
+      - name: Check this is main's latest commit
+        id: latest
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Deploy only from main, not $GITHUB_REF."
+            exit 1
+          fi
+          if [ "$(git rev-parse origin/main)" = "$GITHUB_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Skipped: main has a newer commit, and its own run deploys it."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The CLI takes the endpoint from APPWRITE_ENDPOINT over the config file's, and the config
+      # file names the project, so this is the only check that the secrets and the file agree.
+      - name: Check the config matches the secrets
+        if: steps.latest.outputs.deploy == 'true'
+        run: |
+          node -e '
+            const { CONFIG, APPWRITE_ENDPOINT, PROJECT_ID } = process.env
+            const config = require("./" + CONFIG)
+            if (config.endpoint !== APPWRITE_ENDPOINT || config.projectId !== PROJECT_ID) {
+              console.error("::error::" + CONFIG + " names another project or endpoint than the secrets.")
+              process.exit(1)
+            }
+          '
+
+      - uses: actions/setup-node@v6
+        if: steps.latest.outputs.deploy == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - if: steps.latest.outputs.deploy == 'true'
+        run: npm ci
+
+      # Builds the function bundles, and the web app for this project.
+      - if: steps.latest.outputs.deploy == 'true'
+        run: npm run build
+        env:
+          VITE_APPWRITE_ENDPOINT: ${{ env.APPWRITE_ENDPOINT }}
+          VITE_APPWRITE_PROJECT_ID: ${{ env.PROJECT_ID }}
+
+      - name: Install the Appwrite CLI
+        if: steps.latest.outputs.deploy == 'true'
+        run: npm install --global appwrite-cli@28.7.0
+
+      - name: Push tables, buckets, functions and the web site
+        if: steps.latest.outputs.deploy == 'true'
+        env:
+          API_KEY: ${{ secrets.APPWRITE_DEV_API_KEY }}
+        run: |
+          appwrite client --endpoint "$APPWRITE_ENDPOINT" --project-id "$PROJECT_ID" --key "$API_KEY"
+          log="$RUNNER_TEMP/push.log"
+          push() {
+            appwrite push "$@" --all --force --config-file "$CONFIG" 2>&1 | tee "$log"
+            # The CLI can exit 0 after a failure ("✗ Error: …", or "Deployed 4 of 5 functions
+            # … 1 failed."), or after skipping a resource that lacks a setting ("Skipping it:
+            # set …", with --all), so read what it printed too.
+            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed|Skipping it:' "$log"; then
+              echo "::error::appwrite push $1 failed."
+              exit 1
+            fi
+          }
+          push table
+          push bucket
+          push function
+          push site
