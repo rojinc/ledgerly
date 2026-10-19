@@ -41,6 +41,7 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 - **One deploy at a time,** and a running one is never cancelled.
 - **Only `main`'s latest commit deploys.** `push table --force` makes the database match the commit's `tables.json`, so deploying an older commit would drop columns added since, with their data. A re-run of an older run is skipped with a warning (the newer commit's own run deploys it), and a run on another branch fails. To undo a change, revert it on `main`.
+- **A table push never deletes or recreates anything.** The plan comes first and stops the deploy if it would ([schema changes that lose data](#schema-changes-that-lose-data)).
 - **The CLI can exit 0 when a resource fails to push** (for example "Deployed 4 of 5 functions … 1 failed."), or when `--all` skips one that lacks a setting (`Skipping it: set "entrypoint" …`). So each push runs under `pipefail` and also fails on any `✗`, "… failed." or "Skipping it:" line in the CLI's output. `appwrite push all` can't be used: it needs a console login, not an API key.
 - **The CLI takes the endpoint from `APPWRITE_ENDPOINT` over the config file's,** so nothing in the CLI notices a mismatch. The workflow checks that `APPWRITE_ENDPOINT` is exactly the config's `endpoint` and that the project secret matches its `projectId` before it pushes.
 - **The API key** is passed only to the two steps that use it, never to `npm ci` or the build.
@@ -87,6 +88,22 @@ The Appwrite CLI **deletes columns that disappear from the config** when it push
 3. Renaming = add the new column → backfill (script in `scripts/`) → switch code → remove the old column. That's at least two releases.
 4. Changing a column's type recreates it and **loses its data**. Treat it as a rename.
 5. Every schema PR has the `contract` label and a "Migration" section in its description, even if that section says "additive, none needed".
+
+### Schema changes that lose data
+
+`push table --force` (Appwrite CLI 28.7.0) applies, without asking, every change that loses data: it **deletes and recreates** a column whose `type`, `array` or `format` differs from the server's (`asc` and `ASC` count as different index orders), and **deletes** columns, indexes, tables and databases that aren't in the config. The CLI has no dry run. So before it pushes, the deploy runs `scripts/appwrite-table-plan.py`: `push table` without `--force`, in a pseudo-terminal that answers "n" to every question, which prints every change and applies none that needs approval. The deploy stops, with nothing pushed, if the plan shows:
+
+- `recreating` or `deleting` (a column, index or database), or `(deleted locally)` (a table or database);
+- `Skipping push action` (a changed table or database setting, which stops the CLI before it compares columns) or a timeout, since the plan is then incomplete.
+
+New tables and their columns are created during the plan, as the push would create them. After the real push, a `Deleting …` line fails the deploy too, which reports a change made to the server between the two runs.
+
+**When the plan stops a deploy:**
+- **The file is wrong** (a type that differs only in name, as `string` for a plain text column the server reports as `varchar`): fix `tables.json`. `tables.test.ts` checks the text column types.
+- **The server is wrong** (something made by hand, or an index with lower-case orders): the lead fixes the server with the Appwrite MCP, then re-runs the deploy.
+- **The change is meant to lose data:** follow the steps above (a later PR, a backfill), and the lead applies the destructive step by hand, once, after a backup.
+
+Nothing made on ledgerly-dev ahead of `main` (a table, column or index from an open contract PR) survives a deploy that reaches it: the plan stops the deploy instead of deleting it, until `main` has it too.
 
 ## Backups
 

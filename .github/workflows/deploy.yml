@@ -113,13 +113,32 @@ jobs:
           API_KEY: ${{ secrets.APPWRITE_DEV_API_KEY }}
         run: |
           appwrite client --endpoint "$APPWRITE_ENDPOINT" --project-id "$PROJECT_ID" --key "$API_KEY"
+
+          # `push table --force` deletes and recreates a column or index whose type or orders
+          # changed, and deletes columns, indexes, tables and databases missing from the
+          # config, without asking: data that's gone for good. So the plan comes first, and
+          # anything that would delete or recreate stops the deploy before it's applied.
+          plan="$RUNNER_TEMP/table-plan.log"
+          python3 -I scripts/appwrite-table-plan.py "$plan" \
+            appwrite push table --all --config-file "$CONFIG"
+          if grep -qE '\b(recreating|deleting)\b|\(deleted locally\)' "$plan"; then
+            echo "::error::appwrite push table would delete or recreate a table, column, index or database, losing its data. Nothing was pushed. See environments-and-deploys.md#schema-changes-that-lose-data."
+            exit 1
+          fi
+          # A changed table or database setting stops the CLI before it compares columns.
+          if grep -qE 'Skipping push action|plan: timed out' "$plan"; then
+            echo "::error::The table plan stopped early, so it can't show every change. Nothing was pushed."
+            exit 1
+          fi
+
           log="$RUNNER_TEMP/push.log"
           push() {
             appwrite push "$@" --all --force --config-file "$CONFIG" 2>&1 | tee "$log"
             # The CLI can exit 0 after a failure ("✗ Error: …", or "Deployed 4 of 5 functions
             # … 1 failed."), or after skipping a resource that lacks a setting ("Skipping it:
-            # set …", with --all), so read what it printed too.
-            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed|Skipping it:' "$log"; then
+            # set …", with --all), so read what it printed too. A table push that deleted
+            # something after all (the server changed since the plan) is reported too.
+            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed|Skipping it:|\b(recreating|deleting)\b|Deleting (attribute|index|table|database) ' "$log"; then
               echo "::error::appwrite push $1 failed."
               exit 1
             fi
