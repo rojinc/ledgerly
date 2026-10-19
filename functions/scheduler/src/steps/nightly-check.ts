@@ -25,13 +25,16 @@ import type { Services } from '../services'
 import { describe } from './auto-post'
 
 /**
- * What step 5 did: groups checked to the end, groups left for the next run because writes kept
- * landing while they were read, error lines logged, shares of merged persons, `balances` rows
- * written (backfills included), team memberships removed, and groups that failed.
+ * What step 6 did: groups checked to the end, groups left for the next run because writes kept
+ * landing while they were read, groups the budget cut off, groups skipped because their team is
+ * gone, error lines logged, shares of merged persons, `balances` rows written (backfills
+ * included), team memberships removed, and groups that failed.
  */
 export type CheckCounts = {
   checked: number
   busy: number
+  cutOff: number
+  skipped: number
   findings: number
   merging: number
   repaired: number
@@ -47,14 +50,17 @@ const CHECK_HOUR = 3
 const PUT_OFF_MS = 60 * 60 * 1000
 
 /**
- * Step 5 (scheduling.md#step-5-nightly-check): checks every group that is due, archived ones
- * too: its `balances` row against a fresh sum, its shares against the invariants, and its team
- * against its member rows. It repairs only the row and stale memberships. Logs hold IDs only.
+ * Step 6 (scheduling.md#step-6-nightly-check): checks every group that is due, archived ones
+ * too, until the run's budget is used: its `balances` row against a fresh sum, its shares
+ * against the invariants, and its team against its member rows. It repairs only the row and
+ * stale memberships. Groups it doesn't reach stay due. Logs hold IDs only.
  */
 export async function nightlyCheck(services: Services): Promise<CheckCounts> {
   const counts = {
     checked: 0,
     busy: 0,
+    cutOff: 0,
+    skipped: 0,
     findings: 0,
     merging: 0,
     repaired: 0,
@@ -86,27 +92,44 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
     counts.findings += 1
     console.error(`scheduler: nightly check of group ${groupId}: ${finding}`)
   }
-  // Busy, or cut off by the budget: a later run checks it from the start, and the next one
-  // starts with the groups after it.
-  const putOff = async (busy: boolean) => {
-    if (busy) counts.busy += 1
+  // A purge in progress deletes the team first (identity-and-invites.md#deleting-an-account-m4),
+  // then the group's rows: they're left alone, and the group stays due.
+  const memberships = await membershipsOf(services.teams, groupId)
+  if (memberships === null) {
+    counts.skipped += 1
+    return
+  }
+  const tomorrow = localTimeToUtc(
+    addDays(localToday(group.timezone, services.now), 1),
+    CHECK_HOUR,
+    group.timezone,
+  )
+  // Writes kept landing: a run soon tries again.
+  const busy = async () => {
+    counts.busy += 1
     await setNextCheck(db, groupId, new Date(services.now.getTime() + PUT_OFF_MS).toISOString())
   }
+  // Tomorrow's check starts it again, so it can't hold up the groups after it on every run.
+  const cutOff = async () => {
+    counts.cutOff += 1
+    console.warn(`scheduler: nightly check of group ${groupId} cut off by the budget`)
+    await setNextCheck(db, groupId, tomorrow)
+  }
   const whole = await readWhole(db, groupId)
-  if (!whole) return putOff(true)
+  if (!whole) return busy()
+  if (services.outOfTime()) return cutOff()
   counts.merging += await checkShares(db, whole, report)
 
   const fresh = balancesFromShares(whole.shares)
   if (whole.balances === undefined || !same(whole.balances, fresh)) {
     if (whole.balances !== undefined) report('balances row wrong')
-    if (!(await rebuildBalances(db, groupId))) return putOff(true)
+    if (!(await rebuildBalances(db, groupId))) return busy()
     counts.repaired += 1
   }
-  counts.removed += await reconcileTeam(services, groupId, whole.members, report)
+  if (services.outOfTime()) return cutOff()
+  counts.removed += await reconcileTeam(services, groupId, memberships, whole.members, report)
 
-  if (services.outOfTime()) return putOff(false)
-  const tomorrow = addDays(localToday(group.timezone, services.now), 1)
-  if (await setNextCheck(db, groupId, localTimeToUtc(tomorrow, CHECK_HOUR, group.timezone))) {
+  if (await setNextCheck(db, groupId, tomorrow)) {
     counts.checked += 1
   } else {
     counts.busy += 1
@@ -268,10 +291,11 @@ async function rebuildBalances(db: Db, groupId: string): Promise<boolean> {
 async function reconcileTeam(
   { db, teams, now }: Services,
   groupId: string,
+  memberships: readonly Membership[],
   members: readonly Members[],
   report: (finding: string) => void,
 ): Promise<number> {
-  const old = (await membershipsOf(teams, groupId)).filter(
+  const old = memberships.filter(
     (membership) => now.getTime() - Date.parse(membership.$createdAt) > MEMBERSHIP_GRACE_MS,
   )
   if (old.length === 0) return 0
@@ -313,11 +337,11 @@ async function joinedNow(db: Db, groupId: string, userId: string): Promise<boole
 
 type Membership = Pick<Models.Membership, '$id' | 'userId' | '$createdAt'>
 
-/** Every membership of the group's team; none when the team is gone. */
+/** Every membership of the group's team; null when the team is gone. */
 async function membershipsOf(
   teams: Pick<TeamsApi, 'listMemberships'>,
   teamId: string,
-): Promise<Membership[]> {
+): Promise<Membership[] | null> {
   const found: Membership[] = []
   try {
     for (;;) {
@@ -329,7 +353,7 @@ async function membershipsOf(
       if (memberships.length < PAGE) return found
     }
   } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404) return []
+    if (error instanceof AppwriteException && error.code === 404) return null
     throw error
   }
 }

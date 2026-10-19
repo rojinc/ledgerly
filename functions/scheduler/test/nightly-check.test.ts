@@ -1,10 +1,12 @@
+import { readdirSync, readFileSync } from 'node:fs'
 import type { Groups } from '@ledgerly/core/generated/rows'
+import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { nightlyCheck } from '../src/steps/nightly-check'
 import { call, type Fakes, fakes, group, member, NOW, person } from './harness'
 
-// scheduling.md#step-5-nightly-check. NOW is 07:00 on Monday 19 October in Sydney.
+// scheduling.md#step-6-nightly-check. NOW is 07:00 on Monday 19 October in Sydney.
 const TOMORROW_3AM_SYDNEY = '2026-10-19T16:00:00.000Z'
 const HOUR = 60 * 60 * 1000
 
@@ -122,12 +124,14 @@ function groupRow(services: Fakes, groupId = 'elm') {
 
 const logged = () => errors.mock.calls.map(([line]) => String(line))
 
-describe('step 5: nightly check', () => {
+describe('step 6: nightly check', () => {
   it('backfills a group’s balances row on its first check, then waits until 03:00 tomorrow', async () => {
     const services = seeded()
     expect(await nightlyCheck(services)).toEqual({
       checked: 1,
       busy: 0,
+      cutOff: 0,
+      skipped: 0,
       findings: 0,
       merging: 0,
       repaired: 1,
@@ -307,18 +311,56 @@ describe('step 5: nightly check', () => {
     expect(stored(services)).toBeUndefined()
   })
 
-  it('stops when the run’s budget is used, and checks the group again from the start', async () => {
-    const services = seeded()
+  it('moves a group the budget cuts off to tomorrow, by ID, and checks it then from the start', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    for (const [reads, repaired] of [
+      // Out of time once the group is read whole, or once its row is repaired.
+      [3, 0],
+      [4, 1],
+    ] as const) {
+      // u9 has no member row: a stale membership.
+      const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u9'] })
+      let calls = 0
+      // Two reads let the page in and the group out of it.
+      services.outOfTime = () => ++calls > reads - 1
+      expect(await nightlyCheck(services)).toMatchObject({ checked: 0, cutOff: 1, repaired })
+      expect(groupRow(services).nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
+      expect(warn).toHaveBeenLastCalledWith(
+        'scheduler: nightly check of group elm cut off by the budget',
+      )
+      // The team wasn't reached.
+      expect(services.teams.members('elm')).toHaveLength(4)
+      services.outOfTime = () => false
+      services.now = new Date(TOMORROW_3AM_SYDNEY)
+      expect(await nightlyCheck(services)).toMatchObject({ checked: 1, removed: 1 })
+    }
+  })
+
+  it('leaves a group it doesn’t reach due, for the next run', async () => {
+    const services = seeded(
+      {
+        groups: [
+          group('elm', 'pSam', { type: 'house', name: 'Elm St', settingsJson: '{"type":"house"}' }),
+          group('oak', 'pSam', { type: 'house', name: 'Oak Rd', settingsJson: '{"type":"house"}' }),
+        ],
+      },
+      { oak: ['u1'] },
+    )
     let calls = 0
-    // The budget runs out while the group is checked: after the page is read and the group
-    // taken from it.
-    services.outOfTime = () => ++calls > 2
-    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, busy: 0, repaired: 1 })
-    expect(groupRow(services).nextCheckAt).toBe(new Date(NOW.getTime() + HOUR).toISOString())
-    // An hour later, a run checks it from the start.
-    services.outOfTime = () => false
-    services.now = new Date(NOW.getTime() + HOUR)
-    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, repaired: 0 })
+    // Out of time once Elm St is done: the page, Elm St, its two checks, then Oak Rd.
+    services.outOfTime = () => ++calls > 4
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, cutOff: 0 })
+    expect(groupRow(services, 'oak').nextCheckAt ?? null).toBeNull()
+  })
+
+  it('skips a group whose team is gone, as a purge leaves it, and leaves it due', async () => {
+    // The purge has deleted the team and some of the group's shares: s2 is gone.
+    const services = seeded({ shares: [GROCERIES[1] as object] })
+    services.teams = new FakeTeams()
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, skipped: 1, findings: 0 })
+    expect(stored(services)).toBeUndefined()
+    expect(groupRow(services).nextCheckAt ?? null).toBeNull()
+    expect(logged()).toEqual([])
   })
 
   it('checks archived groups too', async () => {
@@ -533,5 +575,27 @@ describe('step 5: nightly check', () => {
       }
       expect(remove).not.toHaveBeenCalled()
     })
+  })
+})
+
+describe('the team writes (teams.write)', () => {
+  it('are reached by no route that people call', async () => {
+    // Only step 6 writes to a team, and only the cron run calls step 6.
+    const src = new URL('../src/', import.meta.url)
+    const files = (readdirSync(src, { recursive: true }) as string[]).filter((file) =>
+      file.endsWith('.ts'),
+    )
+    const text = (file: string) => readFileSync(new URL(file, src), 'utf8')
+    expect(files.filter((file) => /\.deleteMembership\(|addToTeam\(/.test(text(file)))).toEqual([
+      'steps/nightly-check.ts',
+    ])
+    expect(files.filter((file) => /from '[./]+(steps\/)?nightly-check'/.test(text(file)))).toEqual([
+      'routes/run.ts',
+    ])
+    // And the cron route refuses a person, whatever the trigger says: u9's stale membership stays.
+    const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u9'] })
+    const remove = vi.spyOn(services.teams, 'deleteMembership')
+    expect((await call(services, 'POST', '/', { userId: 'u1', scheduled: true })).status).toBe(403)
+    expect(remove).not.toHaveBeenCalled()
   })
 })
