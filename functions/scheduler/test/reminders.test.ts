@@ -24,6 +24,7 @@ const SYDNEY_YESTERDAY = '2026-10-18'
 function transaction(id: string, extra: Partial<Transactions> = {}) {
   return {
     $id: id,
+    $createdAt: '2026-10-01T00:00:00.000Z',
     groupId: 'acme',
     kind: 'shift',
     status: 'scheduled',
@@ -188,6 +189,16 @@ describe('step 3: shift to confirm', () => {
     const services = seeded([transaction('t1', { scheduleId: 'auto' })])
     expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 0 })
     expect(remindedAt(services, 't1')).toBeNull()
+  })
+
+  it('reminds about a shift of an auto-post schedule made after its day, which step 2 leaves', async () => {
+    // Made on Sydney's 19 October (now), for the 18th.
+    const late = transaction('t1', { scheduleId: 'auto', $createdAt: NOW.toISOString() })
+    const services = seeded([late])
+    expect(await runCron(services)).toMatchObject({
+      posted: { posted: 0 },
+      reminders: { sent: 1, skipped: 0, failed: 0 },
+    })
   })
 
   it('treats a deleted schedule as one that doesn’t auto-post', async () => {

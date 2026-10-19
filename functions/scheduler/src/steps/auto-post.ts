@@ -7,6 +7,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { postInTransaction } from '@ledgerly/server/ledger/post'
 import { findTransaction, ledgerRoute, loadGroupLedger } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
+import { madeLate } from '../occurrences'
 import { pages } from '../pages'
 import { findSchedule } from '../schedule-rows'
 import type { Services } from '../services'
@@ -68,7 +69,7 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
       tableId: TABLES.groups,
       rowId: row.groupId,
     })
-    if (group.archivedAt || !isDue(row, group, now) || createdLate(row, group)) return false
+    if (group.archivedAt || !isDue(row, group, now) || madeLate(row, group.timezone)) return false
     const ledger = await loadGroupLedger(db, group, schedule.createdBy)
     await withTransaction(db, (tx) =>
       postInTransaction(tx, db, {
@@ -85,14 +86,6 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
     )
     return true
   })
-}
-
-// Made after its own day, by a run that came late after an edit: it waits for the user, like any
-// past occurrence that wasn't posted, so a week the edit moved is never paid twice
-// (scheduling.md#step-2-auto-post).
-function createdLate(row: Transactions, group: Groups): boolean {
-  const createdOn = localToday(group.timezone, new Date(row.$createdAt))
-  return compareDates(createdOn, row.date as LocalDate) > 0
 }
 
 // Still `scheduled`, and its day has come in the group's time zone: a shift's once it's over,
