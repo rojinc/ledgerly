@@ -106,6 +106,7 @@ type Setup = {
   members?: Row[]
   invites?: Row[]
   activity?: Row[]
+  statements?: Row[]
   account?: AccountUser
   teams?: Record<string, string[]>
 }
@@ -127,6 +128,7 @@ function setup(options: Setup = {}): Fakes {
       ],
       invites: options.invites ?? [invite('inv1', TOKEN)],
       activity: options.activity ?? [],
+      statements: options.statements ?? [],
     },
     { account: options.account ?? account(), teams: options.teams ?? { g1: ['u2'], g2: ['u2'] } },
   )
@@ -268,6 +270,33 @@ describe('POST /invites/accept', () => {
     expect(services.db.rows('activity')).toEqual([
       expect.objectContaining({ actorPersonId: 'pSam', action: 'member.joined' }),
     ])
+    expect(rowOf(services, 'invites', 'inv1')).toMatchObject({ acceptedAt: NOW.toISOString() })
+  })
+
+  it('answers the group, then a retry the same, when a finalizing statement puts off the merge', async () => {
+    // Merge step 2 leaves g1 for a later run, so Kim's row and email stay on pKim, merged into
+    // Sam: the email is Sam's only through mergedInto.
+    const services = setup({
+      persons: [SAM, KIM],
+      identities: [SAM_EMAIL, KIM_EMAIL],
+      members: [placeholderRow('mKim', 'g1', 'pKim', BEFORE, { displayName: 'Kim' })],
+      invites: [invite('inv1', TOKEN, TO_KIM)],
+      statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' }],
+      account: account({ email: 'kim@example.com' }),
+    })
+    expect(await accept(services)).toEqual({ groupId: 'g1' })
+    expect(rowOf(services, 'persons', 'pKim')).toMatchObject({ mergedInto: 'pSam' })
+    expect(rowOf(services, 'identities', 'iKim')).toMatchObject({ personId: 'pKim' })
+    expect(rowOf(services, 'members', 'mKim')).toMatchObject({
+      personId: 'pKim',
+      status: 'placeholder',
+    })
+    expect(teamUsers(services, 'g1')).toEqual(['u2'])
+    expect(rowOf(services, 'invites', 'inv1')).toMatchObject({ acceptedAt: NOW.toISOString() })
+
+    const writes = vi.spyOn(services.db, 'createOperations')
+    expect(await accept({ ...services, now: LATER })).toEqual({ groupId: 'g1' })
+    expect(writes).not.toHaveBeenCalled()
     expect(rowOf(services, 'invites', 'inv1')).toMatchObject({ acceptedAt: NOW.toISOString() })
   })
 
@@ -445,6 +474,11 @@ describe('POST /invites/accept', () => {
           invites: [invite('inv1', TOKEN, { acceptedAt: BEFORE })],
           account: account({ emailVerification: false }),
         },
+        TOKEN,
+      ],
+      [
+        'a used invite whose identity row is gone',
+        { identities: [], invites: [invite('inv1', TOKEN, { acceptedAt: BEFORE })] },
         TOKEN,
       ],
       [
