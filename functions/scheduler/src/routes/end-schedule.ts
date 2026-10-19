@@ -15,8 +15,9 @@ export type EndedSchedule = { schedule: Schedules; removed: number }
 /**
  * `scheduler POST /schedules/{id}/end` (scheduling.md#schedule-routes): sets `endsOn` and
  * deletes the future occurrences after it that are still `scheduled` or `due` and not edited. It
- * never plans the template, so a schedule can always be ended. A later `endsOn` than before
- * lets the next cron run carry on up to it.
+ * never plans the template, so a schedule can always be ended. It is due at once, so the next
+ * cron run deletes whatever this request didn't get to (a timeout, say), or carries on up to a
+ * later `endsOn` than before.
  */
 export async function endSchedule(
   services: Services,
@@ -37,7 +38,7 @@ export async function endSchedule(
       await guardSchedule(tx, db, schedule, {
         endsOn,
         generatedThrough: done ? endsOn : generated,
-        nextRunAt: done ? null : (schedule.nextRunAt ?? now.toISOString()),
+        nextRunAt: now.toISOString(),
       })
       // An archive that lands meanwhile makes this run again and get ARCHIVED.
       await guardGroup(tx, db, membership.group)

@@ -997,11 +997,30 @@ describe('POST /schedules/{id}/end', () => {
       '2026-11-12',
       '2026-12-03',
     ])
+    // Due at once; the next cron run finds nothing left to do and stops it.
     expect(schedule).toMatchObject({
       endsOn: '2026-11-12',
       generatedThrough: '2026-11-12',
-      nextRunAt: null,
+      nextRunAt: services.now.toISOString(),
     })
+    expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 0, failed: 0 })
+    expect(occurrences(services)).toHaveLength(8)
+    expect(scheduleRow(services)?.nextRunAt).toBeNull()
+  })
+
+  it('leaves the rest of an end that stops partway to the next cron run', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // The end is saved, then its deletes time out.
+    const timeout = failCommit(services, 2)
+    expect(
+      await failure(services, 'POST', `/schedules/${ID}/end`, { body: { endsOn: '2026-11-12' } }),
+    ).toMatchObject({ status: 500 })
+    timeout.mockRestore()
+    expect(occurrences(services).at(-1)?.date).toBe('2026-12-10')
+    await runCron(services)
+    expect(occurrences(services).at(-1)?.date).toBe('2026-11-12')
+    expect(scheduleRow(services)?.nextRunAt).toBeNull()
   })
 
   it('changes nothing when the group is archived while it commits', async () => {
@@ -1037,6 +1056,9 @@ describe('POST /schedules/{id}/end', () => {
       body: { endsOn: '2026-11-15' },
     })
     expect(result.removed).toBe(1)
+    // Nor does the cron run that follows it: there is nothing left to plan.
+    expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 0, failed: 0 })
+    expect(scheduleRow(services, rent.id)?.nextRunAt).toBeNull()
   })
 
   it('lets a later end carry on at the next run', async () => {
