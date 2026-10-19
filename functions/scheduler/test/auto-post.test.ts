@@ -94,7 +94,7 @@ function sharesOf(services: Fakes, transactionId: string): Shares[] {
 
 function update(
   services: Fakes,
-  tableId: 'transactions' | 'groups' | 'schedules',
+  tableId: 'transactions' | 'groups' | 'schedules' | 'members',
   rowId: string,
   data: object,
 ) {
@@ -110,7 +110,10 @@ describe('step 2: auto-post', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-01T00:00:00.000Z'))
   })
-  afterEach(() => vi.useRealTimers())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
 
   it('never posts an occurrence made after its own day, so a moved week isn’t paid twice', async () => {
     const services = seeded()
@@ -217,6 +220,111 @@ describe('step 2: auto-post', () => {
     await create(services, { ...groceries, startsOn: '2026-10-19' })
     expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
     expect(row(services, `${groceries.id}_20261019`).status).toBe('posted')
+  })
+
+  it('leaves an expense its creator would pay once they have moved out', async () => {
+    // Alex adds groceries for Sam with no payers, so Alex would pay, then moves out.
+    const services = seeded()
+    const forSam = {
+      ...groceries,
+      template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, forSam, 'u2')
+    await update(services, 'members', 'elm-pAlex', {
+      status: 'left',
+      role: 'viewer',
+      leftOn: '2026-10-10',
+    })
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('doesn’t post an expense its creator would pay if they move out just before its guard', async () => {
+    const services = seeded()
+    const forSam = {
+      ...groceries,
+      template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, forSam, 'u2')
+    // The 12th, the first one step 2 posts.
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'members', 'elm-pAlex', { status: 'left', role: 'viewer' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, id).status).toBe('scheduled')
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('doesn’t post an expense its creator would pay if they move out while it commits', async () => {
+    const services = seeded()
+    const forSam = {
+      ...groceries,
+      template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, forSam, 'u2')
+    // The member row's guard fails the commit, and the rerun finds Alex moved out.
+    beforeCommit(services.db, () =>
+      update(services, 'members', 'elm-pAlex', { status: 'left', role: 'viewer' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, `${groceries.id}_20261012`).status).toBe('scheduled')
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('doesn’t post one whose payers an edit drops just before its guard, once its creator left', async () => {
+    const services = seeded()
+    const samPays = {
+      ...groceries,
+      template: {
+        totalCents: 6_000,
+        payers: [{ personId: 'pSam', cents: 6_000 }],
+        split: { mode: 'equal', personIds: ['pSam'] },
+      },
+    }
+    await create(services, samPays, 'u2')
+    await update(services, 'members', 'elm-pAlex', { status: 'left', role: 'viewer' })
+    const id = `${groceries.id}_20261012`
+    // The 12th names its payers when step 2 reads it; then an edit leaves Alex paying.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => {
+        const { payers, ...rest } = JSON.parse(row(services, id).inputJson)
+        return update(services, 'transactions', id, { inputJson: JSON.stringify(rest) })
+      },
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
+    expect(row(services, id).status).toBe('scheduled')
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('posted')
+  })
+
+  it('still posts a shift whose creator has left, since the owner is paid', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await update(services, 'members', 'acme-pSam', { status: 'left', role: 'viewer' })
+    expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
+  })
+
+  it('still posts one that names its payers after its creator moved out', async () => {
+    const services = seeded()
+    const samPays = {
+      ...groceries,
+      template: {
+        totalCents: 6_000,
+        payers: [{ personId: 'pSam', cents: 6_000 }],
+        split: { mode: 'equal', personIds: ['pSam', 'pAlex'] },
+      },
+    }
+    await create(services, samPays, 'u2')
+    await update(services, 'members', 'elm-pAlex', {
+      status: 'left',
+      role: 'viewer',
+      leftOn: '2026-10-31',
+    })
+    expect((await runCron(services)).posted.posted).toBe(2)
   })
 
   it('looks back 7 days from the UTC date, and no further', async () => {
@@ -387,7 +495,7 @@ describe('step 2: auto-post', () => {
     await withTransaction(services.db, (tx) =>
       tx.write({ action: 'delete', tableId: 'members', rowId: 'acme-pAcme' }),
     )
-    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(await runCron(services)).toMatchObject({
       posted: { posted: 0, skipped: 0, failed: 1 },
       reminders: { sent: 0, skipped: 0, failed: 0 },
@@ -400,7 +508,6 @@ describe('step 2: auto-post', () => {
     expect(services.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'sam@example.com', idempotencyKey: `reminder-${ID}_20261015` }),
     )
-    quiet.mockRestore()
   })
 
   it('never posts a shift the owner was reminded about, also once autoPost is turned on', async () => {

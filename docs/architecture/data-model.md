@@ -288,8 +288,8 @@ Append-only. Never updated. Deleted only with a group purged when a member delet
 | `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized` |
 | `transactionId` | varchar(36)? | |
 | `subjectPersonId` | varchar(36)? | The person a `member.*` row is about, so the app shows their current name ("Former member" after deletion) |
-| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member or group row names its person through `subjectPersonId` instead (rows written before #50 keep their text). |
-| `changesJson` | text? | `{ before, after }` of the changed fields; never a display name |
+| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member row names its person through `subjectPersonId` instead, and a group row names no one (rows written before #50 keep their text). |
+| `changesJson` | text? | `{ before, after }` of the changed fields; never a display name. Empty when only a name changed, which the summary says. |
 | `at` | datetime | |
 
 Indexes: `idx_group_at (groupId, at)`.
