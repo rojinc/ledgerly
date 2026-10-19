@@ -1,7 +1,7 @@
 [
   {
     "$id": "receipts",
-    "$permissions": ["create(\"users\")"],
+    "$permissions": ["create(\"users/verified\")"],
     "fileSecurity": true,
     "name": "receipts",
     "enabled": true,

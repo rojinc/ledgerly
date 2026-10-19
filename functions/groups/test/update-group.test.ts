@@ -54,7 +54,7 @@ describe('PATCH /groups/{id}', () => {
         groupId: 'g1',
         actorPersonId: 'p1',
         action: 'group.updated',
-        summary: "Member m1 changed the group's name, currency",
+        summary: "Changed the group's name, currency",
         at: NOW.toISOString(),
         $permissions: ['read("team:g1")'],
       }),
