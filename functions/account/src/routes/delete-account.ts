@@ -208,9 +208,12 @@ async function lockOut(users: UsersApi, userId: string): Promise<void> {
 // Step 5, once every group is done: their identities, the invites they sent and their profile
 // (business details included).
 async function deleteOwnRows(db: Db, userId: string, personId: string): Promise<void> {
+  // A merge moves identities last, so one still under way leaves their verified key on the
+  // person being merged into them (idx_mergedInto).
+  const merging = await allRows<Persons>(db, TABLES.persons, [Query.equal('mergedInto', personId)])
   // idx_personId, idx_invitedBy_sentAt
   const identities = await allRows<Identities>(db, TABLES.identities, [
-    Query.equal('personId', personId),
+    Query.equal('personId', [personId, ...merging.map((person) => person.$id)]),
   ])
   const invites = await allRows<Invites>(db, TABLES.invites, [Query.equal('invitedBy', personId)])
   const profile = await getRowOrNull<Profiles>(db, TABLES.profiles, userId)

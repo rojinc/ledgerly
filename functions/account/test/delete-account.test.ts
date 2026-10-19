@@ -757,6 +757,21 @@ describe('POST /delete: steps 5 to 7', () => {
     expect(services.users.account('u1')).toBeUndefined()
   })
 
+  it('also deletes the identities of a person still being merged into them, and no one else’s', async () => {
+    const services = kept()
+    // P's merge into Sam was cut off before its identities moved (they move last).
+    await insert(services, 'persons', [
+      person('pMerging', null, { mergedInto: 'p1' }),
+      person('pOther', null, { mergedInto: 'p2' }),
+    ])
+    await insert(services, 'identities', [
+      identity('iM', 'email:sam.old@example.com', 'pMerging'),
+      identity('iO', 'email:someone@example.com', 'pOther'),
+    ])
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['i3', 'iO'])
+  })
+
   it('waits for a group joined or made after step 4 listed their member rows, which a rerun does', async () => {
     const services = kept()
     // Alex added Sam to the house g5; Sam hasn't joined it yet (D-016).
