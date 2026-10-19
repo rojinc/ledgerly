@@ -10,6 +10,7 @@ import { z } from 'zod'
 import type { Db } from '../appwrite/client'
 import { TABLES } from '../appwrite/tables'
 import type { Tx } from '../appwrite/transaction'
+import { balanceWrite } from './balances'
 import {
   activityWrite,
   changedColumns,
@@ -101,15 +102,12 @@ export async function postInTransaction(
   await requireNotFinalizing(db, existing.groupId, [existing.date, date])
   const oldShares = await listShares(db, existing.$id)
   const row = { ...existing, date }
+  const shares = planned.shares.map((share) => shareColumns(row, share))
+  const balances = await balanceWrite(db, existing.groupId, oldShares, shares)
   await tx.write(
     { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
     // A transaction that isn't posted has no shares (I-6), so this replaces none.
-    ...replaceRows(
-      TABLES.shares,
-      oldShares,
-      planned.shares.map((share) => shareColumns(row, share)),
-      teamRead(existing.groupId),
-    ),
+    ...replaceRows(TABLES.shares, oldShares, shares, teamRead(existing.groupId)),
     activityWrite(
       row,
       actorPersonId,
@@ -118,5 +116,6 @@ export async function postInTransaction(
       changed,
       now,
     ),
+    ...balances,
   )
 }
