@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto'
-import { type Email, EmailError } from '@ledgerly/server/email/send-email'
+import { EmailError } from '@ledgerly/server/email/send-email'
+import { SmsError } from '@ledgerly/server/sms/send-sms'
+import { inviteSms } from '@ledgerly/server/sms/templates'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -26,7 +28,12 @@ const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString()
 
 const BODY = { groupId: 'g1', memberId: 'mSam', email: 'sam@example.com' }
 const TO_KIM = { groupId: 'g1', memberId: 'mKim', email: 'kim@example.com' }
+// Sam's mobile, as typed in an Australian group.
+const TO_SAM_PHONE = { groupId: 'g1', memberId: 'mSam', phone: '0412 345 678' }
+const TO_KIM_PHONE = { groupId: 'g1', memberId: 'mKim', phone: '0498 765 432' }
 const NOT_THEIR_EMAIL = "This email address isn't one this person was added with."
+const NOT_THEIR_PHONE = "This phone number isn't one this person was added with."
+const NOT_A_PHONE = "This phone number isn't valid."
 const TOO_MANY = 'Too many invites have been sent. Try again later.'
 
 function person(id: string, userId: string | null, displayName: string) {
@@ -71,7 +78,8 @@ function member(
 }
 
 function identity(id: string, key: string, personId: string) {
-  return { $id: id, key, type: 'email', personId, verified: false, verifiedAt: null }
+  const type = key.split(':')[0]
+  return { $id: id, key, type, personId, verified: false, verifiedAt: null }
 }
 
 /** `count` invites already sent, with distinct tokens (uniq_tokenHash). */
@@ -94,7 +102,9 @@ function sentInvites(prefix: string, count: number, extra: Partial<Row>): Row[] 
 /**
  * House g1 "Flat 2": u1 (Ann, admin, "Annie" there), u2 (Ben, member) and u3 (Vic, viewer) have
  * joined; Sam and Kim were added and haven't, nor has u4 (Zoe). Pair g2: Ann and Sam. Employer
- * g4: Ben as a member, and Sam. Archived house g3: Ann and Sam. `samUserId` gives Sam an account.
+ * g4: Ben as a member, and Sam. Archived house g3: Ann and Sam. House g5 in New Zealand: Ann and
+ * Sam. Sam, Kim and Jo have an email and an Australian mobile; Sam a New Zealand one too.
+ * `samUserId` gives Sam an account.
  */
 function fixture(options: { samUserId?: string; invites?: Row[]; verified?: boolean } = {}): Fakes {
   return fakes(
@@ -112,12 +122,17 @@ function fixture(options: { samUserId?: string; invites?: Row[]; verified?: bool
         identity('iSam', 'email:sam@example.com', 'pSam'),
         identity('iKim', 'email:kim@example.com', 'pKim'),
         identity('iJo', 'email:jo@example.com', 'pJo'),
+        identity('iSamPhone', 'phone:+61412345678', 'pSam'),
+        identity('iSamNz', 'phone:+64211234567', 'pSam'),
+        identity('iKimPhone', 'phone:+61498765432', 'pKim'),
+        identity('iJoPhone', 'phone:+61423456789', 'pJo'),
       ],
       groups: [
         group('g1', 'house', 'Flat 2'),
         group('g2', 'pair', 'Sam'),
         group('g3', 'house', 'Old flat', { archivedAt: BEFORE }),
         group('g4', 'employer', 'Zed Cafe', { ownerPersonId: 'pBen' }),
+        group('g5', 'house', 'Kiwi flat', { timezone: 'Pacific/Auckland', region: 'NZ' }),
       ],
       members: [
         member('mAnn', 'g1', 'pAnn', 'Annie', 'admin', 'active'),
@@ -132,12 +147,14 @@ function fixture(options: { samUserId?: string; invites?: Row[]; verified?: bool
         member('mSam3', 'g3', 'pSam', 'Sam', 'member', 'placeholder'),
         member('mBen4', 'g4', 'pBen', 'Ben', 'member', 'active'),
         member('mSam4', 'g4', 'pSam', 'Sam', 'viewer', 'placeholder'),
+        member('mAnn5', 'g5', 'pAnn', 'Ann', 'admin', 'active'),
+        member('mSam5', 'g5', 'pSam', 'Sam', 'member', 'placeholder'),
       ],
       invites: options.invites ?? [],
     },
     {
       account: account({ emailVerification: options.verified ?? true }),
-      teams: { g1: ['u1', 'u2', 'u3'], g2: ['u1'], g3: ['u1'], g4: ['u2'] },
+      teams: { g1: ['u1', 'u2', 'u3'], g2: ['u1'], g3: ['u1'], g4: ['u2'], g5: ['u1'] },
     },
   )
 }
@@ -152,9 +169,10 @@ function refused(services: Fakes, body: object = BODY, userId: string | null = '
   return failure(services, 'POST', '/invites', body, userId)
 }
 
-function tokenOf(email: Email | undefined): string {
-  const token = email?.text.match(/\/invite#([^\s]+)/)?.[1]
-  if (!token) throw new Error('The email has no invite link')
+/** The token in an email's or an SMS's invite link. */
+function tokenOf(message: { text: string } | undefined): string {
+  const token = message?.text.match(/\/invite#([^\s]+)/)?.[1]
+  if (!token) throw new Error('The message has no invite link')
   return token
 }
 
@@ -253,38 +271,45 @@ describe('POST /invites', () => {
     ])
   })
 
-  it('writes, sends and answers the same whether or not the person has an account', async () => {
-    async function trace(samUserId?: string) {
-      const services = fixture({ samUserId })
-      const staged: unknown[] = []
-      const stage = services.db.createOperations.bind(services.db)
-      vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
-        staged.push(params.operations)
-        return stage(params)
-      })
-      const response = await call(services, 'POST', '/invites', BODY, 'u1')
-      const [row] = services.db.rows('invites')
-      if (!row) throw new Error('No invite was written')
-      const { $createdAt, $updatedAt, ...invite } = row
-      const token = tokenOf(services.sent[0])
-      // The token, its hash, the row ID and the revs are random; everything else must match.
-      const masked = JSON.stringify({
-        status: response.status,
-        body: response.body,
-        staged,
-        sent: services.sent,
-        invite,
-      })
-        .replaceAll(token, 'TOKEN')
-        .replaceAll(sha256(token), 'HASH')
-        .replaceAll(row.$id, 'ID')
-        .replace(/"rev":"[a-z0-9]{20}"/g, '"rev":"REV"')
-      return JSON.parse(masked)
-    }
-    const registered = await trace('u9')
-    expect(registered).toEqual(await trace())
-    expect(registered.status).toBe(200)
-  })
+  it.each([
+    ['an email', BODY],
+    ['an SMS', TO_SAM_PHONE],
+  ])(
+    'writes, sends %s and answers the same whether or not the person has an account',
+    async (_channel, body) => {
+      async function trace(samUserId?: string) {
+        const services = fixture({ samUserId })
+        const staged: unknown[] = []
+        const stage = services.db.createOperations.bind(services.db)
+        vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+          staged.push(params.operations)
+          return stage(params)
+        })
+        const response = await call(services, 'POST', '/invites', body, 'u1')
+        const [row] = services.db.rows('invites')
+        if (!row) throw new Error('No invite was written')
+        const { $createdAt, $updatedAt, ...invite } = row
+        const token = tokenOf(services.sent[0] ?? services.texts[0])
+        // The token, its hash, the row ID and the revs are random; everything else must match.
+        const masked = JSON.stringify({
+          status: response.status,
+          body: response.body,
+          staged,
+          sent: services.sent,
+          texts: services.texts,
+          invite,
+        })
+          .replaceAll(token, 'TOKEN')
+          .replaceAll(sha256(token), 'HASH')
+          .replaceAll(row.$id, 'ID')
+          .replace(/"rev":"[a-z0-9]{20}"/g, '"rev":"REV"')
+        return JSON.parse(masked)
+      }
+      const registered = await trace('u9')
+      expect(registered).toEqual(await trace())
+      expect(registered.status).toBe(200)
+    },
+  )
 
   it('commits the row before sending', async () => {
     const services = fixture()
@@ -332,16 +357,243 @@ describe('POST /invites', () => {
     expect(services.sent[0]?.text).toContain(`${APP_URL}/invite#${tokenOf(services.sent[0])}`)
   })
 
+  describe('by SMS', () => {
+    const SAM_PHONE = 'phone:+61412345678'
+
+    it('stores only the hash of a random token and texts the link to the number in E.164', async () => {
+      const services = fixture()
+      let storedAtSend: unknown[] = []
+      const text = services.sendSms
+      services.sendSms = async (sms) => {
+        storedAtSend = services.db.rows('invites').map((row) => row.tokenHash)
+        return text(sms)
+      }
+      expect(await sends(services, TO_SAM_PHONE)).toEqual({
+        sentAt: NOW.toISOString(),
+        expiresAt: '2026-11-01T20:00:00.000Z',
+      })
+      const [row] = services.db.rows('invites')
+      const token = tokenOf(services.texts[0])
+      expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/)
+      expect(services.db.rows('invites')).toEqual([
+        expect.objectContaining({
+          groupId: 'g1',
+          memberId: 'mSam',
+          identityKey: SAM_PHONE,
+          tokenHash: sha256(token),
+          channel: 'sms',
+          invitedBy: 'pAnn',
+          sentAt: NOW.toISOString(),
+          expiresAt: '2026-11-01T20:00:00.000Z',
+          acceptedAt: null,
+          $permissions: [],
+        }),
+      ])
+      const url = `${APP_URL}/invite#${token}`
+      expect(services.texts).toEqual([
+        {
+          to: '+61412345678',
+          text: inviteSms({ inviterName: 'Annie', groupName: 'Flat 2', url }),
+          idempotencyKey: `invite/${row?.$id}`,
+        },
+      ])
+      expect(services.texts[0]?.text).toBe(`Annie invited you to Flat 2 on Ledgerly: ${url}`)
+      expect(services.sent).toEqual([])
+      // Committed before the send.
+      expect(storedAtSend).toEqual([sha256(token)])
+      expect(revs(services)).toEqual({
+        ...UNTOUCHED,
+        pAnn: expect.stringMatching(/^[a-z0-9]{20}$/),
+        pSam: expect.stringMatching(/^[a-z0-9]{20}$/),
+      })
+    })
+
+    it.each(['+61 412 345 678', '0412-345-678', '(04) 1234 5678', ' 0412345678 '])(
+      'normalises %j to the same number',
+      async (phone) => {
+        const services = fixture()
+        await sends(services, { ...TO_SAM_PHONE, phone })
+        expect(services.texts[0]?.to).toBe('+61412345678')
+        expect(services.db.rows('invites')[0]?.identityKey).toBe(SAM_PHONE)
+      },
+    )
+
+    it("reads a number typed without a country code as one from the group's region", async () => {
+      const services = fixture()
+      await sends(services, { groupId: 'g5', memberId: 'mSam5', phone: '021 123 4567' })
+      expect(services.texts[0]).toMatchObject({ to: '+64211234567' })
+      expect(services.texts[0]?.text).toMatch(/^Ann invited you to Kiwi flat on Ledgerly: /)
+      expect(services.db.rows('invites')[0]).toMatchObject({
+        groupId: 'g5',
+        identityKey: 'phone:+64211234567',
+        channel: 'sms',
+      })
+    })
+
+    it('writes nothing without APP_URL', async () => {
+      const services = fixture()
+      services.appUrl = ''
+      expect((await refused(services, TO_SAM_PHONE)).code).toBe('INTERNAL')
+      expect(services.db.rows('invites')).toEqual([])
+      expect(revs(services)).toEqual(UNTOUCHED)
+      expect(services.texts).toEqual([])
+    })
+
+    it('refuses the 4th invite to one number in 7 days, whoever sends it', async () => {
+      const services = fixture({
+        invites: sentInvites('s', 3, {
+          identityKey: SAM_PHONE,
+          channel: 'sms',
+          invitedBy: 'pBen',
+          sentAt: ago(7 * DAY_MS - 1000),
+        }),
+      })
+      expect(await refused(services, TO_SAM_PHONE)).toEqual({
+        status: 429,
+        code: 'RATE_LIMITED',
+        message: TOO_MANY,
+      })
+      expect(services.db.rows('invites')).toHaveLength(3)
+      expect(revs(services)).toEqual(UNTOUCHED)
+      expect(services.texts).toEqual([])
+      // The limit is the number's: Kim's number, and Sam's email, have their own.
+      await sends(services, TO_KIM_PHONE)
+      await sends(services, BODY)
+    })
+
+    it("counts emails and SMS together toward the inviter's limit", async () => {
+      const services = fixture({ invites: sentInvites('a', 19, { invitedBy: 'pAnn' }) })
+      await sends(services, TO_SAM_PHONE)
+      expect((await refused(services, TO_KIM)).code).toBe('RATE_LIMITED')
+      expect((await refused(services, TO_KIM_PHONE)).code).toBe('RATE_LIMITED')
+      expect(services.db.rows('invites')).toHaveLength(20)
+      expect(services.texts).toHaveLength(1)
+      expect(services.sent).toEqual([])
+    })
+
+    it('is INTERNAL when the SMS fails, and the row it committed still counts', async () => {
+      const services = fixture({ invites: sentInvites('old', 19, { invitedBy: 'pAnn' }) })
+      services.sendSms = async () => {
+        throw new SmsError('The SMS provider could not be reached: timeout', 'timeout')
+      }
+      const { status, body, logs } = await call(services, 'POST', '/invites', TO_SAM_PHONE, 'u1')
+      expect(status).toBe(500)
+      expect(body).toMatchObject({ ok: false, error: { code: 'INTERNAL' } })
+      expect(logs).toEqual([expect.stringContaining('"cause":"SmsError"')])
+      expect(services.db.rows('invites')).toHaveLength(20)
+      expect(services.db.rows('invites')[19]).toMatchObject({
+        memberId: 'mSam',
+        identityKey: SAM_PHONE,
+        channel: 'sms',
+        invitedBy: 'pAnn',
+      })
+
+      services.sendSms = async (sms) => {
+        services.texts.push(sms)
+      }
+      expect(await refused(services, TO_KIM_PHONE)).toEqual({
+        status: 429,
+        code: 'RATE_LIMITED',
+        message: TOO_MANY,
+      })
+    })
+
+    it('logs no number, text, token or name', async () => {
+      const CONSOLE = ['log', 'info', 'warn', 'error', 'debug'] as const
+      const spies = CONSOLE.map((method) => vi.spyOn(console, method).mockImplementation(() => {}))
+      const services = fixture({ invites: sentInvites('a', 18, { invitedBy: 'pAnn' }) })
+      const logs: string[] = []
+      const send = async (body: object) => {
+        logs.push(...(await call(services, 'POST', '/invites', body, 'u1')).logs)
+      }
+      await send({ ...TO_SAM_PHONE, phone: '+61 412 345 678' })
+      await send({ ...TO_SAM_PHONE, phone: '0423 456 789' })
+      await send({ ...TO_SAM_PHONE, phone: '0412 345' })
+      services.sendSms = async () => {
+        throw new SmsError('The SMS provider answered 400 invalid_number', 'invalid_number', 400)
+      }
+      await send(TO_KIM_PHONE)
+      await send(TO_SAM_PHONE)
+      const secrets = [
+        ...services.texts.map(tokenOf),
+        ...services.texts.map((sms) => sms.text),
+        ...services.db.rows('invites').map((row) => String(row.tokenHash)),
+        '412345678',
+        '412 345 678',
+        '412 345',
+        '498765432',
+        '498 765 432',
+        '423456789',
+        '423 456 789',
+        'Annie',
+        'Flat 2',
+      ]
+      const output = [...logs, ...spies.flatMap((spy) => spy.mock.calls.map(String))].join('\n')
+      expect(logs).toHaveLength(5)
+      expect(logs.map((line) => JSON.parse(line).status)).toEqual([200, 400, 400, 500, 429])
+      for (const secret of secrets) expect(output).not.toContain(secret)
+      expect(output).not.toMatch(/\+6|invite#|phone:/)
+    })
+  })
+
   describe('refuses, writing and sending nothing,', () => {
     it.each([
       [
-        'a phone number, until SMS ships',
-        { groupId: 'g1', memberId: 'mSam', phone: '0412 345 678' },
+        'a phone number too short to be one',
+        { ...TO_SAM_PHONE, phone: '12345' },
+        'u1',
+        { status: 400, code: 'VALIDATION_FAILED', message: NOT_A_PHONE },
+      ],
+      [
+        'a mobile number missing digits',
+        { ...TO_SAM_PHONE, phone: '0412 345' },
+        'u1',
+        { status: 400, code: 'VALIDATION_FAILED', message: NOT_A_PHONE },
+      ],
+      [
+        'text that is not a phone number',
+        { ...TO_SAM_PHONE, phone: 'sam@example.com' },
+        'u1',
+        { status: 400, code: 'VALIDATION_FAILED' },
+      ],
+      [
+        'a phone number nobody has',
+        { ...TO_SAM_PHONE, phone: '0400 000 000' },
+        'u1',
+        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_PHONE },
+      ],
+      [
+        "someone else's phone number",
+        { ...TO_SAM_PHONE, phone: '0423 456 789' },
+        'u1',
+        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_PHONE },
+      ],
+      [
+        "another member's phone number in the same group",
+        { ...TO_SAM_PHONE, phone: TO_KIM_PHONE.phone },
+        'u1',
+        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_PHONE },
+      ],
+      [
+        "the member's other country's number typed without its country code",
+        { ...TO_SAM_PHONE, phone: '021 123 4567' },
+        'u1',
+        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_PHONE },
+      ],
+      [
+        'a viewer, by SMS',
+        TO_SAM_PHONE,
+        'u3',
+        { status: 403, code: 'FORBIDDEN', message: "Your role in this group can't do this." },
+      ],
+      [
+        'someone who has joined, by SMS',
+        { ...TO_SAM_PHONE, memberId: 'mBen' },
         'u1',
         {
           status: 400,
           code: 'VALIDATION_FAILED',
-          message: 'Invites by text message are not available yet.',
+          message: 'Only someone who has not joined the group yet can be invited.',
         },
       ],
       [
@@ -425,17 +677,19 @@ describe('POST /invites', () => {
       expect(services.db.rows('invites')).toEqual([])
       expect(revs(services)).toEqual(UNTOUCHED)
       expect(services.sent).toEqual([])
+      expect(services.texts).toEqual([])
     })
 
-    it('an inviter whose email is not verified', async () => {
+    it.each([BODY, TO_SAM_PHONE])('an inviter whose email is not verified', async (body) => {
       const services = fixture({ verified: false })
-      expect(await refused(services)).toEqual({
+      expect(await refused(services, body)).toEqual({
         status: 403,
         code: 'FORBIDDEN',
         message: 'Verify your email address before you send invites.',
       })
       expect(services.db.rows('invites')).toEqual([])
       expect(services.sent).toEqual([])
+      expect(services.texts).toEqual([])
     })
   })
 

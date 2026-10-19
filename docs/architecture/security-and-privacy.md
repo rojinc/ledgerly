@@ -10,7 +10,7 @@ We store people's money records, contact details and bank details. Treat every c
 | A user writes data they shouldn't | Clients have no write permission anywhere. Functions check `members` role and status on every write. |
 | A client pretends to be another user when calling a function | Functions get the caller only from a JWT that Appwrite verifies (`account.get()`), never from `x-appwrite-user-id`, which a client can forge with a mixed-case header. Functions are `users`-only (never `any` or `guests`), so their domains aren't served, and no user is an impersonator ([permissions](permissions.md#function-execute-permissions)). |
 | Someone claims another person's history | Claims need an identity **verified** by Appwrite Auth. Unverified data never merges persons. |
-| Finding out who is a user by adding them to a group (enumeration) | Members added by someone else always start as placeholders, only the person can join, and person IDs carry no timestamp, so adding someone never reveals whether the email or phone has an account ([D-016](decisions.md)). Accepted: Appwrite's own sign-up says when an email is already registered. |
+| Finding out who is a user by adding them to a group (enumeration) | Members added by someone else always start as placeholders, only the person can join, and person IDs carry no timestamp, so adding someone never reveals whether the email or phone has an account ([D-016](decisions.md)). Accepted: Appwrite's own sign-up says when an email is already registered, and Appwrite refuses to add a phone number to an account when it is already on another one, which shows that the number is registered ([D-017](decisions.md)). |
 | Teammates seeing each other's account emails | Appwrite's membership privacy setting hides account email, phone, name, MFA status and last access from team members; only the user ID is shown. Project settings aren't pushed by deploys: the lead set it on `ledgerly-dev` through the Appwrite MCP, and it must be set on prod when prod is created ([how](#membership-privacy)). |
 | Invite spam or SMS cost abuse | Rate limits: 20 invites per inviter in the last 24 hours, 3 per identity in the last 7 days (rolling), guarded so parallel requests can't pass them together. Tokens are hashed, single-use and expire in 14 days. |
 | Edited history | Final statements lock transactions; activity is append-only and written only by functions. |
@@ -57,7 +57,7 @@ Privacy law obligations (for example Australia's Privacy Act) need professional 
 | --- | --- | --- |
 | Appwrite API key (deploy) | GitHub Actions secret per environment | CI deploy |
 | Resend API key | Appwrite project variable `RESEND_API_KEY` | functions |
-| SMS provider keys (M3) | Appwrite project variables | `identity` |
+| SMS provider API key | Appwrite project variable `SMS_API_KEY` (and `SMS_ACCOUNT_ID` if the provider picked in [#175](https://github.com/rojinc/ledgerly/issues/175) needs one) | `identity` |
 | Sentry DSN (M4) | Project variable / Vite env | functions, web |
 
 Functions use the **per-execution key** in `x-appwrite-key` for database access. Long-lived keys exist only for CI deploys and are scoped to what deploys need.

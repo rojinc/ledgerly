@@ -118,3 +118,10 @@ Format: ID, date, status (`accepted`, `superseded by D-xxx`), decision, why, tra
 **Why:** Making registered people `active` at once showed the adder whether an email or phone has an account, and put people into groups of strangers without asking.
 This refines [D-004](#d-004-one-appwrite-team-per-group-authority-lives-in-members): `placeholder` members now include registered people who haven't joined.
 **Trade-off:** A registered person added to a group sees only its name, type and whether it's archived (and, for a pair group, the other member's display name, so they can tell who added them; #145), as pending, until they join. The list-and-join routes are needed by M2 pair groups (#34), so they ship there. In M1 this rarely matters, because employers are usually placeholders.
+
+### D-017: Functions send SMS with fetch; Appwrite phone login stays off
+*2026-10-19 · accepted*
+
+**Decision:** Functions send every SMS (for now, phone invites) with `sendSms()`, which calls one SMS provider's HTTP API with `fetch`, from `SMS_FROM`, without the provider's SDK. The owner picks the provider ([#175](https://github.com/rojinc/ledgerly/issues/175)); its request is the one provider-specific part of `sendSms`, and until it lands every send fails with `missing_config`. Appwrite Auth's phone login stays off: Appwrite only verifies a phone number a signed-in user adds, which is all claim and accepting an invite need ([D-009](#d-009-placeholders-are-persons-linking-needs-a-verified-identity)).
+**Why:** As with email ([D-011](#d-011-resend-for-all-outgoing-email)), Appwrite Messaging only reaches project users, and an invite goes to someone who may have no account. `fetch` adds no dependency and keeps the provider easy to swap. Phone login isn't needed: claim and accepting an invite only need a verified number.
+**Trade-off:** One more vendor, with its own keys and a cost per message, which the invite limits also cap. Until #175 lands, a phone invite commits its row (it counts toward the limits) and then returns `INTERNAL`.
