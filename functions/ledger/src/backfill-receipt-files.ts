@@ -3,7 +3,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { receiptRows, writeReceiptRows } from '@ledgerly/server/ledger/receipt-files'
-import { Raced } from '@ledgerly/server/ledger/transactions'
+import { listAll, Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 
 type BackfillCounts = {
@@ -49,6 +49,7 @@ export async function backfillReceiptFiles(
       databaseId: DATABASE_ID,
       tableId: TABLES.transactions,
       queries: [
+        // Also matches [] (checked on ledgerly-dev): only files in a list count below.
         Query.isNotNull('receiptFileIds'),
         ...(after === undefined ? [] : [Query.greaterThan('$id', after)]),
         Query.orderAsc('$id'),
@@ -70,7 +71,8 @@ export async function backfillReceiptFiles(
   for (let after: string | undefined; ; ) {
     const page = await files(after)
     for (const fileId of page) {
-      if (!listed.has(fileId) && (await sweep(db, fileId, now))) counts.swept += 1
+      // Every file still without a row, a listed one whose transactions all dropped it included.
+      if (await sweep(db, fileId, now)) counts.swept += 1
     }
     if (page.length < PAGE) break
     after = page.at(-1)
@@ -119,14 +121,22 @@ async function addListing(
     const rows = await receiptRows(db, [fileId])
     const row = rows.get(fileId)
     if (row?.deletingAt) return 'deleting'
+    // As committed now, not as the pass saw them: one may have dropped the file since, and the
+    // code that took it off has written the row already.
+    const listing = await stillListing(db, fileId, transactionIds)
     const stored = row?.transactionIds ?? []
-    const missing = transactionIds.filter((id) => !stored.includes(id))
-    if (row && missing.length === 0 && row.detachedAt === null) return 'unchanged'
+    const missing = listing.filter((id) => !stored.includes(id))
+    if (missing.length === 0 && (listing.length === 0 || row?.detachedAt === null)) {
+      return 'unchanged'
+    }
     try {
-      // Staged, then read again as committed: never an upsert (data-model.md#receiptfiles).
-      await withTransaction(db, (tx) =>
-        writeReceiptRows(db, tx, rows, [{ fileId, add: missing }], now),
-      )
+      // Staged, then the row and the transactions read again as committed: never an upsert
+      // (data-model.md#receiptfiles).
+      await withTransaction(db, async (tx) => {
+        await writeReceiptRows(db, tx, rows, [{ fileId, add: missing }], now)
+        const again = await stillListing(db, fileId, transactionIds)
+        if (again.join() !== listing.join()) throw new Raced()
+      })
       return 'updated'
     } catch (error) {
       const raced =
@@ -136,4 +146,19 @@ async function addListing(
       if (!raced || tries === TRIES) throw error
     }
   }
+}
+
+/** The ones of `transactionIds` that list the file now, in ID order. */
+async function stillListing(
+  db: Db,
+  fileId: string,
+  transactionIds: readonly string[],
+): Promise<string[]> {
+  const rows = await listAll<Transactions>(db, TABLES.transactions, [
+    Query.equal('$id', [...transactionIds]),
+  ])
+  return rows
+    .filter((row) => (row.receiptFileIds ?? []).includes(fileId))
+    .map((row) => row.$id)
+    .sort()
 }

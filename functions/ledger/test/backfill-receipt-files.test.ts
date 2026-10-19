@@ -19,6 +19,7 @@ const row = (fileId: string, extra: Partial<ReceiptFiles> = {}) => ({
 })
 
 const NOW = new Date('2026-10-19T06:00:00.000Z')
+const LATER = '2026-10-19T05:30:00.000Z'
 const noFiles = async () => []
 
 /** The bucket's file IDs, a page of 100 at a time by ID, as the script lists them. */
@@ -181,6 +182,93 @@ describe('backfillReceiptFiles', () => {
     await expect(backfillReceiptFiles(db, bucket('f1'), NOW)).rejects.toThrow()
     expect(changes).toBe(3)
     expect(db.rows('checkpoints')).toEqual([])
+  })
+
+  /** Commits `operations` at once, as the ledger would. */
+  async function commitNow(db: FakeDb, ...operations: Record<string, unknown>[]) {
+    const tx = await db.createTransaction()
+    await db.createOperations({
+      transactionId: tx.$id,
+      operations: operations.map((operation) => ({ databaseId: 'main', ...operation })),
+    })
+    await db.updateTransaction({ transactionId: tx.$id, commit: true })
+  }
+
+  it('counts only files in a list, as isNotNull also matches []', async () => {
+    const db = new FakeDb({ transactions: [tx('t1', [])] })
+    expect(await backfillReceiptFiles(db, bucket('f1'), NOW)).toEqual({
+      updated: 0,
+      unchanged: 0,
+      deleting: 0,
+      swept: 1,
+    })
+  })
+
+  it('never adds a transaction that dropped the file since the pass read it', async () => {
+    const db = new FakeDb({ transactions: [tx('t1', ['f1'])] })
+    const list = db.listRows.bind(db)
+    let done = false
+    vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
+      if (!done && params.tableId === 'receiptFiles') {
+        done = true
+        // The new ledger takes f1 off t1, and writes f1's row taken off.
+        await commitNow(
+          db,
+          { action: 'update', tableId: 'transactions', rowId: 't1', data: { receiptFileIds: [] } },
+          {
+            action: 'create',
+            tableId: 'receiptFiles',
+            rowId: 'f1',
+            data: { transactionIds: null, detachedAt: LATER, deletingAt: null },
+          },
+        )
+      }
+      return list(params)
+    })
+    expect(await backfillReceiptFiles(db, bucket('f1'), NOW)).toMatchObject({
+      updated: 0,
+      unchanged: 1,
+    })
+    // Still taken off, so step 5 deletes it.
+    expect(receiptFiles(db).f1).toEqual({
+      transactionIds: null,
+      detachedAt: LATER,
+      deletingAt: null,
+    })
+  })
+
+  it('starts a file again when a transaction drops it after the staging', async () => {
+    const db = new FakeDb({ transactions: [tx('t1', ['f1'])] })
+    const stage = db.createOperations.bind(db)
+    let done = false
+    vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
+      const result = await stage(params)
+      const rows = (params.operations ?? []).some(
+        (operation) => 'tableId' in operation && operation.tableId === 'receiptFiles',
+      )
+      if (!done && rows) {
+        done = true
+        // Only the transaction changes: the re-read of the row alone wouldn't see it.
+        await commitNow(db, {
+          action: 'update',
+          tableId: 'transactions',
+          rowId: 't1',
+          data: { receiptFileIds: [] },
+        })
+      }
+      return result
+    })
+    expect(await backfillReceiptFiles(db, bucket('f1'), NOW)).toMatchObject({
+      updated: 0,
+      unchanged: 1,
+      swept: 1,
+    })
+    // No transaction lists it any more, so the sweep gives it a row taken off now.
+    expect(receiptFiles(db).f1).toEqual({
+      transactionIds: null,
+      detachedAt: NOW.toISOString(),
+      deletingAt: null,
+    })
   })
 
   it('lists every transaction on each file, and changes nothing when run again', async () => {
