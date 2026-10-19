@@ -352,7 +352,7 @@ function Confirm({
 function LeaveHouse({ group }: { group: Groups }) {
   const headingId = useId()
   const navigate = useNavigate()
-  const leave = useLeaveHouse(group.$id, () => navigate('/groups'))
+  const leave = useLeaveHouse(group.$id)
   const [open, setOpen] = useState(false)
   const trigger = useRef<HTMLButtonElement>(null)
 
@@ -376,7 +376,8 @@ function LeaveHouse({ group }: { group: Groups }) {
           pendingAction="Leaving…"
           pending={leave.isPending}
           error={leave.error?.message ?? ''}
-          onConfirm={() => leave.mutate()}
+          // Only while this page is open: a leave that ends after the caller moved on leaves them be.
+          onConfirm={() => leave.mutate(undefined, { onSuccess: () => navigate('/groups') })}
           onCancel={() => {
             flushSync(() => setOpen(false))
             leave.reset()

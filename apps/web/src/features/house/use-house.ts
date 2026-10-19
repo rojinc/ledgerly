@@ -102,10 +102,9 @@ export function useMemberWrites(groupId: string) {
 
 /**
  * `POST /groups/{id}/leave`. Once it has finished the caller is out of the team, so a retry gets
- * `NOT_A_MEMBER`, which counts as done (functions-api.md#groups). `onLeft` takes the caller off
- * the house's page before its cached rows go, so the page doesn't fetch them again.
+ * `NOT_A_MEMBER`, which counts as done (functions-api.md#groups).
  */
-export function useLeaveHouse(groupId: string, onLeft: () => void) {
+export function useLeaveHouse(groupId: string) {
   const { userId, personId } = useCaller()
   const queryClient = useQueryClient()
   return useMutation({
@@ -117,9 +116,9 @@ export function useLeaveHouse(groupId: string, onLeft: () => void) {
       }
     },
     onSuccess: async () => {
-      onLeft()
       // The caller can't read the house any more: drop what's cached, so Back doesn't show it
-      // as it was, with buttons that would all get NOT_A_MEMBER.
+      // as it was, with buttons that would all get NOT_A_MEMBER. Removing a query doesn't tell
+      // its observers, so the page still open doesn't fetch it again before it goes.
       for (const queryKey of [
         queryKeys.group(groupId),
         queryKeys.members(groupId),

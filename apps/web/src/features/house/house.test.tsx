@@ -1,6 +1,6 @@
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type ErrorCode, type Result } from '../../lib/api'
@@ -624,20 +624,19 @@ describe('HousePage', () => {
       })
       const { queryClient } = renderAt('/groups/g1')
       const settings = await screen.findByRole('region', { name: 'Settings' })
-      // Another admin splits bills equally meanwhile, and this page reloads the house.
+      // Another admin renames the house and splits bills equally meanwhile, and this page
+      // reloads it.
       stored.group = {
         ...stored.group,
+        name: 'Flat 9',
         settingsJson: JSON.stringify({
           type: 'house',
           autoFinalize: false,
           defaultBillSplit: 'equal',
         }),
       }
-      await act(async () => {
-        await queryClient.invalidateQueries({ queryKey: queryKeys.group('g1') })
-        // Query results reach the page on a later tick.
-        await new Promise((resolve) => setTimeout(resolve, 0))
-      })
+      await queryClient.invalidateQueries({ queryKey: queryKeys.group('g1') })
+      expect(await screen.findByRole('heading', { name: 'Flat 9', level: 1 })).toBeTruthy()
       // Only auto-finalize changes here: the split sent is the one stored now, not the one this
       // form showed when it opened.
       fireEvent.click(within(settings).getByLabelText(/Finalize the divide automatically/))
