@@ -9,6 +9,7 @@ import { bootstrap } from './routes/bootstrap'
 import { postClaim } from './routes/claim'
 import { joinPendingGroup, listPendingGroups } from './routes/pending-groups'
 import { updateProfile } from './routes/profile'
+import { sendReminder } from './routes/reminders'
 import { type Services, servicesFromRequest } from './services'
 
 // The commit this bundle was built from (scripts/build-functions.mjs).
@@ -28,6 +29,9 @@ export function identityRoutes(
     ),
     route('POST', '/claim', async (ctx) =>
       postClaim(services(ctx), requireUser(ctx.userId), ctx.body),
+    ),
+    route('POST', '/reminders', async (ctx) =>
+      sendReminder(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
     route('GET', '/groups/pending', async (ctx) =>
       listPendingGroups(services(ctx), requireUser(ctx.userId)),
