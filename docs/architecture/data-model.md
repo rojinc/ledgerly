@@ -268,7 +268,7 @@ Append-only. Never updated or deleted, except when anonymising a deleted account
 | `actorPersonId` | varchar(36)? | Empty for system jobs |
 | `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized` |
 | `transactionId` | varchar(36)? | |
-| `summary` | varchar(255) | Human-readable, e.g. "Alice changed Electricity from $90.00 to $95.00" |
+| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00` |
 | `changesJson` | text? | `{ before, after }` of the changed fields |
 | `at` | datetime | |
 

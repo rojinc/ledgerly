@@ -1,5 +1,6 @@
 import { Navigate, type RouteObject } from 'react-router'
 import { AppLayout } from './app-layout'
+import { ActivityPage } from './features/activity/activity-page'
 import { LoginPage } from './features/auth/login-page'
 import { RedirectIfSignedIn, RequireAuth } from './features/auth/route-guards'
 import { SignupPage } from './features/auth/signup-page'
@@ -39,6 +40,7 @@ export const routes: RouteObject[] = [
           peopleRoutes,
           shiftRoutes,
           billRoutes,
+          { path: 'activity', element: <ActivityPage /> },
         ],
       },
     ],
