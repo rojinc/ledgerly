@@ -1,6 +1,6 @@
 # Functions API
 
-Every write goes through one of five Appwrite Functions. This page is the **contract** between frontend and backend: routes, payloads, responses and errors. The zod schemas in `packages/core/src/schemas/` are the code version of this page. Change both in the same `contract` PR.
+Every write goes through one of five Appwrite Functions. This page is the **contract** between frontend and backend: routes, payloads, responses and errors. The zod schemas in `packages/core/src/schemas/` are the code version of this page, and the response types sit next to them (`TransactionView`, `Balances`, `BootstrapResult` and so on), so functions and the web app share one copy. Change both in the same `contract` PR.
 
 ## Calling a function
 

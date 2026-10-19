@@ -1,7 +1,7 @@
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Persons, Profiles } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
-import { bootstrapBodySchema } from '@ledgerly/core/schemas/identity'
+import { type BootstrapResult, bootstrapBodySchema } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, ensureTeam } from '@ledgerly/server/appwrite/teams'
@@ -20,13 +20,6 @@ import {
 } from '../rows'
 import type { AccountUser, Services } from '../services'
 import { claim, type VerifiedIdentity, verifiedIdentities } from './claim'
-
-export type BootstrapResult = {
-  profile: Profiles
-  personId: string
-  personalGroupId: string
-  linkedGroupIds: string[]
-}
 
 const PERSONAL_GROUP_NAME = 'Personal'
 const MAX_NAME_LENGTH = 100 // persons.displayName

@@ -1,12 +1,12 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Shares } from '@ledgerly/core/generated/rows'
 import type { ReportShare } from '@ledgerly/core/reports/personal-report'
+import type { Balances } from '@ledgerly/core/schemas/ledger'
 import { useQueries, useQuery } from '@tanstack/react-query'
 import { Query } from 'appwrite'
 import { callFunction } from '../../lib/api'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
-import type { Balances } from '../groups/use-groups'
 
 // Appwrite's limit for one page.
 const PAGE = 100

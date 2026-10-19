@@ -129,3 +129,14 @@ export const previewScheduleBodySchema = z
   .superRefine(checkSchedule)
 
 export type PreviewScheduleBody = z.infer<typeof previewScheduleBodySchema>
+
+// Responses (functions-api.md#scheduler), shared by the function and the web app.
+
+/** Why a preview skipped a date. */
+export type SkipReason = 'exdate' | 'holiday'
+
+/** `POST /schedules/preview` */
+export type SchedulePreview = {
+  dates: LocalDate[]
+  skipped: { date: LocalDate; reason: SkipReason }[]
+}

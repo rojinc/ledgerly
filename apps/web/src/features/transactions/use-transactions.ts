@@ -1,6 +1,10 @@
 import type { Category } from '@ledgerly/core/constants/categories'
 import type { Groups, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
-import type { TransactionInput, VoidTransactionBody } from '@ledgerly/core/schemas/ledger'
+import type {
+  TransactionInput,
+  TransactionView,
+  VoidTransactionBody,
+} from '@ledgerly/core/schemas/ledger'
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Query } from 'appwrite'
 import { callFunction, type ErrorCode, type Method } from '../../lib/api'
@@ -19,9 +23,6 @@ export type HistoryRow = Pick<
   Transactions,
   '$id' | 'groupId' | 'kind' | 'status' | 'date' | 'description' | 'totalCents'
 >
-
-/** What the ledger function returns for a write (functions-api.md#ledger). */
-export type TransactionView = { transaction: Transactions; shares: Shares[] }
 
 /** Calls the ledger function; a refusal throws its message in plain words (#37). */
 export async function ledger<T>(method: Method, path: string, body?: unknown): Promise<T> {

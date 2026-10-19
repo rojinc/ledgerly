@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import { ROLES } from '../constants/domain'
+import type { Groups, Members } from '../generated/rows'
 import {
   checkDateOrder,
   currencySchema,
@@ -129,3 +130,9 @@ export const updateMemberBodySchema = z
   .superRefine((member, ctx) => checkDateOrder(member.joinedOn, member.leftOn, 'leftOn', ctx))
 
 export type UpdateMemberBody = z.infer<typeof updateMemberBodySchema>
+
+// Responses (functions-api.md#groups), shared by the function and the web app. `PATCH` and
+// `/archive` return the group row itself.
+
+/** `POST /groups` */
+export type CreateGroupResult = { group: Groups; members: Members[] }

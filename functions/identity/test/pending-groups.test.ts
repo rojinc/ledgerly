@@ -1,7 +1,7 @@
+import type { PendingGroupsResult } from '@ledgerly/core/schemas/identity'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
-import type { PendingGroup } from '../src/routes/pending-groups'
 import {
   BEFORE,
   beforeCommit,
@@ -80,7 +80,7 @@ type Joined = { group: { $id: string; archivedAt: string | null }; member: { sta
 describe('GET /groups/pending', () => {
   it("lists the caller's placeholder groups, archived ones included, and nothing else", async () => {
     const services = fixture()
-    const { groups } = await ok<{ groups: PendingGroup[] }>(services, 'GET', '/groups/pending')
+    const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups).toEqual([
       { id: 'g2', type: 'pair', name: 'Ann and Sam', archivedAt: '2026-10-02T00:00:00.000Z' },
       { id: 'g1', type: 'pair', name: 'Zed and Sam', archivedAt: null },
@@ -97,7 +97,7 @@ describe('GET /groups/pending', () => {
         placeholderRow(`m${i}`, `g${i}`, 'pSam', BEFORE),
       ),
     })
-    const { groups } = await ok<{ groups: PendingGroup[] }>(services, 'GET', '/groups/pending')
+    const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups).toHaveLength(101)
     expect(groups.at(-1)?.id).toBe('g100')
   })
@@ -130,7 +130,7 @@ describe('POST /groups/{id}/join', () => {
       }),
     ])
     // Not pending any more.
-    const { groups } = await ok<{ groups: PendingGroup[] }>(services, 'GET', '/groups/pending')
+    const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups.map((g) => g.id)).toEqual(['g2'])
   })
 

@@ -2,17 +2,10 @@ import { addDays, compareDates, daysBetween, type LocalDate } from '@ledgerly/co
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import { expandSchedule } from '@ledgerly/core/recurrence/expand-schedule'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
-import { previewScheduleBodySchema } from '@ledgerly/core/schemas/scheduler'
+import { previewScheduleBodySchema, type SchedulePreview } from '@ledgerly/core/schemas/scheduler'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { parseBody } from '../parse-body'
 import type { Services } from '../services'
-
-export type SkipReason = 'exdate' | 'holiday'
-
-export type SchedulePreview = {
-  dates: LocalDate[]
-  skipped: { date: LocalDate; reason: SkipReason }[]
-}
 
 const DEFAULT_COUNT = 10
 // The rules the API accepts (scheduling.md#rules-the-ui-builds) fall at least once every

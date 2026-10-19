@@ -1,5 +1,10 @@
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
+import type {
+  JoinGroupResult,
+  PendingGroup,
+  PendingGroupsResult,
+} from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { isInTeam } from '@ledgerly/server/appwrite/teams'
@@ -12,8 +17,6 @@ import type { Services } from '../services'
 
 const PAGE_SIZE = 100
 
-export type PendingGroup = Pick<Groups, 'type' | 'name' | 'archivedAt'> & { id: string }
-
 /**
  * `identity GET /groups/pending`: the groups where the caller's person is still a `placeholder`
  * member, archived ones included (functions-api.md#identity). Only what a pending list shows.
@@ -21,7 +24,7 @@ export type PendingGroup = Pick<Groups, 'type' | 'name' | 'archivedAt'> & { id: 
 export async function listPendingGroups(
   { db }: Services,
   userId: string,
-): Promise<{ groups: PendingGroup[] }> {
+): Promise<PendingGroupsResult> {
   const person = await findPersonOfUser(db, userId)
   if (!person) throw new AppError('NOT_FOUND', SET_UP_FIRST)
   const groupIds = (await placeholderRows(db, person.$id)).map((member) => member.groupId)
@@ -55,7 +58,7 @@ export async function joinPendingGroup(
   userId: string,
   groupId: string,
   body: unknown,
-): Promise<{ group: Groups; member: Members }> {
+): Promise<JoinGroupResult> {
   parseBody(emptyBodySchema, body ?? {})
   const { db } = services
   const person = await findPersonOfUser(db, userId)
