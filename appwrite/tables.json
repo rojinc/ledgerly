@@ -63,7 +63,7 @@
       },
       {
         "key": "mergeMembersJson",
-        "type": "text",
+        "type": "mediumtext",
         "required": false,
         "array": false,
         "default": null
