@@ -114,16 +114,18 @@ describe('POST /statements/{id}/send', () => {
     expect(services.sent).toEqual([])
   })
 
-  it('answers someone outside the group as for a missing statement; members get theirs', async () => {
+  it('answers someone outside the group as for a missing statement; a viewer gets FORBIDDEN and an admin ARCHIVED', async () => {
     const services = fakes({ statements: [statement('st1')] })
+    // A draft, which send refuses, then a final one.
+    await expectHiddenFromDan(services, 'send', ['st1'])
     await finalize(services, 'st1')
-    await expectHiddenFromDan(services, 'send', 'st1')
+    await expectHiddenFromDan(services, 'send', ['st1'])
     await acmeJoins(services)
     expect(
       (await failure(services, 'POST', '/statements/st1/send', undefined, 'u-acme')).code,
     ).toBe('FORBIDDEN')
     await archiveJob(services)
-    await expectHiddenFromDan(services, 'send', 'st1')
+    await expectHiddenFromDan(services, 'send', ['st1'])
     expect((await failure(services, 'POST', '/statements/st1/send')).code).toBe('ARCHIVED')
     expect(services.sent).toEqual([])
   })
@@ -226,20 +228,26 @@ describe('POST /statements/{id}/void', () => {
     expect(response.code).toBe('VALIDATION_FAILED')
   })
 
-  it('answers someone outside the group as for a missing statement; members get theirs', async () => {
+  it('answers someone outside the group as for a missing statement; a viewer gets FORBIDDEN and an admin ARCHIVED', async () => {
     const services = twoMonths()
+    const body = { reason: 'x' }
+    // Every state void refuses or handles on its own: a draft, a final one that isn't the
+    // latest, and a void one (which a retry would finish unlocking), as well as the latest final.
+    await expectHiddenFromDan(services, 'void', ['st-sep'], body)
     await finalize(services, 'st-sep')
     await finalize(services, 'st-oct')
-    const body = { reason: 'x' }
-    await expectHiddenFromDan(services, 'void', 'st-oct', body)
+    await expectHiddenFromDan(services, 'void', ['st-sep', 'st-oct'], body)
     await acmeJoins(services)
     expect((await failure(services, 'POST', '/statements/st-oct/void', body, 'u-acme')).code).toBe(
       'FORBIDDEN',
     )
-    await archiveJob(services)
-    await expectHiddenFromDan(services, 'void', 'st-oct', body)
-    expect((await failure(services, 'POST', '/statements/st-oct/void', body)).code).toBe('ARCHIVED')
     expect(stored(services, 'st-oct').status).toBe('final')
+    await ok(services, 'POST', '/statements/st-oct/void', body)
+    await expectHiddenFromDan(services, 'void', ['st-oct'], body)
+    await archiveJob(services)
+    await expectHiddenFromDan(services, 'void', ['st-sep', 'st-oct'], body)
+    expect((await failure(services, 'POST', '/statements/st-sep/void', body)).code).toBe('ARCHIVED')
+    expect(stored(services, 'st-sep').status).toBe('final')
   })
 })
 

@@ -276,16 +276,25 @@ describe('POST /statements/{id}/finalize', () => {
     ).toBe('VALIDATION_FAILED')
   })
 
-  it('answers someone outside the group as for a missing statement; members get theirs', async () => {
-    const services = fakes({ statements: [statement('st1')] })
+  it('answers someone outside the group as for a missing statement; a viewer gets FORBIDDEN and an admin ARCHIVED', async () => {
+    const services = fakes({
+      statements: [
+        statement('st1'),
+        statement('st-void', {
+          periodStart: '2026-09-01',
+          periodEnd: '2026-09-30',
+          status: 'void',
+        }),
+      ],
+    })
     const body = { send: false }
-    await expectHiddenFromDan(services, 'finalize', 'st1', body)
+    await expectHiddenFromDan(services, 'finalize', ['st1', 'st-void'], body)
     await acmeJoins(services)
     expect((await failure(services, 'POST', '/statements/st1/finalize', body, 'u-acme')).code).toBe(
       'FORBIDDEN',
     )
     await archiveJob(services)
-    await expectHiddenFromDan(services, 'finalize', 'st1', body)
+    await expectHiddenFromDan(services, 'finalize', ['st1'], body)
     expect((await failure(services, 'POST', '/statements/st1/finalize', body)).code).toBe(
       'ARCHIVED',
     )

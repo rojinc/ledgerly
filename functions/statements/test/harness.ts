@@ -393,18 +393,19 @@ export function archiveJob(services: Fakes) {
 
 /**
  * Dan, outside the group, gets exactly the answer for a statement that doesn't exist (NOT_FOUND),
- * so statement IDs can't be probed (#136).
+ * so statement IDs can't be probed (#136). Pass statements the route would refuse too, so no
+ * check on the statement can come before the membership one.
  */
 export async function expectHiddenFromDan(
   services: Fakes,
   action: 'refresh' | 'finalize' | 'send' | 'void',
-  statementId: string,
+  statementIds: string[],
   body?: unknown,
 ) {
   const ask = (id: string) => call(services, 'POST', `/statements/${id}/${action}`, body, 'u-dan')
   const missing = await ask('nope')
   expect(missing.status).toBe(404)
-  expect(await ask(statementId)).toEqual(missing)
+  for (const id of statementIds) expect(await ask(id)).toEqual(missing)
 }
 
 /**

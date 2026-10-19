@@ -170,7 +170,7 @@ describe('a member who left', () => {
     expect((await failure(services, 'POST', '/statements/preview', preview, 'u-dan')).code).toBe(
       'NOT_A_MEMBER',
     )
-    await expectHiddenFromDan(services, 'refresh', 'st1')
+    await expectHiddenFromDan(services, 'refresh', ['st1'])
   })
 })
 
@@ -245,10 +245,19 @@ describe('POST /statements/{id}/refresh', () => {
   })
 
   it('answers someone outside the group as for a missing statement, archived or not', async () => {
-    const services = fakes({ statements: [statement('st1')] })
-    await expectHiddenFromDan(services, 'refresh', 'st1')
+    const services = fakes({
+      statements: [
+        statement('st1'),
+        statement('st-final', {
+          periodStart: '2026-09-01',
+          periodEnd: '2026-09-30',
+          status: 'final',
+        }),
+      ],
+    })
+    await expectHiddenFromDan(services, 'refresh', ['st1', 'st-final'])
     await archiveJob(services)
-    await expectHiddenFromDan(services, 'refresh', 'st1')
+    await expectHiddenFromDan(services, 'refresh', ['st1'])
     expect((await failure(services, 'POST', '/statements/st1/refresh')).code).toBe('ARCHIVED')
     expect(services.db.rows('statements')[0]?.snapshotJson).toBe(statement('st1').snapshotJson)
   })
