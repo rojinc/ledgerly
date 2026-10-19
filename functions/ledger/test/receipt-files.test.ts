@@ -21,7 +21,6 @@ const receiptFiles = (db: Db) =>
     (db.rows('receiptFiles') as unknown as ReceiptFiles[]).map((row) => [
       row.$id,
       {
-        groupId: row.groupId,
         transactionIds: row.transactionIds,
         detachedAt: row.detachedAt,
         deletingAt: row.deletingAt,
@@ -30,13 +29,11 @@ const receiptFiles = (db: Db) =>
   )
 
 const listed = (...transactionIds: string[]) => ({
-  groupId: 'house',
   transactionIds,
   detachedAt: null,
   deletingAt: null,
 })
 const detached = (at = NOW.toISOString()) => ({
-  groupId: 'house',
   transactionIds: null,
   detachedAt: at,
   deletingAt: null,
@@ -77,7 +74,7 @@ const startDeletingNew = (db: Db, fileId: string) =>
   commitNow(db, {
     action: 'create',
     rowId: fileId,
-    data: { groupId: null, transactionIds: null, detachedAt: NOW.toISOString(), deletingAt: LATER },
+    data: { transactionIds: null, detachedAt: NOW.toISOString(), deletingAt: LATER },
   })
 
 /** Runs `meanwhile` once, just before this request commits. */
@@ -250,7 +247,7 @@ describe('a file the scheduler is deleting', () => {
     expect(rows.transactions(db)[0]?.receiptFileIds).toBeNull()
   })
 
-  it('is refused once the scheduler has deleted the file and its row after the file check', async () => {
+  it('is refused when the file and its row are both gone by the staging', async () => {
     const db = await withExpense(['f1'])
     await setReceipts(db, [])
     const files = filesOf(db)
@@ -278,6 +275,22 @@ describe('a file the scheduler is deleting', () => {
     )
     expect((await setReceipts(db, ['f1'])).status).toBe(200)
     expect(receiptFiles(db)).toEqual({ f1: listed('t1') })
+  })
+})
+
+describe('two writes to one file at once', () => {
+  it('keeps both transactions when another attach commits between the read and the staging', async () => {
+    const db = await withExpense(['f1'])
+    for (const id of ['t2', 't3']) await call(db, 'POST', '/transactions', expense({ id }))
+    const getFile = filesOf(db).getFile.bind(filesOf(db))
+    vi.spyOn(filesOf(db), 'getFile').mockImplementationOnce(async (fileId) => {
+      // Another request, start to finish, after this one read the rows. The group guard alone
+      // runs this one again; the second read of the rows would too.
+      expect((await setReceipts(db, ['f1'], 't3')).status).toBe(200)
+      return getFile(fileId)
+    })
+    expect((await setReceipts(db, ['f1'], 't2')).status).toBe(200)
+    expect(receiptFiles(db)).toEqual({ f1: listed('t1', 't3', 't2') })
   })
 })
 

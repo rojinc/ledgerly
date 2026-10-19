@@ -115,8 +115,8 @@ export async function attachReceipts(
   const removed = stored.filter((fileId) => !fileIds.includes(fileId))
   const changed = [...added.map(({ fileId }) => fileId), ...removed]
   if (changed.length === 0) return
-  // Before the files: once the scheduler has deleted a file and then its row, only the file
-  // check can refuse it (scheduling.md#step-5-receipt-clean-up).
+  // Before the files, so a file the scheduler is deleting is refused before any file is reset
+  // (scheduling.md#step-5-receipt-clean-up).
   const rows = await receiptRows(db, changed)
   const [team] = teamRead(groupId) as [string]
   const found = await Promise.all(added.map(({ fileId }) => storage(() => files.getFile(fileId))))
@@ -135,7 +135,6 @@ export async function attachReceipts(
   refuse(added.filter((_, at) => !usable(reset[at])))
   const writes = changed.map((fileId) =>
     rowWrite(rows.get(fileId), fileId, {
-      groupId,
       transactionId,
       listed: fileIds.includes(fileId),
       now,
@@ -148,8 +147,9 @@ export async function attachReceipts(
     if (error instanceof AppwriteException && error.code === 404) throw new Raced()
     throw error
   }
-  // Staged first, then checked: a row that changed before the staging shows here, and one that
-  // changes after it fails the commit.
+  // Staged first, then checked, as committed: through the transaction this would read back our
+  // own staged values. A row that changed before the staging shows here, and one that changes
+  // after it fails the commit (ledger.md#concurrency).
   const current = await receiptRows(db, changed)
   if (changed.some((fileId) => !sameRow(rows.get(fileId), current.get(fileId)))) throw new Raced()
 }
@@ -163,12 +163,11 @@ async function receiptRows(db: Db, fileIds: string[]): Promise<Map<string, Recei
 function rowWrite(
   row: ReceiptFiles | undefined,
   fileId: string,
-  change: { groupId: string; transactionId: string; listed: boolean; now: Date },
+  change: { transactionId: string; listed: boolean; now: Date },
 ): Write {
   const others = (row?.transactionIds ?? []).filter((id) => id !== change.transactionId)
   const transactionIds = change.listed ? [...others, change.transactionId] : others
   const data = {
-    groupId: change.groupId,
     transactionIds: transactionIds.length > 0 ? transactionIds : null,
     detachedAt: transactionIds.length > 0 ? null : change.now.toISOString(),
   }
@@ -181,7 +180,7 @@ function rowWrite(
 
 function sameRow(a: ReceiptFiles | undefined, b: ReceiptFiles | undefined): boolean {
   const columns = (row: ReceiptFiles | undefined) =>
-    row && JSON.stringify([row.groupId, row.transactionIds ?? [], row.detachedAt, row.deletingAt])
+    row && JSON.stringify([row.transactionIds ?? [], row.detachedAt, row.deletingAt])
   return columns(a) === columns(b)
 }
 
