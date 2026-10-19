@@ -59,7 +59,10 @@ export function useDueBills(groupId: string) {
         Query.equal('kind', 'bill'),
         Query.orderAsc('date'),
         Query.orderAsc('$id'),
-      ]),
+      ]).then((rows) =>
+        // By due date itself, which a due bill is dated on, so this only guards that rule.
+        rows.sort((a, b) => (a.dueOn ?? a.date).localeCompare(b.dueOn ?? b.date)),
+      ),
   })
 }
 
@@ -147,9 +150,14 @@ function refresh(queryClient: QueryClient, view: TransactionView) {
   const { transaction } = view
   queryClient.setQueryData(queryKeys.transaction(transaction.$id), transaction)
   queryClient.setQueryData(queryKeys.transactionShares(transaction.$id), view.shares)
-  void queryClient.invalidateQueries({ queryKey: billKeys.all(transaction.groupId) })
-  void queryClient.invalidateQueries({ queryKey: queryKeys.balances(transaction.groupId) })
-  void queryClient.invalidateQueries({ queryKey: ['history', transaction.groupId] })
+  markStale(queryClient, transaction.groupId)
+}
+
+/** The group's bill lists, balance, history and the calendar, after a bill was written. */
+export function markStale(queryClient: QueryClient, groupId: string) {
+  void queryClient.invalidateQueries({ queryKey: billKeys.all(groupId) })
+  void queryClient.invalidateQueries({ queryKey: queryKeys.balances(groupId) })
+  void queryClient.invalidateQueries({ queryKey: ['history', groupId] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
 }
 
@@ -162,6 +170,10 @@ export function useSaveBill() {
         ? ledger<TransactionView>('POST', '/transactions', body)
         : ledger<TransactionView>('PATCH', `/transactions/${body.id}`, body),
     onSuccess: (view) => refresh(queryClient, view),
+    // A change refused because the bill was paid or skipped meanwhile: show it as it is now.
+    onError: (_error, { body, isNew }) => {
+      if (!isNew) void queryClient.invalidateQueries({ queryKey: queryKeys.transaction(body.id) })
+    },
   })
 }
 

@@ -32,6 +32,7 @@ export function usePersonalGroup() {
   const group = useGroup(bootstrap.data?.personalGroupId ?? '')
   return {
     group: bootstrap.data ? group.data : undefined,
+    personId: bootstrap.data?.personId ?? '',
     isError: bootstrap.isError || group.isError,
   }
 }

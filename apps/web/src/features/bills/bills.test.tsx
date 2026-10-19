@@ -135,6 +135,18 @@ describe('BillsPage', () => {
     expect(links[1]?.textContent).toMatch(/^PhoneDue (25 Oct|Oct 25,) 2026.*45\.50$/)
   })
 
+  it('sorts due bills by their due date', async () => {
+    // Listed by date, as the query orders them; the due dates say otherwise.
+    mockLists([
+      bill('b2', { date: '2026-10-25', dueOn: '2026-10-25', description: 'Phone' }),
+      bill('b1', { date: '2026-10-30', dueOn: '2026-10-21', description: 'Late dated' }),
+    ])
+    renderAt('/bills')
+    const due = within(await screen.findByRole('region', { name: 'Due' }))
+    const links = await due.findAllByRole('link')
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/bills/b1', '/bills/b2'])
+  })
+
   it('takes today in the group’s own time zone for “Overdue”', async () => {
     // Still the 18th in New York: a bill due today isn't overdue yet.
     mockGroup({ ...personal, timezone: 'America/New_York' })
@@ -269,21 +281,82 @@ describe('NewBillPage', () => {
     expect(call).not.toHaveBeenCalled()
   })
 
-  it('retries with the same id, and warns on CONFLICT rather than inviting a duplicate', async () => {
+  it('retries with the same id after an error', async () => {
     call.mockResolvedValueOnce({ ok: false, error: { code: 'INTERNAL', message: 'Try again.' } })
-    call.mockResolvedValueOnce({
-      ok: false,
-      error: { code: 'CONFLICT', message: 'A different transaction already has this ID.' },
-    })
+    call.mockImplementationOnce(async (_fn, _method, _path, body) =>
+      view(bill((body as { id: string }).id)),
+    )
+    getRow.mockResolvedValue(bill('b1') as never)
     renderAt('/bills/new')
     type('Description', 'Phone')
     type('Amount (AUD)', '45.50')
     fireEvent.click(screen.getByRole('button', { name: 'Add bill' }))
     expect((await screen.findByRole('alert')).textContent).toBe('Try again.')
+    fireEvent.click(screen.getByRole('button', { name: 'Add bill' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    expect(sentBody(1).id).toBe(sentBody(0).id)
+  })
+
+  it('opens the bill saved by an earlier try when a retry with changes gets CONFLICT', async () => {
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'A different transaction already has this ID.' },
+    })
+    getRow.mockImplementation((async ({ rowId }: { rowId: string }) =>
+      bill(rowId, { description: 'As first sent' })) as never)
+    const { router, queryClient } = renderAt('/bills/new')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    type('Description', 'Phone')
     type('Amount (AUD)', '46')
     fireEvent.click(screen.getByRole('button', { name: 'Add bill' }))
-    expect(await screen.findByText(/may already have been saved/)).toBeTruthy()
-    expect(sentBody(1).id).toBe(sentBody(0).id)
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/bills/${sentBody().id}`))
+    expect(await screen.findByRole('heading', { level: 1, name: 'As first sent' })).toBeTruthy()
+    expect(screen.getByText(/already added by an earlier try/)).toBeTruthy()
+    // Shown on this visit only.
+    await waitFor(() => expect(router.state.location.state).toBeNull())
+    expect(screen.getByText(/already added by an earlier try/)).toBeTruthy()
+    // The lost answer's refresh never ran.
+    for (const queryKey of [['bills', 'g1'], ['balances', 'g1'], ['history', 'g1'], ['calendar']]) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey })
+    }
+  })
+
+  it.each<[string, Partial<Transactions> | 'missing']>([
+    ['no row with the ID (a write clash)', 'missing'],
+    ['someone else’s row', { createdBy: 'p2' }],
+    ['a row that isn’t a bill', { kind: 'expense' }],
+  ])('shows the CONFLICT for %s', async (_, found) => {
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'Someone else changed this at the same time.' },
+    })
+    if (found === 'missing') getRow.mockRejectedValue(new Error('not found'))
+    else
+      getRow.mockImplementation((async ({ rowId }: { rowId: string }) =>
+        bill(rowId, found)) as never)
+    const { router } = renderAt('/bills/new')
+    type('Description', 'Phone')
+    type('Amount (AUD)', '46')
+    fireEvent.click(screen.getByRole('button', { name: 'Add bill' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Someone else changed this at the same time.',
+    )
+    expect(router.state.location.pathname).toBe('/bills/new')
+  })
+
+  it('keeps Add bill focusable while saving, and ignores a second submit', async () => {
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/bills/new')
+    type('Description', 'Phone')
+    type('Amount (AUD)', '45.50')
+    fireEvent.click(screen.getByRole('button', { name: 'Add bill' }))
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    expect(saving.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(saving)
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(call).toHaveBeenCalledTimes(1)
   })
 })
 
@@ -360,6 +433,31 @@ describe('BillPage', () => {
       bill: { status: 'due', dueOn: '2026-10-28' },
     })
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+
+  it('moves focus to the form’s heading when Change this bill opens it', async () => {
+    getRow.mockResolvedValue(bill('b1') as never)
+    renderAt('/bills/b1')
+    const button = await screen.findByRole('button', { name: 'Change this bill' })
+    button.focus()
+    fireEvent.click(button)
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { level: 2, name: 'Change this bill' }),
+    )
+  })
+
+  it('reads the bill again when a change is refused, as it may have been paid meanwhile', async () => {
+    getRow.mockResolvedValue(bill('b1') as never)
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', message: 'Mark a due bill as paid with “post”.' },
+    })
+    renderAt('/bills/b1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change this bill' }))
+    type('Amount (AUD)', '50')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText(/Mark a due bill as paid/)).toBeTruthy()
+    await waitFor(() => expect(getRow).toHaveBeenCalledTimes(2))
   })
 
   it('keeps the split, note and billing period it doesn’t show when changing a bill', async () => {
