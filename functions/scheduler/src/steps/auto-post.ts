@@ -39,6 +39,8 @@ export async function autoPost(services: Services): Promise<PostCounts> {
     Query.equal('status', 'scheduled'),
     Query.between('date', addDays(utcToday, -FLOOR_DAYS), addDays(utcToday, 1)),
     Query.isNotNull('scheduleId'),
+    // Never posted, so not read every hour; post() checks it again.
+    Query.isNull('remindedAt'),
   ])
   for await (const { $id } of occurrences) {
     try {

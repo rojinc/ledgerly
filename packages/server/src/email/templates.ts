@@ -129,8 +129,8 @@ export function divideEmail(input: {
 }
 
 /**
- * To the group owner when a shift that doesn't auto-post is past and still unconfirmed
- * (scheduling.md#step-3-reminders).
+ * To the group owner when a past shift is still unconfirmed: one that doesn't auto-post, or one
+ * step 2 couldn't post (scheduling.md#step-3-reminders).
  */
 export function shiftToConfirmEmail(input: {
   groupName: string

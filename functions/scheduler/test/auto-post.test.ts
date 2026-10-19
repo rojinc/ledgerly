@@ -110,7 +110,10 @@ describe('step 2: auto-post', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-01T00:00:00.000Z'))
   })
-  afterEach(() => vi.useRealTimers())
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
 
   it('never posts an occurrence made after its own day, so a moved week isn’t paid twice', async () => {
     const services = seeded()
@@ -252,6 +255,22 @@ describe('step 2: auto-post', () => {
     )
     expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
     expect(row(services, id).status).toBe('scheduled')
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('doesn’t post an expense its creator would pay if they move out while it commits', async () => {
+    const services = seeded()
+    const forSam = {
+      ...groceries,
+      template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, forSam, 'u2')
+    // The member row's guard fails the commit, and the rerun finds Alex moved out.
+    beforeCommit(services.db, () =>
+      update(services, 'members', 'elm-pAlex', { status: 'left', role: 'viewer' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, `${groceries.id}_20261012`).status).toBe('scheduled')
     expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
   })
 
@@ -449,7 +468,7 @@ describe('step 2: auto-post', () => {
     await withTransaction(services.db, (tx) =>
       tx.write({ action: 'delete', tableId: 'members', rowId: 'acme-pAcme' }),
     )
-    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(await runCron(services)).toMatchObject({
       posted: { posted: 0, skipped: 0, failed: 1 },
       reminders: { sent: 0, skipped: 0, failed: 0 },
@@ -462,7 +481,6 @@ describe('step 2: auto-post', () => {
     expect(services.sendEmail).toHaveBeenCalledWith(
       expect.objectContaining({ to: 'sam@example.com', idempotencyKey: `reminder-${ID}_20261015` }),
     )
-    quiet.mockRestore()
   })
 
   it('never posts a shift the owner was reminded about, also once autoPost is turned on', async () => {
