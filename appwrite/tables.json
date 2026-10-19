@@ -44,6 +44,14 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "rev",
+        "type": "varchar",
+        "size": 20,
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [

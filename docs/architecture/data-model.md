@@ -42,8 +42,9 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `userId` | varchar(36)? | Appwrite user ID. Empty = placeholder. |
 | `displayName` | varchar(100) | Their own name if registered; otherwise the name used by whoever first added them. |
 | `claimedAt` | datetime? | When the person first got a user account (bootstrap or adopt). Claim joins member rows whose `$createdAt` is strictly before it ([identity](identity-and-invites.md#claim-linking-records-to-a-new-account)). |
-| `mergedInto` | varchar(36)? | Set while this person is being merged into another ([identity](identity-and-invites.md#merging-two-persons)). |
+| `mergedInto` | varchar(36)? | Set when this person is merged into another ([identity](identity-and-invites.md#merging-two-persons)). Kept for good: old statements and groups the other person left on their own can still name this one. |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history. |
+| `rev` | varchar(20)? | A fresh random value on every guard write (invite limits), so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |
 
 Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`.
 Permissions: placeholders have none (server only). A registered person's row gets `read("user:<userId>")`.
