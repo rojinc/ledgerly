@@ -212,7 +212,7 @@ Deleting an account ([#50](https://github.com/rojinc/ledgerly/issues/50)). A fun
 | --- | --- | --- | --- |
 | `POST /delete` | `{ confirm: 'DELETE' }` | `{ deletedAt, finished }` | the user, signed in within the last 10 minutes |
 
-Cron: `35 * * * *`, sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), skipping any started in the last minute. A person calling `POST /` gets `FORBIDDEN`.
+Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), skipping any started in the last minute. A person calling `POST /` gets `FORBIDDEN`.
 
 **`POST /delete`** deletes the caller's account ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). It is synchronous and works for up to 20 seconds; `finished: false` means the hourly job deletes the rest. Refusals change nothing, and are checked in this order:
 

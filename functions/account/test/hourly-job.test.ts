@@ -419,7 +419,7 @@ describe('POST /: the time budget', () => {
 })
 
 describe('appwrite/functions.json', () => {
-  it('deploys account with the job’s schedule and timeout, and the scopes its routes need', () => {
+  it('deploys account every 60 minutes (the plan allows no cron), with the job’s timeout, and the scopes its routes need', () => {
     const functions = JSON.parse(
       readFileSync(new URL('../../../appwrite/functions.json', import.meta.url), 'utf8'),
     ) as Array<{ $id: string }>
@@ -433,7 +433,7 @@ describe('appwrite/functions.json', () => {
       ignore: ['*', '!dist/', '!dist/**', '!package.json'],
       execute: ['users'],
       events: [],
-      schedule: '35 * * * *',
+      interval: 60,
       timeout: 900,
       enabled: true,
       logging: true,

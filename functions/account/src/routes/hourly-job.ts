@@ -26,7 +26,8 @@ const PAGE = 100
  */
 export async function hourlyJob(scheduled: boolean, services: () => Services): Promise<JobResult> {
   // Before the services, which need the execution's API key.
-  if (!scheduled) throw new AppError('FORBIDDEN', 'Only the account job’s own cron runs this.')
+  if (!scheduled)
+    throw new AppError('FORBIDDEN', 'Only the account job’s own scheduled run does this.')
   const built = services()
   const settled = built.now.getTime() - SETTLE_MS
   const counts: JobResult = { finished: 0, users: 0, failed: 0 }

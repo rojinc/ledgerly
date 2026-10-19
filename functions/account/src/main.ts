@@ -18,7 +18,7 @@ export function accountRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'account', version }), { public: true }),
-    // Appwrite runs the cron as POST /. Never for a person.
+    // Appwrite runs the hourly job (interval: 60) as POST /. Never for a person.
     route('POST', '/', async (ctx) => hourlyJob(ctx.scheduled, () => services(ctx, JOB_BUDGET_MS))),
     route('POST', '/delete', async (ctx) =>
       deleteAccount(
