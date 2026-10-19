@@ -53,7 +53,7 @@ describe('PasswordSection, an account without a password', () => {
   })
 
   it('sets one with no old password, then says so and offers a change', async () => {
-    update.mockResolvedValue({} as never)
+    update.mockResolvedValue(user('2026-10-19T06:00:00.000Z'))
     renderSection()
     expect(await screen.findByText(/has no password yet/)).toBeTruthy()
     expect(document.getElementById('password')?.tagName).toBe('SECTION')
@@ -74,6 +74,19 @@ describe('PasswordSection, an account without a password', () => {
     expect(document.body.innerHTML).not.toContain(SECRET)
   })
 
+  it('shows the change form at once, even when reading the user again fails', async () => {
+    get.mockReset()
+    get.mockResolvedValueOnce(user('')).mockRejectedValue(new Error('offline'))
+    update.mockResolvedValue(user('2026-10-19T06:00:00.000Z'))
+    renderSection()
+    await screen.findByText(/has no password yet/)
+    type('New password', SECRET)
+    fireEvent.click(screen.getByRole('button', { name: 'Set password' }))
+    expect(await screen.findByRole('button', { name: 'Change password' })).toBeTruthy()
+    expect(screen.queryByText(/has no password yet/)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Set password' })).toBeNull()
+  })
+
   it('refuses one under 8 characters, under the field, and sends nothing', async () => {
     renderSection()
     await screen.findByText(/has no password yet/)
@@ -87,7 +100,9 @@ describe('PasswordSection, an account without a password', () => {
 
   it('keeps Set password from sending twice while it saves', async () => {
     let finish!: () => void
-    update.mockReturnValue(new Promise((resolve) => (finish = () => resolve({} as never))))
+    update.mockReturnValue(
+      new Promise((resolve) => (finish = () => resolve(user('2026-10-19T06:00:00.000Z')))),
+    )
     renderSection()
     await screen.findByText(/has no password yet/)
     type('New password', SECRET)
@@ -113,7 +128,7 @@ describe('PasswordSection, an account with a password', () => {
   }
 
   it('changes it with the current one, then closes and says so', async () => {
-    update.mockResolvedValue({} as never)
+    update.mockResolvedValue(user('2026-10-19T06:00:00.000Z'))
     renderSection()
     await openChange()
     expect((screen.getByLabelText('Current password') as HTMLInputElement).autocomplete).toBe(
@@ -175,5 +190,9 @@ describe('PasswordSection, an account with a password', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Change password' }))
     expect(update).not.toHaveBeenCalled()
     expect(document.body.innerHTML).not.toContain(SECRET)
+    // Opened again, nothing typed before is there.
+    await openChange()
+    expect((screen.getByLabelText('New password') as HTMLInputElement).value).toBe('')
+    expect((screen.getByLabelText('Current password') as HTMLInputElement).value).toBe('')
   })
 })

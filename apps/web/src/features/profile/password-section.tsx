@@ -42,6 +42,7 @@ function lengthError(password: string): string | undefined {
 export function PasswordSection() {
   const user = useCurrentUser().data
   const queryClient = useQueryClient()
+  // ProfilePage mounts this once the user is known, so `false` here never means "loading".
   const hasPassword = Boolean(user?.passwordUpdate)
   const heading = useRef<HTMLHeadingElement>(null)
   const opener = useRef<HTMLButtonElement>(null)
@@ -77,14 +78,20 @@ export function PasswordSection() {
     setDone('')
     if (found.password || found.current) return
     setBusy(true)
+    let updated: Awaited<ReturnType<typeof account.updatePassword>>
     try {
-      await account.updatePassword(hasPassword ? { password, oldPassword: current } : { password })
+      updated = await account.updatePassword(
+        hasPassword ? { password, oldPassword: current } : { password },
+      )
     } catch (error) {
       setRefused(refusal(error))
       setBusy(false)
       return
     }
     flushSync(() => {
+      // The answer is the user with `passwordUpdate` set: shown at once, so the set form can't
+      // be sent again without the current password, even if the re-read below fails.
+      queryClient.setQueryData(queryKeys.currentUser, updated)
       setBusy(false)
       setPassword('')
       setCurrent('')
@@ -124,6 +131,7 @@ export function PasswordSection() {
               type="password"
               autoComplete="current-password"
               label="Current password"
+              maxLength={MAX}
               value={current}
               onChange={(event) => setCurrent(event.target.value)}
               error={errors.current ? { type: 'validate', message: errors.current } : undefined}
