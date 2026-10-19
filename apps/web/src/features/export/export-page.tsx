@@ -1,7 +1,7 @@
 import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
-import { type FormEvent, useEffect, useState } from 'react'
+import { type FormEvent, useEffect, useRef, useState } from 'react'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
@@ -11,16 +11,22 @@ import { useGroups } from '../groups/use-groups'
 import { usePerson, useProfile } from '../profile/use-profile'
 import { download, fileUrl, groupExport, myRecordsExport, profileExport } from './export-data'
 
-/** A file name from the group's name: letters (any script, accents dropped), digits and dashes. */
+// Long names make file names some systems refuse.
+const NAME_LENGTH = 60
+
+/**
+ * A file name from the group's name: letters (any script, accents dropped), digits and dashes,
+ * up to 60 characters.
+ */
 export function fileName(name: string): string {
-  return (
-    name
-      .normalize('NFKD')
-      .replace(/\p{M}/gu, '')
-      .toLowerCase()
-      .replace(/[^\p{L}\p{N}]+/gu, '-')
-      .replace(/^-|-$/g, '') || 'group'
-  )
+  const slug = name
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/^-/, '')
+  // By code point, so a letter outside the BMP isn't cut in half.
+  return Array.from(slug).slice(0, NAME_LENGTH).join('').replace(/-$/, '') || 'group'
 }
 
 function GroupOption({ group }: { group: Groups }) {
@@ -78,6 +84,8 @@ function GroupExport({ groups }: { groups: Groups[] }) {
   const [failed, setFailed] = useState('')
   const [busy, setBusy] = useState(false)
   const [done, setDone] = useState('')
+  const fromField = useRef<HTMLInputElement>(null)
+  const toField = useRef<HTMLInputElement>(null)
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -93,6 +101,8 @@ function GroupExport({ groups }: { groups: Groups[] }) {
     setErrors(found)
     setFailed('')
     setDone('')
+    if (found.from) fromField.current?.focus()
+    else if (found.to) toField.current?.focus()
     if (found.from || found.to || !isLocalDate(from) || !isLocalDate(to)) return
     setBusy(true)
     try {
@@ -133,6 +143,7 @@ function GroupExport({ groups }: { groups: Groups[] }) {
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <TextField
           id="exportStart"
+          ref={fromField}
           type="date"
           label="From"
           value={from}
@@ -141,6 +152,7 @@ function GroupExport({ groups }: { groups: Groups[] }) {
         />
         <TextField
           id="exportEnd"
+          ref={toField}
           type="date"
           label="To"
           value={to}
@@ -181,6 +193,14 @@ function MyDataExport({
     },
     [files],
   )
+  // Files finished after the page is left would never be let go of, so they aren't made.
+  const mounted = useRef(true)
+  useEffect(() => {
+    mounted.current = true
+    return () => {
+      mounted.current = false
+    }
+  }, [])
   const ready = Boolean(user && profile.data && person.data && groups)
   const unavailable =
     groupsFailed || profile.isError || person.isError
@@ -194,6 +214,7 @@ function MyDataExport({
     setBusy(true)
     try {
       const records = await myRecordsExport(profile.data.personId, groups)
+      if (!mounted.current) return
       const details = profileExport({
         name: person.data.displayName,
         email: user.email || null,

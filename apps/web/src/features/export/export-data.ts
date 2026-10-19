@@ -8,7 +8,7 @@ import {
 } from '@ledgerly/core/export/csv'
 import type { Groups, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import { businessDetailsSchema } from '@ledgerly/core/schemas/identity'
-import { type Models, Query } from 'appwrite'
+import { AppwriteException, type Models, Query } from 'appwrite'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 
 // Appwrite's limit for one page and for the values of one Query.equal.
@@ -27,6 +27,25 @@ const TRANSACTION_COLUMNS = [
 ]
 const SHARE_COLUMNS = ['$id', 'transactionId', 'personId', 'groupId', 'givenCents', 'receivedCents']
 const MEMBER_COLUMNS = ['$id', 'groupId', 'personId', 'displayName']
+
+// Reads before giving up on a group that keeps changing, as balances does (ledger.md).
+const TRIES = 3
+
+/** A write between pages can delete the row a cursor points at; reading again from the start fixes it. */
+function cursorLost(error: unknown): boolean {
+  return error instanceof AppwriteException && (error.code === 400 || error.code === 404)
+}
+
+/** `read` again, up to `TRIES` times in all, while it fails with a lost cursor. */
+async function retried<T>(read: () => Promise<T>): Promise<T> {
+  for (let tries = 1; ; tries++) {
+    try {
+      return await read()
+    } catch (error) {
+      if (tries >= TRIES || !cursorLost(error)) throw error
+    }
+  }
+}
 
 /** Every row `queries` match, in cursor pages of 100 (scaling.md#appwrite-limits-we-design-around). */
 async function listAll<T extends Models.Row>(tableId: string, queries: string[]): Promise<T[]> {
@@ -67,12 +86,40 @@ async function listIn<T extends Models.Row>(
   return rows
 }
 
+async function groupRev(groupId: string): Promise<string | null> {
+  const row = await tablesDB.getRow<Groups>({
+    databaseId: DATABASE_ID,
+    tableId: 'groups',
+    rowId: groupId,
+    queries: [Query.select(['$id', 'rev'])],
+  })
+  return row.rev
+}
+
 /**
  * A group's records dated `start` to `end` (both included) as CSV (F-72): its transactions on
  * `idx_group_date`, their shares on `idx_transactionId`, and the members' names in the group.
- * Only reads what the caller's team membership already lets them read; nothing is written.
+ * Every ledger write changes the group's `rev` (ledger.md#concurrency), so the
+ * pages are one consistent read when `rev` is the same before and after; otherwise it reads again,
+ * up to 3 times. Only reads what the caller's team membership already lets them read.
  */
 export async function groupExport(
+  group: Pick<Groups, '$id' | 'currency'>,
+  start: LocalDate,
+  end: LocalDate,
+): Promise<string> {
+  for (let tries = 1; ; tries++) {
+    const read = await retried(async () => {
+      const before = await groupRev(group.$id)
+      const csv = await readGroup(group, start, end)
+      return { csv, same: before === (await groupRev(group.$id)) }
+    })
+    if (read.same) return read.csv
+    if (tries >= TRIES) throw new Error('The group kept changing while it was read')
+  }
+}
+
+async function readGroup(
   group: Pick<Groups, '$id' | 'currency'>,
   start: LocalDate,
   end: LocalDate,
@@ -108,6 +155,11 @@ export async function myRecordsExport(
   personId: string,
   groups: readonly Groups[],
 ): Promise<string> {
+  // Shares span groups, so there's no one `rev` to check: only a lost cursor reads again.
+  return retried(() => readMyRecords(personId, groups))
+}
+
+async function readMyRecords(personId: string, groups: readonly Groups[]): Promise<string> {
   const shares = await listAll<Shares>('shares', [
     Query.equal('personId', personId),
     Query.select(SHARE_COLUMNS),

@@ -1,7 +1,8 @@
 import type { Groups, Profiles } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { Query } from 'appwrite'
+import { AppwriteException, Query } from 'appwrite'
+import { StrictMode } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { tablesDB } from '../../lib/appwrite'
 import { useCurrentUser } from '../auth/use-current-user'
@@ -10,7 +11,10 @@ import { usePerson, useProfile } from '../profile/use-profile'
 import { download, fileUrl } from './export-data'
 import { ExportPage, fileName } from './export-page'
 
-vi.mock('../../lib/appwrite', () => ({ DATABASE_ID: 'main', tablesDB: { listRows: vi.fn() } }))
+vi.mock('../../lib/appwrite', () => ({
+  DATABASE_ID: 'main',
+  tablesDB: { listRows: vi.fn(), getRow: vi.fn() },
+}))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: vi.fn() }))
 vi.mock('../groups/use-groups', () => ({ useGroups: vi.fn() }))
 vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn(), usePerson: vi.fn() }))
@@ -26,6 +30,7 @@ vi.mock('./export-data', async (original) => ({
 }))
 
 const listRows = vi.mocked(tablesDB.listRows)
+const getRow = vi.mocked(tablesDB.getRow)
 const saved = vi.mocked(download)
 
 // The files the page offered as links, by their `blob:<n>` URL.
@@ -88,6 +93,15 @@ function mockTables(tables: Record<string, object[]>) {
   }) as never)
 }
 
+/** The group's `rev` as each read sees it, then `last` from there on. */
+function revs(...seen: string[]) {
+  const last = seen.at(-1)
+  getRow.mockImplementation((async () => ({ $id: 'g1', rev: seen.shift() ?? last })) as never)
+}
+
+/** Appwrite's answer when a cursor's row was deleted between pages. */
+const lostCursor = (code: number) => new AppwriteException('Cursor not found', code)
+
 function calls(): Params[] {
   return listRows.mock.calls.map(([params]) => params as unknown as Params)
 }
@@ -121,12 +135,14 @@ const profile = {
   hoursCapStartsOn: null,
 } as Profiles
 
-function renderPage() {
+function renderPage({ strict = false } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
       <ExportPage />
     </QueryClientProvider>,
+    // The app runs in StrictMode, which mounts each effect twice.
+    { wrapper: strict ? StrictMode : undefined },
   )
 }
 
@@ -142,6 +158,7 @@ beforeEach(() => {
   made = []
   vi.mocked(fileUrl).mockImplementation((csv) => `blob:${made.push(csv) - 1}`)
   Object.assign(URL, { revokeObjectURL: vi.fn() })
+  revs('r1')
 })
 
 afterEach(() => {
@@ -206,6 +223,25 @@ describe('ExportPage: a group’s records', () => {
         queries: [Query.equal('groupId', 'g1'), Query.select(MEMBER_COLUMNS), Query.limit(100)],
       },
     ])
+    // The group's `rev` before and after: the same, so one read.
+    expect(getRow.mock.calls).toEqual([
+      [
+        {
+          databaseId: 'main',
+          tableId: 'groups',
+          rowId: 'g1',
+          queries: [Query.select(['$id', 'rev'])],
+        },
+      ],
+      [
+        {
+          databaseId: 'main',
+          tableId: 'groups',
+          rowId: 'g1',
+          queries: [Query.select(['$id', 'rev'])],
+        },
+      ],
+    ])
     expect(savedLines('flat-2-14-2026-01-01-to-2026-10-26.csv')).toEqual([
       'date,status,kind,description,category,currency,total,person,given,received,net',
       '2026-10-05,posted,expense,Groceries,groceries,AUD,45.05,Sam,45.05,22.53,22.52',
@@ -246,10 +282,89 @@ describe('ExportPage: a group’s records', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
     const input = screen.getByLabelText(field)
     expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(document.activeElement).toBe(input)
     expect(document.getElementById(`${input.id}-error`)?.textContent).toBe(message)
     const other = screen.getByLabelText(field === 'From' ? 'To' : 'From')
     expect(other.getAttribute('aria-invalid')).toBe('false')
     expect(listRows).not.toHaveBeenCalled()
+  })
+
+  it('focuses From when both dates are wrong, and takes a one-day range', async () => {
+    mockTables({})
+    renderPage()
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    expect(document.activeElement).toBe(screen.getByLabelText('From'))
+    expect(screen.getByLabelText('To').getAttribute('aria-invalid')).toBe('true')
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2026-10-01' } })
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2026-10-01' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    await screen.findByText('Downloaded acme-cafe-2026-10-01-to-2026-10-01.csv.')
+  })
+
+  it('reads again when the group changed during the read', async () => {
+    revs('r1', 'r2')
+    let reads = 0
+    listRows.mockImplementation((async ({ tableId }: Params) => {
+      if (tableId !== 'transactions') return { total: 0, rows: [] }
+      reads += 1
+      const rows = [transaction(`t${reads}`, { description: `Read ${reads}` })]
+      return { total: 1, rows }
+    }) as never)
+    renderPage()
+    fireEvent.change(screen.getByLabelText('Group'), { target: { value: 'g1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    await screen.findByText(/^Downloaded/)
+    expect(getRow).toHaveBeenCalledTimes(4)
+    expect(saved).toHaveBeenCalledTimes(1)
+    expect(savedLines('flat-2-14-2026-01-01-to-2026-10-26.csv')[1]).toContain('Read 2')
+  })
+
+  it('gives up when the group changes on each of 3 reads', async () => {
+    revs('r1', 'r2', 'r3', 'r4', 'r5', 'r6', 'r7')
+    mockTables({})
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'We couldn’t make the file. Check your connection and try again.',
+    )
+    expect(getRow).toHaveBeenCalledTimes(6)
+    expect(saved).not.toHaveBeenCalled()
+  })
+
+  it.each([400, 404])('reads again from the start when a cursor is lost (%i)', async (code) => {
+    const many = Array.from({ length: 101 }, (_, index) => transaction(`t${index}`))
+    let lost = false
+    listRows.mockImplementation((async ({ tableId, queries }: Params) => {
+      if (tableId !== 'transactions') return { total: 0, rows: [] }
+      const after = queries.some((query) => query.includes('cursorAfter'))
+      if (after && !lost) {
+        lost = true
+        throw lostCursor(code)
+      }
+      const rows = after ? many.slice(100) : many.slice(0, 100)
+      return { total: rows.length, rows }
+    }) as never)
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    await screen.findByText(/^Downloaded/)
+    expect(calls().filter((params) => params.tableId === 'transactions')).toHaveLength(4)
+    expect(savedLines('acme-cafe-2026-01-01-to-2026-10-25.csv')).toHaveLength(102)
+  })
+
+  it('gives up after 3 lost cursors, and never reads again on other errors', async () => {
+    listRows.mockRejectedValue(lostCursor(404))
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    await screen.findByRole('alert')
+    expect(listRows).toHaveBeenCalledTimes(3)
+    listRows.mockClear()
+    listRows.mockRejectedValue(new AppwriteException('Server error', 500))
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    await waitFor(() => expect(listRows).toHaveBeenCalled())
+    await screen.findByRole('button', { name: 'Download CSV' })
+    expect(listRows).toHaveBeenCalledTimes(1)
   })
 
   it('names the file as the app names the group, a pair by its other member', async () => {
@@ -318,6 +433,7 @@ describe('ExportPage: a group’s records', () => {
     fireEvent.click(busy)
     expect(listRows).toHaveBeenCalledTimes(1)
     await act(async () => fail(new Error('offline')))
+    expect(listRows).toHaveBeenCalledTimes(1)
     expect(screen.getByRole('alert').textContent).toBe(
       'We couldn’t make the file. Check your connection and try again.',
     )
@@ -433,6 +549,52 @@ describe('ExportPage: your data', () => {
     expect(screen.getByRole('link', { name: 'profile.csv' }).getAttribute('href')).toBe('blob:2')
   })
 
+  it('reads your shares again when a cursor is lost', async () => {
+    const shares = Array.from({ length: 101 }, (_, index) => ({
+      $id: `s${index}`,
+      transactionId: 't1',
+      personId: 'p1',
+      groupId: 'g1',
+      givenCents: 100,
+      receivedCents: 0,
+    }))
+    let lost = false
+    listRows.mockImplementation((async ({ tableId, queries }: Params) => {
+      if (tableId === 'transactions') return { total: 1, rows: [transaction('t1')] }
+      if (tableId !== 'shares') return { total: 0, rows: [] }
+      const after = queries.some((query) => query.includes('cursorAfter'))
+      if (after && !lost) {
+        lost = true
+        throw lostCursor(404)
+      }
+      const rows = after ? shares.slice(100) : shares.slice(0, 100)
+      return { total: rows.length, rows }
+    }) as never)
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await screen.findByText('Your files are ready. Download each one:')
+    expect(calls().filter((params) => params.tableId === 'shares')).toHaveLength(4)
+    expect(linkLines('my-records.csv')).toHaveLength(102)
+  })
+
+  it('makes no files once the page is left', async () => {
+    let finish!: (value: unknown) => void
+    listRows.mockReturnValueOnce(new Promise((resolve) => (finish = resolve)) as never)
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await waitFor(() => expect(listRows).toHaveBeenCalledTimes(1))
+    cleanup()
+    await act(async () => finish({ total: 0, rows: [] }))
+    expect(fileUrl).not.toHaveBeenCalled()
+  })
+
+  it('makes the files in StrictMode, as the app runs', async () => {
+    mockTables({})
+    renderPage({ strict: true })
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await screen.findByText('Your files are ready. Download each one:')
+  })
+
   it('says why it waits, and when the files can’t be made', async () => {
     vi.mocked(usePerson).mockReturnValue({ data: undefined } as never)
     renderPage()
@@ -491,6 +653,14 @@ describe('fileName', () => {
     expect(fileName('Crème brûlée')).toBe('creme-brulee')
     expect(fileName('東京旅行')).toBe('東京旅行')
     expect(fileName('!!!')).toBe('group')
+  })
+
+  it('keeps 60 characters at most, without a dash at the end', () => {
+    expect(fileName('a'.repeat(70))).toBe('a'.repeat(60))
+    expect(fileName(`${'a'.repeat(59)} b`)).toBe('a'.repeat(59))
+    expect(fileName(`-${'a'.repeat(60)}`)).toBe('a'.repeat(60))
+    // A letter outside the BMP counts once and isn't cut in half.
+    expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(60))
   })
 })
 
