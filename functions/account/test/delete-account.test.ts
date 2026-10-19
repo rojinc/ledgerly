@@ -724,7 +724,7 @@ describe('POST /delete: reruns and the time budget', () => {
     crashOnCall(services.users, 'delete')
     expect((await call(services)).status).toBe(500)
     vi.restoreAllMocks()
-    // No person names the user any more, so only the job can find it (#50 PR-3).
+    // No person names the user any more, so only the job can find it (hourly-job.test.ts).
     expect(await failure(services)).toMatchObject({ status: 404, code: 'NOT_FOUND' })
     const { users, ...rest } = state(services)
     const { users: _, ...done } = await oneRun()
@@ -748,9 +748,8 @@ describe('POST /delete: reruns and the time budget', () => {
 })
 
 describe('other routes', () => {
-  it('answers like every function: POST / comes with the hourly job (#50 PR-3)', async () => {
+  it('answers like every function', async () => {
     const services = kept()
-    expect(await failure(services, { path: '/' })).toMatchObject({ status: 404, code: 'NOT_FOUND' })
     expect(await failure(services, { method: 'GET' })).toMatchObject({ code: 'NOT_FOUND' })
     expect(await failure(services, { userId: null })).toMatchObject({
       status: 401,
