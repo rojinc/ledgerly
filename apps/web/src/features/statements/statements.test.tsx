@@ -248,6 +248,13 @@ describe('StatementsPage', () => {
     renderAt('/groups/g1/statements')
     expect(await screen.findByText(/No invoices yet/)).toBeTruthy()
   })
+
+  it('shows a balance due past the amount cap', async () => {
+    const big = snapshot({ invoice: { balanceDueCents: 20_000_000_000, paymentTermsDays: 14 } })
+    store(statement('s1', FINAL, big))
+    renderAt('/groups/g1/statements')
+    expect((await screen.findByRole('link')).textContent).toMatch(/200,000,000\.00$/)
+  })
 })
 
 describe('StatementPage: a draft', () => {
@@ -363,6 +370,23 @@ describe('StatementPage: a draft', () => {
     ) as HTMLElement
     expect(pay.textContent).toBe(
       `How to payPayment terms: due on receipt. Please pay by ${formatDate('2026-11-17')}, with INV-0007 as the reference.`,
+    )
+  })
+
+  it('shows an opening balance and balance due past the amount cap', async () => {
+    const people = snapshot().people.map((person) =>
+      person.personId === 'pw' ? { ...person, openingCents: 20_000_000_000 } : person,
+    )
+    const big = snapshot({
+      people,
+      invoice: { balanceDueCents: 20_000_011_500, paymentTermsDays: 14 },
+    })
+    store(statement('s1', FINAL, big))
+    renderAt('/groups/g1/statements/s1')
+    const opening = await screen.findByText('Opening balance (from the previous invoice)')
+    expect(opening.nextElementSibling?.textContent).toMatch(/200,000,000\.00$/)
+    expect(screen.getByText('Balance due').nextElementSibling?.textContent).toMatch(
+      /200,000,115\.00$/,
     )
   })
 
@@ -864,6 +888,20 @@ describe('StatementPage: a monthly divide (#166)', () => {
     const lines = within(article).getByRole('region', { name: 'Transactions' })
     expect(within(lines).getByText(/^Bob: paid .*27\.00, share .*23\.39$/)).toBeTruthy()
     expect(within(lines).getByText(/^Alice: paid .*1,500\.00, share .*500\.00$/)).toBeTruthy()
+  })
+
+  it('shows openings and closings past the amount cap', async () => {
+    const people = divideSnapshot().people.map((person) =>
+      person.personId === 'pa'
+        ? { ...person, openingCents: 20_000_000_000, closingCents: 20_000_099_100 }
+        : person,
+    )
+    store(divide('d1', FINAL_DIVIDE, divideSnapshot({ people })))
+    renderAt('/groups/g1/statements/d1')
+    const article = await screen.findByRole('article', { name: 'Divide' })
+    expect(within(article).getAllByRole('row')[1]?.textContent).toMatch(
+      /^Alice.*200,000,000\.00.*1,500\.00.*509\.00.*200,000,991\.00is owed .*200,000,991\.00$/,
+    )
   })
 
   it('says when someone in a transaction has no part of it', async () => {
