@@ -232,11 +232,26 @@ The `identity` function subscribes to two Appwrite events: `users.*.update.passw
 
 A forged or replayed call can do nothing new: at worst it asks again, within the hour, for the email the real event already sent, and Resend's key drops that copy. **Accepted:**
 - A phone-only account gets no notice until SMS can carry it (#175).
-- Other sessions are signed out only for a change through the password route, by the project's session invalidation setting ([environments](../engineering/environments-and-deploys.md#environments)). A recovery reset leaves them signed in; [#290](https://github.com/rojinc/ledgerly/issues/290) handles that.
+- Other sessions are signed out only for a change through the password route, by the project's session invalidation setting ([environments](../engineering/environments-and-deploys.md#environments)). A recovery reset leaves them signed in, so the sign-in after a reset signs them out ([password recovery](#password-recovery)).
 - A notice to the old address when the email or phone changes is #268.
 - **A first password set through an email or phone change.** Appwrite may set a first password through an email or phone change on an account that has none (made with an email code). That fires only `users.*.update.email` or `.phone`, so no notice goes. #268's notice to the old address covers that path; the 24-hour deletion refusal holds either way, since `passwordUpdate` is set.
 - A send that fails (a Resend outage, say) isn't retried: Appwrite doesn't run an event again. The run logs `failed`.
 - After the deploy, the lead checks on `ledgerly-dev` that setting a first password fires `users.<id>.update.password` and a recovery reset fires `users.<id>.recovery.<tokenId>.update`, each with the user ID in `x-appwrite-event`.
+
+## Password recovery
+
+Someone who forgot their password, or whose password someone else set, resets it from **Forgot your password?** on the log-in page ([#290](https://github.com/rojinc/ledgerly/issues/290)). It's Appwrite's own recovery, called from the web app.
+
+1. **`/recover`** asks for an email and calls `account.createRecovery({ email, url })`, where `url` is `<origin>/recover/complete` with no query string. Appwrite emails a link to it with `userId`, `secret` and `expire` added, through the project's SMTP (Resend), in its own template. The link works for **1 hour**, and **once**. Appwrite allows 10 requests an hour for each address and each IP, and the URL's host must be a registered web platform.
+2. **`/recover/complete`** reads `userId` and `secret`, then replaces the URL with `history.replaceState`. That takes the secret out of the address bar and the Back/Forward history; the browser's own history and the host's access log can still hold the full URL, which is why the link working once, for 1 hour, matters. A reload then finds no parameters, and the page says the link is incomplete. It asks for the new password twice, with Profile's limits (8–256 characters) and refusal messages, and calls `account.updateRecovery({ userId, secret, password })`. A dead link, `user_invalid_token` (used or expired) or `user_not_found` (the account was deleted since), says "This link has expired or was already used." and links back to `/recover`. In case the reset itself went through (say its reply was lost and the form was sent again), it also links to `/login?reset=1`. The secret is never logged, and is dropped once the link is used up.
+3. **What a reset does:**
+   - It sets `passwordUpdate`, so the 24-hour deletion [refusal](#refusals) starts. That's intended: whoever reset it may not be the owner.
+   - It marks the email **verified**, since opening the link proves control of the inbox.
+   - It creates no session, and **deletes none**, whatever the project's `invalidateSessions` setting says. So a session someone else holds stays signed in.
+4. **This browser is signed out first.** A browser still signed in when the link is used would be sent past `/login` into the app, missing the sign-in below. So after a reset the page signs it out (`account.deleteSession({ sessionId: 'current' })`; a 401 means nobody was signed in) and drops the cached data, as logging out does. If that fails, it says so and offers **Try again**; the form doesn't come back, since the link is used up.
+5. **Signing in afterwards signs out the other sessions.** The app then goes to `/login?reset=1` ("Password changed. Sign in to finish."). Signing in from there, with the password or an email code, signs out every **other** session with the helper Profile's **Sign out other devices** uses: `account.listSessions()`, then `account.deleteSession()` for each one that isn't `current`, where a 404 (gone already) counts as done. Never `account.deleteSessions()`, which on Appwrite 1.8.1 deletes the current session too. If that fails, the page says so and offers **Try again** before the app opens.
+
+**Accepted risk:** `createRecovery` answers `user_not_found` (404) for an address with no account and `user_blocked` (401) for a blocked one (for example, mid-deletion), so the API shows whether an account exists, as sign-up already does. The page shows the same message for both and for a sent link: "If that address has an account, we've sent a link. It works for 1 hour."
 
 ## Deleting an account (M4)
 
