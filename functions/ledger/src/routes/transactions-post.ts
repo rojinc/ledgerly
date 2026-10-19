@@ -8,8 +8,6 @@ import {
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { route } from '@ledgerly/server/http/create-handler'
-import { z } from 'zod'
-import type { ServicesFor } from '../services'
 import {
   activityWrite,
   changedColumns,
@@ -34,7 +32,9 @@ import {
   storedInput,
   teamRead,
   Unchanged,
-} from './transactions-shared'
+} from '@ledgerly/server/ledger/transactions'
+import { z } from 'zod'
+import type { ServicesFor } from '../services'
 
 export { postTransactionBodySchema }
 

@@ -5,7 +5,6 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
-import type { ServicesFor } from '../services'
 import {
   activityWrite,
   findTransaction,
@@ -25,7 +24,8 @@ import {
   shareColumns,
   teamRead,
   transactionColumns,
-} from './transactions-shared'
+} from '@ledgerly/server/ledger/transactions'
+import type { ServicesFor } from '../services'
 
 export const createTransactionSchema = transactionInputSchema
 

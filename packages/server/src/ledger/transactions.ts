@@ -22,15 +22,15 @@ import {
   type TransactionTemplate,
   transactionTemplateSchema,
 } from '@ledgerly/core/schemas/ledger'
-import type { Db } from '@ledgerly/server/appwrite/client'
-import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
-import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
-import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
-import { type Membership, requireMember } from '@ledgerly/server/auth/require-member'
-import { AppError } from '@ledgerly/server/http/app-error'
-import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, ID, type Models, Query } from 'node-appwrite'
 import { z } from 'zod'
+import type { Db } from '../appwrite/client'
+import { DATABASE_ID, TABLES, type TableId } from '../appwrite/tables'
+import type { TeamsApi } from '../appwrite/teams'
+import type { Tx, Write } from '../appwrite/transaction'
+import { type Membership, requireMember } from '../auth/require-member'
+import { AppError } from '../http/app-error'
+import { randomId } from '../identity/random-id'
 
 /** functions-api.md#transactioninput: what `POST` and `PATCH` return. */
 export type TransactionView = { transaction: Transactions; shares: Shares[]; items: Items[] }
