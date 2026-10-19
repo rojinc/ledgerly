@@ -205,10 +205,16 @@ function RecurringBillForm({ group }: { group: Groups }) {
         error={errors.until}
         {...form.register('until')}
       />
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" {...form.register('autopay')} />
-        Autopay: mark each one paid on its due date
-      </label>
+      <div className="flex flex-col gap-1">
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" aria-describedby="autopay-hint" {...form.register('autopay')} />
+          Autopay: mark each one paid on its due date
+        </label>
+        {/* The scheduler's auto-post step comes with #33; until then this only stores the choice. */}
+        <p id="autopay-hint" className="text-sm text-muted-foreground">
+          Bills are paid automatically once auto-pay is switched on for the app.
+        </p>
+      </div>
       <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : 'Add recurring bill'}
       </Button>

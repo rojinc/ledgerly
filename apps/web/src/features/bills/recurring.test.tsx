@@ -137,7 +137,11 @@ describe('NewRecurringBillPage', () => {
     type('Amount (AUD)', '45.50')
     type('Day of the month', '15')
     type('Last due date (optional)', '2027-06-30')
-    fireEvent.click(screen.getByLabelText(/Autopay/))
+    const autopay = screen.getByLabelText(/Autopay/)
+    expect(
+      document.getElementById(autopay.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toBe('Bills are paid automatically once auto-pay is switched on for the app.')
+    fireEvent.click(autopay)
     fireEvent.click(screen.getByRole('button', { name: 'Add recurring bill' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(sentBody()).toMatchObject({
