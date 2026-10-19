@@ -2,7 +2,16 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { finishMerges } from '../src/run-merge'
-import { account, BEFORE, beforeCommit, call, type Fakes, fakes, placeholderRow } from './harness'
+import {
+  AFTER,
+  account,
+  BEFORE,
+  beforeCommit,
+  call,
+  type Fakes,
+  fakes,
+  placeholderRow,
+} from './harness'
 
 // Sam (pSam, with an account) verifies a phone that Sammy (pP), a placeholder, holds: Sammy is
 // merged into Sam. Alex (pX) is a housemate.
@@ -821,96 +830,106 @@ describe('POST /claim, merging a placeholder', () => {
       },
     ],
   }
+  /**
+   * g3, where Sammy's row was removed after step 1 listed it, with `more`'s rows: a posted row
+   * naming Sammy at 0 basis points (so no share of Sammy's there, #347), a schedule naming
+   * Sammy, and an activity row about Sammy. An earlier run, while Sam was still joined there,
+   * scanned g3 and left tG3.
+   */
+  async function sammyInG3(more: { members: object[]; activity: object[] }) {
+    const services = house({
+      groups: [group('g3')],
+      members: more.members,
+      // Posted, with Sammy at 0 basis points, so Sammy has no share in it (#347).
+      transactions: [
+        transaction(
+          'tG3',
+          'g3',
+          {
+            payers: [{ personId: 'pX', cents: 2000 }],
+            split: {
+              mode: 'percent',
+              percents: [
+                { personId: 'pX', basisPoints: 10000 },
+                { personId: 'pP', basisPoints: 0 },
+              ],
+            },
+          },
+          2000,
+        ),
+      ],
+      shares: [share('sG3', 'tG3', 'g3', 'pX', 2000, 2000)],
+      activity: [
+        ...more.activity,
+        {
+          $id: 'aG3',
+          $createdAt: BEFORE,
+          at: BEFORE,
+          groupId: 'g3',
+          actorPersonId: 'pX',
+          action: 'member.added',
+          subjectPersonId: 'pP',
+          summary: 'was added',
+        },
+      ],
+    })
+    // And a schedule in g3 that names Sammy.
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'create',
+        tableId: 'schedules',
+        rowId: 'scG3',
+        data: {
+          groupId: 'g3',
+          kind: 'expense',
+          description: 'Internet',
+          createdBy: 'pX',
+          templateJson: JSON.stringify({
+            totalCents: 3000,
+            payers: [{ personId: 'pX', cents: 3000 }],
+            split: { mode: 'equal', personIds: ['pP', 'pX'] },
+          }),
+          rrule: 'FREQ=MONTHLY',
+          startsOn: '2026-10-01',
+          endsOn: null,
+          exdates: null,
+          skipPublicHolidays: false,
+          autoPost: false,
+          horizonDays: 56,
+          generatedThrough: '2026-11-30',
+          nextRunAt: '2026-11-01T00:00:00.000Z',
+        },
+      }),
+    )
+    // A group where U isn't joined is done at once, whatever its cursor says (#347).
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'persons',
+        rowId: 'pP',
+        data: {
+          mergedInto: 'pSam',
+          mergeGroupIds: ['g1', 'g2', 'g3'],
+          mergeMembersJson: recorded(services, ['g1', 'g2', 'g3']),
+          mergeCursorsJson: JSON.stringify([{ groupId: 'g3', after: 'tG3', left: ['tG3'] }]),
+        },
+      }),
+    )
+    return services
+  }
+
   it.each([
     ['no row', { members: [], activity: [] }],
+    // Added after Sam signed up, so Claim step 3 doesn't join it: Sam joins it later (#358).
     [
-      'only a placeholder row',
-      { members: [placeholderRow('m9', 'g3', 'pSam', BEFORE)], activity: [] },
+      'only a placeholder row added after they signed up',
+      { members: [placeholderRow('m9', 'g3', 'pSam', AFTER)], activity: [] },
     ],
     ['a row they left on their own', leftOnTheirOwn],
   ])(
     'leaves Sammy’s activity and inputs in a group where Sam has %s, and still finishes',
     async (_, more) => {
-      const services = house({
-        groups: [group('g3')],
-        members: more.members,
-        // Posted, with Sammy at 0 basis points, so Sammy has no share in it (#347).
-        transactions: [
-          transaction(
-            'tG3',
-            'g3',
-            {
-              payers: [{ personId: 'pX', cents: 2000 }],
-              split: {
-                mode: 'percent',
-                percents: [
-                  { personId: 'pX', basisPoints: 10000 },
-                  { personId: 'pP', basisPoints: 0 },
-                ],
-              },
-            },
-            2000,
-          ),
-        ],
-        shares: [share('sG3', 'tG3', 'g3', 'pX', 2000, 2000)],
-        activity: [
-          ...more.activity,
-          {
-            $id: 'aG3',
-            $createdAt: BEFORE,
-            at: BEFORE,
-            groupId: 'g3',
-            actorPersonId: 'pX',
-            action: 'member.added',
-            subjectPersonId: 'pP',
-            summary: 'was added',
-          },
-        ],
-      })
-      // And a schedule in g3 that names Sammy.
-      await withTransaction(services.db, (tx) =>
-        tx.write({
-          action: 'create',
-          tableId: 'schedules',
-          rowId: 'scG3',
-          data: {
-            groupId: 'g3',
-            kind: 'expense',
-            description: 'Internet',
-            createdBy: 'pX',
-            templateJson: JSON.stringify({
-              totalCents: 3000,
-              payers: [{ personId: 'pX', cents: 3000 }],
-              split: { mode: 'equal', personIds: ['pP', 'pX'] },
-            }),
-            rrule: 'FREQ=MONTHLY',
-            startsOn: '2026-10-01',
-            endsOn: null,
-            exdates: null,
-            skipPublicHolidays: false,
-            autoPost: false,
-            horizonDays: 56,
-            generatedThrough: '2026-11-30',
-            nextRunAt: '2026-11-01T00:00:00.000Z',
-          },
-        }),
-      )
-      // Sammy's row in g3 was removed after step 1 listed it. An earlier run, while Sam was still
-      // joined there, scanned g3 and left tG3: a group where U isn't joined is done at once,
-      // whatever its cursor says (#347).
-      await withTransaction(services.db, (tx) =>
-        tx.write({
-          action: 'update',
-          tableId: 'persons',
-          rowId: 'pP',
-          data: {
-            mergedInto: 'pSam',
-            mergeGroupIds: ['g1', 'g2', 'g3'],
-            mergeMembersJson: recorded(services, ['g1', 'g2', 'g3']),
-            mergeCursorsJson: JSON.stringify([{ groupId: 'g3', after: 'tG3', left: ['tG3'] }]),
-          },
-        }),
-      )
+      const services = await sammyInG3(more)
       await claim(services)
       expect(namingSammy(services)).toEqual({
         identities: [],
@@ -938,13 +957,40 @@ describe('POST /claim, merging a placeholder', () => {
     },
   )
 
-  // The self-review's race on #347: Sam's placeholder row in g3 becomes joined while the claim
-  // is past g3's check. Nothing in g3 moves this run, shares included, so the next run renames
-  // the input before it moves the shares, as everywhere else.
+  // #349 (a): Claim step 3 joins Sam's own placeholder row before the merge carries on.
+  it('joins Sam’s own placeholder row first, so the merge renames Sammy there too', async () => {
+    const services = await sammyInG3({
+      members: [placeholderRow('m9', 'g3', 'pSam', BEFORE)],
+      activity: [],
+    })
+    const { body } = await claim(services)
+    expect(body).toEqual({
+      ok: true,
+      data: { linkedGroupIds: expect.arrayContaining(['g3']) },
+    })
+    expect(services.db.rows('members').find((row) => row.$id === 'm9')?.status).toBe('active')
+    expect(namingSammy(services)).toEqual({
+      identities: [],
+      members: [],
+      shares: [],
+      transactions: [],
+      schedules: [],
+      reminders: [],
+      activity: [],
+    })
+    expect(events(warn)).not.toContainEqual(expect.objectContaining({ event: 'merge_left_inputs' }))
+    expect(events(log)).toContainEqual(expect.objectContaining({ event: 'merge_finished' }))
+  })
+
+  // The self-review's race on #347: Sam's placeholder row in g3 (added after Sam signed up, so
+  // the claim doesn't join it) becomes joined from the app while the claim is past g3's check.
+  // Nothing in g3 moves this run, shares included (so g3's shares are never listed, and the
+  // mock's join never fires), and the next run renames the input before it moves the shares,
+  // as everywhere else.
   it('moves nothing in a group where Sam joins after its check, and the next claim does it all', async () => {
     const services = house({
       groups: [group('g3')],
-      members: [placeholderRow('m9', 'g3', 'pSam', BEFORE)],
+      members: [placeholderRow('m9', 'g3', 'pSam', AFTER)],
       transactions: [
         transaction(
           't9',
@@ -999,7 +1045,11 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
     vi.mocked(services.db.listRows).mockRestore()
-    // Sam is joined in g3 now (this claim joined Sam's own rows last).
+    // Sam joins g3 from the app (as the race did, had g3's shares been listed): the next claim
+    // finds Sam joined there.
+    await withTransaction(services.db, (tx) =>
+      tx.write({ action: 'update', tableId: 'members', rowId: 'm9', data: { status: 'active' } }),
+    )
     await claim(services)
     expect(namingSammy(services)).toEqual({
       identities: [],
