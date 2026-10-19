@@ -184,6 +184,7 @@ const logged = () => errors.mock.calls.map(([line]) => String(line))
 describe('step 6: nightly check', () => {
   it('backfills a group’s balances row on its first check, then waits until 03:00 tomorrow', async () => {
     const services = seeded()
+    const writes = vi.spyOn(services.db, 'createOperations')
     expect(await nightlyCheck(services)).toEqual({
       checked: 1,
       busy: 0,
@@ -196,6 +197,11 @@ describe('step 6: nightly check', () => {
       failed: 0,
     })
     expect(stored(services)).toEqual(ROW)
+    // Server-only, with no permissions (data-model.md#balances).
+    const upsert = writes.mock.calls
+      .flatMap(([params]) => params.operations ?? [])
+      .find((operation) => JSON.stringify(operation).includes('"balances"'))
+    expect(upsert).toMatchObject({ data: { $permissions: [] } })
     expect(groupRow(services).nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
     // A backfill isn't a finding, and a group that isn't due yet isn't read.
     expect(logged()).toEqual([])
@@ -431,6 +437,8 @@ describe('step 6: nightly check', () => {
     })
     expect(await nightlyCheck(services)).toMatchObject({ checked: 0, busy: 1, repaired: 0 })
     expect(stored(services)).toBeUndefined()
+    // Busy, so a run an hour on tries again.
+    expect(groupRow(services).nextCheckAt).toBe(AN_HOUR_ON)
   })
 
   it('sums the shares after staging its guard, so a write of shares just before it counts', async () => {
@@ -549,6 +557,124 @@ describe('step 6: nightly check', () => {
     expect(stored(services)).toBeUndefined()
     expect(groupRow(services).nextCheckAt ?? null).toBeNull()
     expect(logged()).toEqual([])
+  })
+
+  it('skips a group whose purge starts during the read, with no findings', async () => {
+    const services = seeded()
+    // The purge deletes the team, then a batch of shares without the group's guard, while the
+    // check reads.
+    const list = services.db.listRows.bind(services.db)
+    let purged = false
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const result = await list(params)
+      if (params.tableId === 'shares' && !purged) {
+        purged = true
+        services.teams = new FakeTeams()
+        await withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'shares', rowId: 's2' }),
+        )
+      }
+      return result
+    })
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, skipped: 1, findings: 0 })
+    expect(stored(services)).toBeUndefined()
+    expect(logged()).toEqual([])
+  })
+
+  it('skips a group whose row a purge deletes during the read', async () => {
+    const services = seeded()
+    const get = services.db.getRow.bind(services.db)
+    let reads = 0
+    vi.spyOn(services.db, 'getRow').mockImplementation(async (params) => {
+      if (params.tableId === 'groups' && ++reads === 2) {
+        services.teams = new FakeTeams()
+        await withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'groups', rowId: 'elm' }),
+        )
+      }
+      return get(params)
+    })
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, skipped: 1, failed: 0 })
+    expect(logged()).toEqual([])
+  })
+
+  it('reads a big group whole, page by page, with at most 100 IDs in any one filter', async () => {
+    // 250 members and 250 transactions with 500 shares; 150 of them belong to strangers merged
+    // into Sam, whose merges aren't finished.
+    const ids = (prefix: string, count: number) =>
+      Array.from({ length: count }, (_, n) => `${prefix}${String(n).padStart(3, '0')}`)
+    const people = ids('pM', 250)
+    const strangers = ids('pS', 150)
+    const transactions = ids('tB', 250).map((id) => transaction(id, 100))
+    const shares = transactions.flatMap(({ $id }, n) => [
+      share(`${$id}a`, $id, people[n] as string, 100, 0),
+      share(
+        `${$id}b`,
+        $id,
+        n < 150 ? (strangers[n] as string) : (people[(n + 1) % 250] as string),
+        0,
+        100,
+      ),
+    ])
+    const services = seeded({
+      persons: [
+        person('pSam', 'u1'),
+        person('pAlex', 'u2'),
+        person('pPat', null),
+        person('pLee', 'u3'),
+        ...people.map((id) => person(id, null)),
+        ...strangers.map((id) => ({ ...person(id, null), mergedInto: 'pSam' })),
+      ],
+      members: [
+        member('elm', 'pSam'),
+        member('elm', 'pAlex', { role: 'member' }),
+        member('elm', 'pPat', { status: 'placeholder' }),
+        member('elm', 'pLee', { role: 'viewer', status: 'left', leftOn: '2026-09-30' }),
+        ...people.map((id) => member('elm', id, { status: 'placeholder' })),
+      ],
+      identities: strangers.map((id, n) => ({
+        $id: `i${n}`,
+        key: `email:s${n}@example.com`,
+        type: 'email',
+        personId: id,
+        verified: false,
+      })),
+      transactions: [GROCERIES[0] as object, ...transactions],
+      shares: [GROCERIES[1] as object, GROCERIES[2] as object, ...shares],
+    })
+    const reads = vi.spyOn(services.db, 'listRows')
+    expect(await nightlyCheck(services)).toMatchObject({
+      checked: 1,
+      findings: 0,
+      merging: 150,
+      repaired: 1,
+    })
+    // Everyone with a share: Sam, Alex, the 250 members and the 150 strangers.
+    expect(stored(services)).toHaveLength(402)
+    const widest = Math.max(
+      ...reads.mock.calls.flatMap(([params]) =>
+        (params.queries ?? [])
+          .map((query) => JSON.parse(query) as { method: string; values?: unknown[] })
+          .filter((query) => query.method === 'equal')
+          .map((query) => query.values?.length ?? 0),
+      ),
+    )
+    expect(widest).toBeLessThanOrEqual(100)
+  })
+
+  it('checks every due group, page by page', async () => {
+    const groups = Array.from({ length: 250 }, (_, n) =>
+      group(`g${String(n).padStart(3, '0')}`, 'pSam', {
+        type: 'house',
+        name: 'Flat',
+        settingsJson: '{"type":"house"}',
+        rev: 'r0',
+      }),
+    )
+    const services = fakes({ persons: [person('pSam', 'u1')], groups } as never, {
+      teams: Object.fromEntries(groups.map((row) => [row.$id, []])),
+    })
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 250, failed: 0, busy: 0 })
   })
 
   it('fails a group whose team can’t be read, and leaves it due', async () => {

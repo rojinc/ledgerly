@@ -158,7 +158,7 @@ describe('POST / (cron run)', () => {
         reminders: { sent: 1, skipped: 0, failed: 0 },
         summaries: { sent: 0, skipped: 0, failed: 0 },
         // Step 6's first pass backfills each group's balances row.
-        checked: {
+        nightly: {
           checked: 4,
           busy: 0,
           cutOff: 0,

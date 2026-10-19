@@ -115,8 +115,24 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
     console.warn(`scheduler: nightly check of group ${groupId} cut off by the budget`)
     await setNextCheck(db, groupId, tomorrow)
   }
-  const whole = await readWhole(db, groupId)
+  let whole: Whole | undefined
+  try {
+    whole = await readWhole(db, groupId)
+  } catch (error) {
+    // The group row went mid-read: a purge, which deleted the team first.
+    if (notFound(error) && !(await teamExists(services.teams, groupId))) {
+      counts.skipped += 1
+      return
+    }
+    throw error
+  }
   if (!whole) return busy()
+  // A purge that started during the read deletes rows without the group's guard, so the read
+  // can't tell: it would look like broken shares. The team goes first, so check it again.
+  if (!(await teamExists(services.teams, groupId))) {
+    counts.skipped += 1
+    return
+  }
   if (services.outOfTime()) return cutOff()
   counts.merging += await checkShares(db, whole, report)
 
@@ -289,6 +305,8 @@ async function rebuildBalances(db: Db, groupId: string): Promise<boolean> {
         tableId: TABLES.balances,
         rowId: groupId,
         data: { peopleJson },
+        // Server-only, as data-model.md says.
+        permissions: [],
       })
     })
     return true
@@ -328,7 +346,7 @@ async function reconcileTeam(
     try {
       await teams.deleteMembership({ teamId: groupId, membershipId: membership.$id })
     } catch (error) {
-      if (!(error instanceof AppwriteException && error.code === 404)) throw error
+      if (!notFound(error)) throw error
     }
     // A join or a merge that landed, or an account deletion that started, while it was removed
     // gets it back.
@@ -350,6 +368,24 @@ async function keptNow(db: Db, groupId: string, userId: string): Promise<boolean
 
 type Membership = Pick<Models.Membership, '$id' | 'userId' | '$createdAt'>
 
+function notFound(error: unknown): boolean {
+  return error instanceof AppwriteException && error.code === 404
+}
+
+/** False when the group's team is gone: one membership read, not the whole team. */
+async function teamExists(
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  teamId: string,
+): Promise<boolean> {
+  try {
+    await teams.listMemberships({ teamId, queries: [Query.limit(1)] })
+    return true
+  } catch (error) {
+    if (notFound(error)) return false
+    throw error
+  }
+}
+
 /** Every membership of the group's team; null when the team is gone. */
 async function membershipsOf(
   teams: Pick<TeamsApi, 'listMemberships'>,
@@ -366,7 +402,7 @@ async function membershipsOf(
       if (memberships.length < PAGE) return found
     }
   } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404) return null
+    if (notFound(error)) return null
     throw error
   }
 }

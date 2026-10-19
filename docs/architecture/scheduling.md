@@ -195,7 +195,7 @@ Runs last, in what's left of the run's budget. It takes groups where `nextCheckA
 
 Broken shares or transactions are reported, never fixed. They're fixed by hand, with adjustments.
 
-**Repairing the `balances` row.** A missing row (the backfill, or one deleted since) or a wrong one is rewritten in one database transaction: stage the group's guard write, sum the shares after it, then write the row. A wrong row also logs an error. A write of shares that lands meanwhile fails one of the two commits. A sum that makes no valid row (a net past a safe integer, a bug) writes nothing: the group counts as failed and stays due.
+**Repairing the `balances` row.** A missing row (the backfill, or one deleted since) or a wrong one is rewritten in one database transaction: stage the group's guard write, sum the shares after it, then write the row. A wrong row also logs an error. A write of shares that lands meanwhile fails one of the two commits. A rebuild or a `nextCheckAt` write that loses its commit that way counts the group `busy`, an hour on. A sum that makes no valid row (a net past a safe integer, a bug) writes nothing: the group counts as failed and stays due.
 
 **The team.** A team membership is removed when all of these hold:
 - None of the user's persons (`idx_userId`, which isn't unique) has an `active` or `left` member row in the group, or only a `left` row they left on their own since that member row was created (`leftOnTheirOwn()`: their own `member.left` is the newest of their `member.left` and `member.joined` rows, [leaving](permissions.md#leaving-a-group)).
