@@ -444,10 +444,70 @@ describe('PATCH /schedules/{id}', () => {
 
   it('leaves the occurrences after a shorter horizon until the window reaches them', async () => {
     const services = await withThursdays()
-    const { created, removed } = await patch(services, { ...thursdays, horizonDays: 14 })
+    const { created, removed } = await patch(services, {
+      ...thursdays,
+      horizonDays: 14,
+      description: 'Late shift',
+    })
     expect({ created, removed }).toEqual({ created: 0, removed: 0 })
-    expect(occurrences(services)).toHaveLength(11)
     expect(scheduleRow(services)?.generatedThrough).toBe('2026-11-02')
+    const future = () =>
+      occurrences(services)
+        .filter((row) => row.date >= '2026-10-19')
+        .map((row) => row.description)
+    expect(future()).toEqual([...Array(2).fill('Late shift'), ...Array(6).fill('Thursday shift')])
+    // The horizon grows again, and the next run reaches the rest.
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'schedules',
+        rowId: ID,
+        data: { horizonDays: 56, nextRunAt: '2026-10-18T20:00:00.000Z' },
+      }),
+    )
+    await runCron(services)
+    expect(future()).toEqual(Array(8).fill('Late shift'))
+  })
+
+  it('deletes the occurrences before a later start, from today on', async () => {
+    const services = await withThursdays()
+    const { created, removed } = await patch(services, {
+      ...thursdays,
+      startsOn: '2026-11-20',
+      description: 'Late shift',
+    })
+    // 22 October to 19 November.
+    expect({ created, removed }).toEqual({ created: 0, removed: 5 })
+    expect(occurrences(services).map((row) => [row.date, row.description])).toEqual([
+      ['2026-10-01', 'Thursday shift'],
+      ['2026-10-08', 'Thursday shift'],
+      ['2026-10-15', 'Thursday shift'],
+      ['2026-11-26', 'Late shift'],
+      ['2026-12-03', 'Late shift'],
+      ['2026-12-10', 'Late shift'],
+    ])
+  })
+
+  it('never changes a past occurrence that wasn’t posted, even after an earlier end', async () => {
+    const services = await withThursdays()
+    await ok(services, 'POST', `/schedules/${ID}/end`, { body: { endsOn: '2026-10-05' } })
+    // 8 and 15 October weren't posted, so they wait for the user.
+    const renamed = await patch(services, {
+      ...thursdays,
+      endsOn: '2026-10-05',
+      description: 'Late shift',
+    })
+    expect(renamed).toMatchObject({ created: 0, removed: 0 })
+    const { created } = await patch(services, {
+      ...thursdays,
+      endsOn: '2026-12-31',
+      description: 'Late shift',
+    })
+    expect(created).toBe(8)
+    expect(occurrences(services).map((row) => row.description)).toEqual([
+      ...Array(3).fill('Thursday shift'),
+      ...Array(8).fill('Late shift'),
+    ])
   })
 
   it('replaces the items of the occurrences it updates, and deletes those of ones it deletes', async () => {
@@ -705,6 +765,10 @@ describe('races on schedule edits', () => {
     const first = (await runCron(services)).expanded.created
     expect(first).toBeGreaterThan(0)
     expect(first).toBeLessThan(113)
+    // Its progress is saved: up to the last occurrence it created.
+    expect(scheduleRow(services, groceries.id)?.generatedThrough).toBe(
+      occurrences(services, groceries.id).at(-1)?.date,
+    )
     expect(scheduleRow(services, groceries.id)?.nextRunAt).toBe('2026-10-18T20:00:00.000Z')
     spy.mockRestore()
     late = false
@@ -903,7 +967,9 @@ describe('rules with their own end', () => {
     [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029', endsOn: null }, '2026-10-29'],
     [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029', endsOn: '2026-10-20' }, '2026-10-20'],
     [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2', endsOn: '2026-12-31' }, '2026-10-08'],
-    [{ rrule: 'FREQ=MONTHLY;BYMONTHDAY=31;COUNT=2', endsOn: null }, '2026-12-31'],
+    [{ rrule: 'FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=2', endsOn: null }, '2026-11-30'],
+    // Every other week from the week of 1 October: 13 and 27 October.
+    [{ rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=TU;COUNT=2', endsOn: null }, '2026-10-27'],
   ])('scheduleEnd(%o) is %s', (rule, end) => {
     expect(scheduleEnd({ ...rule, startsOn: '2026-10-01' })).toBe(end)
   })

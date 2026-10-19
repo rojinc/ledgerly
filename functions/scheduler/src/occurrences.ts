@@ -101,11 +101,11 @@ type Step =
  * from the day after `after` (by default `generatedThrough`; `startsOn` when empty) to its end
  * or the horizon, whichever comes first, in line with the schedule as it is now, then sets
  * `generatedThrough` and `nextRunAt`. It creates the ones that are missing, by ID (one a person
- * moved to another day still holds its ID). An occurrence that's still `scheduled` or `due`
- * and not edited is updated in place when the template changed, and deleted with its items
- * when the rule no longer has its date or it lies after the schedule's end. So an edit that
- * stopped partway is put right by the next run. Voided, edited and posted ones are left as
- * they are (scheduling.md#idempotency).
+ * moved to another day still holds its ID). An occurrence from today on that's still
+ * `scheduled` or `due` and not edited is updated in place when the template changed, and
+ * deleted with its items when the rule no longer has its date or it lies after the schedule's
+ * end. So an edit that stopped partway is put right by the next run. Earlier ones, and voided,
+ * edited and posted ones, are left as they are (scheduling.md#idempotency).
  *
  * Each batch of at most 90 writes is guarded (ledger.md#concurrency): it stages its progress on
  * the schedule row and checks the stored schedule is the one read, guards the group and the
@@ -126,17 +126,20 @@ export async function generateOccurrences(
   outOfTime: () => boolean = () => false,
 ): Promise<Expansion> {
   const today = localToday(group.timezone, now)
-  const from = laterOf(schedule.startsOn as LocalDate, after ? addDays(after, 1) : null)
+  const next = after ? addDays(after, 1) : null
+  const from = laterOf(schedule.startsOn as LocalDate, next)
   const horizon = addDays(today, schedule.horizonDays)
   const end = scheduleEnd(schedule)
   const to = end && compareDates(end, horizon) < 0 ? end : horizon
   const dates = compareDates(from, to) <= 0 ? datesOf(schedule, group, from, to) : []
   const ids = new Map(dates.map((date) => [occurrenceId(schedule.$id, date), date]))
-  // idx_schedule_date: the ones the schedule may still change.
+  // idx_schedule_date: the ones the schedule may still change. None before today: a past one
+  // that wasn't posted waits for the user. Not limited to `from`, so a later startsOn removes
+  // the ones before it.
   const changeable = (
     await allRows<Transactions>(db, TABLES.transactions, [
       Query.equal('scheduleId', schedule.$id),
-      Query.greaterThanEqual('date', from),
+      Query.greaterThanEqual('date', laterOf(today, next)),
     ])
   ).filter(isChangeable)
   const itemsByRow = groupItems(
@@ -161,8 +164,8 @@ export async function generateOccurrences(
   for (const row of changeable) {
     const date = row.date as LocalDate
     const stale = compareDates(date, to) <= 0 || (end !== null && compareDates(date, end) > 0)
-    // A date the rule no longer has, or after its end. Later ones wait until the window
-    // reaches them.
+    // A date the rule no longer has (before startsOn, say), or after its end. Later ones wait
+    // until the window reaches them.
     if (!ids.has(row.$id) && stale) {
       steps.push({ action: 'delete', date, row, items: itemsByRow.get(row.$id) ?? [] })
     }

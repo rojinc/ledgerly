@@ -79,13 +79,14 @@ for date in expandSchedule(schedule, from, to, holidays(group.region)):
         status = 'scheduled' (shift, expense, income) or 'due' (bill, with dueOn = date)
         scheduleId, date, createdBy = schedule.createdBy
     a changeable row that differs from the template → update it in place, items replaced
-for each changeable row dated from `from` on whose date the rule no longer has:
+for each changeable row dated from max(today, generatedThrough + 1 day) on
+        whose date the rule no longer has (before startsOn, say):
     dated up to `to`, or after `end` → delete it with its items
 generatedThrough = to
 nextRunAt = next local 00:05 in group.timezone (as UTC), or empty once everything up to end exists
 ```
 
-A **changeable** occurrence is still `scheduled` or `due` and not `overridden`. Voided, edited and posted ones are left as they are, and a changeable one dated after `to` but not after `end` waits until the window reaches it. So expansion brings the occurrences in line with the schedule as it is now, and an edit that stopped partway is put right by the next run.
+A **changeable** occurrence is still `scheduled` or `due`, not `overridden`, and dated today or later in the group's timezone. Voided, edited and posted ones are left as they are, and so is a past one that wasn't posted: it waits for the user. A changeable one dated after `to` but not after `end` waits until the window reaches it. So expansion brings the occurrences in line with the schedule as it is now, and an edit that stopped partway is put right by the next run.
 
 Occurrences are written in batches of at most 90 operations per database transaction (a daily rule with a 120-day horizon is 120 rows), with each occurrence's items, in date order. Each batch is guarded ([ledger.md#concurrency](ledger.md#concurrency)):
 - it stages its progress (`generatedThrough` up to the last date it reached, and `nextRunAt` in the last batch) on the schedule row;
@@ -144,7 +145,7 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | Route | What it does |
 | --- | --- |
 | `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
-| `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` moved back to yesterday if it is later, then expand again from local today: changeable occurrences are updated in place, deleted when the new rule no longer has their date, and created where missing. `created` and `removed` count the ones created and deleted; one updated in place counts as neither. The group and kind can't change (`VALIDATION_FAILED`) |
+| `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` moved back to yesterday if it is later, then expand again from local today: changeable occurrences are updated in place, deleted when the new rule no longer has their date (before a later `startsOn`, say) or they are after its end, and created where missing. `created` and `removed` count the ones created and deleted; one updated in place counts as neither. The group and kind can't change (`VALIDATION_FAILED`) |
 | `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended; a later `endsOn` than before carries on at the next run |
 | `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items. One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
