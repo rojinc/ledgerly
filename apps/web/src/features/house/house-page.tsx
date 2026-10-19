@@ -2,7 +2,7 @@ import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import type { UpdateGroupBody } from '@ledgerly/core/schemas/groups'
 import { type ReactNode, type RefObject, useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Navigate, useNavigate, useParams } from 'react-router'
+import { Link, Navigate, useNavigate, useParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
@@ -18,6 +18,7 @@ import {
   toHouseValues,
 } from './house-values'
 import { AddHousemate, EditMember, MoveOut } from './housemate-forms'
+import { SettleUp } from './settle-up'
 import { GroupsError, useLeaveHouse, useMemberWrites, useUpdateHouse } from './use-house'
 
 function Message({ children, alert = false }: { children: string; alert?: boolean }) {
@@ -111,6 +112,15 @@ function House({
       <p role="status" className="text-sm text-muted-foreground empty:hidden">
         {newRole && `Your role here is now ${ROLE_LABEL[newRole]}.`}
       </p>
+      {/* #180. `role` is unset in an archived house. */}
+      {(role === 'admin' || role === 'member') && (
+        <Link
+          to={`/transactions/new?groupId=${group.$id}`}
+          className="inline-flex h-10 items-center self-start rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          Add expense
+        </Link>
+      )}
       <section aria-labelledby="housemates" className="flex flex-col gap-2">
         <h2 id="housemates" className="font-medium">
           Housemates
@@ -132,7 +142,7 @@ function House({
       {(role === 'admin' || role === 'member') && (
         <AddHousemate group={group} isAdmin={role === 'admin'} writes={writes} />
       )}
-      {/* #45: settle up mounts here. */}
+      <SettleUp group={group} me={me} members={members} />
       {/* Someone who moved out is still in the team until they leave (permissions.md). */}
       {!archived && me && me.status !== 'placeholder' && <LeaveHouse group={group} />}
       {role === 'admin' && <HouseSettings group={group} />}
@@ -159,6 +169,8 @@ function MemberRow({
   onRemoved: () => void
 }) {
   const [chosen, setMode] = useState<Mode>('view')
+  // Every row has the same three buttons: each one is described by its housemate's name.
+  const nameId = useId()
   // An open form closes when the caller stops being an admin, or the house is archived.
   const mode = isAdmin ? chosen : 'view'
   const buttons = {
@@ -176,7 +188,7 @@ function MemberRow({
   return (
     <li className="flex flex-col gap-2 px-4 py-3">
       <div className="min-w-0">
-        <p className="font-medium break-words">
+        <p id={nameId} className="font-medium break-words">
           {member.displayName}
           {isMe && ' (you)'}
         </p>
@@ -186,17 +198,32 @@ function MemberRow({
       </div>
       {isAdmin && mode === 'view' && (
         <div className="flex flex-wrap gap-2">
-          <Button ref={buttons.edit} variant="outline" onClick={() => setMode('edit')}>
+          <Button
+            ref={buttons.edit}
+            variant="outline"
+            aria-describedby={nameId}
+            onClick={() => setMode('edit')}
+          >
             Change
           </Button>
           {!member.leftOn && (
-            <Button ref={buttons.moveOut} variant="outline" onClick={() => setMode('moveOut')}>
+            <Button
+              ref={buttons.moveOut}
+              variant="outline"
+              aria-describedby={nameId}
+              onClick={() => setMode('moveOut')}
+            >
               Moved out
             </Button>
           )}
           {/* Your own way out is Leave this house, which checks your balance. */}
           {!isMe && (
-            <Button ref={buttons.remove} variant="outline" onClick={() => setMode('remove')}>
+            <Button
+              ref={buttons.remove}
+              variant="outline"
+              aria-describedby={nameId}
+              onClick={() => setMode('remove')}
+            >
               Remove
             </Button>
           )}
@@ -349,6 +376,7 @@ function LeaveHouse({ group }: { group: Groups }) {
           pendingAction="Leaving…"
           pending={leave.isPending}
           error={leave.error?.message ?? ''}
+          // Only while this page is open: a leave that ends after the caller moved on leaves them be.
           onConfirm={() => leave.mutate(undefined, { onSuccess: () => navigate('/groups') })}
           onCancel={() => {
             flushSync(() => setOpen(false))
@@ -386,7 +414,7 @@ function HouseSettings({ group }: { group: Groups }) {
         Settings
       </h2>
       {values ? (
-        <HouseForm mode="settings" defaultValues={values} onSave={save} />
+        <HouseForm mode="settings" defaultValues={values} stored={values} onSave={save} />
       ) : (
         // A form with defaults would overwrite what's stored.
         <Message alert>

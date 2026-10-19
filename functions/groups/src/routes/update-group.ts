@@ -28,7 +28,7 @@ export async function updateGroup(
   body: unknown,
 ): Promise<Groups> {
   const { settings, ...columns } = parseBody(updateGroupBodySchema, body)
-  const { person, member, group } = await requireMember(db, teams, userId, groupId, {
+  const { person, group } = await requireMember(db, teams, userId, groupId, {
     roles: ['admin'],
   })
   const storedSettings = JSON.parse(group.settingsJson) as GroupSettings
@@ -100,7 +100,7 @@ export async function updateGroup(
           groupId,
           person.$id,
           'group.updated',
-          `${member.displayName} changed the group's ${changed.join(', ')}`,
+          `Changed the group's ${changed.join(', ')}`,
           now,
           { before, after },
         ),

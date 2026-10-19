@@ -158,6 +158,18 @@ describe('route guards', () => {
     renderAt('/login')
     expect(await screen.findByText('Home page')).toBeTruthy()
   })
+
+  it('sends someone who just signed in where they were going, not home', async () => {
+    getUser.mockRejectedValue(new AppwriteException('No session', 401))
+    call.mockResolvedValue(bootstrapped())
+    const { router, queryClient } = renderAt('/secret?tab=2')
+    expect(await screen.findByText('Login page')).toBeTruthy()
+    // Signing in: the user query refetches while /login is still showing.
+    getUser.mockResolvedValue({ $id: 'u1' } as never)
+    await act(() => queryClient.invalidateQueries({ queryKey: ['currentUser'] }))
+    expect(await screen.findByText('Secret page')).toBeTruthy()
+    expect(router.state.location.pathname + router.state.location.search).toBe('/secret?tab=2')
+  })
 })
 
 describe('bootstrapBody', () => {

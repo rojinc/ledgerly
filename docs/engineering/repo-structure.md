@@ -74,6 +74,7 @@ ledgerly/
 │           ├── lib/           appwrite client, callFunction, query keys
 │           ├── ui/            shadcn/ui components (generated, then owned)
 │           └── features/      one folder per feature
+│               ├── activity/
 │               ├── auth/
 │               ├── bills/
 │               ├── groups/
@@ -83,8 +84,10 @@ ledgerly/
 │               ├── transactions/
 │               ├── statements/
 │               ├── house/
+│               ├── onboarding/
 │               ├── people/
-│               └── profile/
+│               ├── profile/
+│               └── receipts/
 │
 └── scripts/                   small repo scripts (build functions, seed dev data)
 ```
