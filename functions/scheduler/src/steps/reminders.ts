@@ -12,6 +12,7 @@ import {
 } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
 import { pages } from '../pages'
+import { findSchedule } from '../schedule-rows'
 import { appBase, type Services } from '../services'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
@@ -36,6 +37,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
   const groups = memo((rowId) =>
     db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId }),
   )
+  const autoPosts = memo(async (rowId) => (await findSchedule(db, rowId))?.autoPost === true)
   // `<groupId>/<personId>`: Appwrite IDs have no slash.
   const recipients = memo((key) => {
     const [groupId, personId] = key.split('/') as [string, string]
@@ -61,6 +63,9 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       // Any shift still `scheduled`, auto-post ones too: step 2 runs first every hour from just
       // after local midnight, so by 07:00 an auto-post shift left here is one it couldn't post.
       const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
+      // Nobody to ask: a shift of a schedule that auto-posts isn't marked, so step 2 keeps trying
+      // it. Step 2 never posts a marked row, so marking it would leave it `scheduled` for good.
+      if (!to && shift.scheduleId && (await autoPosts(shift.scheduleId))) return
       const content = shiftToConfirmEmail({
         groupName: group.name,
         date: shift.date as LocalDate,
@@ -152,8 +157,10 @@ async function remind(
       }
       try {
         // Resend delivers one email per key within 24 hours, so the next run's retry after a
-        // failed commit isn't delivered twice.
-        await sendEmail({ to: email.to, ...email.content, idempotencyKey: `reminder-${seen.$id}` })
+        // failed commit isn't delivered twice. The date is in it: an edit that moves the row
+        // clears remindedAt, and the new date needs its own reminder.
+        const idempotencyKey = `reminder-${seen.$id}-${seen.date}`
+        await sendEmail({ to: email.to, ...email.content, idempotencyKey })
         outcome = 'sent'
       } catch (error) {
         // An email Resend will never take is marked too, so it isn't tried every hour.
