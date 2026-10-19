@@ -16,6 +16,7 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
+import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { listAll, Raced } from '@ledgerly/server/ledger/transactions'
 import { ID, Permission, Query, Role } from 'node-appwrite'
@@ -121,7 +122,13 @@ export async function markMerged(
       return deletes.length
     })
     // After the commit, so a rolled-back try logs nothing.
-    if (typed > 0) console.log(`merge ${placeholderId} into ${intoId}: ${typed} typed keys deleted`)
+    if (typed > 0) {
+      logProblem('merge_typed_keys_deleted', {
+        personId: placeholderId,
+        intoPersonId: intoId,
+        count: typed,
+      })
+    }
     return true
   } catch (error) {
     if (error instanceof NotOurs) return false
