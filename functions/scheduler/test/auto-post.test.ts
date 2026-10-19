@@ -1,11 +1,13 @@
 import type { Activity, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { describe, expect, it, vi } from 'vitest'
+import { AppwriteException } from 'node-appwrite'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ScheduleResult } from '../src/routes/create-schedule'
 import type { RunResult } from '../src/routes/run'
 import {
   beforeCommit,
   beforeStaging,
+  call,
   type Fakes,
   fakes,
   group,
@@ -97,6 +99,41 @@ function update(
 }
 
 describe('step 2: auto-post', () => {
+  // FakeDb stamps $createdAt from the real clock. 1 October: the occurrences these tests make
+  // are made before their days, as a cron run on time makes them.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-01T00:00:00.000Z'))
+  })
+  afterEach(() => vi.useRealTimers())
+
+  it('never posts an occurrence made after its own day, so a moved week isn’t paid twice', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // Thursday 22 October is posted; then an edit on Wednesday 21 moves the schedule to Fridays
+    // but loses its races, so nothing is reconciled until Saturday's run.
+    await update(services, 'transactions', `${ID}_20261022`, { status: 'posted' })
+    services.now = new Date('2026-10-20T20:00:00.000Z')
+    const commit = services.db.updateTransaction.bind(services.db)
+    let commits = 0
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      if (params.commit && [2, 4].includes(++commits)) {
+        throw new AppwriteException('Conflict', 409, 'transaction_conflict')
+      }
+      return commit(params)
+    })
+    await call(services, 'PATCH', `/schedules/${ID}`, {
+      body: { ...thursdays, rrule: 'FREQ=WEEKLY;BYDAY=FR' },
+    })
+    vi.restoreAllMocks()
+    services.now = new Date('2026-10-23T13:05:00.000Z')
+    vi.setSystemTime(services.now)
+    await runCron(services)
+    // Friday 23 was made on Saturday: it waits for the user.
+    expect(row(services, `${ID}_20261022`).status).toBe('posted')
+    expect(row(services, `${ID}_20261023`).status).toBe('scheduled')
+  })
+
   it('waits for step 1 to finish a schedule that is due', async () => {
     const services = seeded()
     await create(services, thursdays)
