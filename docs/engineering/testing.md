@@ -48,7 +48,7 @@ A plain loop is enough; we don't need a property-testing library.
 - A bug fix starts with a failing test that reproduces it.
 - Never delete or skip a failing test to get CI green. If a test is wrong, fix it and explain why in the PR.
 - No real network calls in unit tests. The fake Appwrite client lives in `packages/server/src/appwrite/fake.ts`.
-- Tests must not depend on the machine's timezone. CI runs with `TZ=UTC`, and core tests also run once with `TZ=Australia/Sydney` to catch date bugs.
+- Tests must not depend on the machine's timezone. CI runs every test with `TZ=UTC` and again with `TZ=Australia/Sydney` to catch date bugs, and runs core's coverage gate in Sydney time.
 - Keep tests fast: the whole unit suite should run in under 30 seconds.
 
 ## Commands

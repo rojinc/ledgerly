@@ -29,7 +29,7 @@ The two config files share the resource files through the CLI's `includes` field
 
 ## CI/CD (GitHub Actions)
 
-`ci.yml`, on every pull request and every push to `main`: `npm ci` → lint → typecheck → test (`TZ=UTC`) → `@ledgerly/core` coverage (`TZ=Australia/Sydney`, 100% required) → build.
+`ci.yml`, on every pull request and every push to `main`: `npm ci` → lint → typecheck → test (`TZ=UTC`) → `@ledgerly/core` coverage (`TZ=Australia/Sydney`, 100% required) → test again (`TZ=Australia/Sydney`) → build.
 
 `deploy.yml`:
 
