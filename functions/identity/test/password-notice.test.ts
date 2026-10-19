@@ -1,9 +1,10 @@
+import { EmailError } from '@ledgerly/server/email/send-email'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { AccountUser } from '../src/services'
 import { account, call, type Fakes, fakes } from './harness'
 
-const EVENT = { 'x-appwrite-trigger': 'event' }
+const EVENT = { 'x-appwrite-trigger': 'event', 'x-appwrite-event': 'users.u1.update.password' }
 // 5 minutes before the harness's NOW (07:00 on 19 October in Sydney).
 const CHANGED = '2026-10-18T19:55:00.000Z'
 
@@ -14,9 +15,9 @@ function changed(overrides: Partial<AccountUser> = {}, seed: Parameters<typeof f
   return fakes(seed, { account: account({ passwordUpdate: CHANGED, ...overrides }) })
 }
 
-// An event run: no JWT, `x-appwrite-trigger: event`.
-function fire(services: Fakes, body: unknown = userBody()) {
-  return call(services, 'POST', '/', body, null, EVENT)
+// An event run: no JWT, `x-appwrite-trigger: event`, the event's name in `x-appwrite-event`.
+function fire(services: Fakes, body: unknown = userBody(), headers: Record<string, string> = {}) {
+  return call(services, 'POST', '/', body, null, { ...EVENT, ...headers })
 }
 
 function sent(services: Fakes) {
@@ -75,7 +76,7 @@ describe('POST / (the users.*.update.password event)', () => {
     expect(log.mock.calls).toEqual([[`identity: password notice for user u1: ${outcome}`]])
   })
 
-  it('sends nothing for a user who is gone, or a body without a user ID', async () => {
+  it('sends nothing for a user who is gone, or with no user ID in the name or the body', async () => {
     const services = changed()
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     services.users = {
@@ -84,8 +85,8 @@ describe('POST / (the users.*.update.password event)', () => {
       },
     }
     await fire(services)
-    await fire(services, { $id: '../../etc' })
-    await fire(services, 'not an object')
+    await fire(services, { $id: '../../etc' }, { 'x-appwrite-event': '' })
+    await fire(services, 'not an object', { 'x-appwrite-event': 'users.*.update.password' })
     expect(services.sendEmail).not.toHaveBeenCalled()
     expect(log.mock.calls).toEqual([
       ['identity: password notice for user u1: gone'],
@@ -94,19 +95,48 @@ describe('POST / (the users.*.update.password event)', () => {
     ])
   })
 
-  it('reads only the user ID from the body: a body naming another user re-sends only their own notice', async () => {
+  it('takes the user ID from the event name over the body, and nothing else from the body', async () => {
     const services = changed()
     const get = vi.fn(async ({ userId }: { userId: string }) =>
       account({ $id: userId, email: `${userId}@example.com`, passwordUpdate: CHANGED }),
     )
     services.users = { get }
-    await fire(services, {
-      ...userBody('u2'),
-      email: 'attacker@example.com',
-      emailVerification: true,
-    })
+    await fire(
+      services,
+      { ...userBody('u1'), email: 'attacker@example.com', emailVerification: true },
+      { 'x-appwrite-event': 'users.u2.update.password' },
+    )
     expect(get).toHaveBeenCalledWith({ userId: 'u2' })
     expect(sent(services)).toEqual([expect.objectContaining({ to: 'u2@example.com' })])
+  })
+
+  it('fits a recovery event, whose body is a token: the user comes from the name', async () => {
+    const services = changed()
+    const get = vi.spyOn(services.users, 'get')
+    await fire(
+      services,
+      { $id: 'token1', userId: 'u1', secret: 'SECRET' },
+      { 'x-appwrite-event': 'users.u1.recovery.token1.update' },
+    )
+    expect(get).toHaveBeenCalledWith({ userId: 'u1' })
+    expect(sent(services)).toHaveLength(1)
+  })
+
+  it('falls back to the body’s $id when the name has no user ID', async () => {
+    const services = changed()
+    const get = vi.spyOn(services.users, 'get')
+    await fire(services, userBody('u1'), { 'x-appwrite-event': '' })
+    expect(get).toHaveBeenCalledWith({ userId: 'u1' })
+  })
+
+  it('logs a failed send and fails the run, which Appwrite won’t retry', async () => {
+    const services = changed()
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    services.sendEmail = vi.fn(async () => {
+      throw new EmailError('Resend answered 503 unknown', 'unknown', 503)
+    })
+    expect((await fire(services)).status).toBe(500)
+    expect(log.mock.calls).toEqual([['identity: password notice for user u1: failed (unknown)']])
   })
 
   it('never logs the body, the address or the name', async () => {

@@ -22,9 +22,14 @@ export function identityRoutes(
   return [
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
     // identity-and-invites.md#password-notice: the users.*.update.password event.
-    route('POST', '/', async (ctx) => passwordNotice(services(ctx), ctx.event, ctx.body), {
-      event: true,
-    }),
+    route(
+      'POST',
+      '/',
+      async (ctx) => passwordNotice(services(ctx), ctx.event, ctx.headers, ctx.body),
+      {
+        event: true,
+      },
+    ),
     route('POST', '/bootstrap', async (ctx) =>
       bootstrap(services(ctx), requireUser(ctx.userId), ctx.body),
     ),

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import type { Profiles } from '@ledgerly/core/generated/rows'
 import { idSchema } from '@ledgerly/core/schemas/common'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
+import { EmailError } from '@ledgerly/server/email/send-email'
 import { passwordChangedEmail } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { getRowOrNull, isAppwriteError } from '../rows'
@@ -11,27 +12,41 @@ import type { AccountUser, Services } from '../services'
 // queue, short enough that a replay can't email about an old change.
 const PASSWORD_NOTICE_WINDOW_MINUTES = 60
 
-type Outcome = 'sent' | 'stale' | 'unverified' | 'gone'
+type Outcome = 'sent' | 'stale' | 'unverified' | 'gone' | `failed (${string})`
 
 /**
  * `identity POST /` (identity-and-invites.md#password-notice): the `users.*.update.password`
- * event, run without a JWT. Only `$id` is read from the body, which can carry the password
- * hash, so the body is never logged or stored; everything else comes from `users.get`. Always
- * `{}`: the outcome goes to the log, with the user ID.
+ * event, run without a JWT. Only the user ID is read: from the event's name, else the body's
+ * `$id`. The body can carry the password hash, so it's never logged or stored; everything else
+ * comes from `users.get`. `{}` unless the send fails; the outcome goes to the log, with the ID.
  */
 export async function passwordNotice(
   services: Services,
   event: boolean,
+  headers: Record<string, string>,
   body: unknown,
 ): Promise<Record<string, never>> {
   if (!event) throw new AppError('FORBIDDEN', 'Only Appwrite sends this.')
-  const userId = idOf(body)
-  const outcome = userId === null ? 'gone' : await notify(services, userId)
-  console.log(`identity: password notice for user ${userId ?? '(none)'}: ${outcome}`)
+  const userId = idFromEvent(headers['x-appwrite-event']) ?? idFromBody(body)
+  const log = (outcome: Outcome) =>
+    console.log(`identity: password notice for user ${userId ?? '(none)'}: ${outcome}`)
+  try {
+    log(userId === null ? 'gone' : await notify(services, userId))
+  } catch (error) {
+    // Appwrite doesn't run an event again, so a failed send is lost; the run fails with it.
+    if (error instanceof EmailError) log(`failed (${error.type})`)
+    throw error
+  }
   return {}
 }
 
-function idOf(body: unknown): string | null {
+// `users.<userId>.update.password`, or `users.<userId>.recovery.<tokenId>.update`.
+function idFromEvent(name: string | undefined): string | null {
+  const parsed = idSchema.safeParse(name?.match(/^users\.([^.]+)\./)?.[1])
+  return parsed.success ? parsed.data : null
+}
+
+function idFromBody(body: unknown): string | null {
   const id = typeof body === 'object' && body !== null ? (body as { $id?: unknown }).$id : null
   const parsed = idSchema.safeParse(id)
   return parsed.success ? parsed.data : null
