@@ -195,6 +195,8 @@ export function mergePostedSplit(
  *   P's place for a loan), if that plans the same parts;
  * - otherwise as `exact`, from the parts. An edit that changes the total then picks the split
  *   again.
+ * With a 0 total there are no parts: the renamed split stays, unless the rename left it invalid
+ * (weights past MAX_WEIGHT); then it's `exact` with everyone it names at 0.
  * A loan that becomes U to U is voided.
  */
 export function mergeInput<T extends Named>(
@@ -249,9 +251,9 @@ export function mergeInput<T extends Named>(
 function writeOut(input: Named, kind: TransactionKind, merge: Merge, posted: Posted) {
   const parts = mergedParts(posted, merge)
   if (parts.length === 0) {
-    // No part to keep (a 0 total). Unless the rename left the split invalid (weights past
-    // MAX_WEIGHT), it stays; otherwise everyone it names gets 0, so the row can still be stored.
-    if (input.split && !splitSpecSchema.safeParse(input.split).success) {
+    // No part to keep. With a 0 total, a split the rename left invalid (weights past MAX_WEIGHT)
+    // becomes everyone it names at 0, so the row can still be stored; otherwise it stays.
+    if (posted.totalCents === 0 && input.split && !splitSpecSchema.safeParse(input.split).success) {
       const amounts = splitPersonIds(input.split).map((personId) => ({ personId, cents: 0 }))
       input.split = { mode: 'exact', amounts }
     }

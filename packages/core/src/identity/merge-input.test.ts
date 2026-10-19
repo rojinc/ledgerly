@@ -565,6 +565,14 @@ describe('mergeInput: a posted row with a 0 total', () => {
     expect(transactionTemplateSchema.safeParse(input).success).toBe(true)
   })
 
+  it('leaves a row with a total but no part as it is, rather than make it not add up', () => {
+    // Shares can't be missing from a posted row with a total (I-1): no exact zeros for it.
+    const missing = { ...posted([]), totalCents: 9000 }
+    expect(mergeInput(nothing, 'expense', merge, missing).input.split).toEqual(
+      mergeSplit(heavy, merge),
+    )
+  })
+
   it('keeps a split the rename leaves valid, and a row with no split', () => {
     const light: SplitSpec = {
       mode: 'weights',
@@ -615,6 +623,26 @@ describe('mergePostedSplit', () => {
       mode: 'exact',
       amounts: [{ personId: 'U', cents: 300 }],
     })
+  })
+
+  it('writes out as exact zeros a 0 item whose weights the rename takes past MAX_WEIGHT', () => {
+    const heavy: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'P', weight: 6000 },
+        { personId: 'U', weight: 6000 },
+        { personId: 'X', weight: 1 },
+      ],
+    }
+    const split = mergePostedSplit(heavy, merge, 0, ctx)
+    expect(split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'U', cents: 0 },
+        { personId: 'X', cents: 0 },
+      ],
+    })
+    expect(splitSpecSchema.safeParse(split).success).toBe(true)
   })
 
   it('plans an item by days as it was before the merge, from the member dates step 1 recorded', () => {
