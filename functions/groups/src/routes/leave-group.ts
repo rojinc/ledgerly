@@ -14,6 +14,7 @@ import {
   balanceOf,
   conflictAsTryAgain,
   getRowOrNull,
+  hasShares,
   invalid,
   keepAnotherAdmin,
   parseBody,
@@ -43,6 +44,8 @@ export async function leaveGroup(
     throw new AppError('ARCHIVED', 'This group is archived, so it can no longer be changed.')
   }
   if (group.type === 'personal') throw invalid("You can't leave your personal group.")
+  // A merge into them is open here while P still has a share here (U's balance leaves it out).
+  const shared = (placeholderId: string) => hasShares(db, groupId, placeholderId)
   if (member.status === 'left') {
     // Their own leave already committed (its member.left row says so): only the team step is
     // left, even if a share landed on them since. Someone who moved out settles up first, and
@@ -59,8 +62,8 @@ export async function leaveGroup(
           })
           const current = await getRowOrNull<Members>(db, TABLES.members, member.$id)
           if (current?.personId !== person.$id || current.status !== 'left') throw tryAgain()
+          await requireNoOpenMerge(db, tx, groupId, person.$id, shared)
           await requireSettled(db, groupId, person.$id)
-          await requireNoOpenMerge(db, groupId, person.$id)
           await tx.write(
             activityWrite(groupId, person.$id, 'member.left', 'left', now, {
               subjectPersonId: person.$id,
@@ -96,8 +99,8 @@ export async function leaveGroup(
         ) {
           throw tryAgain()
         }
+        await requireNoOpenMerge(db, tx, groupId, person.$id, shared)
         await requireSettled(db, groupId, person.$id)
-        await requireNoOpenMerge(db, groupId, person.$id)
         if (current.role === 'admin') {
           await keepAnotherAdmin(
             db,

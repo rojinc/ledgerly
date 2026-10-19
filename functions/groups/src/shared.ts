@@ -1,7 +1,7 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
 import { closeAtFor, localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Identities, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import type { MergingRefusal } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
@@ -210,31 +210,46 @@ export async function hasShares(db: Db, groupId: string, personId: string): Prom
 }
 
 /**
- * Refuses, with CONFLICT and `merging`, while a merge into the person is still open in the group
+ * Refuses, with CONFLICT and `merging`, while a merge into the person is open in the group
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): a P merged into them
- * (`idx_mergedInto`) still has an identity, lists the group in `mergeGroupIds`, and has no member
- * row here any more. Until the merge finishes, P's shares or inputs here may still name P, which
- * a leave or a removal would count as someone else's. Callers check after their guard writes, so
- * a merge's step 2 that lands meanwhile fails their commit.
+ * (`idx_mergedInto`) lists the group in `mergeGroupIds`, has no member row here any more (step 2
+ * gave P's place to them), and is still `named` here, which a leave or a removal would count as
+ * someone else's. Per group, so a merge stuck elsewhere doesn't hold this one.
+ *
+ * Inside the transaction (`tx`), call it after staging the member row and before reading the
+ * balance or shares: when such a P exists it stages a guard write on the group's row first, which
+ * every merge batch also writes, so a batch that moves P's shares meanwhile fails one of the two
+ * commits. Without `tx`, it's the early check only.
  */
-export async function requireNoOpenMerge(db: Db, groupId: string, personId: string): Promise<void> {
+export async function requireNoOpenMerge(
+  db: Db,
+  tx: Tx | undefined,
+  groupId: string,
+  personId: string,
+  named: (placeholderId: string) => Promise<boolean>,
+): Promise<void> {
   const { rows: merged } = await db.listRows<Persons>({
     databaseId: DATABASE_ID,
     tableId: TABLES.persons,
     queries: [Query.equal('mergedInto', personId), Query.limit(100)],
     total: false,
   })
-  for (const placeholder of merged) {
-    if (!placeholder.mergeGroupIds?.includes(groupId)) continue
+  const listing = merged.filter((placeholder) => placeholder.mergeGroupIds?.includes(groupId))
+  if (listing.length === 0) return
+  await tx?.write({
+    action: 'update',
+    tableId: TABLES.groups,
+    rowId: groupId,
+    data: { rev: randomId() },
+  })
+  for (const placeholder of listing) {
+    // P still has its place here: a kept group, or one step 2 hasn't reached.
     const row = await findFirst<Members>(db, TABLES.members, [
       Query.equal('groupId', groupId),
       Query.equal('personId', placeholder.$id),
     ])
     if (row) continue
-    const identity = await findFirst<Identities>(db, TABLES.identities, [
-      Query.equal('personId', placeholder.$id),
-    ])
-    if (!identity) continue
+    if (!(await named(placeholder.$id))) continue
     const details: MergingRefusal = { reason: 'merging' }
     throw new AppError(
       'CONFLICT',
