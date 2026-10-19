@@ -151,6 +151,40 @@ describe('PATCH /groups/{id}', () => {
     expect(moved).toMatchObject({ timezone: to, nextCloseAt: closeAt })
   })
 
+  it.each([
+    ['Brisbane', 'Australia/Brisbane', '2026-10-31T20:00:00.000Z'],
+    ['Perth', 'Australia/Perth', '2026-10-31T22:00:00.000Z'],
+    ['Honolulu', 'Pacific/Honolulu', '2026-11-01T16:00:00.000Z'],
+  ])('keeps October through a move west to %s and back (#126)', async (_, zone, westClose) => {
+    const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
+    services.now = new Date('2026-10-31T19:05:00.000Z')
+    const west = await ok(services, 'PATCH', '/groups/g1', { timezone: zone })
+    expect(west).toMatchObject({ nextCloseAt: westClose })
+    // Not due yet in the new time zone, and October has already ended there.
+    const back = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Sydney' })
+    expect(back).toMatchObject({ nextCloseAt: SYDNEY_OCTOBER })
+  })
+
+  it('closes the current period in the new time zone when nothing is due', async () => {
+    // November closes at 06:00 on 1 December in Sydney.
+    const services = setUp('employer', { nextCloseAt: '2026-11-30T19:00:00.000Z' })
+    services.now = new Date('2026-11-10T00:00:00.000Z')
+    const perth = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Perth' })
+    expect(perth).toMatchObject({ nextCloseAt: '2026-11-30T22:00:00.000Z' })
+  })
+
+  it('takes the new cycle from today when the time zone changes with it and nothing is due', async () => {
+    const services = setUp('employer', { nextCloseAt: '2026-11-30T19:00:00.000Z' })
+    services.now = new Date('2026-11-10T00:00:00.000Z')
+    const weekly = await ok(services, 'PATCH', '/groups/g1', {
+      timezone: 'Australia/Perth',
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    // The week 9–15 November closes at 06:00 on 16 November in Perth.
+    expect(weekly).toMatchObject({ nextCloseAt: '2026-11-15T22:00:00.000Z' })
+  })
+
   it('closes a due October in the new time zone when the cycle changes too', async () => {
     const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
     services.now = new Date('2026-10-31T19:05:00.000Z')

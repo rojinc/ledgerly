@@ -75,13 +75,16 @@ export async function updateGroup(
     const timeZone = columns.timezone ?? group.timezone
     // Compared as instants: Appwrite may return the stored datetime with an offset, not Z.
     const due = cycle !== 'none' && stored !== null && Date.parse(stored) <= now.getTime()
-    if (!due) data.nextCloseAt = nextCloseAtFor(cycle, anchor, timeZone, now)
-    else if ('timezone' in after) {
-      // The due period's end, read in the time zone the close was made in, closes in the new
-      // one (#126). Kept as it was, a move west of more than 18 hours would split the period in
-      // two, and one east of 6 hours or more would give it a day of the next.
+    const timeZoneOnly = !('statementCycle' in after || 'cycleAnchor' in after)
+    if (cycle !== 'none' && stored !== null && (due || timeZoneOnly) && 'timezone' in after) {
+      // The stored close's period, read in the time zone it was made in, closes in the new one
+      // (#126), due or not: a period's dates don't depend on the time zone. Kept as it was, a
+      // due close moved west of more than 18 hours would split its period in two, and one moved
+      // east of 6 hours or more would give it a day of the next. Recomputed from today, a move
+      // after the period ended but before its close (or a move back) would skip it.
       data.nextCloseAt = closeAtFor(periodEndClosedAt(stored, group.timezone), timeZone)
-    } else data.nextCloseAt = stored
+    } else if (due) data.nextCloseAt = stored
+    else data.nextCloseAt = nextCloseAtFor(cycle, anchor, timeZone, now)
   }
   const changed = Object.keys(after)
   await conflictAsTryAgain(() =>
