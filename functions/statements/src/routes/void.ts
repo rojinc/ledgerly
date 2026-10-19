@@ -1,5 +1,6 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
 import { voidStatementBodySchema } from '@ledgerly/core/schemas/statements'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import type { Services } from '../services'
 import {
@@ -10,8 +11,8 @@ import {
   invalid,
   isFinalizing,
   latestFinal,
+  NO_SUCH_STATEMENT,
   parseBody,
-  requireMemberOf,
   updateStatement,
 } from '../shared'
 import { unlock } from './finalize'
@@ -29,9 +30,16 @@ export async function voidRoute(
 ): Promise<Statements> {
   const { reason } = parseBody(voidStatementBodySchema, body)
   const statement = await getStatement(db, statementId)
-  const { person, group } = await requireMemberOf(db, teams, userId, statement, {
-    roles: ['admin'],
-  })
+  const { person, group } = await requireMemberOf(
+    db,
+    teams,
+    userId,
+    statement.groupId,
+    NO_SUCH_STATEMENT,
+    {
+      roles: ['admin'],
+    },
+  )
   // A retry, or a void interrupted while unlocking: finish taking the locks off.
   if (statement.status === 'void') {
     await unlock(db, statement)
