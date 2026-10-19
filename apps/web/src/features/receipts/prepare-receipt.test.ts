@@ -85,6 +85,14 @@ describe('prepareReceipt', () => {
     expect(createImageBitmap).not.toHaveBeenCalled()
   })
 
+  it('refuses a photo it can’t draw, rather than upload a blank one', async () => {
+    vi.mocked(HTMLCanvasElement.prototype.getContext).mockReturnValue(null)
+    expect(await prepareReceipt(photo())).toEqual({
+      error: 'We couldn’t read this photo. Try a JPEG or PNG.',
+    })
+    expect(HTMLCanvasElement.prototype.toBlob).not.toHaveBeenCalled()
+  })
+
   it('refuses other files, unreadable photos and anything over 10 MB', async () => {
     expect(await prepareReceipt(new File(['x'], 'notes.txt', { type: 'text/plain' }))).toEqual({
       error: 'Add a photo or a PDF.',

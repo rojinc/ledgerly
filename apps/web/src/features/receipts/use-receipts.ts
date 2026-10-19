@@ -1,10 +1,10 @@
 import type { Transactions } from '@ledgerly/core/generated/rows'
 import type { TransactionView } from '@ledgerly/core/schemas/ledger'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { ID, Permission, Role } from 'appwrite'
+import { ID, ImageFormat, Permission, Role } from 'appwrite'
 import { client, storage } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
-import { ledger } from '../transactions/use-transactions'
+import { LedgerError, ledger } from '../transactions/use-transactions'
 
 /** appwrite/buckets.json */
 export const RECEIPTS_BUCKET = 'receipts'
@@ -45,9 +45,45 @@ export function useSetReceipts(row: Transactions) {
       if (before) queryClient.setQueryData(key, { ...before, receiptFileIds: list })
       return { rollback: () => queryClient.setQueryData(key, before) }
     },
-    onError: (_error, _input, context) => context?.rollback(),
+    onError: (error, _input, context) => {
+      context?.rollback()
+      // Locked by a statement, or the group archived, meanwhile: show the page as it is now, so
+      // its Add and Remove go.
+      if (error instanceof LedgerError && ['LOCKED', 'ARCHIVED'].includes(error.code)) {
+        void queryClient.invalidateQueries({ queryKey: key, exact: true })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.group(row.groupId) })
+      }
+    },
     onSuccess: (view) => queryClient.setQueryData(key, view.transaction),
   })
+}
+
+/** The list as it is now: someone else may have changed it since the page last drew it. */
+export function useCurrentReceipts(row: Transactions) {
+  const queryClient = useQueryClient()
+  return () =>
+    queryClient.getQueryData<Transactions>(queryKeys.transaction(row.$id))?.receiptFileIds ??
+    row.receiptFileIds ??
+    []
+}
+
+/** A preview, always as WebP: never the stored format, which could be anything. */
+export function previewUrl(fileId: string, width: number) {
+  return storage.getFilePreview({
+    bucketId: RECEIPTS_BUCKET,
+    fileId,
+    width,
+    output: ImageFormat.Webp,
+  })
+}
+
+const RASTER = ['image/webp', 'image/jpeg', 'image/png']
+
+/** A preview's bytes, only as a raster image: the blob URL is on the app's own origin. */
+export async function fetchPreview(fileId: string, width: number): Promise<Blob> {
+  const blob = await fetchFileBlob(previewUrl(fileId, width))
+  if (!RASTER.includes(blob.type)) throw new Error(`A preview came back as ${blob.type}`)
+  return blob
 }
 
 /**

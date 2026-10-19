@@ -9,9 +9,11 @@ import { LedgerError } from '../transactions/use-transactions'
 import { prepareReceipt } from './prepare-receipt'
 import {
   fetchFileBlob,
+  fetchPreview,
   MAX_RECEIPTS,
   RECEIPTS_BUCKET,
   uploadReceipt,
+  useCurrentReceipts,
   useSetReceipts,
 } from './use-receipts'
 
@@ -53,6 +55,8 @@ export function ReceiptsSection({
   const verified = Boolean(useCurrentUser().data?.emailVerification)
   const list = row.receiptFileIds ?? []
   const setReceipts = useSetReceipts(row)
+  const currentList = useCurrentReceipts(row)
+  const heading = useRef<HTMLHeadingElement>(null)
   // Uploaded but not attached yet: Try again attaches it without uploading again.
   const [pending, setPending] = useState<string>()
   const [error, setError] = useState<string>()
@@ -62,8 +66,15 @@ export function ReceiptsSection({
 
   const attach = (fileId: string) => {
     setError(undefined)
+    // The list as it is now: a slow upload mustn't undo someone else's change meanwhile.
+    const now = currentList()
+    if (now.includes(fileId)) {
+      // Attached already: an earlier answer was lost, and Realtime brought the row.
+      setPending(undefined)
+      return
+    }
     setReceipts.mutate(
-      { list: [...list, fileId], optimistic: false },
+      { list: [...now, fileId], optimistic: false },
       {
         onSuccess: () => setPending(undefined),
         onError: (refusal) => {
@@ -107,15 +118,17 @@ export function ReceiptsSection({
 
   const remove = (fileId: string) => {
     setError(undefined)
+    // Its button goes with it: focus the heading rather than lose it.
+    heading.current?.focus()
     setReceipts.mutate(
-      { list: list.filter((id) => id !== fileId), optimistic: true },
+      { list: currentList().filter((id) => id !== fileId), optimistic: true },
       { onError: (refusal) => setError(attachMessage(refusal)) },
     )
   }
 
   return (
     <section aria-labelledby="receipts-heading" className="flex flex-col gap-3">
-      <h2 id="receipts-heading" className="font-medium">
+      <h2 id="receipts-heading" ref={heading} tabIndex={-1} className="font-medium outline-none">
         Receipts
       </h2>
       {list.length === 0 ? (
@@ -159,6 +172,8 @@ export function ReceiptsSection({
               type="file"
               accept="image/*,application/pdf"
               aria-describedby="receipt-file-status"
+              // While one is on its way, another pick would be lost.
+              disabled={busy}
               className="text-sm file:mr-3 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               onChange={(event) => void add(event)}
             />
@@ -204,9 +219,7 @@ function Receipt({
           if (!gone) setKind({ pdf: true })
           return
         }
-        const blob = await fetchFileBlob(
-          storage.getFilePreview({ bucketId: RECEIPTS_BUCKET, fileId, width: 320 }),
-        )
+        const blob = await fetchPreview(fileId, 320)
         objectUrl = URL.createObjectURL(blob)
         if (gone) URL.revokeObjectURL(objectUrl)
         else setKind({ image: objectUrl })
@@ -288,7 +301,8 @@ function DownloadPdf({ fileId }: { fileId: string }) {
             link.href = url
             link.download = 'receipt.pdf'
             link.click()
-            URL.revokeObjectURL(url)
+            // Later: Safari cancels a download whose URL goes in the same tick.
+            setTimeout(() => URL.revokeObjectURL(url), 1000)
           } catch {
             setFailed(true)
           }
@@ -326,6 +340,11 @@ function LargeView({
     close.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') closing.current()
+      // Close is its only control: Tab stays on it rather than reach the page behind.
+      if (event.key === 'Tab') {
+        event.preventDefault()
+        close.current?.focus()
+      }
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
@@ -334,7 +353,7 @@ function LargeView({
   useEffect(() => {
     let gone = false
     let objectUrl: string | undefined
-    fetchFileBlob(storage.getFilePreview({ bucketId: RECEIPTS_BUCKET, fileId, width: 1600 }))
+    fetchPreview(fileId, 1600)
       .then((blob) => {
         objectUrl = URL.createObjectURL(blob)
         if (gone) URL.revokeObjectURL(objectUrl)

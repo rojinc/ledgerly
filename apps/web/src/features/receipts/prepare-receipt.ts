@@ -51,7 +51,12 @@ export async function prepareReceipt(picked: File): Promise<Prepared> {
   const canvas = document.createElement('canvas')
   canvas.width = width
   canvas.height = height
-  canvas.getContext('2d')?.drawImage(bitmap, 0, 0, width, height)
+  const context = canvas.getContext('2d')
+  if (!context) {
+    bitmap.close()
+    return { error: 'We couldn’t read this photo. Try a JPEG or PNG.' }
+  }
+  context.drawImage(bitmap, 0, 0, width, height)
   bitmap.close()
   const { type, name } = photoType(canEncodeWebp())
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, 0.85))

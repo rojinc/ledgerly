@@ -1,6 +1,6 @@
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { AppwriteException } from 'appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
@@ -56,15 +56,17 @@ function renderSection(transaction: Transactions, mayChange = true) {
   return { queryClient }
 }
 const fetches: string[] = []
+let previewType = 'image/webp'
 beforeEach(() => {
   mockVerified = true
+  previewType = 'image/webp'
   fetches.length = 0
   localStorage.setItem('cookieFallback', '{"a_session":"s"}')
   // The SDK's methods are overloaded; the object form is the one used.
-  type FileParams = { fileId: string; width?: number }
+  type FileParams = { fileId: string; width?: number; output?: string }
   vi.mocked(storage.getFilePreview).mockImplementation(
     ((params: FileParams) =>
-      `https://store/${params.fileId}/preview?width=${params.width}`) as never,
+      `https://store/${params.fileId}/preview?width=${params.width}&output=${params.output}`) as never,
   )
   vi.mocked(storage.getFileDownload).mockImplementation(
     ((params: FileParams) => `https://store/${params.fileId}/download`) as never,
@@ -77,7 +79,12 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (url: string, init: RequestInit) => {
       fetches.push(`${url} ${JSON.stringify(init.headers)} ${init.credentials}`)
-      return new Response('bytes', { status: 200 })
+      // Appwrite's preview is the format asked for; a download is the file as stored.
+      const type = url.includes('/preview') ? previewType : 'application/pdf'
+      return new Response(new Uint8Array([1, 2, 3]), {
+        status: 200,
+        headers: { 'Content-Type': type },
+      })
     }),
   )
   URL.createObjectURL = vi.fn((blob: Blob) => `blob:${blob.size}`)
@@ -112,12 +119,12 @@ describe('ReceiptsSection', () => {
     expect(first.getAttribute('src')).toMatch(/^blob:/)
     // Fetched, not linked: Safari sends no third-party cookie on an <img>.
     expect(fetches[0]).toBe(
-      'https://store/img1/preview?width=320 {"X-Appwrite-Project":"ledgerly-test","X-Fallback-Cookies":"{\\"a_session\\":\\"s\\"}"} include',
+      'https://store/img1/preview?width=320&output=webp {"X-Appwrite-Project":"ledgerly-test","X-Fallback-Cookies":"{\\"a_session\\":\\"s\\"}"} include',
     )
     fireEvent.click(first.closest('button') as HTMLElement)
     const dialog = screen.getByRole('dialog', { name: 'Receipt 1 of 2' })
     await waitFor(() =>
-      expect(fetches.some((f) => f.includes('img1/preview?width=1600'))).toBe(true),
+      expect(fetches.some((f) => f.includes('img1/preview?width=1600&output=webp'))).toBe(true),
     )
     expect(await within(dialog).findByRole('img', { name: 'Receipt 1 of 2' })).toBeTruthy()
     expect(document.activeElement).toBe(within(dialog).getByRole('button', { name: 'Close' }))
@@ -240,6 +247,112 @@ describe('ReceiptsSection', () => {
     cleanup()
     renderSection(row(), false)
     expect(screen.queryByRole('heading', { name: 'Receipts' })).toBeNull()
+  })
+
+  it('attaches to the list as it is now, not as it was when the photo was picked', async () => {
+    prepare.mockResolvedValue({ file: ready })
+    let uploaded: (file: unknown) => void = () => {}
+    createFile.mockReturnValue(new Promise((resolve) => (uploaded = resolve)) as never)
+    call.mockResolvedValue(view(['img1', 'b2', 'new1']))
+    const { queryClient } = renderSection(row(['img1']))
+    pick()
+    // Someone else adds a receipt while this upload is on its way (Realtime refreshes the row).
+    await waitFor(() => expect(createFile).toHaveBeenCalled())
+    queryClient.setQueryData(['transaction', 't1'], row(['img1', 'b2']))
+    uploaded({ $id: 'new1' })
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toEqual({ receiptFileIds: ['img1', 'b2', 'new1'] })
+  })
+
+  it('counts a receipt already attached, when its answer was lost, as done', async () => {
+    prepare.mockResolvedValue({ file: ready })
+    createFile.mockResolvedValue({ $id: 'new1' } as never)
+    call.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    const { queryClient } = renderSection(row())
+    pick()
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy()
+    // It was saved after all: Realtime brings the row with it.
+    queryClient.setQueryData(['transaction', 't1'], row(['new1']))
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull())
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('reloads the row and the group when a change is refused as locked or archived', async () => {
+    call.mockResolvedValue({ ok: false, error: { code: 'LOCKED', message: 'Locked.' } })
+    const { queryClient } = renderSection(row(['img1']))
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove receipt 1' }))
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 't1'], exact: true }),
+    )
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'house1'] })
+  })
+
+  it('keeps the new list once a removal is done, with focus on the heading', async () => {
+    call.mockResolvedValue(view(['img2']))
+    const { queryClient } = renderSection(row(['img1', 'img2']))
+    fireEvent.click(await screen.findByRole('button', { name: 'Remove receipt 1' }))
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Receipts' }))
+    await waitFor(() =>
+      expect(queryClient.getQueryData<Transactions>(['transaction', 't1'])?.receiptFileIds).toEqual(
+        ['img2'],
+      ),
+    )
+    expect(await screen.findByRole('img', { name: 'Receipt 1 of 1' })).toBeTruthy()
+  })
+
+  it('takes no second file or removal while one is on its way', async () => {
+    prepare.mockResolvedValue({ file: ready })
+    createFile.mockResolvedValue({ $id: 'new1' } as never)
+    call.mockReturnValueOnce(new Promise(() => {}) as never)
+    renderSection(row(['img1']))
+    pick()
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(
+      (screen.getByLabelText('Add a receipt (photo or PDF)') as HTMLInputElement).disabled,
+    ).toBe(true)
+    const remove = screen.getByRole('button', { name: 'Remove receipt 1' })
+    expect(remove.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(remove)
+    // A removal would reach the function after a tick.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    })
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows only raster previews, and keeps Tab on Close in the larger view', async () => {
+    renderSection(row(['img1']))
+    const thumb = await screen.findByRole('img', { name: 'Receipt 1 of 1' })
+    fireEvent.click(thumb.closest('button') as HTMLElement)
+    const close = screen.getByRole('button', { name: 'Close' })
+    // Tab is kept from leaving the dialog for the page behind it.
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(false)
+    expect(document.activeElement).toBe(close)
+    fireEvent.click(close)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    cleanup()
+    previewType = 'image/svg+xml'
+    renderSection(row(['img1']))
+    expect(await screen.findByText('We couldn’t load receipt 1.')).toBeTruthy()
+    expect(screen.queryByRole('img')).toBeNull()
+  })
+
+  it('lets go of preview memory when it goes', async () => {
+    renderSection(row(['img1']))
+    const thumb = await screen.findByRole('img', { name: 'Receipt 1 of 1' })
+    const src = thumb.getAttribute('src')
+    cleanup()
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(src)
+  })
+
+  it('says when the bucket refuses the file type', async () => {
+    prepare.mockResolvedValue({ file: ready })
+    createFile.mockRejectedValue(new AppwriteException('No', 400, 'storage_file_type_unsupported'))
+    renderSection(row())
+    pick()
+    expect(await screen.findByText('Add a photo or a PDF.')).toBeTruthy()
   })
 
   it('stops offering Add at 10 receipts', async () => {
