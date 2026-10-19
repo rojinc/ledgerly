@@ -56,6 +56,7 @@ describe('AppLayout, 768 px and wider', () => {
       'Groups',
       'People',
       'Bills',
+      'Activity',
       'Profile',
     ])
     expect(screen.getByRole('button', { name: 'Log out' })).toBeTruthy()
@@ -101,7 +102,7 @@ describe('AppLayout, under 768 px', () => {
     fireEvent.click(menu)
     expect(menu.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getAllByRole('navigation', { name: 'Main' })).toHaveLength(1)
-    expect(screen.getAllByRole('link')).toHaveLength(8)
+    expect(screen.getAllByRole('link')).toHaveLength(9)
     expect(screen.getByRole('button', { name: 'Log out' })).toBeTruthy()
     fireEvent.click(menu)
     expect(screen.queryByRole('navigation', { name: 'Main' })).toBeNull()
