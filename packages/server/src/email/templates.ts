@@ -1,6 +1,6 @@
 import { endOfMonth, type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import type { Attachment } from './send-email'
 
 /** What `sendEmail` needs apart from the addresses. */
@@ -175,6 +175,42 @@ export function timerRunningEmail(input: {
     { label: 'Open the timer', url: input.url },
   )
 }
+
+/**
+ * A reminder that someone owes the sender money (F-63, identity-and-invites.md#reminders), to
+ * the address the sender typed. `senderName` is the sender's name in that group, free text they
+ * chose, so it stays out of the subject and is cut to 40 characters; `amountCents` is the whole
+ * balance owed. Nothing else: no recipient or group name (both are what the sender calls them),
+ * no transactions, no note, and only a link to the app.
+ */
+export function reminderEmail(input: {
+  senderName: string
+  amountCents: number
+  currency: string
+  url: string
+}): EmailContent {
+  const characters = Array.from(input.senderName.trim())
+  const sender =
+    characters.length > SENDER_LENGTH
+      ? `${characters
+          .slice(0, SENDER_LENGTH - 1)
+          .join('')
+          .trimEnd()}…`
+      : characters.join('')
+  // A balance is worked out from amounts, so it can pass the amount cap.
+  const amount = formatNet(input.amountCents, input.currency, LOCALE)
+  return message(
+    'You have a payment reminder',
+    [
+      `${sender} sent you a reminder that you owe them ${amount}.`,
+      "If you've already paid, let them know so they can record it.",
+    ],
+    { label: 'Open Ledgerly', url: input.url },
+  )
+}
+
+// The most of a sender's own name a reminder shows.
+const SENDER_LENGTH = 40
 
 // The same paragraphs as HTML and as plain text. Names are user-typed, so HTML escapes
 // everything, and the subject is kept to one line. No images, so no tracking pixels
