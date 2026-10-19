@@ -83,7 +83,8 @@ for each changeable row dated from generatedThrough + 1 day on (startsOn when em
         whose date the rule no longer has (before startsOn, say):
     dated up to `to`, or after `end` → delete it with its items
 generatedThrough = the later of to and its old value
-nextRunAt = next local 00:05 in group.timezone (as UTC), or empty once everything up to end exists
+nextRunAt = next local 00:05 in group.timezone (as UTC; 01:05 where the clocks skip midnight),
+            or empty once everything up to end exists
 ```
 
 A **changeable** occurrence is still `scheduled` or `due` and not `overridden`. Voided, edited and posted ones are left as they are, and a changeable one dated after `to` but not after `end` waits until the window reaches it. Creating and reconciling start from the same day, the day after `generatedThrough`. An edit or an end moves `generatedThrough` to yesterday (or later), so they never make, change or delete anything before today: a past occurrence that wasn't posted waits for the user. So expansion brings the occurrences in line with the schedule as it is now, and an edit that stopped partway is put right by the next run, however late it comes: a run after midnight, or after an outage, also brings the days since `generatedThrough` in line, as the edit would have.
