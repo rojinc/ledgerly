@@ -446,6 +446,9 @@ describe('POST /invites', () => {
     [
       'the inviter',
       'pAnn',
+      // Before the request, requireMember counts them as no person (permissions.md, step 2);
+      // a deletion that starts meanwhile is caught by the guards.
+      { status: 403, code: 'NOT_A_MEMBER', message: "You're not a member of this group." },
       { status: 401, code: 'UNAUTHENTICATED', message: 'Log in to continue.' },
     ],
     // The same answer as a wrong address, so it doesn't show the deletion.
@@ -453,8 +456,9 @@ describe('POST /invites', () => {
       'the person invited',
       'pSam',
       { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
+      { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
     ],
-  ])('when %s has started deleting their account', (_who, personId, expected) => {
+  ])('when %s has started deleting their account', (_who, personId, before, expected) => {
     // Deletion step 2 (identity-and-invites.md#order): deletedAt and a fresh rev, the identities
     // kept until step 5. Sam has an account, as anyone deleting one does.
     const deleting = (services: Fakes) => () =>
@@ -470,7 +474,7 @@ describe('POST /invites', () => {
     it('refuses, committing and sending nothing', async () => {
       const services = fixture({ samUserId: 'u9' })
       await deleting(services)()
-      expect(await refused(services)).toEqual(expected)
+      expect(await refused(services)).toEqual(before)
       expectNothingDone(services)
     })
 
