@@ -196,7 +196,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
 
-`POST /` reads only the user ID, from the event's name in `x-appwrite-event` or else the body's `$id`, and which event ran, from the end of that name. It never logs or stores the body (Appwrite's user model can carry the password hash), and answers `{}` to an event run whether it sent an email or not (a failed send fails the run).
+`POST /` reads only the user ID, from the event's name in `x-appwrite-event` (a missing or any other name gets `FORBIDDEN`), and which event ran, from the end of that name; a change event also checks it against the body's `$id` ([change notice](identity-and-invites.md#email-and-phone-change-notice)). It never logs or stores the body (Appwrite's user model can carry the password hash), and answers `{}` to an event run whether it sent an email or not (a failed send fails the run).
 
 `linkedGroupIds` (`/bootstrap`, `/claim`) lists only the groups joined in that call, so after a retry it leaves out groups an earlier, interrupted call already joined.
 
