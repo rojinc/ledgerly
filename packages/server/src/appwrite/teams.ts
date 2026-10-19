@@ -24,7 +24,11 @@ export async function ensureTeam(teams: TeamsApi, teamId: string, name: string):
 }
 
 /** Adds the user to the team. "Already a member" counts as done, so a retry is safe. */
-export async function addToTeam(teams: TeamsApi, teamId: string, userId: string): Promise<void> {
+export async function addToTeam(
+  teams: Pick<TeamsApi, 'createMembership'>,
+  teamId: string,
+  userId: string,
+): Promise<void> {
   await doneIfExists(teams.createMembership({ teamId, userId, roles: NO_ROLES }))
 }
 

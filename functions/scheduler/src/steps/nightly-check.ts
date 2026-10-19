@@ -1,13 +1,20 @@
 import { addDays } from '@ledgerly/core/dates/local-date'
 import { localTimeToUtc, localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Persons, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type {
+  Groups,
+  Identities,
+  Members,
+  Persons,
+  Shares,
+  Transactions,
+} from '@ledgerly/core/generated/rows'
 import { assertShareInvariants } from '@ledgerly/core/ledger/invariants'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
 import type { BalancesPeople } from '@ledgerly/core/schemas/ledger'
 import { balancesFromShares } from '@ledgerly/core/settle/balances'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
+import { addToTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
@@ -37,6 +44,7 @@ const PAGE = 100
 // Joining and merging add the team membership before the member row.
 const MEMBERSHIP_GRACE_MS = 60 * 60 * 1000
 const CHECK_HOUR = 3
+const PUT_OFF_MS = 60 * 60 * 1000
 
 /**
  * Step 5 (scheduling.md#step-5-nightly-check): checks every group that is due, archived ones
@@ -78,31 +86,31 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
     counts.findings += 1
     console.error(`scheduler: nightly check of group ${groupId}: ${finding}`)
   }
-  const whole = await readWhole(db, groupId)
-  if (!whole) {
-    counts.busy += 1
-    return
+  // Busy, or cut off by the budget: a later run checks it from the start, and the next one
+  // starts with the groups after it.
+  const putOff = async (busy: boolean) => {
+    if (busy) counts.busy += 1
+    await setNextCheck(db, groupId, new Date(services.now.getTime() + PUT_OFF_MS).toISOString())
   }
+  const whole = await readWhole(db, groupId)
+  if (!whole) return putOff(true)
   counts.merging += await checkShares(db, whole, report)
 
   const fresh = balancesFromShares(whole.shares)
   if (whole.balances === undefined || !same(whole.balances, fresh)) {
     if (whole.balances !== undefined) report('balances row wrong')
-    if (!(await rebuildBalances(db, groupId))) {
-      counts.busy += 1
-      return
-    }
+    if (!(await rebuildBalances(db, groupId))) return putOff(true)
     counts.repaired += 1
   }
   counts.removed += await reconcileTeam(services, groupId, whole.members, report)
 
-  // Cut off by the budget: the next run checks it from the start.
-  if (services.outOfTime()) return
-  if (!(await setNextCheck(db, group, services.now))) {
+  if (services.outOfTime()) return putOff(false)
+  const tomorrow = addDays(localToday(group.timezone, services.now), 1)
+  if (await setNextCheck(db, groupId, localTimeToUtc(tomorrow, CHECK_HOUR, group.timezone))) {
+    counts.checked += 1
+  } else {
     counts.busy += 1
-    return
   }
-  counts.checked += 1
 }
 
 type Whole = {
@@ -194,18 +202,28 @@ function ruleOf(error: LedgerError): string {
   return /I-\d/.exec(error.message)?.[0] ?? 'an invariant'
 }
 
-/** The persons among `personIds` that were merged into someone else. */
+/**
+ * The persons among `personIds` whose merge into someone else isn't finished: `mergedInto` set,
+ * and still an identity (a merge moves P's identities last, identity-and-invites.md).
+ */
 async function mergedPersons(db: Db, personIds: readonly string[]): Promise<Set<string>> {
-  const merged = new Set<string>()
+  const merging = new Set<string>()
   const unique = [...new Set(personIds)]
   for (let start = 0; start < unique.length; start += PAGE) {
-    const rows = await allRows<Persons>(db, TABLES.persons, [
+    const merged = await allRows<Persons>(db, TABLES.persons, [
       Query.equal('$id', unique.slice(start, start + PAGE)),
       Query.isNotNull('mergedInto'),
     ])
-    for (const row of rows) merged.add(row.$id)
+    if (merged.length === 0) continue
+    const identities = await allRows<Identities>(db, TABLES.identities, [
+      Query.equal(
+        'personId',
+        merged.map((row) => row.$id),
+      ),
+    ])
+    for (const identity of identities) merging.add(identity.personId)
   }
-  return merged
+  return merging
 }
 
 function same(a: BalancesPeople | null, b: BalancesPeople): boolean {
@@ -263,20 +281,34 @@ async function reconcileTeam(
   )
   let removed = 0
   for (const membership of old) {
-    const personId = personOf.get(membership.userId)
-    if (await backed(db, groupId, personId, members)) continue
+    if (await backed(db, groupId, personOf.get(membership.userId)?.personId, members)) continue
     // Again, just before removing: a join that has landed since keeps it.
-    const again = (await personsOf(db, [membership.userId])).get(membership.userId)
-    if (await backed(db, groupId, again, await memberRows(db, groupId, again))) continue
+    if (await joinedNow(db, groupId, membership.userId)) continue
     try {
       await teams.deleteMembership({ teamId: groupId, membershipId: membership.$id })
     } catch (error) {
       if (!(error instanceof AppwriteException && error.code === 404)) throw error
     }
+    // A join or a merge that landed while it was removed gets it back.
+    if (await joinedNow(db, groupId, membership.userId)) {
+      await addToTeam(teams, groupId, membership.userId)
+      continue
+    }
     removed += 1
     report(`removed team membership ${membership.$id}`)
   }
   return removed
+}
+
+/**
+ * Whether the user's person, read again now, has a joined row in the group, or is being deleted:
+ * account deletion leaves the team as its own last step for each group, and decides a rerun from
+ * it (identity-and-invites.md#deleting-an-account-m4).
+ */
+async function joinedNow(db: Db, groupId: string, userId: string): Promise<boolean> {
+  const person = (await personsOf(db, [userId])).get(userId)
+  if (person?.deletedAt) return true
+  return backed(db, groupId, person?.personId, await memberRows(db, groupId, person?.personId))
 }
 
 type Membership = Pick<Models.Membership, '$id' | 'userId' | '$createdAt'>
@@ -302,14 +334,18 @@ async function membershipsOf(
   }
 }
 
+type Person = { personId: string; deletedAt: string | null }
+
 /** Each user's person, by user ID (idx_userId). */
-async function personsOf(db: Db, userIds: readonly string[]): Promise<Map<string, string>> {
-  const personOf = new Map<string, string>()
+async function personsOf(db: Db, userIds: readonly string[]): Promise<Map<string, Person>> {
+  const personOf = new Map<string, Person>()
   for (let start = 0; start < userIds.length; start += PAGE) {
     const rows = await allRows<Persons>(db, TABLES.persons, [
       Query.equal('userId', userIds.slice(start, start + PAGE)),
     ])
-    for (const row of rows) if (row.userId) personOf.set(row.userId, row.$id)
+    for (const row of rows) {
+      if (row.userId) personOf.set(row.userId, { personId: row.$id, deletedAt: row.deletedAt })
+    }
   }
   return personOf
 }
@@ -345,19 +381,14 @@ async function backed(
   return false
 }
 
-/**
- * `nextCheckAt` = 03:00 tomorrow in the group's time zone. False when a write to the group row
- * landed meanwhile: the next run checks it again.
- */
-async function setNextCheck(db: Db, group: Groups, now: Date): Promise<boolean> {
-  const tomorrow = addDays(localToday(group.timezone, now), 1)
-  const nextCheckAt = localTimeToUtc(tomorrow, CHECK_HOUR, group.timezone)
+/** False when a write to the group row landed meanwhile: a later run checks it again. */
+async function setNextCheck(db: Db, groupId: string, nextCheckAt: string): Promise<boolean> {
   try {
     await withTransaction(db, (tx) =>
       tx.write({
         action: 'update',
         tableId: TABLES.groups,
-        rowId: group.$id,
+        rowId: groupId,
         data: { nextCheckAt },
       }),
     )
