@@ -9,6 +9,7 @@ vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
 
 const call = vi.mocked(callFunction)
+const onJoined = vi.fn()
 
 const PENDING = [
   { id: 'g1', type: 'pair', name: 'Alex', archivedAt: null },
@@ -19,7 +20,7 @@ function renderList() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <PendingGroups />
+      <PendingGroups onJoined={onJoined} />
     </QueryClientProvider>,
   )
   return queryClient
@@ -44,15 +45,28 @@ describe('PendingGroups', () => {
   })
 
   it('joins with POST /groups/{id}/join, then refreshes the user’s groups', async () => {
-    call.mockImplementation(async (_fn, method) =>
-      method === 'GET'
-        ? { ok: true as const, data: { groups: PENDING } }
-        : { ok: true as const, data: { group: {}, member: {} } },
-    )
+    let resolveJoin!: () => void
+    const joining = new Promise<void>((r) => {
+      resolveJoin = r
+    })
+    call.mockImplementation(async (_fn, method) => {
+      if (method === 'GET') return { ok: true as const, data: { groups: PENDING } }
+      await joining
+      return { ok: true as const, data: { group: {}, member: {} } }
+    })
     const queryClient = renderList()
     queryClient.setQueryData(queryKeys.groups('u1'), [])
-    fireEvent.click(await screen.findByRole('button', { name: 'Join Alex' }))
-    await waitFor(() => expect(call).toHaveBeenCalledWith('identity', 'POST', '/groups/g1/join'))
+    const join = await screen.findByRole('button', { name: 'Join Alex' })
+    join.focus()
+    fireEvent.click(join)
+    // Still focusable while it works, and a second press sends nothing more.
+    await waitFor(() => expect(join.getAttribute('aria-disabled')).toBe('true'))
+    expect(document.activeElement).toBe(join)
+    fireEvent.click(join)
+    resolveJoin()
+    await waitFor(() => expect(onJoined).toHaveBeenCalledWith('Alex'))
+    expect(call.mock.calls.filter(([, method]) => method === 'POST')).toHaveLength(1)
+    expect(call).toHaveBeenCalledWith('identity', 'POST', '/groups/g1/join')
     await waitFor(() =>
       expect(queryClient.getQueryState(queryKeys.groups('u1'))?.isInvalidated).toBe(true),
     )
@@ -73,13 +87,18 @@ describe('PendingGroups', () => {
     const rows = screen.getAllByRole('listitem')
     expect(await within(rows[1] as HTMLElement).findByRole('alert')).toBeTruthy()
     expect(within(rows[0] as HTMLElement).queryByRole('alert')).toBeNull()
+    expect(onJoined).not.toHaveBeenCalled()
+    // NOT_A_MEMBER: the list is out of date, so it's read again.
+    await waitFor(() =>
+      expect(call.mock.calls.filter(([, method]) => method === 'GET')).toHaveLength(2),
+    )
   })
 
   it('shows nothing when there are none, or they can’t be read', async () => {
     call.mockResolvedValue({ ok: true, data: { groups: [] } })
     const { container } = render(
       <QueryClientProvider client={new QueryClient()}>
-        <PendingGroups />
+        <PendingGroups onJoined={onJoined} />
       </QueryClientProvider>,
     )
     await waitFor(() => expect(call).toHaveBeenCalled())

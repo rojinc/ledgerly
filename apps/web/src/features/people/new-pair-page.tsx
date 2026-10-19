@@ -1,5 +1,8 @@
-import type { Groups, Members } from '@ledgerly/core/generated/rows'
-import { type CreateGroupBody, createGroupBodySchema } from '@ledgerly/core/schemas/groups'
+import {
+  type CreateGroupBody,
+  type CreateGroupResult,
+  createGroupBodySchema,
+} from '@ledgerly/core/schemas/groups'
 import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
 import { useState } from 'react'
@@ -92,12 +95,7 @@ function PairForm({ currency }: { currency: string }) {
       noValidate
       className="flex flex-col gap-4"
       onSubmit={form.handleSubmit(async (body) => {
-        const result = await callFunction<{ group: Groups; members: Members[] }>(
-          'groups',
-          'POST',
-          '/groups',
-          body,
-        )
+        const result = await callFunction<CreateGroupResult>('groups', 'POST', '/groups', body)
         if (!result.ok) {
           // Either a clash, or an earlier try with this ID went through and its answer was lost.
           if (result.error.code === 'CONFLICT') {

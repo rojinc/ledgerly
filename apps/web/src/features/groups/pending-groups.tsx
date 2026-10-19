@@ -1,4 +1,5 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
+import type { PendingGroup, PendingGroupsResult } from '@ledgerly/core/schemas/identity'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
@@ -16,24 +17,18 @@ export const TYPE_LABEL: Record<Groups['type'], string> = {
   pair: 'Shared with one person',
 }
 
-/** What `identity GET /groups/pending` answers (functions-api.md#identity). */
-type PendingGroup = Pick<Groups, 'type' | 'name' | 'archivedAt'> & { id: string }
-
 /**
  * Groups the user was added to but hasn't joined (D-016), each with Join. Shows nothing when
- * there are none, or when they can't be read: the joined groups above still work.
+ * there are none, or when they can't be read: the joined groups above still work. `onJoined`
+ * gets the group's name once it's joined, since its row (and the focused Join button) goes away.
  */
-export function PendingGroups() {
+export function PendingGroups({ onJoined }: { onJoined: (name: string) => void }) {
   const userId = useCurrentUser().data?.$id ?? ''
   const pending = useQuery({
     queryKey: pendingKey(userId),
     enabled: userId !== '',
     queryFn: async () => {
-      const result = await callFunction<{ groups: PendingGroup[] }>(
-        'identity',
-        'GET',
-        '/groups/pending',
-      )
+      const result = await callFunction<PendingGroupsResult>('identity', 'GET', '/groups/pending')
       if (!result.ok) throw new Error(result.error.message)
       return result.data.groups
     },
@@ -49,27 +44,41 @@ export function PendingGroups() {
       </p>
       <ul className="divide-y divide-border rounded-md border border-border">
         {pending.data.map((group) => (
-          <PendingRow key={group.id} group={group} />
+          <PendingRow key={group.id} group={group} onJoined={onJoined} />
         ))}
       </ul>
     </section>
   )
 }
 
-function PendingRow({ group }: { group: PendingGroup }) {
+function PendingRow({
+  group,
+  onJoined,
+}: {
+  group: PendingGroup
+  onJoined: (name: string) => void
+}) {
   const userId = useCurrentUser().data?.$id ?? ''
   const queryClient = useQueryClient()
   const join = useMutation({
     mutationFn: async () => {
       const result = await callFunction('identity', 'POST', `/groups/${group.id}/join`)
-      if (!result.ok) throw new Error(result.error.message)
+      if (!result.ok) {
+        // Not in it any more (or never was): the list is out of date, so read it again.
+        if (result.error.code === 'NOT_A_MEMBER') {
+          void queryClient.invalidateQueries({ queryKey: pendingKey(userId) })
+        }
+        throw new Error(result.error.message)
+      }
     },
     // Joined: it's one of the user's groups now, and no longer waiting.
-    onSuccess: () =>
-      Promise.all([
+    onSuccess: () => {
+      onJoined(group.name)
+      return Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) }),
         queryClient.invalidateQueries({ queryKey: pendingKey(userId) }),
-      ]),
+      ])
+    },
   })
   return (
     <li className="flex flex-col gap-2 px-4 py-3">
@@ -82,10 +91,11 @@ function PendingRow({ group }: { group: PendingGroup }) {
           </p>
         </div>
         {/* Named for its group: every row has a Join button. */}
+        {/* aria-disabled, not disabled: a disabled button loses focus. */}
         <Button
           size="sm"
-          onClick={() => join.mutate()}
-          disabled={join.isPending}
+          onClick={() => !join.isPending && join.mutate()}
+          aria-disabled={join.isPending}
           aria-label={`Join ${group.name}`}
         >
           {join.isPending ? 'Joining…' : 'Join'}

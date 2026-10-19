@@ -1,5 +1,6 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
+import { useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -9,10 +10,14 @@ import { useBalances, useGroups } from './use-groups'
 
 export function GroupsPage() {
   const groups = useGroups()
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [joined, setJoined] = useState('')
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Groups</h1>
+        <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+          Groups
+        </h1>
         <Link
           to="/groups/new-employer"
           className="inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
@@ -20,7 +25,17 @@ export function GroupsPage() {
           New employer
         </Link>
       </div>
-      <PendingGroups />
+      {/* Mounted from the start, so the announcement is read out when it changes. */}
+      <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        {joined && `Joined ${joined}.`}
+      </p>
+      <PendingGroups
+        onJoined={(name) => {
+          setJoined(name)
+          // The joined row and its focused button go away: keep focus on the page.
+          heading.current?.focus()
+        }}
+      />
       {groups.data ? (
         <>
           <GroupList groups={groups.data.filter((group) => !group.archivedAt)} />

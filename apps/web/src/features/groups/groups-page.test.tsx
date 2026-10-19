@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
@@ -92,6 +92,33 @@ describe('GroupsPage', () => {
         queries: expect.arrayContaining([expect.stringContaining('g1')]),
       }),
     )
+  })
+
+  it('moves focus to the heading and says so after joining a pending group', async () => {
+    listTeams.mockResolvedValue({ total: 0, teams: [] } as never)
+    listRows.mockResolvedValue({ total: 0, rows: [] } as never)
+    let joined = false
+    call.mockImplementation(async (_fn, method, path) => {
+      if (method === 'POST') {
+        joined = true
+        return { ok: true as const, data: { group: {}, member: {} } }
+      }
+      if (path === '/groups/pending') {
+        const groups = joined ? [] : [{ id: 'g7', type: 'pair', name: 'Alex', archivedAt: null }]
+        return { ok: true as const, data: { groups } }
+      }
+      return { ok: true as const, data: { people: [], transfers: [] } }
+    })
+    renderPage()
+    const join = await screen.findByRole('button', { name: 'Join Alex' })
+    join.focus()
+    fireEvent.click(join)
+    expect(await screen.findByText('Joined Alex.')).toBeTruthy()
+    expect(screen.getByText('Joined Alex.').getAttribute('role')).toBe('status')
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Groups' }))
+    // The row goes, and focus stays on the heading.
+    await waitFor(() => expect(screen.queryByRole('button', { name: 'Join Alex' })).toBeNull())
+    expect(document.activeElement?.tagName).toBe('H1')
   })
 
   it('links a lend & borrow group to its page', async () => {

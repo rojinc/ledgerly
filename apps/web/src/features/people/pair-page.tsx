@@ -2,10 +2,12 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import { type TransactionInput, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
+import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
 import { type ReactNode, useEffect, useState } from 'react'
 import { type FieldErrors, get, type Resolver, useForm } from 'react-hook-form'
 import { Link, useParams } from 'react-router'
+import { queryKeys } from '../../lib/query-keys'
 import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
@@ -206,6 +208,7 @@ function EntryForm({
   net: number
 }) {
   const create = useCreateTransaction()
+  const queryClient = useQueryClient()
   // One ID per entry, so a retry after an error can't add it twice; a new one once it's saved.
   const [id, setId] = useState(() => ID.unique())
   const [saved, setSaved] = useState(false)
@@ -238,26 +241,43 @@ function EntryForm({
     form.setValue('amount', due > 0 ? centsToText(due, group.currency) : '')
   }
 
+  const submit = form.handleSubmit(async (body) => {
+    try {
+      await create.mutateAsync(body)
+      setId(ID.unique())
+      form.reset(defaults())
+      setSaved(true)
+    } catch (error) {
+      const code = error instanceof LedgerError ? error.code : undefined
+      if (code === 'CONFLICT') {
+        // The same ID with different content: an earlier try was saved though its answer was
+        // lost, or the ID is taken. Show what's stored, and use a new ID for the next try.
+        void queryClient.invalidateQueries({ queryKey: ['history', group.$id] })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.balances(group.$id) })
+        setId(ID.unique())
+      }
+      // Archived meanwhile: reload the group, so the page shows it read-only.
+      if (code === 'ARCHIVED') {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.group(group.$id) })
+      }
+      form.setError('root', {
+        message:
+          code === 'CONFLICT'
+            ? 'This may already have been saved from your last try. Check the list below before adding it again.'
+            : (error as Error).message,
+      })
+    }
+  })
+
   return (
     <form
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          await create.mutateAsync(body)
-          setId(ID.unique())
-          form.reset(defaults())
-          setSaved(true)
-        } catch (error) {
-          // The same ID again, with different content: an earlier try may have been saved
-          // although its answer was lost. Say so, rather than inviting a duplicate.
-          const message =
-            error instanceof LedgerError && error.code === 'CONFLICT'
-              ? 'This may already have been saved from your last try. Check the list below before adding it again.'
-              : (error as Error).message
-          form.setError('root', { message })
-        }
-      })}
+      onSubmit={(event) => {
+        // aria-disabled, not disabled, keeps focus on Add; this guard stops a second send.
+        if (form.formState.isSubmitting) event.preventDefault()
+        else void submit(event)
+      }}
     >
       <h2 className="font-medium">Record</h2>
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
@@ -321,7 +341,7 @@ function EntryForm({
       />
       <TextField id="note" label="Note (optional)" error={errors.note} {...form.register('note')} />
       <div className="flex items-center gap-3">
-        <Button type="submit" disabled={isSubmitting}>
+        <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : 'Add'}
         </Button>
         {saved && (
