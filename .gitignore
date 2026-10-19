@@ -13,6 +13,9 @@ coverage/
 .env.*
 !.env.example
 
+# Python bytecode (scripts/)
+__pycache__/
+
 # logs
 *.log
 npm-debug.log*

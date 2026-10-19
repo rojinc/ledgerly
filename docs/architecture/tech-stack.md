@@ -62,6 +62,8 @@ Appwrite Messaging can only message project users, not addresses like an employe
 
 Expo + React Native, the Appwrite React Native SDK and the same `packages/core`. The server already enforces every rule, so the mobile app is just another client.
 
+The [spike](../planning/mobile-spike.md) ([#57](https://github.com/rojinc/ledgerly/issues/57)) used Expo SDK 58 (managed, Expo Go), React Native 0.88, `react-native-appwrite` 2.0 and `@tanstack/react-query`, with `packages/core` unchanged. Its app is on the never-merged `spike/57-expo` branch; the M5 build picks the layout and versions from the report.
+
 ## Deliberately not used
 
 | Not used | Reason |

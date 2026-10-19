@@ -11,6 +11,8 @@ export const TABLES = {
   shares: 'shares',
   items: 'items',
   balances: 'balances',
+  receiptFiles: 'receiptFiles',
+  checkpoints: 'checkpoints',
   schedules: 'schedules',
   statements: 'statements',
   activity: 'activity',
