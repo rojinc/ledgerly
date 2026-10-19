@@ -11,7 +11,7 @@ import type { Services } from '../services'
 /**
  * `scheduler DELETE /schedules/{id}` (scheduling.md#schedule-routes): only while none of its
  * occurrences is posted, otherwise it is ended instead. Deletes the schedule and all its
- * occurrences, voided and edited ones included, with their items.
+ * occurrences, voided and edited ones included, with their items, taking their receipts off.
  */
 export async function deleteSchedule(
   services: Services,
@@ -27,7 +27,7 @@ export async function deleteSchedule(
         'This schedule has posted transactions, so end it instead of deleting it.',
       )
     }
-    await removeOccurrences(db, membership.group, scheduleId, null, { all: true })
+    await removeOccurrences(db, membership.group, scheduleId, null, services.now, { all: true })
     await withTransaction(db, async (tx) => {
       await tx.write({ action: 'delete', tableId: TABLES.schedules, rowId: scheduleId })
       // An archive that lands meanwhile makes this run again and get ARCHIVED.

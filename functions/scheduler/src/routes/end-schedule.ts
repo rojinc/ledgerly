@@ -48,7 +48,7 @@ export async function endSchedule(
     // Only future ones: a past occurrence that wasn't posted waits for the user.
     const after = addDays(endsOn, 1)
     const from = compareDates(after, today) > 0 ? after : today
-    const removed = await removeOccurrences(db, membership.group, scheduleId, from)
+    const removed = await removeOccurrences(db, membership.group, scheduleId, from, now)
     return { schedule: await getSchedule(db, scheduleId), removed }
   })
 }
