@@ -576,6 +576,28 @@ describe('mergePostedSplit', () => {
     })
   })
 
+  it('plans an item by days as it was before the merge, from the member dates step 1 recorded', () => {
+    // A September bill of 75.00 by days: P was there all 30 days, U 15 (from the 16th), X 30.
+    const days: SplitSpec = { mode: 'days', personIds: ['P', 'U', 'X'] }
+    const september = { start: '2026-09-01' as LocalDate, end: '2026-09-30' as LocalDate }
+    const before = {
+      members: [
+        { personId: 'P', joinedOn: JAN as LocalDate, leftOn: null },
+        { personId: 'U', joinedOn: '2026-09-16' as LocalDate, leftOn: null },
+        { personId: 'X', joinedOn: JAN as LocalDate, leftOn: null },
+      ],
+      period: september,
+    }
+    // After step 2, U's kept row starts in January, so an edit would count U's days once: 37.50.
+    expect(mergePostedSplit(days, merge, 7500, { ...ctx, period: september }, before)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'U', cents: 4500 },
+        { personId: 'X', cents: 3000 },
+      ],
+    })
+  })
+
   it('renames only a split it can’t plan now: days naming P, whose row is gone', () => {
     const days: SplitSpec = { mode: 'days', personIds: ['P', 'X'] }
     const september = { start: '2026-09-01' as LocalDate, end: '2026-09-30' as LocalDate }

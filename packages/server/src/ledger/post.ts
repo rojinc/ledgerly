@@ -11,6 +11,7 @@ import type { Db } from '../appwrite/client'
 import { TABLES } from '../appwrite/tables'
 import type { Tx } from '../appwrite/transaction'
 import { balanceWrite } from './balances'
+import { refuseDeletedPeople } from './deleted-people'
 import {
   activityWrite,
   changedColumns,
@@ -108,6 +109,7 @@ export async function postInTransaction(
     invalid('Only a scheduled or due transaction can be posted.')
   }
   await guardGroupAndMembers(tx, db, group, ledger, planned.people)
+  await refuseDeletedPeople(tx, db, ledger, { kind: existing.kind, input, before: stored })
   await requireNotFinalizing(db, existing.groupId, [existing.date, date])
   await requireNoOpenMerge(db, existing, oldShares, oldItems)
   const row = { ...existing, date }
