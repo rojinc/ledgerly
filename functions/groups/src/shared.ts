@@ -1,8 +1,9 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
 import { closeAtFor, localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Shares } from '@ledgerly/core/generated/rows'
+import type { Groups, Identities, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
+import type { MergingRefusal } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
@@ -206,6 +207,41 @@ export async function hasShares(db: Db, groupId: string, personId: string): Prom
     Query.equal('personId', personId),
   ])
   return share !== undefined
+}
+
+/**
+ * Refuses, with CONFLICT and `merging`, while a merge into the person is still open in the group
+ * (identity-and-invites.md#while-a-merge-is-open-in-a-group): a P merged into them
+ * (`idx_mergedInto`) still has an identity, lists the group in `mergeGroupIds`, and has no member
+ * row here any more. Until the merge finishes, P's shares or inputs here may still name P, which
+ * a leave or a removal would count as someone else's. Callers check after their guard writes, so
+ * a merge's step 2 that lands meanwhile fails their commit.
+ */
+export async function requireNoOpenMerge(db: Db, groupId: string, personId: string): Promise<void> {
+  const { rows: merged } = await db.listRows<Persons>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.persons,
+    queries: [Query.equal('mergedInto', personId), Query.limit(100)],
+    total: false,
+  })
+  for (const placeholder of merged) {
+    if (!placeholder.mergeGroupIds?.includes(groupId)) continue
+    const row = await findFirst<Members>(db, TABLES.members, [
+      Query.equal('groupId', groupId),
+      Query.equal('personId', placeholder.$id),
+    ])
+    if (row) continue
+    const identity = await findFirst<Identities>(db, TABLES.identities, [
+      Query.equal('personId', placeholder.$id),
+    ])
+    if (!identity) continue
+    const details: MergingRefusal = { reason: 'merging' }
+    throw new AppError(
+      'CONFLICT',
+      'Someone’s accounts are being joined up in this group. Try again shortly.',
+      details,
+    )
+  }
 }
 
 /** Admins who have joined (status active): leaving or demoting must keep at least one. */

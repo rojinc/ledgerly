@@ -24,6 +24,7 @@ import {
   joinedAdmins,
   keepAnotherAdmin,
   parseBody,
+  requireNoOpenMerge,
   tryAgain,
 } from '../shared'
 
@@ -56,6 +57,7 @@ export async function deleteMember(
   // Checked early so a refusal leaves the team alone; checked again in the transaction.
   if (await hasShares(db, groupId, member.personId)) throw invalid(HAS_SHARES)
   if (await isNamed(db, groupId, member.personId)) throw invalid(IS_NAMED)
+  await requireNoOpenMerge(db, groupId, member.personId)
   const joinedAdmin = member.role === 'admin' && member.status === 'active'
   if (joinedAdmin && !(await joinedAdmins(db, groupId)).some((a) => a.$id !== member.$id)) {
     throw invalid(NEEDS_ADMIN)
@@ -73,6 +75,7 @@ export async function deleteMember(
         // commit. Read the stored row, not this transaction's view, where it is gone.
         if (await hasShares(db, groupId, member.personId)) throw invalid(HAS_SHARES)
         if (await isNamed(db, groupId, member.personId)) throw invalid(IS_NAMED)
+        await requireNoOpenMerge(db, groupId, member.personId)
         // A placeholder who joined after the first read gets CONFLICT; the retry sees them
         // active and takes them out of the team.
         const current = await getRowOrNull<Members>(db, TABLES.members, memberId)
