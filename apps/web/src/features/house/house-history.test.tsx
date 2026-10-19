@@ -119,15 +119,17 @@ describe('HouseHistory', () => {
         ],
       )
       renderHistory()
-      await waitFor(async () =>
-        expect(await rowTexts()).toEqual([
-          expect.stringMatching(/^Power(1 Nov|Nov 1,) 2026 · Due (1 Nov|Nov 1,) 2026\$40\.00$/),
-          // No description: the kind's label.
-          expect.stringMatching(/^Bill(25 Oct|Oct 25,) 2026 · Scheduled\$40\.00$/),
-          expect.stringMatching(/^Milk(18 Oct|Oct 18,) 2026 · Void\$40\.00$/),
-          expect.stringMatching(/^Groceries(18 Oct|Oct 18,) 2026 · Paid by Alice and Bob\$90\.50$/),
-        ]),
-      )
+      // The file's first test starts cold. The payers come last, from a second read: wait for them
+      // by text, then read the rows once. Polling role queries, slow when cold, used up waitFor's
+      // 1 s under load, and the cold renders alone can take over 1 s under load too.
+      await screen.findByText(/Paid by Alice and Bob/, {}, { timeout: 3000 })
+      expect(await rowTexts()).toEqual([
+        expect.stringMatching(/^Power(1 Nov|Nov 1,) 2026 · Due (1 Nov|Nov 1,) 2026\$40\.00$/),
+        // No description: the kind's label.
+        expect.stringMatching(/^Bill(25 Oct|Oct 25,) 2026 · Scheduled\$40\.00$/),
+        expect.stringMatching(/^Milk(18 Oct|Oct 18,) 2026 · Void\$40\.00$/),
+        expect.stringMatching(/^Groceries(18 Oct|Oct 18,) 2026 · Paid by Alice and Bob\$90\.50$/),
+      ])
       const links = within(screen.getByRole('list')).getAllByRole('link')
       expect(links.map((link) => link.getAttribute('href'))).toEqual([
         '/transactions/t4',

@@ -142,7 +142,7 @@ Each writer checks after its own guard writes: the member row for a leave or a r
 
 ### Finishing merges
 
-A merge cut off partway carries on within about an hour, even if U never calls `/claim` again, and a big one over several runs ([#246](https://github.com/rojinc/ledgerly/issues/246)). `identity` runs every hour on a schedule (`interval: 60`: the plan allows intervals of 60 minutes or more but no cron, so Appwrite picks the minute), sent as `POST /` with the `schedule` trigger ([functions API](functions-api.md#identity)):
+A merge cut off partway carries on within about an hour, even if U never calls `/claim` again, and a big one over several runs ([#246](https://github.com/rojinc/ledgerly/issues/246)). `identity` runs every 60 minutes (`interval: 60`, so Appwrite picks the minute: [intervals, not cron](../engineering/environments-and-deploys.md#function-settings)), sent as `POST /` with the `schedule` trigger ([functions API](functions-api.md#identity)):
 
 1. **A scheduled run finishes merges.** A signed-in call gets `FORBIDDEN`. Other runs without a JWT are handled as [function-side checks](permissions.md#function-side-checks) says.
 2. **The budget** is the same as `/claim`'s, well inside the function's timeout, and it counts the walk below.
@@ -187,11 +187,11 @@ Someone owed money in a lend & borrow group can email the other person a reminde
    2. Read both rows again. A recipient with `deletedAt` (a deletion that started meanwhile) gets the same `VALIDATION_FAILED` as a wrong address; a sender with `deletedAt` gets `UNAUTHENTICATED`.
    3. **Rate limits** (`REMINDER_LIMITS`, rolling): at most 1 per sender per group in the last 3 days, 3 per recipient person in the last 7 days from all senders, and 20 per sender in the last 24 hours across groups. Otherwise `RATE_LIMITED`, one message for all three.
 7. **Stage and commit:** the `reminders` row (ID `id`, `channel: 'email'`, `sentAt` now) and a `reminder.sent` [activity](data-model.md#activity) row: `actorPersonId` = the sender, `subjectPersonId` = the recipient, summary `was sent a reminder` (the feed shows "<subject> was sent a reminder"), no `changesJson`. **Commit before sending,** so N parallel requests with different `id`s can't all count 0 and all send: the guards fail every commit but one.
-8. **Send** through Resend with the idempotency key `person-reminder-<id>`. A failed send answers `INTERNAL` and still counts toward the limits, as for invites; the app retries with the same `id` (step 3), and the same key stops a second delivery. On a re-send, Resend's `invalid_idempotent_request` and `concurrent_idempotent_requests` mean the key was taken already: the reminder counts as sent (200), as the scheduler treats them.
+8. **Send** through Resend with the idempotency key `person-reminder-<id>`. A failed send answers `INTERNAL` and still counts toward the limits, as for invites; the app retries with the same `id` (step 3), and the same key stops a second delivery. On a re-send, Resend's `invalid_idempotent_request` means the key was used already, with other content: the reminder counts as sent (200). `concurrent_idempotent_requests` means a parallel call is still sending it and may yet fail, so it answers `INTERNAL`, and the app tries again.
 9. **The email:**
    - **Subject:** "You have a payment reminder", fixed: the sender's name is free text they chose, so it stays out of the subject.
    - **Body:** "{sender} sent you a reminder that you owe them {amount}." and "If you've already paid, let them know so they can record it.", and one link to the app (`APP_URL`).
-   - `{sender}` is the sender's `members.displayName` in that group, cut to 40 characters (with "…") and HTML-escaped. `{amount}` is the whole balance in the group's currency.
+   - `{sender}` is the sender's `members.displayName` in that group, put on one line (each run of spaces and line breaks becomes one space), cut to 40 characters as people see them, so an emoji isn't split (with "…"), and HTML-escaped. `{amount}` is the whole balance in the group's currency.
    - **Nothing else:** no recipient or group name (both are what the sender calls them), no transactions, no note (a phishing risk) and no `replyTo` (it would show the sender's account email).
 
 The response and the email are the same whether the recipient is a placeholder without an account, one with an account, or a joined member. The address typed and the amount are stored nowhere, and logs hold IDs, error codes and Resend's email ID only.
