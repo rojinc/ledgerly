@@ -1,10 +1,12 @@
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { parseLocalDate } from '@ledgerly/core/dates/local-date'
 import type { BusinessDetails } from '@ledgerly/core/schemas/identity'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { buildStatementSnapshot, type SnapshotInput } from '@ledgerly/core/statements/snapshot'
 import { extractText, getDocumentProxy } from 'unpdf'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { useFontReader } from './fonts'
 import { type InvoiceDetails, renderInvoicePdf } from './invoice-pdf'
 
 type Line = StatementSnapshot['lines'][number]
@@ -124,6 +126,24 @@ async function textBeyondPage(pdf: Buffer): Promise<string[]> {
   }
   return beyond
 }
+
+// Where the build finds each font file (scripts/build-functions.mjs).
+const FONT_PATHS: Record<string, string | URL> = {
+  'NotoSansCJKsc-Regular.otf': new URL('../../fonts/NotoSansCJKsc-Regular.otf', import.meta.url),
+  'NotoEmoji_400Regular.ttf': createRequire(import.meta.url).resolve(
+    '@expo-google-fonts/noto-emoji/400Regular/NotoEmoji_400Regular.ttf',
+  ),
+}
+// The font files each test reads, in order, as a new instance would.
+let reads: string[] = []
+beforeEach(() => {
+  reads = []
+  useFontReader((file) => {
+    reads.push(file)
+    return readFileSync(FONT_PATHS[file] as string | URL)
+  })
+  vi.spyOn(console, 'info').mockImplementation(() => {})
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -278,6 +298,8 @@ describe('renderInvoicePdf', () => {
     expect(pages.length).toBeGreaterThan(1)
     expect(pages.some((page) => page.includes('Notes Line 1 Line 2'))).toBe(true)
     expect(pages.join(' ')).toContain('Line 79 Line 80')
+    // The number's runs print in every page's footer.
+    expect(pages.at(-1)).toContain(`INV-0010 · page ${pages.length} of ${pages.length}`)
   })
 
   it('shows hours as h:mm, so 20 minutes reads 0:20', async () => {
@@ -294,29 +316,91 @@ describe('renderInvoicePdf', () => {
     expect(text).toContain('1 Oct 2026 Short call 0:20 $30.00/h $10.00')
   })
 
-  it('prints a character Roboto can’t draw as �, so Bill to is never blank (#269)', async () => {
+  it('prints a character no font has as �, so Bill to is never blank (#269)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const snapshot = buildStatementSnapshot({
       ...goldenInput({ ...fullBusiness, businessName: 'Café Ngọc' }),
-      recipient: { personId: 'employer', name: '张三 Pty Ltd', emails: ['accounts@acme.example'] },
+      recipient: { personId: 'employer', name: 'ร้าน Pty Ltd', emails: ['accounts@acme.example'] },
     })
     const text = await pdfText(await renderInvoicePdf(snapshot, details))
-    expect(text).toContain('Bill to �� Pty Ltd accounts@acme.example')
+    expect(text).toContain('Bill to ���� Pty Ltd accounts@acme.example')
     expect(text).toMatch(/^Café Ngọc /)
     // The count only, never the text.
-    expect(warn.mock.calls).toEqual([['invoice PDF: 2 characters print as U+FFFD']])
+    expect(warn.mock.calls).toEqual([['invoice PDF: 4 characters print as U+FFFD']])
+    expect(reads).toEqual([])
   })
 
-  it('marks every text it prints from the profile and the snapshot', async () => {
+  it('prints Chinese, Japanese, Korean and emoji in their own fonts (#270)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const snapshot = buildStatementSnapshot({
       ...goldenInput({
-        businessName: '山 Services',
-        address: '1 山 St',
+        ...fullBusiness,
+        businessName: '山田太郎 カタカナ',
+        invoiceNotes: 'Thanks 😀',
+      }),
+      lines: [
+        line(
+          '2026-10-02',
+          'expense',
+          4000,
+          [share('worker', 4000, 0), share('employer', 0, 4000)],
+          {
+            description: '김민준 한국어',
+          },
+        ),
+      ],
+      recipient: { personId: 'employer', name: '张三 Pty Ltd', emails: ['accounts@acme.example'] },
+    })
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    expect(text).toMatch(/^山田太郎 カタカナ /)
+    expect(text).toContain('Bill to 张三 Pty Ltd accounts@acme.example')
+    expect(text).toContain('2 Oct 2026 김민준 한국어 $40.00')
+    expect(text).toContain('Notes Thanks 😀')
+    // Nothing printed as �, or left out (an unknown glyph extracts as U+0000).
+    expect(text).not.toContain('�')
+    expect(text).not.toContain('\u0000')
+    expect(warn).not.toHaveBeenCalled()
+    expect(reads).toEqual(['NotoSansCJKsc-Regular.otf', 'NotoEmoji_400Regular.ttf'])
+  })
+
+  it('reads no font file for an invoice Roboto can print', async () => {
+    await renderInvoicePdf(goldenSnapshot(), details)
+    expect(reads).toEqual([])
+  })
+
+  it('reads a font file once while the instance is warm', async () => {
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      recipient: { personId: 'employer', name: '张三 Pty Ltd', emails: ['accounts@acme.example'] },
+    })
+    await renderInvoicePdf(snapshot, details)
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    expect(text).toContain('Bill to 张三 Pty Ltd')
+    expect(reads).toEqual(['NotoSansCJKsc-Regular.otf'])
+  })
+
+  // Roboto has no Ṣ, but has S and U+0323 (#269, #297).
+  it('prints a letter Roboto has only as base + mark from its parts', async () => {
+    const snapshot = buildStatementSnapshot(goldenInput({ businessName: 'Ṣàdé Services' }))
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    expect(text).toMatch(/^S\u0323àdé Services /)
+    expect(reads).toEqual([])
+  })
+
+  // Thai is in no font, so each text shows �; Chinese prints, in Noto Sans CJK.
+  it.each([
+    ['marks', 'ก', '�', 11],
+    ['prints', '山', '山', 0],
+  ])('%s every text it prints from the profile and the snapshot', async (_, char, shown, count) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput({
+        businessName: `${char} Services`,
+        address: `1 ${char} St`,
         email: 'sam@example.com',
-        bank: { accountName: '山 Lee', bsb: '062000', accountNumber: '12345678' },
-        payId: '山@example.com',
-        invoiceNotes: 'Thanks 山',
+        bank: { accountName: `${char} Lee`, bsb: '062000', accountNumber: '12345678' },
+        payId: `${char}@example.com`,
+        invoiceNotes: `Thanks ${char}`,
       }),
       lines: [
         shift('2026-10-01', 12500),
@@ -326,7 +410,7 @@ describe('renderInvoicePdf', () => {
           4000,
           [share('worker', 4000, 0), share('employer', 0, 4000)],
           {
-            description: '山 supplies',
+            description: `${char} supplies`,
           },
         ),
         line(
@@ -335,38 +419,40 @@ describe('renderInvoicePdf', () => {
           1000,
           [share('employer', 1000, 0), share('worker', 0, 1000)],
           {
-            description: '山 transfer',
+            description: `${char} transfer`,
           },
         ),
         // A kind from an older snapshot, printed as stored.
-        line('2026-10-04', '山', 3000, [share('employer', 3000, 3000)]),
+        line('2026-10-04', char, 3000, [share('employer', 3000, 3000)]),
       ],
-      recipient: { personId: 'employer', name: '山 Co', emails: ['山@acme.example'] },
+      recipient: { personId: 'employer', name: `${char} Co`, emails: [`${char}@acme.example`] },
     })
     const text = await pdfText(
-      await renderInvoicePdf(snapshot, { ...details, displayNumber: '山-0010' }),
+      await renderInvoicePdf(snapshot, { ...details, displayNumber: `${char}-0010` }),
     )
     for (const expected of [
-      '� Services',
-      '1 � St',
-      'Number �-0010',
-      'Bill to � Co �@acme.example',
-      '2 Oct 2026 � supplies',
-      '3 Oct 2026 � transfer',
-      '4 Oct 2026 � $30.00',
-      'Bank transfer: � Lee,',
-      'PayID: �@example.com',
-      'with �-0010 as the reference.',
-      'Notes Thanks �',
-      '�-0010 · page 1 of',
+      `${shown} Services`,
+      `1 ${shown} St`,
+      `Number ${shown}-0010`,
+      `Bill to ${shown} Co ${shown}@acme.example`,
+      `2 Oct 2026 ${shown} supplies`,
+      `3 Oct 2026 ${shown} transfer`,
+      `4 Oct 2026 ${shown} $30.00`,
+      `Bank transfer: ${shown} Lee,`,
+      `PayID: ${shown}@example.com`,
+      `with ${shown}-0010 as the reference.`,
+      `Notes Thanks ${shown}`,
+      `${shown}-0010 · page 1 of`,
     ]) {
       expect(text).toContain(expected)
     }
     // Nothing left that the font would leave out (an unknown glyph extracts as U+0000).
     expect(text).not.toContain('\u0000')
-    expect(text).not.toContain('山')
+    expect(text).not.toContain(count > 0 ? char : '�')
     // Once for the invoice number, wherever it prints.
-    expect(warn.mock.calls).toEqual([['invoice PDF: 11 characters print as U+FFFD']])
+    expect(warn.mock.calls).toEqual(
+      count > 0 ? [[`invoice PDF: ${count} characters print as U+FFFD`]] : [],
+    )
   })
 
   it('logs nothing when Roboto can draw it all', async () => {

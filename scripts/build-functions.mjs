@@ -1,7 +1,10 @@
-// Bundles Appwrite Functions into functions/<name>/dist/main.js, then checks that each bundle
-// loads and answers GET /health. Usage: node scripts/build-functions.mjs [name ...] (default: all)
+// Bundles Appwrite Functions into functions/<name>/dist/main.js, copies the files a bundle reads
+// next to it, then checks that each bundle loads and answers GET /health.
+// Usage: node scripts/build-functions.mjs [name ...] (default: all)
 import { execFileSync } from 'node:child_process'
-import { readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { basename } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
@@ -14,6 +17,20 @@ const functions =
         .filter((entry) => entry.isDirectory())
         .map((entry) => entry.name)
 const version = gitVersion()
+// The invoice PDF's Noto fonts (packages/server/src/pdf/fonts.ts), too big to bundle, with the
+// SHA-256 of each pinned file (#270). A file that is missing or has changed fails the build.
+const fonts = {
+  statements: [
+    [
+      'packages/server/fonts/NotoSansCJKsc-Regular.otf',
+      '2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b',
+    ],
+    [
+      'node_modules/@expo-google-fonts/noto-emoji/400Regular/NotoEmoji_400Regular.ttf',
+      '24aaa2a20c9c06ffe9bf04284bfd1f14376a329d10122f902abe2770817eb504',
+    ],
+  ],
+}
 
 for (const name of functions) {
   const outfile = `${root}/functions/${name}/dist/main.js`
@@ -36,6 +53,7 @@ for (const name of functions) {
     },
     logLevel: 'warning',
   })
+  copyFonts(name)
   await checkHealth(name, outfile)
   console.log(`built functions/${name}/dist/main.js (${version})`)
 }
@@ -52,6 +70,19 @@ function gitVersion() {
       .trim()
   } catch {
     return 'local'
+  }
+}
+
+function copyFonts(name) {
+  for (const [source, sha256] of fonts[name] ?? []) {
+    if (!existsSync(`${root}/${source}`)) throw new Error(`functions/${name}: ${source} is missing`)
+    const content = readFileSync(`${root}/${source}`)
+    const hash = createHash('sha256').update(content).digest('hex')
+    if (hash !== sha256) {
+      throw new Error(`functions/${name}: ${source} has SHA-256 ${hash}, not ${sha256}`)
+    }
+    mkdirSync(`${root}/functions/${name}/dist/fonts`, { recursive: true })
+    writeFileSync(`${root}/functions/${name}/dist/fonts/${basename(source)}`, content)
   }
 }
 

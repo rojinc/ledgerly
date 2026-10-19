@@ -116,6 +116,11 @@ Every function runs on `node-24`, the same Node as `.nvmrc`, CI and the build's 
 
 Each function runs from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, and the deployment uploads only `dist/` and `package.json` (`ignore: ["*", "!dist/", "!dist/**", "!package.json"]`, which also holds under strict `.gitignore` rules). Never add a `.gitignore` inside `functions/<name>/`: the CLI applies it on top of `ignore`, so one that lists `dist/` would leave the bundle out.
 
+- **The `statements` bundle carries font files** for the invoice PDF ([statements.md](../architecture/statements.md#invoice-pdf-layout-employer)). The build copies them into `functions/statements/dist/fonts/`, and fails if one is missing or its SHA-256 differs from the one in `scripts/build-functions.mjs`:
+  - `NotoSansCJKsc-Regular.otf` (16.4 MB), committed under `packages/server/fonts/` with its licence, from notofonts/noto-cjk tag `Sans2.004`;
+  - `NotoEmoji_400Regular.ttf` (0.9 MB), from the devDependency `@expo-google-fonts/noto-emoji`, pinned to `0.4.8`.
+
+  The deployment is then 15.4 MB as `.tar.gz` (#270). A self-hosted Appwrite allows 30 MB (`_APP_COMPUTE_SIZE_LIMIT`); Cloud's plan doesn't publish its limit.
 - **`commands` stays empty.** The uploaded `package.json` names `@ledgerly/*` packages, which aren't on public npm, so an `npm install` could pull a stranger's package of the same name. The bundle already holds every dependency.
 - **Key scopes** are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`). Give a function only the scopes a documented route needs; a change to them gets the `security` label.
 - `GET /health`, the only route that runs without a signed-in caller, returns `{ fn, version }` on every function, where `version` is the commit the bundle was built from (`-dirty` when built with uncommitted changes).

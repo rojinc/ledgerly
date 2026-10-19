@@ -1,8 +1,9 @@
 import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { formatMoney } from '@ledgerly/core/money/format'
-import { missingGlyphs, printable } from '@ledgerly/core/pdf/pdf-glyphs'
+import { fontRuns, missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
-import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces'
+import type { Content, ContentText, TDocumentDefinitions } from 'pdfmake/interfaces'
+import { loadFonts } from './fonts'
 import {
   field,
   footer,
@@ -39,13 +40,17 @@ export async function renderInvoicePdf(
   const money = (cents: number) => formatMoney(cents, snapshot.group.currency, LOCALE)
   const dueOn = addDays(details.issuedOn, invoice.paymentTermsDays)
   const business = issuer.business
-  // Roboto can't draw every script, and pdfmake would leave out what it can't draw, so every text
-  // from the snapshot or the profile prints through printable(): a missing character shows as �.
+  // pdfmake would leave out what its font can't draw, so every text from the snapshot or the
+  // profile prints as fontRuns() splits it, each run in its own font, and a character no font has
+  // as �. A font's file is read the first time a run needs it.
   let replaced = 0
-  const print = (text: string) => {
+  const print = (text: string): ContentText[] => {
     replaced += missingGlyphs(text).length
-    return printable(text)
+    const runs = fontRuns(text)
+    loadFonts(runs.map((run) => run.font))
+    return runs
   }
+  const paragraph = (text: string): ContentText => ({ text: print(text) })
   const number = print(details.displayNumber)
   const worker = snapshot.people.find((person) => person.personId === issuer.personId)
   const openingCents = worker?.openingCents ?? 0
@@ -71,7 +76,7 @@ export async function renderInvoicePdf(
             business.address,
             business.email,
             business.phone,
-          ]).map(print),
+          ]).map(paragraph),
         ],
         {
           width: 'auto',
@@ -97,7 +102,7 @@ export async function renderInvoicePdf(
     },
     heading('Bill to'),
     { text: print(recipient.name), bold: true },
-    ...recipient.emails.map(print),
+    ...recipient.emails.map(paragraph),
     amountLine('Opening balance (from the previous invoice)', money(openingCents)),
   ]
 
@@ -109,7 +114,7 @@ export async function renderInvoicePdf(
         ['Date', 'Description', 'Hours', 'Rate', 'Amount'],
         charges.map((line) => [
           formatDate(line.date),
-          print(lineText(line)),
+          paragraph(lineText(line)),
           line.shift ? hoursText(line.shift.minutes) : '',
           line.shift ? `${money(line.shift.rateCents)}/h` : '',
           money(owed(line)),
@@ -124,7 +129,11 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        credits.map((line) => [formatDate(line.date), print(lineText(line)), money(owed(line))]),
+        credits.map((line) => [
+          formatDate(line.date),
+          paragraph(lineText(line)),
+          money(owed(line)),
+        ]),
         { total: ['Total payments and deductions', money(total(credits))] },
       ),
     )
@@ -148,7 +157,7 @@ export async function renderInvoicePdf(
         ['Date', 'Description', 'Amount'],
         records.map((line) => [
           formatDate(line.date),
-          print(lineText(line)),
+          paragraph(lineText(line)),
           money(line.totalCents),
         ]),
       ),
@@ -164,14 +173,20 @@ export async function renderInvoicePdf(
           business.bank &&
             `Bank transfer: ${business.bank.accountName}, BSB ${business.bank.bsb.replace(/^(\d{3})(\d{3})$/, '$1-$2')}, account ${business.bank.accountNumber}`,
           business.payId && `PayID: ${business.payId}`,
-          `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with ${number} as the reference.`,
-        ]).map(print),
+        ]).map(paragraph),
+        {
+          text: [
+            `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with `,
+            ...number,
+            ' as the reference.',
+          ],
+        },
       ],
     })
   }
   if (business.invoiceNotes) {
     // Not unbreakable: notes taller than a page would be dropped, heading and all.
-    content.push(heading('Notes'), print(business.invoiceNotes))
+    content.push(heading('Notes'), paragraph(business.invoiceNotes))
   }
   // The count only, never the text (security-and-privacy.md#personal-data).
   if (replaced > 0) console.warn(`invoice PDF: ${replaced} characters print as U+FFFD`)

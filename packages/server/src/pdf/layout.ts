@@ -11,8 +11,8 @@ import type {
 
 // Roboto ships inside pdfmake as base64 in a JavaScript file, so esbuild bundles it like any
 // other module and the function needs no font files on disk. In Node, pdfmake takes fonts only
-// by file name, so they go into its in-memory file system (not in its types).
-const { virtualfs } = pdfmake as unknown as {
+// by file name, so they go into its in-memory file system (not in its types), as fonts.ts's do.
+export const { virtualfs } = pdfmake as unknown as {
   virtualfs: { writeFileSync(name: string, content: Buffer): void }
 }
 const fonts = { normal: 'Roboto-Regular.ttf', bold: 'Roboto-Medium.ttf' }
@@ -58,9 +58,10 @@ export const PAGE: Omit<TDocumentDefinitions, 'content'> = {
 }
 
 /** The page footer: `<label> · page 2 of 3`. */
-export function footer(label: string): TDocumentDefinitions['footer'] {
+export function footer(label: Content): TDocumentDefinitions['footer'] {
   return (page, pages) => ({
-    text: `${label} · page ${page} of ${pages}`,
+    // In its own text: pdfmake would take a bare array of runs for a stack and leave it out.
+    text: [{ text: label }, ` · page ${page} of ${pages}`],
     alignment: 'center',
     fontSize: 8,
     color: MUTED,
@@ -118,7 +119,7 @@ export function table(
   return { layout: 'lightHorizontalLines', table: { headerRows: 1, widths, body } }
 }
 
-export function field(label: string, value: string): TableCell[] {
+export function field(label: string, value: Content): TableCell[] {
   return [
     { text: label, color: MUTED },
     { text: value, bold: true },

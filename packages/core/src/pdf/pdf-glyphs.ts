@@ -1,6 +1,7 @@
 // statements.md#invoice-pdf-layout-employer: the invoice PDF prints in the Roboto that pdfmake
-// bundles, and pdfmake leaves out a character its font can't draw without any error (#103). So
-// every text it prints goes through printable(), and a missing character shows as a visible �.
+// bundles, then Noto Sans CJK and Noto Emoji, and pdfmake leaves out a character its font can't
+// draw without any error (#103). So every text it prints goes through fontRuns(), and a character
+// no font has shows as a visible �.
 
 import { NOTO_EMOJI_PACKED, NOTO_SANS_CJK_PACKED } from './pdf-glyphs-noto'
 
@@ -108,7 +109,7 @@ function drawable(codePoint: number): boolean {
 }
 
 /**
- * How the PDF font can draw one character of composed (NFC) text: as itself, or else from its
+ * How Roboto can draw one character of composed (NFC) text: as itself, or else from its
  * decomposed parts when Roboto has each of them (`ṣ` → s + U+0323), or not at all (undefined).
  * Roboto has many composed letters but few combining marks (no U+0302), and some letters only
  * as base + mark, so neither form alone covers what it can draw.
@@ -122,24 +123,23 @@ function drawn(char: string): string | undefined {
 }
 
 /**
- * The code points in `text`, composed (NFC) first, that the PDF font can't draw, in order, once
- * for each time they occur. A decomposed `Ê` (E + U+0302) composes to a letter Roboto has, and a
- * `ṣ` it has no code point for draws from s + U+0323 (see drawn()). A surrogate pair, such as
- * most emoji, is one character; a lone surrogate is missing.
+ * The code points in `text`, composed (NFC) first, that no font of the PDF can draw, in order,
+ * once for each time they occur: those fontRuns() prints as U+FFFD. A decomposed `Ê` (E + U+0302)
+ * composes to a letter Roboto has, and a `ṣ` it has no code point for draws from s + U+0323 (see
+ * drawn()). A surrogate pair, such as most emoji, is one character; a lone surrogate is missing.
  */
 export function missingGlyphs(text: string): number[] {
-  return Array.from(text.normalize('NFC'))
-    .filter((char) => drawn(char) === undefined)
-    .map((char) => char.codePointAt(0) as number)
+  return split(text).missing
 }
 
 /**
- * `text` as the PDF font can draw it: composed (NFC), each character as drawn() gives it, and
- * each one it still can't draw replaced by U+FFFD, so the gap shows: `张三 Pty Ltd` →
- * `�� Pty Ltd`.
+ * `text` as the PDF prints it: fontRuns() joined, so a character no font has shows as U+FFFD:
+ * `ร้าน Ltd` → `���� Ltd`.
  */
 export function printable(text: string): string {
-  return Array.from(text.normalize('NFC'), (char) => drawn(char) ?? '�').join('')
+  return fontRuns(text)
+    .map((run) => run.text)
+    .join('')
 }
 
 type Ranges = readonly (readonly [from: number, to: number])[]
@@ -190,15 +190,23 @@ function within(ranges: Ranges, codePoint: number): boolean {
   return range !== undefined && range[0] <= codePoint
 }
 
-function has(font: PdfFont, codePoint: number): boolean {
-  if (font === 'Roboto') return drawable(codePoint)
-  return within(font === 'NotoSansCJK' ? cjkRanges() : emojiRanges(), codePoint)
+/** `chars` as `font` draws them (Roboto as drawn() gives each), or undefined if it can't. */
+function drawnIn(font: PdfFont, chars: string): string | undefined {
+  const parts = Array.from(chars, (char) => {
+    if (font === 'Roboto') return drawn(char)
+    const ranges = font === 'NotoSansCJK' ? cjkRanges() : emojiRanges()
+    return within(ranges, char.codePointAt(0) as number) ? char : undefined
+  })
+  return parts.every((part) => part !== undefined) ? parts.join('') : undefined
 }
 
-/** The first font that can draw every character of `chars`. */
-function firstFont(chars: string): PdfFont | undefined {
-  const codePoints = Array.from(chars, (char) => char.codePointAt(0) as number)
-  return FONTS.find((font) => codePoints.every((codePoint) => has(font, codePoint)))
+/** `chars` in the first font that can draw all of them. */
+function firstFont(chars: string): FontRun | undefined {
+  for (const font of FONTS) {
+    const text = drawnIn(font, chars)
+    if (text !== undefined) return { font, text }
+  }
+  return undefined
 }
 
 // A zero-width joiner or a variation selector changes how the character before it is drawn, so
@@ -216,33 +224,42 @@ let graphemes: Intl.Segmenter | undefined
 
 /**
  * `text`, composed (NFC), as runs by font. Each grapheme cluster (what a reader sees as one
- * character) goes to the first font that has all of it: Roboto, then Noto Sans CJK, then Noto
- * Emoji. `张三 Pty Ltd` → NotoSansCJK `张三`, Roboto ` Pty Ltd`. Only Noto Emoji has U+FE0F,
- * U+FE0E, U+20E3 and U+200D, so an emoji sequence (`♥` + U+FE0F, a keycap, 🏃 + U+200D + `♀`)
- * goes there whole. When no font has a whole cluster, each of its characters goes to the first
- * font that has it, a zero-width joiner (U+200D) or variation selector (U+FE00–U+FE0F,
- * U+E0100–U+E01EF) staying with the character before it, and a character no font has becomes
- * U+FFFD in a Roboto run.
+ * character) goes to the first font that has all of it: Roboto (which draws `ṣ` from its parts,
+ * see drawn()), then Noto Sans CJK, then Noto Emoji. `张三 Pty Ltd` → NotoSansCJK `张三`, Roboto
+ * ` Pty Ltd`. Only Noto Emoji has U+FE0F, U+FE0E, U+20E3 and U+200D, so an emoji sequence
+ * (`♥` + U+FE0F, a keycap, 🏃 + U+200D + `♀`) goes there whole. When no font has a whole
+ * cluster, each of its characters goes to the first font that has it, a zero-width joiner
+ * (U+200D) or variation selector (U+FE00–U+FE0F, U+E0100–U+E01EF) staying with the character
+ * before it, and a character no font has becomes U+FFFD in a Roboto run.
  */
 export function fontRuns(text: string): FontRun[] {
+  return split(text).runs
+}
+
+/** fontRuns(), and the code points it prints as U+FFFD. */
+function split(text: string): { runs: FontRun[]; missing: number[] } {
   const runs: FontRun[] = []
-  const add = (font: PdfFont, chars: string) => {
+  const missing: number[] = []
+  const add = ({ font, text }: FontRun) => {
     const last = runs.at(-1)
-    if (last?.font === font) last.text += chars
-    else runs.push({ font, text: chars })
+    if (last?.font === font) last.text += text
+    else runs.push({ font, text })
   }
   graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' })
   for (const { segment } of graphemes.segment(text.normalize('NFC'))) {
-    const font = firstFont(segment)
-    if (font) {
-      add(font, segment)
+    const whole = firstFont(segment)
+    if (whole) {
+      add(whole)
       continue
     }
     for (const char of segment) {
+      const codePoint = char.codePointAt(0) as number
       const last = runs.at(-1)
-      const own = last && joinsPrevious(char.codePointAt(0) as number) ? last.font : firstFont(char)
-      add(own ?? 'Roboto', own ? char : '\u{FFFD}')
+      const own =
+        last && joinsPrevious(codePoint) ? { font: last.font, text: char } : firstFont(char)
+      if (!own) missing.push(codePoint)
+      add(own ?? { font: 'Roboto', text: '\u{FFFD}' })
     }
   }
-  return runs
+  return { runs, missing }
 }
