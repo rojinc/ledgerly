@@ -188,3 +188,23 @@ export type DeleteAccountResult = { deletedAt: string; finished: boolean }
 export type DeleteAccountRefusal =
   | { reason: 'reauth' | 'recent_password_change' }
   | { groupIds: string[] }
+
+const memberDatesSchema = z.strictObject({
+  joinedOn: localDateSchema,
+  leftOn: localDateSchema.nullable(),
+})
+
+/**
+ * `persons.mergeMembersJson` (data-model.md#persons): for each of P's groups, P's member dates
+ * there and U's, or `null` where U had no row, as merge step 1 found them. Step 3 plans a posted
+ * row's items with them (identity-and-invites.md#merging-two-persons).
+ */
+export const mergeMembersSchema = z.array(
+  z.strictObject({
+    groupId: idSchema,
+    from: memberDatesSchema,
+    into: memberDatesSchema.nullable(),
+  }),
+)
+
+export type MergeMembers = z.infer<typeof mergeMembersSchema>
