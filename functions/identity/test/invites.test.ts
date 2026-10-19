@@ -307,7 +307,8 @@ describe('POST /invites', () => {
     const { status, body, logs } = await call(services, 'POST', '/invites', BODY, 'u1')
     expect(status).toBe(500)
     expect(body).toMatchObject({ ok: false, error: { code: 'INTERNAL' } })
-    expect(logs).toEqual([expect.stringContaining('"cause":"EmailError"')])
+    // Resend's type, never its message (log.ts describe()).
+    expect(logs).toEqual([expect.stringContaining('"cause":"EmailError internal_server_error"')])
     expect(services.db.rows('invites')).toHaveLength(20)
     expect(services.db.rows('invites')[19]).toMatchObject({ memberId: 'mSam', invitedBy: 'pAnn' })
 
