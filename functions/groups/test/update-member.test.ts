@@ -99,6 +99,14 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
     expect(summariesOf(services)).toEqual([['p2', summary]])
   })
 
+  it('stores no changes for a rename alone, which only the summary says', async () => {
+    const services = house()
+    await patch(services, 'm2', { displayName: 'Alex' })
+    const activity = services.db.rows('activity')
+    expect(activity).toEqual([expect.objectContaining({ summary: 'was renamed' })])
+    expect(activity[0]?.changesJson ?? null).toBeNull()
+  })
+
   it('writes nothing when nothing changes', async () => {
     const services = house()
     const update = vi.spyOn(services.db, 'createOperations')
