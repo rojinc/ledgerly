@@ -15,7 +15,7 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
   return (
     <p
       role={alert ? 'alert' : 'status'}
-      className={alert ? 'text-destructive' : 'text-muted-foreground'}
+      className={`break-words ${alert ? 'text-destructive' : 'text-muted-foreground'}`}
     >
       {children}
     </p>
@@ -114,8 +114,8 @@ function Details({ row }: { row: Transactions }) {
           <>
             <dt className="text-muted-foreground">Shift</dt>
             <dd>
-              {Math.floor(shift.minutes / 60)} h {shift.minutes % 60} min at{' '}
-              {formatMoney(shift.rateCents, group.data.currency)} an hour
+              {hoursText(shift.minutes)} at {formatMoney(shift.rateCents, group.data.currency)} an
+              hour
             </dd>
           </>
         )}
@@ -146,17 +146,19 @@ function Details({ row }: { row: Transactions }) {
       {shares.data && shares.data.length > 0 && (
         <section aria-labelledby="shares-heading" className="flex flex-col gap-2">
           <h2 id="shares-heading" className="font-medium">
-            Who paid, and who it was for
+            {row.kind === 'shift'
+              ? 'Who earned it, and who owes it'
+              : 'Who paid, and who it was for'}
           </h2>
           <ul className="flex flex-col gap-1 text-sm">
             {shares.data.map((share) => (
-              <li key={share.$id}>
+              <li key={share.$id} className="break-words">
                 {names.get(share.personId) ?? 'Someone'}:{' '}
                 {[
                   share.givenCents !== 0 &&
                     `${row.kind === 'shift' ? 'earned' : 'paid'} ${formatMoney(share.givenCents, group.data.currency)}`,
                   share.receivedCents !== 0 &&
-                    `${row.kind === 'payment' ? 'received' : 'for them'} ${formatMoney(share.receivedCents, group.data.currency)}`,
+                    `${row.kind === 'payment' ? 'received' : row.kind === 'shift' ? 'owes' : 'for them'} ${formatMoney(share.receivedCents, group.data.currency)}`,
                 ]
                   .filter(Boolean)
                   .join(', ')}
@@ -170,6 +172,15 @@ function Details({ row }: { row: Transactions }) {
       )}
     </>
   )
+}
+
+/** `5 h 30 min`, `8 h` or `45 min`: no zero parts. */
+function hoursText(minutes: number): string {
+  const hours = Math.floor(minutes / 60)
+  const rest = minutes % 60
+  return [hours > 0 && `${hours} h`, (rest > 0 || hours === 0) && `${rest} min`]
+    .filter(Boolean)
+    .join(' ')
 }
 
 function GroupLink({ group }: { group: Groups }) {

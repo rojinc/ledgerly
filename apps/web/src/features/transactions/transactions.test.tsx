@@ -272,6 +272,11 @@ describe('NewTransactionPage', () => {
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Supplies' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect(await screen.findByText('Enter an amount like 4050')).toBeTruthy()
+    // Three decimals for a currency like KWD.
+    cleanup()
+    mockGroups({ ...acme, currency: 'KWD' })
+    renderAt('/transactions/new?groupId=g1')
+    expect(await screen.findByText('For example 4.050.')).toBeTruthy()
   })
 
   it('has no form for a viewer or an archived group', async () => {
@@ -413,6 +418,17 @@ describe('HistoryPage', () => {
     expect(
       (await screen.findByRole('link', { name: 'Add expense or payment' })).getAttribute('href'),
     ).toBe('/transactions/new?groupId=g1')
+    expect(screen.getByRole('link', { name: 'Invoices' }).getAttribute('href')).toBe(
+      '/groups/g1/statements',
+    )
+    cleanup()
+    // An admin who isn't the group's owner: the form would refuse them, so no link.
+    mockPersonId = 'pe'
+    mockGroups(acme, 'admin')
+    renderAt('/transactions?groupId=g1')
+    await screen.findByText('All square')
+    expect(screen.queryByRole('link', { name: 'Add expense or payment' })).toBeNull()
+    mockPersonId = 'pw'
     cleanup()
     mockGroups(acme, 'viewer')
     renderAt('/transactions?groupId=g1')
@@ -443,11 +459,14 @@ describe('TransactionPage', () => {
     call.mockResolvedValue(
       ok({ transaction: row('t1', { status: 'void', voidReason: 'Twice' }), shares: [] }),
     )
-    renderAt('/transactions/t1')
+    const { queryClient } = renderAt('/transactions/t1')
+    const cancel = vi.spyOn(queryClient, 'cancelQueries')
     expect(await screen.findByRole('heading', { name: 'Supplies' })).toBeTruthy()
     expect(screen.getByText(/^A?\$40\.00$/)).toBeTruthy()
     expect(screen.getByText('From the hardware shop')).toBeTruthy()
     expect(await screen.findByText(/^Sam: paid .*40\.00$/)).toBeTruthy()
+    // Long names wrap at 375 px.
+    expect(screen.getByText(/^Sam: paid/).className).toContain('break-words')
     expect(screen.getByText(/^Acme: for them .*40\.00$/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Void' }))
     expect(await screen.findByText('Say why, for example “Entered twice”.')).toBeTruthy()
@@ -460,6 +479,10 @@ describe('TransactionPage', () => {
     )
     expect(await screen.findByText('Void. Reason: Twice')).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Void' })).toBeNull()
+    // Only the row's own query is cancelled, never its shares under the same prefix.
+    expect(cancel).toHaveBeenCalledWith({ queryKey: ['transaction', 't1'], exact: true })
+    // So does a long reason.
+    expect(screen.getByText('Void. Reason: Twice').className).toContain('break-words')
   })
 
   it('offers Void to a member on a row they added, and refreshes balances, history and calendar', async () => {
@@ -514,6 +537,25 @@ describe('TransactionPage', () => {
     renderAt('/transactions/t1')
     expect(await screen.findByText(/^5 h 30 min at .*25\.00 an hour$/)).toBeTruthy()
     expect(await screen.findByText(/^Sam: earned .*125\.00$/)).toBeTruthy()
+    expect(screen.getByText(/^Acme: owes .*125\.00$/)).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'Who earned it, and who owes it' })).toBeTruthy()
+  })
+
+  it.each([
+    [480, /^8 h at /],
+    [45, /^45 min at /],
+  ])('drops a zero part from %i shift minutes', async (minutes, text) => {
+    mockGroups(acme)
+    mockRows([], [])
+    getRow.mockResolvedValue(
+      row('t1', {
+        kind: 'shift',
+        totalCents: 100,
+        inputJson: JSON.stringify({ shift: { minutes, rateCents: 2500 } }),
+      }) as never,
+    )
+    renderAt('/transactions/t1')
+    expect(await screen.findByText(text)).toBeTruthy()
   })
 
   it('shows no shift line for a running timer, or for an entry that isn’t a shift', async () => {

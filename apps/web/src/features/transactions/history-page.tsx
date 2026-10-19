@@ -174,9 +174,12 @@ function GroupSummary({ group }: { group: Groups }) {
   const members = useMembers(group.$id)
   const balances = useBalances(group.$id)
   const other = members.data?.find((m) => m.personId !== personId)?.displayName
-  // permissions.md: admins and members add; a viewer (an employer who joined) only reads.
+  // permissions.md: admins and members add; a viewer (an employer who joined) only reads. The
+  // entry form speaks as the worker, so only the group's owner gets it (as on that page).
   const canAdd =
-    !group.archivedAt && (member.data?.role === 'admin' || member.data?.role === 'member')
+    !group.archivedAt &&
+    group.ownerPersonId === personId &&
+    (member.data?.role === 'admin' || member.data?.role === 'member')
 
   let balance: ReactNode
   // Only once it's known whose side to word it from, and who the other person is.
@@ -214,6 +217,12 @@ function GroupSummary({ group }: { group: Groups }) {
           Add expense or payment
         </Link>
       )}
+      <Link
+        to={`/groups/${group.$id}/statements`}
+        className="self-start text-sm underline underline-offset-4"
+      >
+        Invoices
+      </Link>
     </section>
   )
 }
