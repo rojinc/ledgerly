@@ -23,6 +23,15 @@ function decimal(cents: number, digits: number): string {
  */
 export function formatMoney(cents: number, currency: string, locale?: string): string {
   assertAmountCents(cents)
+  return formatNet(cents, currency, locale)
+}
+
+/**
+ * `formatMoney` for a figure worked out from amounts, such as a net, a balance or a total, which
+ * can pass the amount cap (ledger.md#allocation-and-rounding): it only has to be an exact integer.
+ */
+export function formatNet(cents: number, currency: string, locale?: string): string {
+  if (!Number.isSafeInteger(cents)) throw new RangeError('A net must be a whole number of cents')
   const { format, digits } = currencyFormat(currency, locale)
   return format.format(decimal(cents, digits) as Intl.StringNumericLiteral)
 }

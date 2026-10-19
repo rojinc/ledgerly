@@ -1,5 +1,5 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import type { ReactNode } from 'react'
 import { formatDate, lineText } from './invoice-view'
@@ -34,7 +34,10 @@ export function DivideView({
   statement: Statements
   snapshot: StatementSnapshot
 }) {
-  const money = (cents: number) => formatMoney(cents, snapshot.group.currency)
+  // Openings, closings and sums are worked out, so they can pass the amount cap.
+  const money = (cents: number) => formatNet(cents, snapshot.group.currency)
+  // A stored amount (a line's total, a share's paid and part) is within the cap.
+  const stored = (cents: number) => formatMoney(cents, snapshot.group.currency)
   const names = new Map(snapshot.people.map((person) => [person.personId, person.name]))
   const name = (personId: string) => names.get(personId) ?? 'Someone'
   const final = statement.status === 'final' || statement.status === 'void'
@@ -134,15 +137,15 @@ export function DivideView({
                     <span className="text-muted-foreground">{formatDate(line.date)}</span>{' '}
                     {lineText(line)}
                   </span>
-                  <span className="tabular-nums">{money(line.totalCents)}</span>
+                  <span className="tabular-nums">{stored(line.totalCents)}</span>
                 </p>
                 <ul className="flex flex-col pl-4 text-muted-foreground">
                   {line.shares.map((share) => (
                     <li key={share.personId} className="break-words">
                       {name(share.personId)}:{' '}
                       {[
-                        share.givenCents !== 0 && `paid ${money(share.givenCents)}`,
-                        share.receivedCents !== 0 && `share ${money(share.receivedCents)}`,
+                        share.givenCents !== 0 && `paid ${stored(share.givenCents)}`,
+                        share.receivedCents !== 0 && `share ${stored(share.receivedCents)}`,
                       ]
                         .filter(Boolean)
                         .join(', ') || 'no part'}

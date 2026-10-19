@@ -115,6 +115,11 @@ describe('balanceText', () => {
     expect(balanceText(-5000, 'Alex', 'AUD')).toMatch(/^You owe Alex .*50\.00$/)
     expect(balanceText(0, 'Sam', 'AUD')).toBe('All square')
   })
+
+  it('words a balance past the amount cap', () => {
+    expect(balanceText(20_000_000_000, 'Sam', 'AUD')).toMatch(/^Sam owes you .*200,000,000\.00$/)
+    expect(balanceText(-20_000_000_000, 'Alex', 'AUD')).toMatch(/^You owe Alex .*200,000,000\.00$/)
+  })
 })
 
 describe('repayment defaults', () => {
