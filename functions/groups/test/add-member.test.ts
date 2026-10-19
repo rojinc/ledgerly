@@ -118,6 +118,10 @@ describe('POST /groups/{id}/members', () => {
     const registered = await add(services, { displayName: 'Robin', email: 'reg@example.com' })
     expect(registered).toMatchObject({ personId: 'p9', status: 'placeholder' })
     expect(services.teams.members('g1')?.map((m) => m.userId)).not.toContain('u9')
+    // The row is about the person found, not the one adding them (data-model.md#activity).
+    expect(services.db.rows('activity')).toEqual([
+      expect.objectContaining({ action: 'member.added', subjectPersonId: 'p9' }),
+    ])
 
     const unknown = await add(services, { displayName: 'Robin', email: 'new@example.com' })
     expect(unknown.personId).not.toBe('p9')
