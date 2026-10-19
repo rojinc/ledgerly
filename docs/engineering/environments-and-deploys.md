@@ -41,7 +41,7 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 - **One deploy at a time,** and a running one is never cancelled.
 - **Only `main`'s latest commit deploys.** `push table --force` makes the database match the commit's `tables.json`, so deploying an older commit would drop columns added since, with their data. A re-run of an older run is skipped with a warning (the newer commit's own run deploys it), and a run on another branch fails. To undo a change, revert it on `main`.
-- **The CLI can exit 0 when a resource fails to push** (for example "Deployed 4 of 5 functions … 1 failed."), so each push runs under `pipefail` and also fails on any `✗` or "… failed." line in the CLI's output. `appwrite push all` can't be used: it needs a console login, not an API key.
+- **The CLI can exit 0 when a resource fails to push** (for example "Deployed 4 of 5 functions … 1 failed."), or when `--all` skips one that lacks a setting (`Skipping it: set "entrypoint" …`). So each push runs under `pipefail` and also fails on any `✗`, "… failed." or "Skipping it:" line in the CLI's output. `appwrite push all` can't be used: it needs a console login, not an API key.
 - **The CLI takes the endpoint from `APPWRITE_ENDPOINT` over the config file's,** so nothing in the CLI notices a mismatch. The workflow checks that `APPWRITE_ENDPOINT` is exactly the config's `endpoint` and that the project secret matches its `projectId` before it pushes.
 - **The API key** is passed only to the two steps that use it, never to `npm ci` or the build.
 - **Until the secrets exist (#3),** a deploy is skipped with a warning. One with only some of its secrets fails instead.

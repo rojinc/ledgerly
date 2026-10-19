@@ -117,8 +117,9 @@ jobs:
           push() {
             appwrite push "$@" --all --force --config-file "$CONFIG" 2>&1 | tee "$log"
             # The CLI can exit 0 after a failure ("✗ Error: …", or "Deployed 4 of 5 functions
-            # … 1 failed."), so read what it printed too.
-            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed' "$log"; then
+            # … 1 failed."), or after skipping a resource that lacks a setting ("Skipping it:
+            # set …", with --all), so read what it printed too.
+            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed|Skipping it:' "$log"; then
               echo "::error::appwrite push $1 failed."
               exit 1
             fi
