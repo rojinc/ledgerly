@@ -724,6 +724,8 @@ describe('fileName', () => {
     // most, so the name with its dates stays under 255: 한 is 3 bytes, की is 6.
     expect(fileName('한'.repeat(61))).toBe('한'.repeat(60))
     expect(fileName('की'.repeat(61))).toBe('की'.repeat(30))
+    // A character that would pass 180 bytes is left out whole, and nothing after it is kept.
+    expect(fileName(`a${'की'.repeat(30)}b`)).toBe(`a${'की'.repeat(29)}`)
   })
 })
 

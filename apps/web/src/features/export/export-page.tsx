@@ -29,9 +29,12 @@ export function fileName(name: string): string {
     .toLowerCase()
     .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')
     .replace(/^-/, '')
+  const encoder = new TextEncoder()
   let kept = ''
+  let bytes = 0
   for (const character of characters(slug).slice(0, NAME_LENGTH)) {
-    if (new TextEncoder().encode(kept + character).length > NAME_BYTES) break
+    bytes += encoder.encode(character).length
+    if (bytes > NAME_BYTES) break
     kept += character
   }
   kept = kept.replace(/-$/, '')

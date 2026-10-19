@@ -1,5 +1,5 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
-import { formatNet } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import type { ReactNode } from 'react'
 import { invoiceSections, type Line } from './invoice-sections'
@@ -59,11 +59,13 @@ function LineTable({
   lines,
   amount,
   money,
+  stored,
   total,
 }: {
   lines: Line[]
   amount: (line: Line) => number
   money: (cents: number) => string
+  stored: (cents: number) => string
   total?: [label: string, amount: string]
 }) {
   return (
@@ -85,7 +87,7 @@ function LineTable({
                 {/* Under the description rather than in columns of their own, to fit 375 px. */}
                 {line.shift && (
                   <span className="block text-muted-foreground">
-                    {hoursText(line.shift.minutes)} at {money(line.shift.rateCents)}/h
+                    {hoursText(line.shift.minutes)} at {stored(line.shift.rateCents)}/h
                   </span>
                 )}
               </td>
@@ -127,6 +129,8 @@ export function InvoiceView({
   }
   // The opening, the section totals and the balance due are worked out, so they can pass the cap.
   const money = (cents: number) => formatNet(cents, snapshot.group.currency)
+  // A stored amount, such as a shift's rate, is within the cap.
+  const stored = (cents: number) => formatMoney(cents, snapshot.group.currency)
   const { openingCents, owed, charges, credits, records } = invoiceSections(
     snapshot,
     issuer.personId,
@@ -197,6 +201,7 @@ export function InvoiceView({
             lines={charges}
             amount={owed}
             money={money}
+            stored={stored}
             total={['Total work and charges', money(sum(charges))]}
           />
         </Section>
@@ -207,6 +212,7 @@ export function InvoiceView({
             lines={credits}
             amount={owed}
             money={money}
+            stored={stored}
             total={['Total payments and deductions', money(sum(credits))]}
           />
         </Section>
@@ -226,7 +232,12 @@ export function InvoiceView({
           <p className="text-sm text-muted-foreground">
             Not charged: these don’t change the balance due.
           </p>
-          <LineTable lines={records} amount={(line) => line.totalCents} money={money} />
+          <LineTable
+            lines={records}
+            amount={(line) => line.totalCents}
+            money={money}
+            stored={stored}
+          />
         </Section>
       )}
       {balance > 0 && (
