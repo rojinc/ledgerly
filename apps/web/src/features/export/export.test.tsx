@@ -7,8 +7,8 @@ import { tablesDB } from '../../lib/appwrite'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroups } from '../groups/use-groups'
 import { usePerson, useProfile } from '../profile/use-profile'
-import { download } from './export-data'
-import { ExportPage } from './export-page'
+import { download, fileUrl } from './export-data'
+import { ExportPage, fileName } from './export-page'
 
 vi.mock('../../lib/appwrite', () => ({ DATABASE_ID: 'main', tablesDB: { listRows: vi.fn() } }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: vi.fn() }))
@@ -16,16 +16,33 @@ vi.mock('../groups/use-groups', () => ({ useGroups: vi.fn() }))
 vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn(), usePerson: vi.fn() }))
 // Pair names have their own tests (#145): here a group is shown by its name.
 vi.mock('../groups/use-group-name', () => ({
-  useGroupName: (group: Groups) => group.name,
+  useGroupName: (group: Groups) => (group.type === 'pair' ? 'Alex' : group.name),
   useSortedByName: (groups: Groups[]) => [...groups].sort((a, b) => a.name.localeCompare(b.name)),
 }))
 vi.mock('./export-data', async (original) => ({
   ...(await original<typeof import('./export-data')>()),
   download: vi.fn(),
+  fileUrl: vi.fn(),
 }))
 
 const listRows = vi.mocked(tablesDB.listRows)
 const saved = vi.mocked(download)
+
+// The files the page offered as links, by their `blob:<n>` URL.
+let made: string[] = []
+
+const TRANSACTION_COLUMNS = [
+  '$id',
+  'groupId',
+  'date',
+  'status',
+  'kind',
+  'description',
+  'category',
+  'totalCents',
+]
+const SHARE_COLUMNS = ['$id', 'transactionId', 'personId', 'groupId', 'givenCents', 'receivedCents']
+const MEMBER_COLUMNS = ['$id', 'groupId', 'personId', 'displayName']
 
 // Sunday 25 October in UTC, already Monday the 26th in Sydney.
 const NOW = new Date('2026-10-25T13:30:00.000Z')
@@ -75,6 +92,13 @@ function calls(): Params[] {
   return listRows.mock.calls.map(([params]) => params as unknown as Params)
 }
 
+/** The lines of the CSV offered as the link `name`. */
+function linkLines(name: string): string[] {
+  const href = screen.getByRole('link', { name }).getAttribute('href') ?? ''
+  const csv = made[Number(href.replace('blob:', ''))] ?? ''
+  return csv.slice(1, -2).split('\r\n')
+}
+
 /** The lines of the CSV saved as `name`. */
 function savedLines(name: string): string[] {
   const csv = saved.mock.calls.find(([file]) => file === name)?.[1] ?? ''
@@ -115,6 +139,9 @@ beforeEach(() => {
   vi.mocked(useGroups).mockReturnValue({ data: [flat, cafe] } as never)
   vi.mocked(useProfile).mockReturnValue({ data: profile } as never)
   vi.mocked(usePerson).mockReturnValue({ data: { displayName: 'Sam Lee' } } as never)
+  made = []
+  vi.mocked(fileUrl).mockImplementation((csv) => `blob:${made.push(csv) - 1}`)
+  Object.assign(URL, { revokeObjectURL: vi.fn() })
 })
 
 afterEach(() => {
@@ -159,6 +186,7 @@ describe('ExportPage: a group’s records', () => {
           Query.equal('groupId', 'g1'),
           Query.greaterThanEqual('date', '2026-01-01'),
           Query.lessThanEqual('date', '2026-10-26'),
+          Query.select(TRANSACTION_COLUMNS),
           Query.orderAsc('date'),
           Query.limit(100),
         ],
@@ -166,12 +194,16 @@ describe('ExportPage: a group’s records', () => {
       {
         databaseId: 'main',
         tableId: 'shares',
-        queries: [Query.equal('transactionId', ['t1', 't2']), Query.limit(100)],
+        queries: [
+          Query.equal('transactionId', ['t1', 't2']),
+          Query.select(SHARE_COLUMNS),
+          Query.limit(100),
+        ],
       },
       {
         databaseId: 'main',
         tableId: 'members',
-        queries: [Query.equal('groupId', 'g1'), Query.limit(100)],
+        queries: [Query.equal('groupId', 'g1'), Query.select(MEMBER_COLUMNS), Query.limit(100)],
       },
     ])
     expect(savedLines('flat-2-14-2026-01-01-to-2026-10-26.csv')).toEqual([
@@ -195,6 +227,7 @@ describe('ExportPage: a group’s records', () => {
       Query.equal('groupId', 'g2'),
       Query.greaterThanEqual('date', '2026-09-01'),
       Query.lessThanEqual('date', '2026-09-30'),
+      Query.select(TRANSACTION_COLUMNS),
       Query.orderAsc('date'),
       Query.limit(100),
     ])
@@ -203,16 +236,50 @@ describe('ExportPage: a group’s records', () => {
   })
 
   it.each([
-    ['2026-10-02', '2026-10-01', 'The start must be on or before the end'],
-    ['', '2026-10-01', 'Enter both dates'],
-  ])('refuses %j to %j and reads nothing', (from, to, message) => {
+    ['2026-10-02', '2026-10-01', 'From', 'The start must be on or before the end'],
+    ['', '2026-10-01', 'From', 'Enter a date'],
+    ['2026-10-01', '', 'To', 'Enter a date'],
+  ])('refuses %j to %j on %s, and reads nothing', (from, to, field, message) => {
     renderPage()
     fireEvent.change(screen.getByLabelText('From'), { target: { value: from } })
     fireEvent.change(screen.getByLabelText('To'), { target: { value: to } })
     fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
-    expect(screen.getByText(message)).toBeTruthy()
-    expect(screen.getByLabelText('From').getAttribute('aria-invalid')).toBe('true')
+    const input = screen.getByLabelText(field)
+    expect(input.getAttribute('aria-invalid')).toBe('true')
+    expect(document.getElementById(`${input.id}-error`)?.textContent).toBe(message)
+    const other = screen.getByLabelText(field === 'From' ? 'To' : 'From')
+    expect(other.getAttribute('aria-invalid')).toBe('false')
     expect(listRows).not.toHaveBeenCalled()
+  })
+
+  it('names the file as the app names the group, a pair by its other member', async () => {
+    vi.mocked(useGroups).mockReturnValue({
+      data: [group('g3', 'Sam', { type: 'pair' })],
+    } as never)
+    mockTables({})
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    expect(await screen.findByText('Downloaded alex-2026-01-01-to-2026-10-26.csv.')).toBeTruthy()
+    expect(saved.mock.calls[0]?.[0]).toBe('alex-2026-01-01-to-2026-10-26.csv')
+  })
+
+  it('reads every page of members past 100', async () => {
+    const people = Array.from({ length: 150 }, (_, index) => ({
+      $id: `m${index}`,
+      personId: `p${index}`,
+      displayName: `Person ${index}`,
+    }))
+    listRows.mockImplementation((async ({ tableId, queries }: Params) => {
+      if (tableId !== 'members') return { total: 0, rows: [] }
+      const rows = queries.includes(Query.cursorAfter('m99'))
+        ? people.slice(100)
+        : people.slice(0, 100)
+      return { total: rows.length, rows }
+    }) as never)
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    await screen.findByText(/^Downloaded/)
+    expect(calls().filter((params) => params.tableId === 'members')).toHaveLength(2)
   })
 
   it('reads every page, and the shares 100 transactions at a time', async () => {
@@ -259,7 +326,7 @@ describe('ExportPage: a group’s records', () => {
 })
 
 describe('ExportPage: your data', () => {
-  it('downloads profile.csv and my-records.csv, with only your own shares', async () => {
+  it('offers profile.csv and my-records.csv as links, with only your own shares', async () => {
     mockTables({
       shares: [
         { groupId: 'g1', transactionId: 't1', personId: 'p1', givenCents: 0, receivedCents: 2253 },
@@ -269,25 +336,38 @@ describe('ExportPage: your data', () => {
       transactions: [transaction('t1'), transaction('t9', { groupId: 'g9' })],
     })
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Download my data' }))
-    expect(await screen.findByText('Downloaded profile.csv and my-records.csv.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    const status = await screen.findByText('Your files are ready. Download each one:')
+    expect(status.closest('[role="status"]')).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'profile.csv' }).getAttribute('download')).toBe(
+      'profile.csv',
+    )
     expect(calls()).toEqual([
       {
         databaseId: 'main',
         tableId: 'shares',
-        queries: [Query.equal('personId', 'p1'), Query.orderAsc('date'), Query.limit(100)],
+        queries: [
+          Query.equal('personId', 'p1'),
+          Query.select(SHARE_COLUMNS),
+          Query.orderAsc('date'),
+          Query.limit(100),
+        ],
       },
       {
         databaseId: 'main',
         tableId: 'transactions',
-        queries: [Query.equal('$id', ['t1', 't9']), Query.limit(100)],
+        queries: [
+          Query.equal('$id', ['t1', 't9']),
+          Query.select(TRANSACTION_COLUMNS),
+          Query.limit(100),
+        ],
       },
     ])
-    expect(savedLines('my-records.csv')).toEqual([
+    expect(linkLines('my-records.csv')).toEqual([
       'group,groupType,date,kind,description,category,currency,total,given,received,net',
       'Flat 2/14,house,2026-10-05,expense,Groceries,groceries,AUD,45.05,0.00,22.53,-22.53',
     ])
-    expect(savedLines('profile.csv')).toEqual([
+    expect(linkLines('profile.csv')).toEqual([
       'field,value',
       'name,Sam Lee',
       'email,sam@example.com',
@@ -299,61 +379,138 @@ describe('ExportPage: your data', () => {
       'summaryFrequency,none',
       'business.businessName,Sam Lee Cleaning',
     ])
+    expect(saved).not.toHaveBeenCalled()
   })
 
-  it('leaves out business details that don’t read', async () => {
-    vi.mocked(useProfile).mockReturnValue({ data: { ...profile, businessJson: '{' } } as never)
+  it('names a pair group by its other member, as the app does', async () => {
+    vi.mocked(useGroups).mockReturnValue({
+      data: [group('g3', 'Sam', { type: 'pair' }), flat],
+    } as never)
+    mockTables({
+      shares: [
+        { groupId: 'g3', transactionId: 't1', personId: 'p1', givenCents: 0, receivedCents: 100 },
+      ],
+      transactions: [transaction('t1', { groupId: 'g3' })],
+      // The user's own row last: their own name must never win.
+      members: [
+        { groupId: 'g3', personId: 'p2', displayName: 'Alex' },
+        { groupId: 'g3', personId: 'p1', displayName: 'Sam' },
+      ],
+    })
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await screen.findByText('Your files are ready. Download each one:')
+    expect(calls().at(-1)?.queries).toEqual([
+      Query.equal('groupId', ['g3']),
+      Query.select(MEMBER_COLUMNS),
+      Query.limit(100),
+    ])
+    expect(linkLines('my-records.csv')[1]).toMatch(/^Alex,pair,/)
+  })
+
+  it.each([
+    ['that don’t parse', '{'],
+    ['that the schema refuses', JSON.stringify({ abn: '1' })],
+    ['that aren’t there', null],
+  ])('leaves out business details %s', async (_case, businessJson) => {
+    vi.mocked(useProfile).mockReturnValue({ data: { ...profile, businessJson } } as never)
     mockTables({})
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Download my data' }))
-    await screen.findByText(/^Downloaded profile/)
-    expect(savedLines('profile.csv').some((line) => line.startsWith('business.'))).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await screen.findByText('Your files are ready. Download each one:')
+    expect(linkLines('profile.csv').some((line) => line.startsWith('business.'))).toBe(false)
   })
 
-  it('waits for the profile, and says when the files can’t be made', async () => {
+  it('lets go of the last files when new ones are made', async () => {
+    mockTables({})
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await screen.findByText('Your files are ready. Download each one:')
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:0'))
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:1')
+    await screen.findByText('Your files are ready. Download each one:')
+    expect(screen.getByRole('link', { name: 'profile.csv' }).getAttribute('href')).toBe('blob:2')
+  })
+
+  it('says why it waits, and when the files can’t be made', async () => {
     vi.mocked(usePerson).mockReturnValue({ data: undefined } as never)
     renderPage()
-    const button = screen.getByRole('button', { name: 'Download my data' })
+    const button = screen.getByRole('button', { name: 'Make my files' })
     expect(button.getAttribute('aria-disabled')).toBe('true')
+    expect(
+      document.getElementById(button.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toBe('Loading your details…')
     fireEvent.click(button)
     expect(listRows).not.toHaveBeenCalled()
+    cleanup()
+    vi.mocked(usePerson).mockReturnValue({ data: undefined, isError: true } as never)
+    renderPage()
+    expect(
+      screen.getByText('We couldn’t load your details. Reload the page to try again.'),
+    ).toBeTruthy()
     cleanup()
     vi.mocked(usePerson).mockReturnValue({ data: { displayName: 'Sam Lee' } } as never)
     listRows.mockRejectedValue(new Error('offline'))
     renderPage()
-    fireEvent.click(screen.getByRole('button', { name: 'Download my data' }))
+    const ready = screen.getByRole('button', { name: 'Make my files' })
+    expect(ready.hasAttribute('aria-describedby')).toBe(false)
+    fireEvent.click(ready)
     expect((await screen.findByRole('alert')).textContent).toBe(
       'We couldn’t make the files. Check your connection and try again.',
     )
-    expect(saved).not.toHaveBeenCalled()
+    expect(screen.queryByRole('link')).toBeNull()
   })
 })
 
 describe('ExportPage: groups', () => {
-  it('says so when the groups can’t be loaded, and still offers your data', () => {
+  it('says so when the groups can’t be loaded, and why your data waits', () => {
     vi.mocked(useGroups).mockReturnValue({ data: undefined, isError: true } as never)
     renderPage()
-    expect(screen.getByRole('alert').textContent).toBe(
+    expect(screen.getAllByRole('alert')[0]?.textContent).toBe(
       'We couldn’t load your groups. Reload the page to try again.',
     )
     expect(screen.queryByLabelText('Group')).toBeNull()
-    expect(screen.getByRole('button', { name: 'Download my data' })).toBeTruthy()
+    expect(
+      screen.getByText('We couldn’t load your details. Reload the page to try again.'),
+    ).toBeTruthy()
+  })
+
+  it('offers no group export when there are no groups', () => {
+    vi.mocked(useGroups).mockReturnValue({ data: [] } as never)
+    renderPage()
+    expect(screen.queryByRole('button', { name: 'Download CSV' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Make my files' })).toBeTruthy()
   })
 })
 
-describe('download', () => {
-  it('saves the CSV through a link, without uploading it', async () => {
+describe('fileName', () => {
+  it('keeps letters of any script, drops accents, and falls back to “group”', () => {
+    expect(fileName('Flat 2/14')).toBe('flat-2-14')
+    expect(fileName('Café Night')).toBe('cafe-night')
+    expect(fileName('Crème brûlée')).toBe('creme-brulee')
+    expect(fileName('東京旅行')).toBe('東京旅行')
+    expect(fileName('!!!')).toBe('group')
+  })
+})
+
+describe('download and fileUrl', () => {
+  it('saves the CSV through a link, and lets go of it a minute later', async () => {
     const real = await vi.importActual<typeof import('./export-data')>('./export-data')
-    const created = vi.fn(() => 'blob:x')
+    const created = vi.fn((_blob: Blob) => 'blob:x')
     const revoked = vi.fn()
     Object.assign(URL, { createObjectURL: created, revokeObjectURL: revoked })
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
-    vi.useRealTimers()
+    vi.useFakeTimers({ toFake: ['setTimeout'] })
     real.download('a.csv', 'x')
     expect(click).toHaveBeenCalledTimes(1)
     const link = click.mock.contexts[0] as HTMLAnchorElement
     expect(link.download).toBe('a.csv')
     expect(link.href).toBe('blob:x')
-    await waitFor(() => expect(revoked).toHaveBeenCalledWith('blob:x'))
+    expect(created.mock.calls[0]?.[0].type).toBe('text/csv;charset=utf-8')
+    vi.advanceTimersByTime(59_999)
+    expect(revoked).not.toHaveBeenCalled()
+    vi.advanceTimersByTime(1)
+    expect(revoked).toHaveBeenCalledWith('blob:x')
   })
 })
