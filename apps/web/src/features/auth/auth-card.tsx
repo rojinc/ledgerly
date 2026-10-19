@@ -11,3 +11,8 @@ export function AuthCard({ title, children }: { title: string; children: ReactNo
     </main>
   )
 }
+
+/** A ref that focuses its element once it's on the page: for a message that replaces a form. */
+export function focusOnMount(element: HTMLElement | null) {
+  element?.focus()
+}
