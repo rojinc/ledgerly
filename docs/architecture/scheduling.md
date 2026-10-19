@@ -114,13 +114,13 @@ A schedule whose `nextRunAt` has come is left for now: step 1 hasn't brought its
 | Reminder | Condition | Sent to |
 | --- | --- | --- |
 | Bill due soon | status `due`, `dueOn` within 2 days, `remindedAt` empty | joined admins with an account (personal: the owner) |
-| Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost` or the shift was made after its day (step 2 never posts it), `remindedAt` empty | group owner |
+| Shift to confirm | status `scheduled`, `date < today`, `remindedAt` empty, whether or not its schedule has `autoPost` | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
 Each reminder goes out once. In one database transaction, `remindedAt` is staged first, then the stored row is checked: still the same status, date or `startedAt`, not locked and not reminded. Only then is the email sent, with Resend's idempotency key `reminder-<transactionId>`, before the commit. A row that changed after the page was read gets nothing. One that changes after staging fails the commit, and the next run looks at it again; if the email had gone out, Resend doesn't deliver it twice within 24 hours. A failed send leaves `remindedAt` empty, so the next run tries again, except for an email Resend will never take (a bad address, or the same key with different content), which is marked. Any other failure on one row is counted, and the run carries on. Bill reminders add `dueOn` to the key: a new due date clears `remindedAt` and needs its own reminder.
 
 - **Who gets it:** only an active member with an account and a verified email (`users.get`, so the function has the `users.read` scope). With nobody to send to, `remindedAt` is still set, so the row isn't read every hour.
-- **Shift to confirm:** also for a `scheduled` shift that has no schedule, since nothing will post it. The shift's date must be before today in the group's timezone. The query uses the same 7-day floor as step 2.
+- **Shift to confirm:** for every `scheduled` shift dated before today in the group's timezone: one with no schedule (nothing posts it), one whose schedule doesn't auto-post, and an auto-post one that step 2 couldn't post (a template a member change broke, a schedule step 1 can't finish, or one made after its day), so none drops out of the 7-day window unseen. Auto-post shifts step 2 can post never get one: every hourly run does step 2 before step 3, from the first run after local midnight, and reminders wait until 07:00. The query uses the same 7-day floor as step 2. An auto-post expense or income that step 2 can't post has no reminder of its own; it stays on the calendar for the user.
 - **When:** only once it is 07:00 or later in the group's timezone, so nobody gets one in the middle of the night; a later run picks up the rest. Archived groups get none: their rows are marked without an email, since a timer there can't be stopped.
 - **Link:** `<APP_URL>/groups/<groupId>/transactions/<transactionId>`.
 
