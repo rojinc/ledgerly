@@ -3,14 +3,20 @@ import { formatMoney } from '@ledgerly/core/money/format'
 import { ID } from 'appwrite'
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router'
-import { queryKeys } from '../../lib/query-keys'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroups } from '../groups/use-groups'
 import { elapsedText } from './shift-values'
-import { useMyRoles, useStartTimer, useStopTimer, useToday } from './use-shifts'
+import {
+  todayKey,
+  useMyRoles,
+  useStartTimer,
+  useStopTimer,
+  useToday,
+  useTodayDates,
+} from './use-shifts'
 
 /** The time now, once a second, for the running duration. */
 function useNow(): number {
@@ -36,16 +42,14 @@ export function TodayPage() {
   const personId = useBootstrap(userId).data?.personId ?? ''
   const groups = useGroups()
   const employers = groups.data?.filter((group) => group.type === 'employer')
-  const today = useToday(employers, personId)
+  const dates = useTodayDates(employers)
+  const today = useToday(employers, personId, dates)
   const roles = useMyRoles(employers, personId)
-  const todayKey = queryKeys.today(
-    userId,
-    (employers ?? []).map((group) => group.$id),
-  )
+  const key = todayKey(userId, employers, dates)
   // Here, not in the timer panels: an optimistic start or stop swaps the panel, and a rollback
   // must still show the error and retry with the same ID and employer.
-  const start = useStartTimer(todayKey)
-  const stop = useStopTimer(todayKey)
+  const start = useStartTimer(key)
+  const stop = useStopTimer(key)
   const [startId, setStartId] = useState(() => ID.unique())
   const [startGroupId, setStartGroupId] = useState('')
   const [breakMinutes, setBreakMinutes] = useState('')

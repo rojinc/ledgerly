@@ -637,6 +637,29 @@ describe('ShiftPage', () => {
     expect(sentBody().description).toBe('Timed shift')
   })
 
+  it('saves a timer stopped within the minute it started, whose times are equal (#147 O5)', async () => {
+    const timed = { minutes: 0, rateCents: 2550, startTime: '09:00', endTime: '09:00' }
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))
+    call.mockResolvedValue(view(shiftRow()))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    type('Description', 'Quick shift')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sentBody().shift).toStrictEqual(timed)
+    expect(sentBody().description).toBe('Quick shift')
+  })
+
+  it('still refuses equal times typed over a stored shift’s', async () => {
+    mockRow(shiftRow())
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    type('End', '09:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('The end must differ from the start')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+  })
+
   it('works the minutes out again once a time changes', async () => {
     const timed = { minutes: 29, rateCents: 2550, startTime: '09:00', endTime: '09:30' }
     mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))

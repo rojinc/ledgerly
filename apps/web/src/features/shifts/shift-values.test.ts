@@ -39,6 +39,9 @@ describe('shift times', () => {
     expect(parseHours('7.25')).toBe(435)
     expect(parseHours('0.33')).toBe(20)
     expect(parseHours('7:60')).toBeUndefined()
+    // Minutes after `:` take two digits: `7:3` could be meant as 7:30 (#147 O10).
+    expect(parseHours('7:3')).toBeUndefined()
+    expect(parseHours('7:03')).toBe(423)
     expect(parseHours('7.555')).toBeUndefined()
     expect(parseHours('-1')).toBeUndefined()
     expect(parseHours('seven')).toBeUndefined()
