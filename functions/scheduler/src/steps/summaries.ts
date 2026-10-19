@@ -59,9 +59,10 @@ async function summarise(
   try {
     email = seen.summaryFrequency === 'none' ? undefined : await summaryOf(services, seen, links)
   } catch (error) {
-    // One that can never be built (an amount too big to show, a query Appwrite refuses) would
-    // fail on every run, so it moves on and counts as failed. A read that failed for now (a
-    // timeout, a rate limit) leaves it for the next run.
+    // One that can never be built (an amount too big to show, a query Appwrite refuses, a row
+    // gone) would fail on every run, so it moves on and counts as failed. Anything else leaves it
+    // for the next run: a timeout, a rate limit, an outage, or a key missing a scope, so a config
+    // error fixed later loses no period.
     if (!lasting(error)) throw error
     console.error(`scheduler: summary failed for profile ${seen.$id}: ${describe(error)}`)
     return (await moveOn(services, seen)) ? 'failed' : undefined
@@ -72,10 +73,7 @@ async function summarise(
 function lasting(error: unknown): boolean {
   return (
     error instanceof RangeError ||
-    (error instanceof AppwriteException &&
-      error.code >= 400 &&
-      error.code < 500 &&
-      error.code !== 429)
+    (error instanceof AppwriteException && (error.code === 400 || error.code === 404))
   )
 }
 

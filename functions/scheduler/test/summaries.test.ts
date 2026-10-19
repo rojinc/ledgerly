@@ -415,8 +415,12 @@ describe('step 4: summary emails', () => {
 
   it.each([
     ['moves on from one Appwrite refuses to build', 400, NEXT_WEEK],
+    ['moves on from one whose rows are gone', 404, NEXT_WEEK],
     ['tries one again that hit a rate limit', 429, DUE],
-  ])('%s, counting it as failed', async (_case, code, nextSummaryAt) => {
+    ['tries one again after a key without a scope', 401, DUE],
+    ['tries one again after a key without a permission', 403, DUE],
+    ['tries one again in an outage', 500, DUE],
+  ])('%s (%i), counting it as failed', async (_case, code, nextSummaryAt) => {
     const services = seeded()
     const list = services.db.listRows.bind(services.db)
     vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
@@ -431,6 +435,39 @@ describe('step 4: summary emails', () => {
       `scheduler: summary failed for profile u1: AppwriteException ${code} general_query`,
     )
     quiet.mockRestore()
+  })
+
+  it('stops, even within a page, once the time budget is used up', async () => {
+    const services = seeded({
+      profiles: [profile(), profile({ $id: 'u2', personId: 'pAlex' })],
+      accounts: {
+        u1: { email: 'sam@example.com', emailVerification: true },
+        u2: { email: 'alex@example.com', emailVerification: true },
+      },
+    })
+    services.outOfTime = () => services.sendEmail.mock.calls.length >= 1
+    expect((await runCron(services)).summaries).toEqual({ sent: 1, skipped: 0, failed: 0 })
+    const alex = services.db.rows('profiles').find((row) => row.$id === 'u2')
+    expect(alex?.nextSummaryAt).toBe(DUE)
+  })
+
+  it('counts nothing for a profile deleted after the move is staged', async () => {
+    const services = seeded()
+    const stage = services.db.createOperations.bind(services.db)
+    let done = false
+    vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+      const staged = await stage(params)
+      if (!done && JSON.stringify(params.operations).includes('"nextSummaryAt"')) {
+        done = true
+        // The account's deletion takes the profile away (identity-and-invites.md#order).
+        await withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'profiles', rowId: 'u1' }),
+        )
+      }
+      return staged
+    })
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
   it('tries a summary again next run when it can’t be built', async () => {
