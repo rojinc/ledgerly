@@ -115,8 +115,8 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
       remove(TABLES.transactions, row.$id),
     ])
   }
-  // idx_groupId, idx_group_period, idx_group_at
-  for (const tableId of [TABLES.schedules, TABLES.statements, TABLES.activity]) {
+  // idx_groupId, idx_group_period, idx_group_at, idx_groupId
+  for (const tableId of [TABLES.schedules, TABLES.statements, TABLES.activity, TABLES.reminders]) {
     for await (const row of pages<Models.Row>(services, tableId, ofGroup)) {
       await add([remove(tableId, row.$id)])
     }

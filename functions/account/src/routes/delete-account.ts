@@ -9,6 +9,7 @@ import type {
   Members,
   Persons,
   Profiles,
+  Reminders,
   Transactions,
 } from '@ledgerly/core/generated/rows'
 import {
@@ -24,7 +25,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
-import { type Deleting, leaveGroups } from '../groups'
+import { type Deleting, finalizingStatement, leaveGroups } from '../groups'
 import { parseBody } from '../parse-body'
 import { doneIfGone, FORMER_MEMBER, getRowOrNull, isAppwriteError, personsOfUser } from '../rows'
 import type { Services, UsersApi } from '../services'
@@ -86,7 +87,11 @@ async function refuse(
   if (await hasRunningTimer(db, personId)) {
     throw new AppError('CONFLICT', 'A timer is running. Stop or void it first.')
   }
-  const groupIds = await housesToHandOver(db, personId)
+  const adminRows = await joinedAdminRows(db, personId)
+  if (await finalizingAlone(db, personId, adminRows)) {
+    throw new AppError('CONFLICT', 'A statement is being finalized. Finish it first.')
+  }
+  const groupIds = await housesToHandOver(db, personId, adminRows)
   if (groupIds.length > 0) {
     const details: DeleteAccountRefusal = { groupIds }
     throw new AppError('VALIDATION_FAILED', 'Make someone else an admin first.', details)
@@ -111,24 +116,44 @@ async function hasRunningTimer(db: Db, personId: string): Promise<boolean> {
   return false
 }
 
-// Houses that aren't archived where they're the only joined admin and another member is
-// `active`, who could be made admin: the rule leaving uses (permissions.md#leaving-a-group).
-async function housesToHandOver(db: Db, personId: string): Promise<string[]> {
-  // idx_person_status
-  const adminRows = (
+// Their `active` member rows with the role `admin` (idx_person_status).
+async function joinedAdminRows(db: Db, personId: string): Promise<Members[]> {
+  return (
     await allRows<Members>(db, TABLES.members, [
       Query.equal('personId', personId),
       Query.equal('status', 'active'),
     ])
   ).filter((member) => member.role === 'admin')
+}
+
+// The other `active` members of a group (idx_groupId).
+async function othersIn(db: Db, groupId: string, personId: string): Promise<Members[]> {
+  return (await allRows<Members>(db, TABLES.members, [Query.equal('groupId', groupId)])).filter(
+    (member) => member.personId !== personId && member.status === 'active',
+  )
+}
+
+// A group with a statement being finalized where they're the only joined admin: only an admin
+// can finish a finalize, so once they're gone nobody could, and the group couldn't be archived.
+// (An archived group never has one: archiving waits for a finalize, which refuses one archived.)
+async function finalizingAlone(db: Db, personId: string, adminRows: Members[]): Promise<boolean> {
+  for (const { groupId } of adminRows) {
+    if (!(await finalizingStatement(db, groupId))) continue
+    if (!(await othersIn(db, groupId, personId)).some((member) => member.role === 'admin')) {
+      return true
+    }
+  }
+  return false
+}
+
+// Houses that aren't archived where they're the only joined admin and another member is
+// `active`, who could be made admin: the rule leaving uses (permissions.md#leaving-a-group).
+async function housesToHandOver(db: Db, personId: string, adminRows: Members[]): Promise<string[]> {
   const groupIds: string[] = []
   for (const { groupId } of adminRows) {
     const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
     if (group?.type !== 'house' || group.archivedAt) continue
-    // idx_groupId
-    const others = (
-      await allRows<Members>(db, TABLES.members, [Query.equal('groupId', groupId)])
-    ).filter((member) => member.personId !== personId && member.status === 'active')
+    const others = await othersIn(db, groupId, personId)
     if (others.length > 0 && !others.some((member) => member.role === 'admin')) {
       groupIds.push(groupId)
     }
@@ -257,7 +282,18 @@ async function deleteOwnRows(db: Db, userId: string, personId: string): Promise<
   const identities = await allRows<Identities>(db, TABLES.identities, [
     Query.equal('personId', [personId, ...merging.map((person) => person.$id)]),
   ])
-  const invites = await allRows<Invites>(db, TABLES.invites, [Query.equal('invitedBy', personId)])
+  const invites = [
+    // idx_invitedBy_sentAt
+    ...(await allRows<Invites>(db, TABLES.invites, [Query.equal('invitedBy', personId)])),
+    ...(await invitesTo(db, personId)),
+  ]
+  // idx_sentBy_sentAt, idx_toPerson_sentAt (a merge moves a reminder's toPersonId too)
+  const reminders = [
+    ...(await allRows<Reminders>(db, TABLES.reminders, [Query.equal('sentBy', personId)])),
+    ...(await allRows<Reminders>(db, TABLES.reminders, [
+      Query.equal('toPersonId', [personId, ...merging.map((person) => person.$id)]),
+    ])),
+  ]
   const profile = await getRowOrNull<Profiles>(db, TABLES.profiles, userId)
   await writeInBatches(db, [
     ...identities.map((row) => ({
@@ -265,11 +301,46 @@ async function deleteOwnRows(db: Db, userId: string, personId: string): Promise<
       tableId: TABLES.identities,
       rowId: row.$id,
     })),
-    ...invites.map((row) => ({
+    ...unique(invites).map((row) => ({
       action: 'delete' as const,
       tableId: TABLES.invites,
       rowId: row.$id,
     })),
+    ...reminders.map((row) => ({
+      action: 'delete' as const,
+      tableId: TABLES.reminders,
+      rowId: row.$id,
+    })),
     ...(profile ? [{ action: 'delete' as const, tableId: TABLES.profiles, rowId: userId }] : []),
   ])
+}
+
+// Invites sent to them in the groups they joined, which are kept: each holds the address it
+// was sent to. One to a group where they're a placeholder stays, as the group does (D-016).
+// invites.memberId has no index: Appwrite reads the table, which is small, once per deletion.
+async function invitesTo(db: Db, personId: string): Promise<Invites[]> {
+  // idx_person_status
+  const memberIds = (
+    await allRows<Members>(db, TABLES.members, [
+      Query.equal('personId', personId),
+      Query.equal('status', ['active', 'left']),
+    ])
+  ).map((member) => member.$id)
+  const invites: Invites[] = []
+  for (let start = 0; start < memberIds.length; start += IDS_PER_QUERY) {
+    invites.push(
+      ...(await allRows<Invites>(db, TABLES.invites, [
+        Query.equal('memberId', memberIds.slice(start, start + IDS_PER_QUERY)),
+      ])),
+    )
+  }
+  return invites
+}
+
+// Ids per query, well under Appwrite's limit on values in one `equal`.
+const IDS_PER_QUERY = 50
+
+// An invite they sent to their own member row is found twice.
+function unique<R extends { $id: string }>(rows: R[]): R[] {
+  return [...new Map(rows.map((row) => [row.$id, row])).values()]
 }
