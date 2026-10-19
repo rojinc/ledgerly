@@ -247,7 +247,11 @@ describe('BillsPage: recurring', () => {
 
   it('stops one from today in the group’s time zone, after confirming', async () => {
     mockLists([schedule('s1')])
-    call.mockResolvedValue(ok({ schedule: schedule('s1', { endsOn: '2026-10-19' }) }))
+    call.mockImplementation(async () => {
+      // Stored as stopped: the list reloads it so.
+      mockLists([schedule('s1', { endsOn: '2026-10-19' })])
+      return ok({ schedule: schedule('s1', { endsOn: '2026-10-19' }) })
+    })
     renderAt('/bills')
     fireEvent.click(await screen.findByRole('button', { name: 'Stop Rent' }))
     expect(screen.getByText(/Stop Rent from today\?/)).toBeTruthy()
@@ -258,6 +262,54 @@ describe('BillsPage: recurring', () => {
       endsOn: '2026-10-19',
     })
     expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Bills' }))
+    // Shown as stopped at once: Stop doesn't come back before the list reloads.
+    expect(screen.queryByRole('button', { name: 'Stop Rent' })).toBeNull()
+  })
+
+  it('removes one that hasn’t started yet, as it can’t be given an end before its start', async () => {
+    mockLists([schedule('s1', { startsOn: '2026-10-26' })])
+    call.mockImplementation(async () => {
+      mockLists([])
+      return ok({})
+    })
+    renderAt('/bills')
+    const region = within(await screen.findByRole('region', { name: 'Recurring' }))
+    expect((await region.findByRole('listitem')).textContent).toMatch(
+      /Starts (26 Oct|Oct 26,) 2026/,
+    )
+    fireEvent.click(region.getByRole('button', { name: 'Stop Rent' }))
+    expect(
+      screen.getByText('Remove Rent? It hasn’t started yet, so no bills are kept.'),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+    expect(await screen.findByText('Removed Rent.')).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('scheduler', 'DELETE', '/schedules/s1', undefined)
+    expect(region.queryByRole('listitem')).toBeNull()
+  })
+
+  it('moves focus to Cancel when the question opens', async () => {
+    mockLists([schedule('s1')])
+    renderAt('/bills')
+    const stop = await screen.findByRole('button', { name: 'Stop Rent' })
+    stop.focus()
+    fireEvent.click(stop)
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+  })
+
+  it('shows the last due date from the rule’s end too, the earlier one first', async () => {
+    mockLists([
+      schedule('s1', { rrule: 'FREQ=WEEKLY;BYDAY=MO;UNTIL=20270628' }),
+      schedule('s2', {
+        description: 'Gym',
+        rrule: 'FREQ=WEEKLY;BYDAY=MO;UNTIL=20270628',
+        endsOn: '2026-12-28',
+      }),
+    ])
+    renderAt('/bills')
+    const region = within(await screen.findByRole('region', { name: 'Recurring' }))
+    const items = await region.findAllByRole('listitem')
+    expect(items[0]?.textContent).toMatch(/Last due (28 Jun|Jun 28,) 2027/)
+    expect(items[1]?.textContent).toMatch(/Last due (28 Dec|Dec 28,) 2026/)
   })
 
   it('cancels a stop, putting focus back on Stop, and shows a refusal', async () => {

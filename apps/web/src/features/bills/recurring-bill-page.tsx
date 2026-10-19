@@ -193,6 +193,7 @@ function RecurringBillForm({ group }: { group: Groups }) {
         id="startsOn"
         type="date"
         label="First due date"
+        hint="The first bill is due on the first matching day from this date."
         error={errors.startsOn}
         {...form.register('startsOn')}
       />

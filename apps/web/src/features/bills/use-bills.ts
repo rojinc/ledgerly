@@ -1,3 +1,4 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import type {
   PostTransactionBody,
@@ -8,7 +9,7 @@ import type {
 import type { EndScheduleBody, ScheduleInput } from '@ledgerly/core/schemas/scheduler'
 import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Query } from 'appwrite'
-import { callFunction } from '../../lib/api'
+import { callFunction, type Method } from '../../lib/api'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { writeErrorMessage } from '../groups/archive-group'
@@ -113,16 +114,17 @@ export function useRecurringBills(groupId: string) {
 }
 
 /** Calls the scheduler function; a refusal throws its message in plain words. */
-async function scheduler<T>(path: string, body: unknown): Promise<T> {
-  const result = await callFunction<T>('scheduler', 'POST', path, body)
+async function scheduler<T>(method: Method, path: string, body?: unknown): Promise<T> {
+  const result = await callFunction<T>('scheduler', method, path, body)
   if (!result.ok) throw new Error(writeErrorMessage(result.error))
   return result.data
 }
 
 /** After a schedule changes: the lists (its occurrences are due bills) and the calendar. */
-function refreshRecurring(queryClient: QueryClient, schedule: Schedules) {
-  void queryClient.invalidateQueries({ queryKey: billKeys.all(schedule.groupId) })
-  void queryClient.invalidateQueries({ queryKey: ['schedules', schedule.groupId] })
+function refreshRecurring(queryClient: QueryClient, groupId: string) {
+  void queryClient.invalidateQueries({ queryKey: billKeys.all(groupId) })
+  void queryClient.invalidateQueries({ queryKey: ['schedules', groupId] })
+  void queryClient.invalidateQueries({ queryKey: ['history', groupId] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
 }
 
@@ -130,18 +132,40 @@ function refreshRecurring(queryClient: QueryClient, schedule: Schedules) {
 export function useCreateRecurringBill() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (input: ScheduleInput) => scheduler<{ schedule: Schedules }>('/schedules', input),
-    onSuccess: ({ schedule }) => refreshRecurring(queryClient, schedule),
+    mutationFn: (input: ScheduleInput) =>
+      scheduler<{ schedule: Schedules }>('POST', '/schedules', input),
+    onSuccess: ({ schedule }) => refreshRecurring(queryClient, schedule.groupId),
   })
 }
 
-/** `scheduler POST /schedules/{id}/end`: no more bills after `endsOn`. */
-export function useStopRecurringBill(id: string) {
+/**
+ * Stops a recurring bill from `today`: `POST /schedules/{id}/end` with today as its end date.
+ * One that hasn't started has no end date to give (the scheduler refuses one before `startsOn`),
+ * and nothing of it has been paid, so it's removed with `DELETE /schedules/{id}` instead.
+ */
+export function useStopRecurringBill(schedule: Schedules) {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (body: EndScheduleBody) =>
-      scheduler<{ schedule: Schedules }>(`/schedules/${id}/end`, body),
-    onSuccess: ({ schedule }) => refreshRecurring(queryClient, schedule),
+    mutationFn: async (today: LocalDate): Promise<Schedules | undefined> => {
+      if (today < schedule.startsOn) {
+        await scheduler<object>('DELETE', `/schedules/${schedule.$id}`)
+        return undefined
+      }
+      const body: EndScheduleBody = { endsOn: today }
+      const { schedule: stopped } = await scheduler<{ schedule: Schedules }>(
+        'POST',
+        `/schedules/${schedule.$id}/end`,
+        body,
+      )
+      return stopped
+    },
+    onSuccess: (stopped) => {
+      // Shown as it is now at once, so Stop doesn't come back until the list reloads.
+      queryClient.setQueryData<Schedules[]>(billKeys.recurring(schedule.groupId), (rows) =>
+        rows?.flatMap((row) => (row.$id !== schedule.$id ? [row] : stopped ? [stopped] : [])),
+      )
+      refreshRecurring(queryClient, schedule.groupId)
+    },
   })
 }
 

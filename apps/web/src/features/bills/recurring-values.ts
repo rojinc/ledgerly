@@ -79,9 +79,18 @@ export function templateCents(schedule: Pick<Schedules, 'templateJson'>): number
   }
 }
 
+/**
+ * The last date one can be due: the earlier of its end date (set by Stop) and the rule's UNTIL
+ * (set by "Last due date"), or undefined when it has neither.
+ */
+export function lastDue(schedule: Pick<Schedules, 'endsOn' | 'rrule'>): string | undefined {
+  const until = /UNTIL=(\d{4})(\d{2})(\d{2})/.exec(schedule.rrule)
+  const dates = [schedule.endsOn, until ? `${until[1]}-${until[2]}-${until[3]}` : undefined]
+  return dates.filter((date): date is string => Boolean(date)).sort()[0]
+}
+
 /** Stopped, or past its last date: nothing more is made. */
 export function hasEnded(schedule: Pick<Schedules, 'endsOn' | 'rrule'>, today: string): boolean {
-  const until = /UNTIL=(\d{4})(\d{2})(\d{2})/.exec(schedule.rrule)
-  const last = schedule.endsOn ?? (until ? `${until[1]}-${until[2]}-${until[3]}` : undefined)
+  const last = lastDue(schedule)
   return last !== undefined && last < today
 }

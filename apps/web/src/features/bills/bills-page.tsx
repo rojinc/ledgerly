@@ -3,6 +3,7 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import { type ReactNode, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
 import { Link } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -11,7 +12,7 @@ import { useGroup } from '../groups/use-groups'
 import { describeRepeat, fromRrule } from '../schedules/rrule'
 import { formatDate } from '../statements/invoice-view'
 import { isOverdue, monthsBefore } from './bill-values'
-import { hasEnded, templateCents } from './recurring-values'
+import { hasEnded, lastDue, templateCents } from './recurring-values'
 import { useDueBills, usePaidBills, useRecurringBills, useStopRecurringBill } from './use-bills'
 
 export function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
@@ -71,8 +72,8 @@ export function BillsPage() {
       {personal.group ? (
         <BillLists
           group={personal.group}
-          onStopped={(description) => {
-            setDone(`Stopped ${description}. Bills already made stay.`)
+          onStopped={(message) => {
+            setDone(message)
             heading.current?.focus()
           }}
         />
@@ -85,13 +86,7 @@ export function BillsPage() {
   )
 }
 
-function BillLists({
-  group,
-  onStopped,
-}: {
-  group: Groups
-  onStopped: (description: string) => void
-}) {
+function BillLists({ group, onStopped }: { group: Groups; onStopped: (message: string) => void }) {
   const today = localToday(group.timezone, new Date())
   const due = useDueBills(group.$id)
   const paid = usePaidBills(group.$id, monthsBefore(today, 3))
@@ -212,19 +207,24 @@ function RecurringBill({
   schedule: Schedules
   today: LocalDate
   money: (cents: number) => string
-  onStopped: (description: string) => void
+  onStopped: (message: string) => void
 }) {
-  const stop = useStopRecurringBill(schedule.$id)
+  const stop = useStopRecurringBill(schedule)
   const [confirming, setConfirming] = useState(false)
   const stopButton = useRef<HTMLButtonElement>(null)
+  const cancelButton = useRef<HTMLButtonElement>(null)
   const repeat = fromRrule(schedule.rrule)
   const cents = templateCents(schedule)
   const ended = hasEnded(schedule, today)
+  const last = lastDue(schedule)
+  // Not started: Stop removes it, as nothing of it can have been paid.
+  const notStarted = today < schedule.startsOn
   const details = [
     repeat ? describeRepeat(repeat) : undefined,
     cents === undefined ? undefined : money(cents),
     schedule.autoPost ? 'Autopay' : undefined,
-    ended ? 'Ended' : schedule.endsOn ? `Last due ${formatDate(schedule.endsOn)}` : undefined,
+    notStarted ? `Starts ${formatDate(schedule.startsOn)}` : undefined,
+    ended ? 'Ended' : last ? `Last due ${formatDate(last)}` : undefined,
   ].filter(Boolean)
   return (
     <li className="flex flex-col gap-2 px-3 py-2">
@@ -238,7 +238,11 @@ function RecurringBill({
           <Button
             ref={stopButton}
             variant="outline"
-            onClick={() => setConfirming(true)}
+            onClick={() => {
+              // The button goes as the question opens: focus moves to its safe answer, Cancel.
+              flushSync(() => setConfirming(true))
+              cancelButton.current?.focus()
+            }}
             aria-label={`Stop ${schedule.description}`}
           >
             Stop
@@ -248,8 +252,9 @@ function RecurringBill({
       {confirming && (
         <div className="flex flex-col gap-2 rounded-md border border-border p-3">
           <p className="text-sm">
-            Stop {schedule.description} from today? No more bills are made after today. Bills
-            already made stay, so you can still pay or skip them.
+            {notStarted
+              ? `Remove ${schedule.description}? It hasn’t started yet, so no bills are kept.`
+              : `Stop ${schedule.description} from today? No more bills are made after today. Bills already made stay, so you can still pay or skip them.`}
           </p>
           {stop.isError && <Message alert>{stop.error.message}</Message>}
           <div className="flex flex-wrap gap-2">
@@ -257,20 +262,22 @@ function RecurringBill({
               aria-disabled={stop.isPending}
               onClick={() => {
                 if (stop.isPending) return
-                stop.mutate(
-                  { endsOn: today },
-                  {
-                    onSuccess: () => {
-                      setConfirming(false)
-                      onStopped(schedule.description)
-                    },
+                stop.mutate(today, {
+                  onSuccess: () => {
+                    setConfirming(false)
+                    onStopped(
+                      notStarted
+                        ? `Removed ${schedule.description}.`
+                        : `Stopped ${schedule.description}. Bills already made stay.`,
+                    )
                   },
-                )
+                })
               }}
             >
-              {stop.isPending ? 'Stopping…' : 'Stop it'}
+              {stop.isPending ? 'Stopping…' : notStarted ? 'Remove it' : 'Stop it'}
             </Button>
             <Button
+              ref={cancelButton}
               variant="ghost"
               aria-disabled={stop.isPending}
               onClick={() => {
