@@ -39,7 +39,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired, or the invite isn't the caller's (used by someone else, or its address is another account's) |
-| `RATE_LIMITED` | 429 | Too many invites or reminders |
+| `RATE_LIMITED` | 429 | Too many invites or reminders, or too many wrong addresses typed for them ([#274](https://github.com/rojinc/ledgerly/issues/274)) |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |
 
