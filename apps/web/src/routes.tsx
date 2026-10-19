@@ -2,6 +2,8 @@ import { Navigate, type RouteObject } from 'react-router'
 import { AppLayout } from './app-layout'
 import { ActivityPage } from './features/activity/activity-page'
 import { LoginPage } from './features/auth/login-page'
+import { RecoverCompletePage } from './features/auth/recover-complete-page'
+import { RecoverPage } from './features/auth/recover-page'
 import { RedirectIfSignedIn, RequireAuth } from './features/auth/route-guards'
 import { SignupPage } from './features/auth/signup-page'
 import { VerifyEmailPage } from './features/auth/verify-email-page'
@@ -24,9 +26,12 @@ export const routes: RouteObject[] = [
     children: [
       { path: 'login', element: <LoginPage /> },
       { path: 'signup', element: <SignupPage /> },
+      { path: 'recover', element: <RecoverPage /> },
     ],
   },
   { path: 'verify-email', element: <VerifyEmailPage /> },
+  // No guard: someone signed in may open the emailed link.
+  { path: 'recover/complete', element: <RecoverCompletePage /> },
   {
     element: <RequireAuth />,
     children: [

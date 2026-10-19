@@ -361,6 +361,25 @@ describe('POST / (the hourly run)', () => {
     expect(warn).not.toHaveBeenCalled()
   })
 
+  it('leaves the keys alone when U’s deletion starts after U was read (#260)', async () => {
+    const services = seeded()
+    const get = services.users.get.bind(services.users)
+    services.users.get = async (params) => {
+      await withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pSam',
+          data: { deletedAt: '2026-10-19T00:00:00.000Z' },
+        }),
+      )
+      return get(params)
+    }
+    expect((await hourly(services)).body).toMatchObject({ ok: true })
+    expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: false })
+    expect(warn).toHaveBeenCalledWith('identity: merges into pSam stopped: NOT_FOUND')
+  })
+
   it('goes on to the next U when one U’s person row can’t be read', async () => {
     const ALEX = { ...SAM, $id: 'pAlex', userId: 'u2', displayName: 'Alex' }
     const ALEXS = { ...SAMMY, $id: 'pA2', mergedInto: 'pAlex', mergeGroupIds: [] }

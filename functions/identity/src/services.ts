@@ -13,8 +13,8 @@ export type AccountUser = Pick<
   | 'emailVerification'
   | 'phone'
   | 'phoneVerification'
-  | 'passwordUpdate'
   | 'labels'
+  | 'passwordUpdate'
 >
 
 /** The parts of Users that identity uses; the real `Users` satisfies it. */
