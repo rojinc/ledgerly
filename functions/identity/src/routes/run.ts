@@ -56,10 +56,8 @@ export async function run(scheduled: boolean, services: () => Services): Promise
       logProblem('merge_stopped', { intoPersonId: intoId, error })
     }
   }
-  // How many merged persons the walk read, to see its cost (scaling.md).
-  console.log(
-    `identity: merges ${result.unfinished} unfinished, ${result.finished} finished, ${result.skipped} skipped, ${result.cutOff} cut off (mergedInto rows read: ${read})`,
-  )
+  // With how many merged persons the walk read, to see its cost (scaling.md).
+  logProblem('merge_run', { counts: { ...result, personsRead: read } })
   return result
 }
 

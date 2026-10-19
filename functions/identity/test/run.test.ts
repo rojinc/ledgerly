@@ -146,9 +146,12 @@ describe('POST / (the hourly run)', () => {
     })
     expect(services.db.rows('members')[0]).toMatchObject({ personId: 'pSam', status: 'active' })
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
-    expect(log).toHaveBeenCalledWith(
-      'identity: merges 1 unfinished, 1 finished, 0 skipped, 0 cut off (mergedInto rows read: 1)',
-    )
+    expect(events(log, 'merge_run')).toEqual([
+      {
+        event: 'merge_run',
+        counts: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, personsRead: 1 },
+      },
+    ])
     // Finished: the next run finds nothing.
     expect((await hourly(services)).body).toEqual({
       ok: true,
@@ -262,9 +265,12 @@ describe('POST / (the hourly run)', () => {
       ok: true,
       data: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100 },
     })
-    expect(log).toHaveBeenCalledWith(
-      'identity: merges 100 unfinished, 0 finished, 0 skipped, 100 cut off (mergedInto rows read: 100)',
-    )
+    expect(events(log, 'merge_run')).toEqual([
+      {
+        event: 'merge_run',
+        counts: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100, personsRead: 100 },
+      },
+    ])
   })
 
   it('doesn’t count a merge put off with time left as cut off, and waits to verify U’s keys', async () => {
