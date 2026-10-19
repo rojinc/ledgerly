@@ -2,6 +2,7 @@ import type { Category } from '@ledgerly/core/constants/categories'
 import { parseMoney } from '@ledgerly/core/money/format'
 import type { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
+import { centsToText } from '../groups/employer-form'
 
 /** What an employer entry records (ledger.md#employer-presets; user-flows.md#4). */
 export type EntryType = 'reimbursable' | 'onTheirCard' | 'personalOnTheirCard' | 'paymentReceived'
@@ -38,12 +39,36 @@ export type EntryValues = {
 /** The two people in an employer group: the worker it pays (its owner) and the employer. */
 export type EmployerPeople = { worker: string; employer: string }
 
-function cents(text: string, currency: string): number {
+/** An amount as typed, in cents, or NaN when it isn't one. */
+export function cents(text: string, currency: string): number {
   try {
     return parseMoney(text.trim(), currency)
   } catch {
     return Number.NaN
   }
+}
+
+/** An amount as typed in this currency: `40.50`, or `4050` for one without cents. */
+export function amountExample(currency: string): string {
+  return centsToText(4050, currency)
+}
+
+/**
+ * The amount field's error in plain words, or undefined. `schemaRefused`: the schema refused the
+ * body's `totalCents`.
+ */
+export function amountError(
+  text: string,
+  totalCents: number | undefined,
+  schemaRefused: boolean,
+  currency: string,
+): string | undefined {
+  if (text.trim() === '') return 'Required'
+  if (schemaRefused || Number.isNaN(totalCents)) {
+    return `Enter an amount like ${amountExample(currency)}`
+  }
+  if (typeof totalCents === 'number' && totalCents <= 0) return 'Enter an amount above 0'
+  return undefined
 }
 
 /**

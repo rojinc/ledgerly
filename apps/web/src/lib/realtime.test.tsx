@@ -609,6 +609,21 @@ describe('useRealtimeSync', () => {
     expect(fake.disconnect).toHaveBeenCalledTimes(1)
   })
 
+  it('treats the first open after signing out and in again as a first connection', async () => {
+    const first = mount()
+    await settle()
+    for (const open of fake.opens) open()
+    first.unmount()
+    await settle()
+    act(() => vi.runOnlyPendingTimers())
+    expect(fake.disconnect).toHaveBeenCalledTimes(1)
+    const { invalidate } = mount()
+    await settle()
+    for (const open of fake.opens) open()
+    act(() => vi.advanceTimersByTime(FLUSH_MS))
+    expect(invalidate).not.toHaveBeenCalled()
+  })
+
   it('ignores events once unmounted', async () => {
     const { unmount, invalidate } = mount()
     await settle()
