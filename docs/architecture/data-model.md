@@ -31,6 +31,7 @@ persons ──┬── identities                       (server only)
                       statements
                       activity
                       invites                   (server only)
+                      balances      (1:1 with a group, server only)
 ```
 
 ## persons
@@ -114,11 +115,12 @@ Row ID = Appwrite Team ID ([D-004](decisions.md)).
 | `statementCycle` | enum(none, weekly, fortnightly, monthly) | default `none` (employer default `monthly`) |
 | `cycleAnchor` | varchar(10)? | First day of the first period, for weekly and fortnightly cycles |
 | `nextCloseAt` | datetime? | When the current period's statement is due to be drafted ([statements](statements.md#periods)). Set by `groups` on create and whenever `statementCycle`, `cycleAnchor` or `timezone` changes; moved forward by `statements`. |
+| `nextCheckAt` | datetime? | When the group's [nightly check](scheduling.md#step-6-nightly-check) is next due. Written only by `scheduler`. Empty means due now, so a group's first check is also the backfill of its `balances` row. |
 | `settingsJson` | text | `GroupSettings` (below) |
 | `archivedAt` | datetime? | Archived groups are read-only |
 | `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |
 
-Indexes: `idx_nextCloseAt (nextCloseAt)`, `idx_owner_type (ownerPersonId, type)` (bootstrap finds the caller's personal group on every login).
+Indexes: `idx_nextCloseAt (nextCloseAt)`, `idx_nextCheckAt (nextCheckAt)`, `idx_owner_type (ownerPersonId, type)` (bootstrap finds the caller's personal group on every login).
 Permissions: `read("team:<groupId>")`.
 
 ```ts
@@ -219,6 +221,18 @@ Items are rebuilt completely on every edit, like shares ([building shares](ledge
 Indexes: `idx_transaction_position (transactionId, position)`.
 Permissions: `read("team:<groupId>")` (the function sets the group's team when it writes).
 
+## balances
+
+A cache of each person's balance in a group, so `GET /groups/{groupId}/balances` reads one row instead of every share ([ledger](ledger.md#balances)). One row per group: row ID = `groupId`.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `peopleJson` | mediumtext | `BalancesPeople`: `{ personId, netCents, shares }[]`, one entry for each person with at least one share in the group, with their net and how many shares they have, in ascending `personId` order |
+
+A group with no row has none built yet, or had it deleted (by a [merge](identity-and-invites.md#merging-two-persons), or because it didn't fit, [ledger](ledger.md#balances)): `/balances` sums its shares instead, and the [nightly check](scheduling.md#step-6-nightly-check) builds the row. Why it isn't one row per person: [Scaling](scaling.md#the-balances-cache).
+Indexes: none (read by ID).
+Permissions: none (server only). Clients get balances from `GET /groups/{groupId}/balances`.
+
 ## schedules
 
 | Column | Type | Notes |
@@ -308,14 +322,14 @@ Bucket-level permission on `receipts`: `create("users/verified")`, so only verif
 
 ## Derived and copied data
 
-Each item below has exactly one writer and can be rebuilt from its source. Nothing else is copied.
+Each item below is written only by the functions listed and can be rebuilt from its source. Nothing else is copied.
 
 | Data | Source | Written by |
 | --- | --- | --- |
 | `shares` rows | `transactions.inputJson` + `items` + members | `ledger` (and `scheduler` when it auto-posts, through the same core function) |
 | `shares.groupId/date/kind/category` | the transaction | rebuilt with the shares |
 | `statements.snapshotJson`, PDFs | transactions and shares at finalize time | `statements` (an intentional historical snapshot) |
-| `balances` table (M4) | shares | `ledger`, inside the same transaction |
+| `balances` rows | shares | every writer of shares, inside the same transaction ([ledger](ledger.md#balances)); created and repaired by the scheduler's [nightly check](scheduling.md#step-6-nightly-check) |
 
 ## Categories
 

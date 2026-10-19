@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import { MAX_AMOUNT_CENTS } from '../constants/limits'
 import {
+  balancesPeopleSchema,
   itemInputSchema,
   postTransactionBodySchema,
   receiptsBodySchema,
@@ -500,5 +501,32 @@ describe('stopTimerBodySchema', () => {
     expect(paths(stopTimerBodySchema, { transactionId: 'tx2', breakMinutes: -5 })).toEqual([
       'breakMinutes',
     ])
+  })
+})
+
+describe('balancesPeopleSchema', () => {
+  const alice = { personId: 'alice', netCents: 4500, shares: 3 }
+  const bob = { personId: 'bob', netCents: -4500, shares: 1 }
+
+  it('accepts people in ascending personId order, any safe integer net, and none at all', () => {
+    expect(paths(balancesPeopleSchema, [alice, bob])).toEqual([])
+    expect(paths(balancesPeopleSchema, [{ ...alice, netCents: 0 }])).toEqual([])
+    // A balance sums many transactions, so it can pass one transaction's cap.
+    expect(paths(balancesPeopleSchema, [{ ...alice, netCents: 3 * MAX_AMOUNT_CENTS }])).toEqual([])
+    expect(paths(balancesPeopleSchema, [])).toEqual([])
+  })
+
+  it('refuses people out of order or twice', () => {
+    expect(paths(balancesPeopleSchema, [bob, alice])).toEqual(['1.personId'])
+    expect(paths(balancesPeopleSchema, [alice, alice])).toEqual(['1.personId'])
+  })
+
+  it('refuses no shares, fractions of a cent, unsafe integers, bad IDs and unknown keys', () => {
+    expect(paths(balancesPeopleSchema, [{ ...alice, shares: 0 }])).toEqual(['0.shares'])
+    expect(paths(balancesPeopleSchema, [{ ...alice, shares: 1.5 }])).toEqual(['0.shares'])
+    expect(paths(balancesPeopleSchema, [{ ...alice, netCents: 0.5 }])).toEqual(['0.netCents'])
+    expect(paths(balancesPeopleSchema, [{ ...alice, netCents: 2 ** 53 }])).toEqual(['0.netCents'])
+    expect(paths(balancesPeopleSchema, [{ ...alice, personId: '../x' }])).toEqual(['0.personId'])
+    expect(paths(balancesPeopleSchema, [{ ...alice, name: 'Alice' }])).toEqual(['0'])
   })
 })
