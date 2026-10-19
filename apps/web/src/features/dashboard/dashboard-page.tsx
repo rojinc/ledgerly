@@ -17,6 +17,7 @@ import { GroupName } from '../groups/use-group-name'
 import { useGroups } from '../groups/use-groups'
 import { GettingStarted } from '../onboarding/getting-started'
 import { useProfile } from '../profile/use-profile'
+import { HoursCapSummary } from '../shifts/hours-cap'
 import { useAllBalances, useMyShares } from './use-dashboard'
 
 const TYPE_LABEL: Record<Groups['type'], string> = {
@@ -58,6 +59,7 @@ export function DashboardPage() {
           {/* No groups: nothing to sum yet, only the guide. */}
           {groups.data.length > 0 && (
             <>
+              <HoursCapSummary />
               <BalancesSection groups={groups.data} />
               <MonthSections groups={groups.data} refetchGroups={() => groups.refetch()} />
             </>
