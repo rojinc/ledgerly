@@ -1521,6 +1521,29 @@ describe('a person who deleted their account, in a group they had joined', () =>
     expect(services.db.rows('schedules')).toEqual([])
   })
 
+  it.each([
+    ['a new schedule', 'POST'],
+    ['an edit', 'PATCH'],
+  ])(
+    'fails %s whose commit comes after the deletion, and refuses it when run again',
+    async (_, method) => {
+      const services = seeded()
+      if (method === 'PATCH') {
+        await create(services, {
+          ...rent,
+          template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+        })
+      }
+      // After the guard on pAlex's row is staged: the deletion's write fails the commit (409).
+      beforeCommit(services.db, () => deleteAccount(services))
+      const path = method === 'POST' ? '/schedules' : `/schedules/${rent.id}`
+      expect(await failure(services, method, path, { body: rent })).toEqual(refused)
+      const stored = scheduleRow(services, rent.id)
+      if (method === 'POST') expect(stored).toBeUndefined()
+      else expect(JSON.parse(stored?.templateJson ?? '{}').split.personIds).toEqual(['pSam'])
+    },
+  )
+
   it('is refused when the deletion commits just before an edit guards them', async () => {
     const services = seeded()
     const samOnly = {

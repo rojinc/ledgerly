@@ -134,7 +134,11 @@ export const updateTransaction = (services: ServicesFor) =>
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
           await refuseDeletedPeople(tx, db, ledger, {
             kind: input.kind,
-            input,
+            // As stored: without payers, the payer resolved above (a row's creator) is stored too.
+            input: {
+              ...input,
+              payers: storedInputSchema.parse(JSON.parse(planned.inputJson)).payers,
+            },
             before: await storedInput(db, existing),
           })
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])

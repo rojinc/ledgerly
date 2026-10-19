@@ -119,6 +119,27 @@ describe('a person who deleted their account, in a group they had joined', () =>
     expect(JSON.parse(rows.transactions(db)[0]?.inputJson ?? '').split.personIds).toEqual(['alice'])
   })
 
+  it('can’t become the payer an edit fills in, as the creator of a row with several payers', async () => {
+    const db = seed()
+    // Bob records what Alice and Cara paid between them. Without payers, an edit keeps the
+    // creator paying (functions-api.md#ledger, "Payers when none are given").
+    const twoPayers = expense({
+      payers: [
+        { personId: 'alice', cents: 4500 },
+        { personId: 'cara', cents: 4500 },
+      ],
+      split: { mode: 'equal', personIds: ['alice', 'cara'] },
+    })
+    expect(outcome(await call(db, 'POST', '/transactions', twoPayers, 'u-bob'))).toEqual({
+      status: 200,
+    })
+    await deleteAccount(db, 'bob')
+    const { payers, ...noPayers } = twoPayers
+    expect(outcome(await call(db, 'PATCH', '/transactions/t1', noPayers))).toEqual(refused)
+    expect(JSON.parse(rows.transactions(db)[0]?.inputJson ?? '').payers).toEqual(payers)
+    expect(rows.shares(db).map((share) => share.personId)).not.toContain('bob')
+  })
+
   it('stays on a due bill that names them, which can still be paid, but can’t become its payer', async () => {
     const db = seed()
     const bill = {
