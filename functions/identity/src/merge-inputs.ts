@@ -38,14 +38,15 @@ export const VOID_REASON = 'Both sides are now the same person.'
 
 /**
  * What became of the groups a call looked at. `skipped`: rows whose stored input can't be renamed
- * (unreadable, or invalid once renamed), left as they are and logged by ID. `done`: every group
- * was read to the end, with nothing put off or skipped.
+ * (unreadable, or invalid once renamed), left as they are and logged by ID. `cutOff`: the
+ * deadline stopped it. `done`: every group was read to the end, with nothing put off or skipped.
  */
 export type InputsResult = {
   rewritten: number
   voided: number
   skipped: number
   putOff: string[]
+  cutOff: boolean
   done: boolean
 }
 
@@ -67,11 +68,19 @@ export async function moveInputs(
   now: Date,
   deadline: number,
 ): Promise<InputsResult> {
-  const result: InputsResult = { rewritten: 0, voided: 0, skipped: 0, putOff: [], done: true }
+  const result: InputsResult = {
+    rewritten: 0,
+    voided: 0,
+    skipped: 0,
+    putOff: [],
+    cutOff: false,
+    done: true,
+  }
   for (const groupId of groupIds) {
     const outcome = await moveGroupInputs(db, merge, groupId, now, deadline, result)
     if (outcome === 'putOff') result.putOff.push(groupId)
     if (outcome === 'cutOff') {
+      result.cutOff = true
       result.done = false
       break
     }
@@ -88,9 +97,13 @@ async function moveGroupInputs(
   deadline: number,
   result: InputsResult,
 ): Promise<'done' | 'putOff' | 'cutOff'> {
-  // An edit after the merge plans a row with the members as step 2 left them.
-  const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
-  const ctx = group ? (await loadGroupLedger(db, group, merge.into)).ctx : undefined
+  // An edit after the merge plans a row with the members as step 2 left them, and as they are
+  // after a race: a member change may be what made the batch run again.
+  const members = async () => {
+    const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+    return group ? (await loadGroupLedger(db, group, merge.into)).ctx : undefined
+  }
+  let ctx = await members()
   let cursor: string | undefined
   for (;;) {
     if (Date.now() >= deadline) return 'cutOff'
@@ -126,7 +139,10 @@ async function moveGroupInputs(
       if (error instanceof Finalizing) return 'putOff'
       // A row changed after it was read: read this page again. Rows already rewritten no
       // longer name P, so they're left alone.
-      if (error instanceof Raced || isAppwriteError(error, 409)) continue
+      if (error instanceof Raced || isAppwriteError(error, 409)) {
+        ctx = await members()
+        continue
+      }
       throw error
     }
     for (const rowId of skipped) {
@@ -258,12 +274,6 @@ async function planRewrites(
   return { rewrites, skipped }
 }
 
-/**
- * Stored JSON with P renamed: `json` is the new text, undefined when nothing changed, and
- * `voided` as `rename` says. The stored object is renamed as it is, so its keys keep their order.
- * Undefined when the JSON can't be read, or is no longer valid once renamed: nothing invalid is
- * ever written.
- */
 /** A bill's billing period from its stored input, for a `days` split. */
 function billPeriod(row: Transactions): DateRange | undefined {
   const stored = storedInputSchema.safeParse(JSON.parse(row.inputJson))
@@ -271,6 +281,12 @@ function billPeriod(row: Transactions): DateRange | undefined {
   return periodStart && periodEnd ? { start: periodStart, end: periodEnd } : undefined
 }
 
+/**
+ * Stored JSON with P renamed: `json` is the new text, undefined when nothing changed, and
+ * `voided` as `rename` says. The stored object is renamed as it is, so its keys keep their order.
+ * Undefined when the JSON can't be read, or is no longer valid once renamed: nothing invalid is
+ * ever written.
+ */
 function renamed(
   text: string,
   schema: z.ZodType,
@@ -422,12 +438,14 @@ const SCHEDULE_COLUMNS = [
 
 /**
  * What became of the groups' schedules. `skipped`: templates that can't be renamed, left as they
- * are and logged by ID. `done`: every group was read to the end, with nothing put off or skipped.
+ * are and logged by ID. `cutOff`: the deadline stopped it. `done`: every group was read to the
+ * end, with nothing put off or skipped.
  */
 export type TemplatesResult = {
   rewritten: number
   skipped: number
   putOff: string[]
+  cutOff: boolean
   done: boolean
 }
 
@@ -444,11 +462,18 @@ export async function moveTemplates(
   groupIds: readonly string[],
   deadline: number,
 ): Promise<TemplatesResult> {
-  const result: TemplatesResult = { rewritten: 0, skipped: 0, putOff: [], done: true }
+  const result: TemplatesResult = {
+    rewritten: 0,
+    skipped: 0,
+    putOff: [],
+    cutOff: false,
+    done: true,
+  }
   for (const groupId of groupIds) {
     const outcome = await moveGroupTemplates(db, merge, groupId, deadline, result)
     if (outcome === 'putOff') result.putOff.push(groupId)
     if (outcome === 'cutOff') {
+      result.cutOff = true
       result.done = false
       break
     }

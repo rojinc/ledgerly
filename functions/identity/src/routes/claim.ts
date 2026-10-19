@@ -94,13 +94,14 @@ async function claimIdentities(
   personId: string,
   identities: VerifiedIdentity[],
 ): Promise<void> {
+  const verified = identities.map((identity) => identity.key)
   for (const identity of identities) {
     try {
-      await claimIdentity(services, personId, identity)
+      await claimIdentity(services, personId, identity, verified)
     } catch (error) {
       if (!isAppwriteError(error, 409)) throw error
       // Another claim created the same key first (`key` is unique), so look again.
-      await conflictAsTryAgain(() => claimIdentity(services, personId, identity))
+      await conflictAsTryAgain(() => claimIdentity(services, personId, identity, verified))
     }
   }
 }
@@ -110,6 +111,7 @@ async function claimIdentity(
   { db, now }: Services,
   personId: string,
   { type, key }: VerifiedIdentity,
+  verified: readonly string[],
 ): Promise<void> {
   const identity = await findIdentity(db, key)
   if (!identity) {
@@ -139,8 +141,8 @@ async function claimIdentity(
   // Someone else's: a registered person keeps it. A placeholder is the same human as the
   // caller, so it's merged into the caller's person: step 1 marks it here, and the claim
   // carries the merge on (`finishMerges`). markMerged leaves alone a person with an account,
-  // or one another adoption or merge got first.
-  await markMerged(db, identity.personId, personId)
+  // or one another adoption or merge got first. Only the keys the user verified move to them.
+  await markMerged(db, identity.personId, personId, verified)
 }
 
 // Step 3: the person's `placeholder` rows added strictly before `claimedAt`, while they had no
