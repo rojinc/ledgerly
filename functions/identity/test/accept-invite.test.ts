@@ -217,7 +217,8 @@ describe('POST /invites/accept', () => {
       expect.objectContaining({ groupId: 'g1', actorPersonId: 'pSam', action: 'member.joined' }),
     ])
     expect(rowOf(services, 'invites', 'inv1')).toMatchObject({ acceptedAt: NOW.toISOString() })
-    expect(staged).toEqual(['members', 'activity', 'invites'])
+    // The join stages a guard write on the person (guardPerson, identity-and-invites.md#order).
+    expect(staged).toEqual(['members', 'persons', 'activity', 'invites'])
   })
 
   it('adopts: a new user who signed up with the invited email joins through bootstrap', async () => {
@@ -403,6 +404,19 @@ describe('POST /invites/accept', () => {
     })
   })
 
+  it('refuses a caller whose account deletion has started, as claim does, writing nothing', async () => {
+    const services = setup({ persons: [{ ...SAM, deletedAt: BEFORE }] })
+    const before = state(services)
+    const writes = vi.spyOn(services.db, 'createOperations')
+    expect(await refused(services)).toEqual({
+      status: 404,
+      code: 'NOT_FOUND',
+      message: 'Set up your account first.',
+    })
+    expect(writes).not.toHaveBeenCalled()
+    expect(state(services)).toEqual(before)
+  })
+
   describe('refuses with INVITE_INVALID and one message, writing nothing,', () => {
     const USED_BY_KIM = invite('inv1', TOKEN, { ...TO_KIM, acceptedAt: BEFORE })
     const TO_BEN = { memberId: 'mBen', identityKey: 'email:ben@example.com' }
@@ -440,6 +454,15 @@ describe('POST /invites/accept', () => {
           identities: [SAM_EMAIL, BEN_EMAIL],
           invites: [invite('inv1', TOKEN, { ...TO_BEN, acceptedAt: BEFORE })],
           account: AS_BEN,
+        },
+        TOKEN,
+      ],
+      // A person with deletedAt is never resolved from a userId (identity-and-invites.md#order).
+      [
+        'a used invite to a caller whose account deletion has started',
+        {
+          persons: [{ ...SAM, deletedAt: BEFORE }],
+          invites: [invite('inv1', TOKEN, { acceptedAt: BEFORE })],
         },
         TOKEN,
       ],
