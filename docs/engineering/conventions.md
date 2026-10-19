@@ -61,12 +61,13 @@ Use the words from the [glossary](../product/glossary.md), in code and in UI tex
 - Declare routes with `route(method, '/path/:id', handler)`: `ctx.params` is typed from the path.
 - Handlers are thin: validate → authorize → call core → write → respond. Business rules live in `packages/core`.
 - Log one structured line per request: `{ fn, route, status, ms, code?, cause? }`, where `cause` is the name (never the message) of the error behind a 5xx. `createHandler` does this. No personal data ([security](../architecture/security-and-privacy.md)).
-- Send email only with `sendEmail()` (`packages/server/src/email/`), with the subject and body from a template there. It logs nothing, and every failure is an `EmailError` with a `type` (`missing_config`, `timeout`, `network` or Resend's error name) and, when Resend answered, its HTTP `status`. Both are safe to log. Never log an address, subject or body. Where a send may run again after a crash, like finalize step 9 or a retried `send`, pass an `idempotencyKey`, one per email: `invoice/<statementId>/<sentAt read before sending, or first>/employer` and `.../copy`, not one for both. Resend then delivers each once (keys last 24 hours); a key reused for a different email gets a 409 on every re-run.
+- Send email only with `sendEmail()` (`packages/server/src/email/`), with the subject and body from a template there. It logs nothing, and every failure is an `EmailError` with a `type` (`missing_config`, `timeout`, `network` or Resend's error name) and, when Resend answered, its HTTP `status`. Both are safe to log. Never log an address, subject or body. Where a send may run again after a crash, like finalize step 9 or a retried `send`, pass an `idempotencyKey`, one per email: `invoice/<statementId>/<sentAt read before sending, or first>/employer` and `.../copy`, not one for both, and for a divide `divide/<statementId>/<sentAt read before sending, or first>/<personId>`, one per housemate. Resend then delivers each once (keys last 24 hours); a key reused for a different email gets a 409 on every re-run.
 
 ## React
 
 - Function components and hooks only.
 - Server data is fetched with TanStack Query. Query keys come from `lib/query-keys.ts`. Don't copy server data into `useState`.
+- A new query key gets its line in `lib/realtime.ts`, or goes in `NOT_LIVE`.
 - Writes use `useMutation` with optimistic updates where the result is predictable.
 - Forms use react-hook-form + the **same zod schema** as the function.
 - Accessibility basics are required: every input has a label, everything works by keyboard, focus is visible, and colour is never the only signal (dashed vs solid on the calendar, not just colour).

@@ -271,8 +271,9 @@ function StartTimer({
       )}
       <Button
         className="self-start"
-        disabled={start.isPending || disabled}
-        onClick={() => onStart(groupId)}
+        // aria-disabled, not disabled: a disabled button loses focus.
+        aria-disabled={start.isPending || disabled}
+        onClick={() => !(start.isPending || disabled) && onStart(groupId)}
       >
         Start
       </Button>
@@ -318,6 +319,7 @@ function RunningTimer({
         className="flex flex-col gap-3"
         onSubmit={(event) => {
           event.preventDefault()
+          if (stop.isPending || starting) return
           const text = breakMinutes.trim()
           if (text !== '' && !/^\d+$/.test(text)) {
             setError('Enter whole minutes')
@@ -349,7 +351,7 @@ function RunningTimer({
             {stop.error.message}
           </p>
         )}
-        <Button type="submit" className="self-start" disabled={stop.isPending || starting}>
+        <Button type="submit" className="self-start" aria-disabled={stop.isPending || starting}>
           Stop
         </Button>
         {!starting && (

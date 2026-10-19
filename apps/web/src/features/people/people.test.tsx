@@ -499,6 +499,44 @@ describe('PeoplePage', () => {
     expect(screen.queryByText('Alex')).toBeNull()
   })
 
+  it('sorts people by the name shown, not the group’s own name (#147 O11)', async () => {
+    mockPersonId = 'p2'
+    mockGroup(0)
+    // Sam (p2) is in two pairs, each named after Sam by its creator: Zed's and Alex's.
+    vi.mocked(useGroups).mockReturnValue({
+      data: [
+        { ...pair, $id: 'g2', name: 'Sam' },
+        { ...pair, $id: 'g1', name: 'Sam' },
+      ],
+      isError: false,
+    } as never)
+    const zeds = [
+      { ...members('active')[1], $id: 'm3', groupId: 'g2' },
+      { ...members()[0], $id: 'm4', groupId: 'g2', personId: 'p3', displayName: 'Zed' },
+    ] as Members[]
+    listRows.mockImplementation((async ({
+      tableId,
+      queries,
+    }: {
+      tableId: string
+      queries: string[]
+    }) => {
+      const rows =
+        tableId !== 'members'
+          ? []
+          : queries.some((query) => query.includes('"g2"'))
+            ? zeds
+            : members('active')
+      return { total: rows.length, rows }
+    }) as never)
+    renderAt('/people')
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole('link', { name: /Alex|Zed/ }).map((link) => link.getAttribute('href')),
+      ).toEqual(['/people/g1', '/people/g2']),
+    )
+  })
+
   it('says when there’s no one yet', () => {
     vi.mocked(useGroups).mockReturnValue({ data: [], isError: false } as never)
     renderAt('/people')

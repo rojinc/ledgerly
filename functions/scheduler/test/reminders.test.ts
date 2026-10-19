@@ -148,7 +148,13 @@ describe('POST / (cron run)', () => {
   it('logs counts only', async () => {
     const services = seeded([transaction('t1')])
     const { body, logs } = await call(services, 'POST', '/', { userId: null, scheduled: true })
-    expect(body).toEqual({ ok: true, data: { reminders: { sent: 1, skipped: 0, failed: 0 } } })
+    expect(body).toEqual({
+      ok: true,
+      data: {
+        expanded: { schedules: 0, created: 0, failed: 0 },
+        reminders: { sent: 1, skipped: 0, failed: 0 },
+      },
+    })
     expect(logs.join('\n')).not.toContain('sam@example.com')
   })
 })
@@ -156,7 +162,7 @@ describe('POST / (cron run)', () => {
 describe('step 3: shift to confirm', () => {
   it('emails the group owner once about a past shift that doesn’t auto-post', async () => {
     const services = seeded([transaction('t1')])
-    expect(await runCron(services)).toEqual({ reminders: { sent: 1, skipped: 0, failed: 0 } })
+    expect((await runCron(services)).reminders).toEqual({ sent: 1, skipped: 0, failed: 0 })
     expect(services.sendEmail).toHaveBeenCalledTimes(1)
     const email = services.sendEmail.mock.calls[0]?.[0]
     expect(email).toMatchObject({
@@ -168,7 +174,7 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
 
     // The next run sends nothing more.
-    expect(await runCron(services)).toEqual({ reminders: { sent: 0, skipped: 0, failed: 0 } })
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 0 })
     expect(services.sendEmail).toHaveBeenCalledTimes(1)
   })
 

@@ -18,9 +18,13 @@ import {
 
 const CLOSE_AT = '2026-10-31T13:00:00.000Z'
 const TIMER_RUNNING = 'A timer is running in this group. Stop or void it first.'
+const FINALIZING = 'A statement in this group is being finalized. Finish it first.'
 
 /** p1's employer group g2, with Acme as the placeholder employer, and `shifts` in it. */
-function employerFixture(shifts: ReturnType<typeof shift>[] = []) {
+function employerFixture(
+  shifts: ReturnType<typeof shift>[] = [],
+  statements: ReturnType<typeof statement>[] = [],
+) {
   return fakes(
     {
       persons: [person(1), placeholder('pA', 'Acme')],
@@ -31,9 +35,45 @@ function employerFixture(shifts: ReturnType<typeof shift>[] = []) {
         member('m3', 'g3', 'p1', 'admin', 'active'),
       ],
       transactions: shifts,
+      statements,
     },
     { g2: ['u1'], g3: ['u1'] },
   )
+}
+
+/** An October invoice of `groupId` in `status`. */
+function statement(id: string, status: string, groupId = 'g2') {
+  return {
+    $id: id,
+    groupId,
+    type: 'invoice',
+    periodStart: '2026-10-01',
+    periodEnd: '2026-10-31',
+    status,
+    snapshotJson: '{}',
+  }
+}
+
+/**
+ * Finalize step 1 for `id` in g2, staged in a transaction of its own: the group guard and the
+ * `finalizing` status. Returns its commit.
+ */
+async function stageFinalizing(db: FakeDb, id: string) {
+  const { $id: transactionId } = await db.createTransaction()
+  await db.createOperations({
+    transactionId,
+    operations: [
+      { action: 'update', databaseId: 'main', tableId: 'groups', rowId: 'g2', data: { rev: id } },
+      {
+        action: 'update',
+        databaseId: 'main',
+        tableId: 'statements',
+        rowId: id,
+        data: { status: 'finalizing' },
+      },
+    ],
+  })
+  return () => db.updateTransaction({ transactionId, commit: true })
 }
 
 /** A shift in `groupId`; `running` is a timer that hasn't stopped (scheduling.md#timer-shifts). */
@@ -167,6 +207,64 @@ describe('POST /groups/{id}/archive', () => {
     expect(await ok(services, 'POST', '/groups/g2/archive')).toMatchObject({
       archivedAt: NOW.toISOString(),
     })
+  })
+
+  it('refuses while a statement of the group is being finalized', async () => {
+    const services = employerFixture([], [statement('st1', 'finalizing')])
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: FINALIZING,
+    })
+    expect(services.db.rows('groups')[0]).toMatchObject({ archivedAt: null, nextCloseAt: CLOSE_AT })
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('archives with draft, final and void statements, whatever finalizes in other groups', async () => {
+    const services = employerFixture(
+      [],
+      [
+        statement('st1', 'draft'),
+        statement('st2', 'final'),
+        statement('st3', 'void'),
+        statement('st4', 'finalizing', 'g3'),
+      ],
+    )
+    expect(await ok(services, 'POST', '/groups/g2/archive')).toMatchObject({
+      archivedAt: NOW.toISOString(),
+    })
+  })
+
+  it('refuses when a finalize starts just before the archive stages', async () => {
+    const services = employerFixture([], [statement('st1', 'draft')])
+    beforeStaging(services.db, 1, async () => (await stageFinalizing(services.db, 'st1'))())
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toMatchObject({
+      code: 'CONFLICT',
+      message: FINALIZING,
+    })
+    expect(services.db.rows('groups')[0]).toMatchObject({ archivedAt: null })
+  })
+
+  it('fails the archive when a finalize starts after its check, and refuses the retry', async () => {
+    const services = employerFixture([], [statement('st1', 'draft')])
+    beforeCommit(services.db, async () => (await stageFinalizing(services.db, 'st1'))())
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('groups')[0]).toMatchObject({ archivedAt: null })
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toMatchObject({
+      message: FINALIZING,
+    })
+  })
+
+  it('fails a finalize start staged before the archive commits', async () => {
+    const services = employerFixture([], [statement('st1', 'draft')])
+    const commitFinalizing = await stageFinalizing(services.db, 'st1')
+    await ok(services, 'POST', '/groups/g2/archive')
+    await expect(commitFinalizing()).rejects.toMatchObject({ code: 409 })
+    expect(services.db.rows('statements')[0]).toMatchObject({ status: 'draft' })
   })
 
   it('refuses when a timer start commits just before the archive stages', async () => {

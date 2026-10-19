@@ -215,4 +215,13 @@ describe('updateMemberBodySchema', () => {
     )
     expect(paths(updateMemberBodySchema, { status: 'left' })).toEqual([''])
   })
+
+  it('accepts null to move someone back in, with or without a move-in date', () => {
+    expect(updateMemberBodySchema.parse({ leftOn: null })).toEqual({ leftOn: null })
+    expect(paths(updateMemberBodySchema, { joinedOn: '2026-08-01', leftOn: null })).toEqual([])
+  })
+
+  it.each(['', '2026-02-30', '31/10/2026'])('rejects leftOn %j', (leftOn) => {
+    expect(paths(updateMemberBodySchema, { leftOn })).toEqual(['leftOn'])
+  })
 })

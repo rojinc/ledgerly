@@ -178,8 +178,19 @@ export type Ledger = {
 }
 
 /** Everything `buildShares` needs about the group (build-shares.ts). */
-export async function loadLedger(db: Db, membership: Membership): Promise<Ledger> {
-  const { group } = membership
+export function loadLedger(db: Db, membership: Membership): Promise<Ledger> {
+  return loadGroupLedger(db, membership.group, membership.person.$id)
+}
+
+/**
+ * `loadLedger` without a caller, for jobs such as the scheduler: `callerPersonId` pays when
+ * an input names no payers.
+ */
+export async function loadGroupLedger(
+  db: Db,
+  group: Groups,
+  callerPersonId: string,
+): Promise<Ledger> {
   // I-3: every member row counts, placeholders and people who left included.
   const members = await listAll<Members>(db, TABLES.members, [Query.equal('groupId', group.$id)])
   const settings = groupSettingsSchema.safeParse(JSON.parse(group.settingsJson))
@@ -189,7 +200,7 @@ export async function loadLedger(db: Db, membership: Membership): Promise<Ledger
     ctx: {
       groupType: group.type,
       ownerPersonId: group.ownerPersonId,
-      callerPersonId: membership.person.$id,
+      callerPersonId,
       members: members.map((member) => ({
         personId: member.personId,
         joinedOn: member.joinedOn as LocalDate,

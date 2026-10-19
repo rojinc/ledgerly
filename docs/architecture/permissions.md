@@ -34,9 +34,9 @@ Table-level permissions: **none** on every table. Row security is on everywhere.
 | Edit or void transactions **they created** | ✓ | ✓ | — |
 | Edit or void **anyone's** transactions | ✓ | — | — |
 | Create and edit schedules | ✓ | own only | — |
-| Add members and send invites | ✓ | house only | — |
+| Add members and send invites (invites need a verified email) | ✓ | house only | — |
 | Remove members, change roles, change settings | ✓ | — | — |
-| Finalize, send or void statements | ✓ | — | — |
+| Finalize, send, void, reissue or discard statements | ✓ | — | — |
 | Archive the group | ✓ | — | — |
 
 Nobody can edit or void a **locked** transaction, admins included ([I-7](ledger.md#invariants)).
@@ -55,8 +55,8 @@ Members who haven't joined (`placeholder`) keep their role but have no access, a
 ### Leaving a group
 
 - **Moving out (house):** set `leftOn` and change the role to `viewer`. A joined member's status becomes `left`; they keep read access so they can see and settle what they owe. Someone who never joined stays `placeholder`. Clearing `leftOn` turns `left` back into `active` only for someone who moved out and is still in the team, never for a row that left on its own (it has its own `member.left`): leaving on your own is final for that row.
-- **Removing completely:** only allowed when the person has no shares in the group and isn't named in a transaction that isn't posted yet (`scheduled`, `running` or `due`, including its items' splits) or in a schedule's template. Otherwise use `left`.
-- **Leaving voluntarily:** a member may leave once their balance is 0. In one database transaction their status becomes `left`, their role `viewer` and `leftOn` today if empty; then their team membership is removed. Their history stays. Coming back after leaving voluntarily isn't supported in v1, so someone who left can only be a `viewer`. `leftOn` is never before `joinedOn`. Someone already marked `left` (moved out) still needs a balance of 0 to leave. A retry of their own leave that was cut off before the team step skips the balance check, so it can finish even if a share landed in between. It counts as their own leave when the newest `member.left` or `member.joined` row they wrote since that member row was created is `member.left`. Leaving can be finished in an archived group.
+- **Removing completely:** only allowed when the person has no shares in the group and isn't named in a transaction that isn't posted yet (`scheduled`, `running` or `due`, including its items' splits) or in a schedule's template, and didn't create a schedule whose template names no payers (the scheduler charges its creator for the trial occurrence and its auto-posts, [scheduling](scheduling.md)). Otherwise use `left`.
+- **Leaving voluntarily:** a member may leave once their balance is 0. In one database transaction their status becomes `left`, their role `viewer` and `leftOn` today if empty; then their team membership is removed. Their history stays. Coming back after leaving voluntarily isn't supported in v1, so someone who left can only be a `viewer`. `leftOn` is never before `joinedOn`. Someone already marked `left` (moved out) still needs a balance of 0 to leave; their leave then writes their own `member.left`, with a guard write on their row, so it's final for that row too and a move back in racing it fails. A retry of their own leave that was cut off before the team step skips the balance check, so it can finish even if a share landed in between. It counts as their own leave when the newest `member.left` or `member.joined` row they wrote since that member row was created is `member.left`. Leaving can be finished in an archived group.
 
 ## Function-side checks
 
@@ -74,7 +74,13 @@ Scheduled jobs run with the server key and no caller. They write as the system a
 
 ## Storage
 
-- `receipts`: any signed-in user can upload. The client must set `read("team:<groupId>")` on the file. The `ledger` function checks, before attaching a file to a transaction, that the file's permissions match that transaction's group, then resets them to exactly `read("team:<groupId>")`. That removes any `update` or `delete` the uploader granted themselves, so nobody can swap or delete a receipt behind a locked transaction.
+- `receipts`: only verified users can upload (`create("users/verified")`). The client must set `read("team:<groupId>")` on the file. Before a write attaches a file that isn't already on the stored row, the `ledger` function checks that:
+  - the file is in the `receipts` bucket;
+  - its permissions include `read("team:<groupId>")` for the transaction's group;
+  - its `mimeType` is `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif` or `application/pdf` (`image/heif` because a `.heic` photo can report itself as HEIF; the bucket takes no `.heif` files);
+  - its upload is complete (`chunksUploaded` equals `chunksTotal`). An unfinished upload's remaining chunks could still change its content and permissions.
+
+  Any failure gives `VALIDATION_FAILED`, naming `receiptFileIds.<index>`, with the same message for every failure. A missing file and another group's file get the same answer, so the reply never shows whether a file ID exists. Only after every file passes does the ledger set each file's permissions to exactly `read("team:<groupId>")`, and it does so **before** the row commits. That removes any wider read and any `update` or `delete` the uploader granted themselves, so a stored ID never points at a file its uploader can still swap or delete behind a locked transaction. A retry passes the check again. Taking a file off a transaction leaves the file and its permissions as they are. A file no transaction lists keeps the permissions it has until it's cleaned up ([security](security-and-privacy.md#threats-and-controls)).
 - `statements`: only the `statements` function writes. Files are readable by the group's team.
 
 ## Function execute permissions

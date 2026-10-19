@@ -30,6 +30,7 @@ import {
   transactionColumns,
   Unchanged,
 } from '@ledgerly/server/ledger/transactions'
+import { attachReceipts, receiptsColumn, sameReceipts } from '../receipts'
 import type { ServicesFor } from '../services'
 
 export const updateTransactionSchema = transactionInputSchema
@@ -37,7 +38,8 @@ export const updateTransactionSchema = transactionInputSchema
 /**
  * `PATCH /transactions/{id}` (functions-api.md#ledger): replaces the transaction with the
  * body, rebuilds its shares and items, and records before and after in an activity row
- * (ledger.md#editing). Its status stays: posting a due bill is `/post`.
+ * (ledger.md#editing). Its status stays: posting a due bill is `/post`. A body without
+ * `receiptFileIds` keeps the stored receipts.
  */
 export const updateTransaction = (services: ServicesFor) =>
   route('PATCH', '/transactions/:id', ({ userId, params, body, db, headers }) =>
@@ -45,9 +47,10 @@ export const updateTransaction = (services: ServicesFor) =>
       const input = parseBody(updateTransactionSchema, body)
       if (input.id !== params.id) invalid('The body’s id must match the transaction.')
       const found = await getTransaction(db, params.id)
+      const { teams, files } = services({ headers })
       const membership = await requireMemberOf(
         db,
-        services({ headers }).teams,
+        teams,
         userId,
         found.groupId,
         NO_SUCH_TRANSACTION,
@@ -63,7 +66,6 @@ export const updateTransaction = (services: ServicesFor) =>
       requireUnlocked(found)
       const now = new Date()
       requireNotTooFarAhead(input.date, membership.group, now)
-      if (input.receiptFileIds?.length) invalid('Receipts can’t be attached yet.')
       const ledger = await loadLedger(db, membership)
 
       const person = membership.person.$id
@@ -94,8 +96,11 @@ export const updateTransaction = (services: ServicesFor) =>
                 : person
           const planned = plan(input, existing.status, ledger, payer)
           const content = transactionColumns(input, planned)
+          const storedReceipts = existing.receiptFileIds ?? []
+          const receipts = input.receiptFileIds ?? storedReceipts
           const columns = {
             ...content,
+            receiptFileIds: receiptsColumn(receipts),
             // scheduling.md: an edited occurrence is kept apart from its schedule from now on.
             overridden: existing.scheduleId !== null || existing.overridden,
             // A new due date gets its own reminder (functions-api.md#ledger).
@@ -112,11 +117,15 @@ export const updateTransaction = (services: ServicesFor) =>
           if (!sameRows(oldItems, itemData)) {
             changes.items = { before: itemSummary(oldItems), after: itemSummary(itemData) }
           }
+          if (!sameReceipts(storedReceipts, receipts)) {
+            changes.receiptFileIds = { before: storedReceipts, after: receipts }
+          }
           if (Object.keys(changes).length === 0 && sameRows(oldShares, shareData)) {
             throw new Unchanged()
           }
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
+          await attachReceipts(files, existing.groupId, receipts, storedReceipts)
           await tx.write(
             { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
             ...replaceRows(TABLES.shares, oldShares, shareData, permissions),
