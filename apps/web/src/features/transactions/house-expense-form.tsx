@@ -2,10 +2,10 @@ import { CATEGORIES } from '@ledgerly/core/constants/categories'
 import { MAX_PEOPLE_PER_TRANSACTION } from '@ledgerly/core/constants/limits'
 import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { type TransactionInput, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { ID } from 'appwrite'
-import { useEffect, useRef, useState } from 'react'
+import { type RefObject, useEffect, useRef, useState } from 'react'
 import { type FieldError, type FieldErrors, get, type Resolver, useForm } from 'react-hook-form'
 import { useNavigate } from 'react-router'
 import { schemaResolver } from '../../lib/schema-resolver'
@@ -139,20 +139,37 @@ function houseExpenseResolver(
   }
 }
 
-/** A house expense: who paid, and how it's split between whom (#180, #181). */
+/** Changing a posted house expense with the form it was made with (#202), as #184 does. */
+export type HouseExpenseEdit = {
+  row: Transactions
+  values: HouseExpenseValues
+  /** The form's heading, which gets focus when it opens (`useSwap`). */
+  heading: RefObject<HTMLHeadingElement | null>
+  /** `ledger PATCH /transactions/{id}`, kept by the page: a refusal can outlast the form. */
+  save: (body: TransactionInput) => Promise<unknown>
+  /** Called after a save and on Cancel. */
+  onDone: () => void
+}
+
+/**
+ * A house expense: who paid, and how it's split between whom (#180, #181); a new one, or a
+ * posted one being changed (#202).
+ */
 export function HouseExpenseForm({
   group,
   members,
   personId,
+  edit,
 }: {
   group: Groups
   members: Members[]
   personId: string
+  edit?: HouseExpenseEdit
 }) {
   const navigate = useNavigate()
   const create = useCreateTransaction()
-  // One ID per visit, so a retry after an error can't add it twice.
-  const [id] = useState(() => ID.unique())
+  // One ID per visit, so a retry after an error can't add it twice. A change keeps the row's.
+  const [id] = useState(() => edit?.row.$id ?? ID.unique())
   const [today] = useState(() => localToday(group.timezone, new Date()))
   const sorted = [...members].sort((a, b) => a.displayName.localeCompare(b.displayName))
   const toBody: ToBody = (values) =>
@@ -162,7 +179,7 @@ export function HouseExpenseForm({
     splitProblems(values, group.currency, body.totalCents ?? Number.NaN)
   const form = useForm<HouseExpenseValues, unknown, TransactionInput>({
     resolver: houseExpenseResolver(toBody, problemsOf, preview, group.currency),
-    defaultValues: {
+    defaultValues: edit?.values ?? {
       amount: '',
       date: today,
       description: '',
@@ -179,8 +196,10 @@ export function HouseExpenseForm({
   const { errors, isSubmitting } = form.formState
   const values = form.watch()
 
-  // The ticks follow the date until one is changed by hand (#180 decision 5).
-  const handTicked = useRef(false)
+  // The ticks follow the date until one is changed by hand (#180 decision 5). A change starts
+  // from the stored people, as if ticked by hand, so a new date never changes who shares it
+  // (#202 decision 2).
+  const handTicked = useRef(edit !== undefined)
   const { date } = values
   useEffect(() => {
     if (handTicked.current) return
@@ -239,13 +258,20 @@ export function HouseExpenseForm({
         void form.handleSubmit(
           async (input) => {
             try {
+              if (edit) {
+                // Saving it unchanged is fine: the function answers with the row as it is.
+                await edit.save(input)
+                edit.onDone()
+                return
+              }
               const view = await create.mutateAsync(input)
               navigate(`/transactions/${view.transaction.$id}`, { replace: true })
             } catch (error) {
               // The same ID again, with different content: an earlier try may have been saved
-              // although its answer was lost. Say so, rather than inviting a duplicate.
+              // although its answer was lost. Say so, rather than inviting a duplicate. On a
+              // change, CONFLICT is another write that got there first, and the function says so.
               const message =
-                error instanceof LedgerError && error.code === 'CONFLICT'
+                !edit && error instanceof LedgerError && error.code === 'CONFLICT'
                   ? 'This may already have been saved from your last try. Check the calendar before adding it again.'
                   : (error as Error).message
               form.setError('root', { message })
@@ -262,6 +288,11 @@ export function HouseExpenseForm({
         )(event)
       }}
     >
+      {edit && (
+        <h2 id="edit-heading" ref={edit.heading} tabIndex={-1} className="font-medium outline-none">
+          Change this expense
+        </h2>
+      )}
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
       <TextField
         id="amount"
@@ -356,9 +387,24 @@ export function HouseExpenseForm({
         currency={group.currency}
       />
       <TextField id="note" label="Note (optional)" error={errors.note} {...form.register('note')} />
-      <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
-        {isSubmitting ? 'Saving…' : 'Add'}
-      </Button>
+      <div className="flex flex-wrap gap-3">
+        <Button type="submit" aria-disabled={isSubmitting}>
+          {isSubmitting ? 'Saving…' : edit ? 'Save' : 'Add'}
+        </Button>
+        {edit && (
+          // Not while saving: the save would still land, after the form had gone.
+          <Button
+            type="button"
+            variant="outline"
+            aria-disabled={isSubmitting}
+            onClick={() => {
+              if (!form.formState.isSubmitting) edit.onDone()
+            }}
+          >
+            Cancel
+          </Button>
+        )}
+      </div>
     </form>
   )
 }

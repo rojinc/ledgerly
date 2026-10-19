@@ -47,6 +47,7 @@ To fix a posted entry, the worker opens it and taps **Edit**, which shows the sa
 2. Alice adds the electricity bill: $270, period 1 Jul–30 Sep, due 15 Oct, not paid yet → `ledger POST /transactions` with `kind: bill`, status `due`.
 3. Alice pays it on 10 Oct and marks it paid → `ledger POST /transactions/{id}/post`, with payer Alice.
 4. The default split is **days present**. Cara moved in on 1 Aug, so she pays for 61 of the 92 days.
+5. A posted house expense is fixed the same way as an employer entry: its creator or an admin opens it and taps **Edit**, which shows the house expense form filled in → `ledger PATCH /transactions/{id}`. Who paid, the split and the people sharing it can all change; a new date doesn't change who shares it. An expense with items, or one the form can't show, has no Edit: void it and add it again.
 
 ## 7. Itemised grocery receipt
 
