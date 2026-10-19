@@ -2,7 +2,7 @@ import type { Groups, Identities, Members, Persons } from '@ledgerly/core/genera
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
-import { moveIdentities, moveMembers, moveShares } from './merge'
+import { moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
 import { moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
 
@@ -59,8 +59,16 @@ async function runMerge(
   const templates = await moveTemplates(db, merge, groupIds, deadline)
   const inputs = await moveInputs(db, merge, groupIds, now, deadline)
   const shares = await moveShares(db, fromId, intoId, members.kept, deadline)
-  const counts = `${members.joined.length} groups joined, ${templates.rewritten + inputs.rewritten} inputs, ${inputs.voided} voided, ${shares.moved} shares, ${templates.skipped + inputs.skipped} left as they are`
-  if (members.done && templates.done && inputs.done && shares.done && Date.now() < deadline) {
+  const reminders = await moveReminders(db, fromId, intoId, members.kept, deadline)
+  const counts = `${members.joined.length} groups joined, ${templates.rewritten + inputs.rewritten} inputs, ${inputs.voided} voided, ${shares.moved} shares, ${reminders.moved} reminders, ${templates.skipped + inputs.skipped} left as they are`
+  if (
+    members.done &&
+    templates.done &&
+    inputs.done &&
+    shares.done &&
+    reminders.done &&
+    Date.now() < deadline
+  ) {
     const identities = await moveIdentities(db, fromId, intoId, deadline)
     console.log(`merge ${fromId} into ${intoId}: ${counts}, ${identities} identities`)
     // Cut off partway, some identities are still P's, and the next claim moves the rest.

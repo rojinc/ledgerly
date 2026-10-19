@@ -66,6 +66,14 @@ describe('PATCH /groups/{id}', () => {
     })
   })
 
+  it('stores no changes for a new name alone, which only the summary says', async () => {
+    const services = setUp()
+    await ok(services, 'PATCH', '/groups/g1', { name: 'Flat 3' })
+    const activity = services.db.rows('activity')
+    expect(activity).toEqual([expect.objectContaining({ summary: "Changed the group's name" })])
+    expect(activity[0]?.changesJson ?? null).toBeNull()
+  })
+
   it('changes the settings of the same type', async () => {
     const services = setUp('employer')
     const settings = { ...EMPLOYER_SETTINGS, recipients: ['pay@example.com'] }

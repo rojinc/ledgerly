@@ -3,7 +3,7 @@ import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { markMerged, moveIdentities, moveMembers, moveShares } from '../src/merge'
+import { markMerged, moveIdentities, moveMembers, moveReminders, moveShares } from '../src/merge'
 import {
   beforeCommit,
   beforeStaging,
@@ -737,5 +737,99 @@ describe('moveShares (step 3)', () => {
     expect(
       store.rows('shares').map((row) => [row.personId, row.givenCents, row.receivedCents]),
     ).toEqual([['pU', 3000, 3000]])
+  })
+})
+
+describe('moveReminders (step 3)', () => {
+  function sentTo(n: number, groupId = 'g1', toPersonId = 'pP') {
+    return {
+      $id: `r${String(n).padStart(3, '0')}`,
+      groupId,
+      sentBy: 'pX',
+      toPersonId,
+      channel: 'email',
+      sentAt: NOW.toISOString(),
+    }
+  }
+
+  function seed(reminders: object[]) {
+    return new FakeDb({ persons: [U, P], reminders } as ConstructorParameters<typeof FakeDb>[0])
+  }
+
+  it('makes every reminder P was sent to U, but in kept groups, in batches of at most 90', async () => {
+    const store = seed([
+      ...Array.from({ length: 100 }, (_, n) => sentTo(n, `g${n % 3}`)),
+      // A kept group's, and one to someone else.
+      sentTo(100, 'gKept'),
+      sentTo(101, 'g1', 'pX'),
+    ])
+    const commits = vi.spyOn(store, 'createOperations')
+    expect(await moveReminders(store, 'pP', 'pU', new Set(['gKept']), FAR)).toEqual({
+      moved: 100,
+      done: true,
+    })
+    const to = store.rows('reminders').map((row) => row.toPersonId)
+    expect(to.filter((id) => id === 'pU')).toHaveLength(100)
+    expect(to.slice(100)).toEqual(['pP', 'pX'])
+    // Only the recipient changes.
+    expect(store.rows('reminders')[0]).toMatchObject({ ...sentTo(0, 'g0'), toPersonId: 'pU' })
+    const sizes = new Map<string, number>()
+    for (const [params] of commits.mock.calls) {
+      sizes.set(
+        params.transactionId,
+        (sizes.get(params.transactionId) ?? 0) + (params.operations?.length ?? 0),
+      )
+    }
+    expect([...sizes.values()]).toEqual([MERGE_BATCH, 10])
+  })
+
+  it('runs a batch again when a purge deletes one of its rows first', async () => {
+    const store = seed([sentTo(1), sentTo(2)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"toPersonId"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({ action: 'delete', tableId: 'reminders', rowId: 'r001' }),
+        ),
+    )
+    expect(await moveReminders(store, 'pP', 'pU', new Set(), FAR)).toEqual({
+      moved: 1,
+      done: true,
+    })
+    expect(store.rows('reminders').map((row) => [row.$id, row.toPersonId])).toEqual([
+      ['r002', 'pU'],
+    ])
+  })
+
+  it('runs a batch again when another run of the merge moved a row first', async () => {
+    const store = seed([sentTo(1), sentTo(2)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"toPersonId"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'reminders',
+            rowId: 'r001',
+            data: { toPersonId: 'pU' },
+          }),
+        ),
+    )
+    expect(await moveReminders(store, 'pP', 'pU', new Set(), FAR)).toEqual({
+      moved: 1,
+      done: true,
+    })
+    expect(store.rows('reminders').every((row) => row.toPersonId === 'pU')).toBe(true)
+  })
+
+  it('starts nothing once the deadline has passed', async () => {
+    const store = seed([sentTo(1)])
+    expect(await moveReminders(store, 'pP', 'pU', new Set(), 0)).toEqual({
+      moved: 0,
+      done: false,
+    })
+    expect(store.rows('reminders')[0]?.toPersonId).toBe('pP')
   })
 })

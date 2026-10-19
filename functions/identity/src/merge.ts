@@ -5,6 +5,7 @@ import type {
   Identities,
   Members,
   Persons,
+  Reminders,
   Shares,
   Statements,
 } from '@ledgerly/core/generated/rows'
@@ -463,6 +464,67 @@ function combined(theirs: readonly Shares[], ours: readonly Shares[], intoId: st
 export async function dropBalances(tx: Tx, db: Db, groupId: string): Promise<void> {
   if (await getRowOrNull<Balances>(db, TABLES.balances, groupId)) {
     await tx.write({ action: 'delete', tableId: TABLES.balances, rowId: groupId })
+  }
+}
+
+/**
+ * Step 3, reminders: every reminder P was sent (`idx_toPerson_sentAt`), but in the `kept` groups,
+ * is to U instead, so the recipient limit counts them toward U (identity-and-invites.md#reminders).
+ * Batches of at most 90 writes, each row staged, then read again, so a purge or another run of
+ * this merge running the same rows makes the batch run again. It stops once `deadline` (epoch ms)
+ * has passed; `done` is true once none is left.
+ */
+export async function moveReminders(
+  db: Db,
+  fromId: string,
+  intoId: string,
+  kept: ReadonlySet<string>,
+  deadline: number,
+): Promise<{ moved: number; done: boolean }> {
+  let moved = 0
+  for (;;) {
+    if (Date.now() >= deadline) return { moved, done: false }
+    const { rows } = await db.listRows<Reminders>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.reminders,
+      queries: [
+        Query.equal('toPersonId', fromId),
+        ...[...kept].map((groupId) => Query.notEqual('groupId', groupId)),
+        Query.limit(MAX_OPS_PER_DB_TRANSACTION),
+      ],
+      total: false,
+    })
+    if (rows.length === 0) return { moved, done: true }
+    try {
+      await withTransaction(db, async (tx) => {
+        await tx.write(
+          ...rows.map((row) => ({
+            action: 'update' as const,
+            tableId: TABLES.reminders,
+            rowId: row.$id,
+            data: { toPersonId: intoId },
+          })),
+        )
+        const { rows: stored } = await db.listRows<Reminders>({
+          databaseId: DATABASE_ID,
+          tableId: TABLES.reminders,
+          queries: [
+            Query.equal(
+              '$id',
+              rows.map((row) => row.$id),
+            ),
+            Query.limit(rows.length),
+          ],
+          total: false,
+        })
+        if (stored.length !== rows.length || stored.some((row) => row.toPersonId !== fromId)) {
+          throw new Raced()
+        }
+      })
+      moved += rows.length
+    } catch (error) {
+      if (!(error instanceof Raced || isAppwriteError(error, 409))) throw error
+    }
   }
 }
 

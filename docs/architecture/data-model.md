@@ -31,6 +31,7 @@ persons ──┬── identities                       (server only)
                       statements
                       activity
                       invites                   (server only)
+                      reminders                 (server only)
                       balances      (1:1 with a group, server only)
 ```
 
@@ -284,11 +285,11 @@ Append-only. Never updated. Deleted only with a group purged when a member delet
 | --- | --- | --- |
 | `groupId` | varchar(36) | |
 | `actorPersonId` | varchar(36)? | Empty for system jobs |
-| `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized` |
+| `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized`, `reminder.sent` |
 | `transactionId` | varchar(36)? | |
-| `subjectPersonId` | varchar(36)? | The person a `member.*` row is about, so the app shows their current name ("Former member" after deletion) |
-| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member or group row names its person through `subjectPersonId` instead (rows written before #50 keep their text). |
-| `changesJson` | text? | `{ before, after }` of the changed fields; never a display name |
+| `subjectPersonId` | varchar(36)? | The person a `member.*` or `reminder.sent` row is about, so the app shows their current name ("Former member" after deletion) |
+| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member or reminder row names its person through `subjectPersonId` instead, and a group row names no one (rows written before #50 keep their text). |
+| `changesJson` | text? | `{ before, after }` of the changed fields; never a display name. Empty when only a name changed, which the summary says. |
 | `at` | datetime | |
 
 Indexes: `idx_group_at (groupId, at)`.
@@ -310,6 +311,22 @@ Permissions: `read("team:<groupId>")`.
 
 Indexes: `uniq_tokenHash (tokenHash)` **unique**, `idx_invitedBy_sentAt (invitedBy, sentAt)`, `idx_identity_sentAt (identityKey, sentAt)`.
 Permissions: none (server only).
+
+## reminders
+
+One row per reminder sent ([reminders](identity-and-invites.md#reminders), F-63): the state its rate limits count. Row ID = the client's `id`, so a retry finds it.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `groupId` | varchar(36) | A `pair` group |
+| `sentBy` | varchar(36) | personId of the sender, a joined member |
+| `toPersonId` | varchar(36) | personId of the other member it was sent to |
+| `channel` | enum(email, sms) | `email` until SMS reminders, after [#40](https://github.com/rojinc/ledgerly/issues/40) |
+| `sentAt` | datetime | |
+
+The address typed and the amount are **not stored**: the limits count by person, and the address is already an identity row.
+Indexes: `idx_sentBy_sentAt (sentBy, sentAt)`, `idx_toPerson_sentAt (toPersonId, sentAt)`, `idx_groupId (groupId)` (for a purge).
+Permissions: none (server only). Kept until either person's account is deleted, or the group is purged ([deleting an account](identity-and-invites.md#deleting-an-account-m4)); pruning old rows is a later follow-up.
 
 ## Storage buckets
 

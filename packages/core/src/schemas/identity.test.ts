@@ -7,6 +7,7 @@ import {
   createInviteBodySchema,
   deleteAccountBodySchema,
   hoursCapSchema,
+  sendReminderBodySchema,
   updateProfileBodySchema,
 } from './identity'
 
@@ -114,6 +115,25 @@ describe('createInviteBodySchema', () => {
     )
     const withChannel = { ...invite, email: 'cara@example.com', channel: 'email' }
     expect(paths(createInviteBodySchema, withChannel)).toEqual([''])
+  })
+})
+
+describe('sendReminderBodySchema', () => {
+  const reminder = { id: 'r1', groupId: 'pair1', email: 'cara@example.com' }
+
+  it('needs an id, a pair group and one email address', () => {
+    expect(paths(sendReminderBodySchema, reminder)).toEqual([])
+    expect(paths(sendReminderBodySchema, { ...reminder, email: 'cara' })).toEqual(['email'])
+    expect(paths(sendReminderBodySchema, { groupId: 'pair1', email: 'cara@example.com' })).toEqual([
+      'id',
+    ])
+    expect(paths(sendReminderBodySchema, { id: 'r1', groupId: 'pair1' })).toEqual(['email'])
+  })
+
+  it('takes no phone, note or amount: unknown keys fail', () => {
+    for (const extra of [{ phone: '0412 345 678' }, { note: 'Pay up' }, { amountCents: 100 }]) {
+      expect(paths(sendReminderBodySchema, { ...reminder, ...extra })).toEqual([''])
+    }
   })
 })
 
