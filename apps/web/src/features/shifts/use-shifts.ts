@@ -5,6 +5,7 @@ import type {
   StartTimerBody,
   StopTimerBody,
   TransactionInput,
+  TransactionView,
   VoidTransactionBody,
 } from '@ledgerly/core/schemas/ledger'
 import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
@@ -12,7 +13,7 @@ import { Query } from 'appwrite'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { useCurrentUser } from '../auth/use-current-user'
-import { LedgerError, ledger, type TransactionView } from '../transactions/use-transactions'
+import { LedgerError, ledger } from '../transactions/use-transactions'
 
 // Appwrite's limit for one page and for the values of one Query.equal.
 const PAGE = 100
