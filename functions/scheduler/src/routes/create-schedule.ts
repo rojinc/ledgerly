@@ -66,7 +66,11 @@ export async function createSchedule(
       await withTransaction(db, async (tx) => {
         // The people the template names stay members while it exists (ledger.md#concurrency).
         await guardGroupAndMembers(tx, db, membership.group, ledger, people)
-        await refuseDeletedPeople(tx, db, ledger, input.kind, input.template)
+        await refuseDeletedPeople(tx, db, ledger, {
+          kind: input.kind,
+          input: input.template,
+          guard: true,
+        })
         await tx.write({
           action: 'create',
           tableId: TABLES.schedules,

@@ -12,19 +12,30 @@ const EXEMPT: readonly TransactionKind[] = ['payment', 'adjustment']
 
 /**
  * functions-api.md#ledger ("Deleted people"): VALIDATION_FAILED when `input` names a person
- * who deleted their account, in a group where they had joined, and `before` (the stored input
- * or template) didn't name them already. Payments and adjustments are exempt, and a
- * placeholder is never refused, so the answer can't show the deletion (D-016). Each such
- * person's row gets a fresh `rev` before `deletedAt` is read, so a deletion racing this write
- * fails one of the two commits. Call it after `guardGroupAndMembers`.
+ * who deleted their account, in a group where they had joined, and `before` (the stored input)
+ * didn't name them already. Payments and adjustments are exempt, and a placeholder is never
+ * refused, so the answer can't show the deletion (D-016). Call it after `guardGroupAndMembers`.
+ *
+ * With `guard`, each such person's row gets a fresh `rev` before `deletedAt` is read, so a
+ * deletion racing the write fails one of the two commits. A schedule needs it: the deletion ends
+ * the schedules that name them by a query, which a template saved meanwhile could miss. A
+ * transaction doesn't: one that races the deletion is the same as one made just before it.
  */
 export async function refuseDeletedPeople(
   tx: Tx,
   db: Db,
   ledger: Ledger,
-  kind: TransactionKind,
-  input: TransactionTemplate,
-  before?: TransactionTemplate,
+  {
+    kind,
+    input,
+    before,
+    guard = false,
+  }: {
+    kind: TransactionKind
+    input: TransactionTemplate
+    before?: TransactionTemplate
+    guard?: boolean
+  },
 ): Promise<void> {
   if (EXEMPT.includes(kind)) return
   const named = new Set(before ? everyPersonId(before) : [])
@@ -43,14 +54,16 @@ export async function refuseDeletedPeople(
     .filter((member) => member.status !== 'placeholder')
     .map((member) => member.personId)
   if (joined.length === 0) return
-  await tx.write(
-    ...joined.map((personId) => ({
-      action: 'update' as const,
-      tableId: TABLES.persons,
-      rowId: personId,
-      data: { rev: randomId() },
-    })),
-  )
+  if (guard) {
+    await tx.write(
+      ...joined.map((personId) => ({
+        action: 'update' as const,
+        tableId: TABLES.persons,
+        rowId: personId,
+        data: { rev: randomId() },
+      })),
+    )
+  }
   const persons = await Promise.all(
     joined.map((personId) =>
       db.getRow<Persons>({

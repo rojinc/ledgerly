@@ -77,7 +77,7 @@ export const createTransaction = (services: ServicesFor) =>
       const permissions = teamRead(input.groupId)
       await withTransaction(db, async (tx) => {
         await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
-        await refuseDeletedPeople(tx, db, ledger, input.kind, input)
+        await refuseDeletedPeople(tx, db, ledger, { kind: input.kind, input })
         await requireNotFinalizing(db, input.groupId, [input.date])
         // permissions.md#storage: checked and limited to the team before the row commits.
         await attachReceipts(files, db, tx, {

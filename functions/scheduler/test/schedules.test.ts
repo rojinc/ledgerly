@@ -1473,17 +1473,16 @@ describe('a person who deleted their account, in a group they had joined', () =>
   const deleteAccount = (services: Fakes) =>
     setRow(services, 'persons', 'pAlex', { deletedAt: '2026-10-17T00:00:00.000Z' })
 
+  const refused = { status: 400, code: 'VALIDATION_FAILED' }
+
   it('can’t be named in a new schedule', async () => {
     const services = seeded()
     await deleteAccount(services)
-    expect(await failure(services, 'POST', '/schedules', { body: rent })).toEqual({
-      status: 400,
-      code: 'VALIDATION_FAILED',
-    })
+    expect(await failure(services, 'POST', '/schedules', { body: rent })).toEqual(refused)
     expect(services.db.rows('schedules')).toEqual([])
   })
 
-  it('stays in a template that already names them, but can’t be added to one', async () => {
+  it('can’t be added to a template, or kept in one, so an ended schedule doesn’t start again', async () => {
     const services = seeded()
     const samOnly = {
       ...rent,
@@ -1492,15 +1491,50 @@ describe('a person who deleted their account, in a group they had joined', () =>
     }
     await create(services, rent)
     await create(services, samOnly)
+    // Deleting the account ends the schedules that name them (identity-and-invites.md).
+    await ok(services, 'POST', `/schedules/${rent.id}/end`, { body: { endsOn: '2026-11-01' } })
     await deleteAccount(services)
-    const renamed = await call(services, 'PATCH', `/schedules/${rent.id}`, {
-      body: { ...rent, description: 'House rent' },
-    })
-    expect(renamed.status).toBe(200)
+    const before = services.db.rows('transactions').length
+    // An edit form opened before the deletion sends no end date.
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: rent })).toEqual(
+      refused,
+    )
     expect(
       await failure(services, 'PATCH', `/schedules/${samOnly.id}`, {
         body: { ...samOnly, template: rent.template },
       }),
-    ).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
+    ).toEqual(refused)
+    expect(services.db.rows('transactions')).toHaveLength(before)
+    expect(services.db.rows('schedules').find((row) => row.$id === rent.id)?.endsOn).toBe(
+      '2026-11-01',
+    )
+  })
+
+  it('is refused when the deletion commits just before the schedule guards them', async () => {
+    const services = seeded()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"persons"'),
+      () => deleteAccount(services),
+    )
+    expect(await failure(services, 'POST', '/schedules', { body: rent })).toEqual(refused)
+    expect(services.db.rows('schedules')).toEqual([])
+  })
+
+  it('is refused when the deletion commits just before an edit guards them', async () => {
+    const services = seeded()
+    const samOnly = {
+      ...rent,
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, samOnly)
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"persons"'),
+      () => deleteAccount(services),
+    )
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: rent })).toEqual(
+      refused,
+    )
   })
 })

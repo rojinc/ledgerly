@@ -132,14 +132,11 @@ export const updateTransaction = (services: ServicesFor) =>
             throw new Unchanged()
           }
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
-          await refuseDeletedPeople(
-            tx,
-            db,
-            ledger,
-            input.kind,
+          await refuseDeletedPeople(tx, db, ledger, {
+            kind: input.kind,
             input,
-            await storedInput(db, existing),
-          )
+            before: await storedInput(db, existing),
+          })
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
           await attachReceipts(files, db, tx, {
             groupId: existing.groupId,

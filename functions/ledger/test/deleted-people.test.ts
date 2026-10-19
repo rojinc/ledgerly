@@ -39,6 +39,30 @@ describe('a person who deleted their account, in a group they had joined', () =>
     expect(rows.transactions(db)).toEqual([])
   })
 
+  it('can’t be named where they have left, as deleting the account leaves every group', async () => {
+    const db = seed()
+    const withLee = expense({ split: { mode: 'equal', personIds: ['alice', 'lee'] } })
+    expect(outcome(await call(db, 'POST', '/transactions', withLee))).toEqual({ status: 200 })
+    await deleteAccount(db, 'lee')
+    expect(outcome(await call(db, 'POST', '/transactions', { ...withLee, id: 't2' }))).toEqual(
+      refused,
+    )
+  })
+
+  it('can’t be named in an item’s split either', async () => {
+    const db = seed()
+    await deleteAccount(db, 'bob')
+    const items = expense({
+      totalCents: undefined,
+      split: undefined,
+      items: [
+        { name: 'Milk', amountCents: 300, split: { mode: 'equal', personIds: ['alice'] } },
+        { name: 'Wine', amountCents: 2000, split: { mode: 'equal', personIds: ['bob'] } },
+      ],
+    })
+    expect(outcome(await call(db, 'POST', '/transactions', items))).toEqual(refused)
+  })
+
   it('can be named where they never joined (a placeholder), so nothing shows the deletion', async () => {
     const db = seed()
     await deleteAccount(db, 'pat')
@@ -119,19 +143,11 @@ describe('a person who deleted their account, in a group they had joined', () =>
     expect(outcome(await call(db, 'POST', '/transactions/b2/post', {}))).toEqual({ status: 200 })
   })
 
-  it('is refused when the deletion commits while the write is being made', async () => {
+  it('is checked with a read only, so a transaction’s writes stay within budget', async () => {
     const db = seed()
-    // The deletion lands after the person's row is guarded, just before the commit.
-    const commit = db.updateTransaction.bind(db)
-    let done = false
-    vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
-      if (!done && params.commit) {
-        done = true
-        await deleteAccount(db, 'bob')
-      }
-      return commit(params)
-    })
-    expect(outcome(await call(db, 'POST', '/transactions', expense()))).toEqual(refused)
-    expect(rows.transactions(db)).toEqual([])
+    // A write that races the deletion is the same as one made just before it (ledger.md).
+    const stage = vi.spyOn(db, 'createOperations')
+    expect(outcome(await call(db, 'POST', '/transactions', expense()))).toEqual({ status: 200 })
+    expect(JSON.stringify(stage.mock.calls)).not.toContain('"persons"')
   })
 })
