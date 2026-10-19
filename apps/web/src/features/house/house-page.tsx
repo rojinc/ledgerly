@@ -17,7 +17,7 @@ import {
   ROLE_LABEL,
   toHouseValues,
 } from './house-values'
-import { AddHousemate, EditMember, MoveOut } from './housemate-forms'
+import { AddHousemate, EditMember, MoveBackIn, MoveOut } from './housemate-forms'
 import { SettleUp } from './settle-up'
 import { GroupsError, useLeaveHouse, useMemberWrites, useUpdateHouse } from './use-house'
 
@@ -151,7 +151,7 @@ function House({
   )
 }
 
-type Mode = 'view' | 'edit' | 'moveOut' | 'remove'
+type Mode = 'view' | 'edit' | 'moveOut' | 'moveBackIn' | 'remove'
 
 function MemberRow({
   group,
@@ -176,12 +176,14 @@ function MemberRow({
   const buttons = {
     edit: useRef<HTMLButtonElement>(null),
     moveOut: useRef<HTMLButtonElement>(null),
+    moveBackIn: useRef<HTMLButtonElement>(null),
     remove: useRef<HTMLButtonElement>(null),
   }
 
   function close(from: Exclude<Mode, 'view'>) {
     flushSync(() => setMode('view'))
-    // Moving out takes its button away: focus goes to Change.
+    // Moving out or back in turns that button into the other one (the same element), which
+    // keeps focus. A button that's gone sends focus to Change.
     ;(buttons[from].current ?? buttons.edit.current)?.focus()
   }
 
@@ -206,7 +208,16 @@ function MemberRow({
           >
             Change
           </Button>
-          {!member.leftOn && (
+          {member.leftOn ? (
+            <Button
+              ref={buttons.moveBackIn}
+              variant="outline"
+              aria-describedby={nameId}
+              onClick={() => setMode('moveBackIn')}
+            >
+              Moved back in
+            </Button>
+          ) : (
             <Button
               ref={buttons.moveOut}
               variant="outline"
@@ -234,6 +245,9 @@ function MemberRow({
       )}
       {mode === 'moveOut' && (
         <MoveOut group={group} member={member} writes={writes} onClose={() => close('moveOut')} />
+      )}
+      {mode === 'moveBackIn' && (
+        <MoveBackIn member={member} writes={writes} onClose={() => close('moveBackIn')} />
       )}
       {mode === 'remove' && (
         <ConfirmRemove
