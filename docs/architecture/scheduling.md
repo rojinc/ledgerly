@@ -62,7 +62,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, then the nightly check. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
+The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up (step 5, [#163](https://github.com/rojinc/ledgerly/issues/163)), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -141,9 +141,9 @@ Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a 
 
 The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
 
-### Step 5: nightly check
+### Step 6: nightly check
 
-Runs last, in what's left of the run's budget. It takes groups where `nextCheckAt` is empty or `<= now` (`idx_nextCheckAt`), in pages of 100 by `$id` as step 1 does, until the budget is used. Archived groups are checked too. A check reads, apart from the two repairs below and its `nextCheckAt`: it never writes shares, transactions or members, and it doesn't finish merges. A group whose team is gone (a [purge](identity-and-invites.md#deleting-an-account-m4) in progress) has no memberships to check.
+Runs last, in what's left of the run's budget. It takes groups where `nextCheckAt` is empty or `<= now` (`idx_nextCheckAt`), in pages of 100 by `$id` as step 1 does, until the budget is used. Archived groups are checked too. A group whose team is gone (a [purge](identity-and-invites.md#deleting-an-account-m4) in progress) is skipped. A check reads, apart from the two repairs below and its `nextCheckAt`: it never writes shares, transactions or members, and it doesn't finish merges (a lead decision for v1: only `/claim` carries a merge on).
 
 **Reading a group whole.** It reads the group's `rev`, then the group's members, posted transactions (`idx_group_status_date`), shares and `balances` row, then `rev` again. Every write of shares changes `rev` ([concurrency](ledger.md#concurrency)), so the same value means nothing changed in between. Otherwise it reads again, up to 3 times, then leaves the group for the next run (counted as `busy`).
 
@@ -165,7 +165,7 @@ Broken shares or transactions are reported, never fixed. They're fixed by hand, 
 
 After removing it, the check reads the member rows once more, and adds the membership back if a join or a merge made the person a joined member meanwhile. This catches a join, a merge or a leave that stopped between its Teams call and its database transaction. A membership that's already gone counts as removed. These are the scheduler's only team writes (the `teams.write` scope), and no route that people call reaches them.
 
-**When it's done.** A group whose check finished gets `nextCheckAt` = 03:00 tomorrow in the group's time zone, worked out as a local date and then converted to UTC, as for summaries. A group cut off by the budget, or left as `busy`, gets `nextCheckAt` one hour later: a later run checks it from the start, and the next run starts with the groups after it. Writing `nextCheckAt` changes the group row, so a ledger write that overlaps it runs once more. Runs that overlap are safe: the checks only read, the repairs are guarded, and the run returns counts only. Until alerting exists, the error lines are the alert.
+**When it's done.** A group whose check finished gets `nextCheckAt` = 03:00 tomorrow in the group's time zone, worked out as a local date and then converted to UTC, as for summaries. So does a group the budget cut off, with its ID logged: tomorrow's check starts it again from the start, and it can't hold up the groups after it on every run. A group left as `busy` gets `nextCheckAt` one hour later, so a later run tries it again soon. Writing `nextCheckAt` changes the group row, so a ledger write that overlaps it runs once more. Runs that overlap are safe: the checks only read, the repairs are guarded, and the run returns counts only. Until alerting exists, the error lines are the alert.
 
 ## Schedule routes
 

@@ -17,7 +17,7 @@ This is the same idea as Splitwise's "paid share / owed share". We use *given* a
 
 ## Invariants
 
-These must hold for every posted transaction, always. `packages/core` exports `assertShareInvariants()`; the `ledger` function calls it before every write, and the scheduler's [nightly check](scheduling.md#step-5-nightly-check) checks every group again.
+These must hold for every posted transaction, always. `packages/core` exports `assertShareInvariants()`; the `ledger` function calls it before every write, and the scheduler's [nightly check](scheduling.md#step-6-nightly-check) checks every group again.
 
 1. **I-1 Balanced:** Σ `givenCents` = Σ `receivedCents` = `totalCents`. So the nets in a transaction always add up to 0.
 2. **I-2 Integers:** every amount is an integer number of cents. No floats are ever stored.
@@ -165,7 +165,7 @@ Each group's **`balances` row** ([data model](data-model.md#balances)) holds eac
 
 - **Every write of shares keeps it**, in the same database transaction. That covers `ledger`'s create, edit, post, void and timer stop, and the scheduler's auto-post. After staging its guard write on the group row, the write reads the row. It subtracts the shares it replaces and adds the ones it writes (core `applyShares()`), dropping anyone left with no shares, and writes the row back. When nothing changed, there's no write.
 - **A [merge](identity-and-invites.md#merging-two-persons) batch deletes it instead**, for each group whose shares the batch changes. A merge renames a person, which a cache keyed by person can't follow share by share. `/balances` sums the shares until the nightly check builds the row again.
-- **No row** (not built yet, or deleted): the write leaves it alone, and `/balances` sums the shares instead. The [nightly check](scheduling.md#step-5-nightly-check) builds it: a group's first check is the backfill.
+- **No row** (not built yet, or deleted): the write leaves it alone, and `/balances` sums the shares instead. The [nightly check](scheduling.md#step-6-nightly-check) builds it: a group's first check is the backfill.
 - **No guard of its own:** every writer has staged the group row first, so writes in one group already take turns ([concurrency](#concurrency)). A write that read the row before another one committed fails its commit and runs again.
 - **A row that doesn't fit is deleted.** That's a row that can't be read or fails `balancesPeopleSchema`, or one where someone's share count would go below 0, someone dropped would still have a net that isn't 0, or a net would pass a safe integer. It's a bug, so the write deletes the row in the same transaction instead of failing, and logs an error with the group's ID. `/balances` sums the shares until the nightly check rebuilds the row. A cache never stops a write.
 - **The nightly check** compares the row with a fresh sum and repairs it.
