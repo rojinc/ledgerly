@@ -724,6 +724,7 @@ describe('moveMembers (step 2)', () => {
 
     it('is put off, with nothing written there, while the other groups go on', async () => {
       const services = purging((teamId) => (teamId === 'g1' ? gone() : undefined))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
         kept: new Set(),
         joined: ['g2'],
@@ -737,6 +738,10 @@ describe('moveMembers (step 2)', () => {
       expect(joinedRows(services).map(([groupId]) => groupId)).toEqual(['g2'])
       // Not even g1's guard was written.
       expect(services.db.rows('groups').find((row) => row.$id === 'g1')?.rev).toBe('r0')
+      // By ID, so the group holding the merge open can be found.
+      expect(warn.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+        { fn: 'unknown', event: 'merge_put_off_team_gone', personId: 'pP', groupId: 'g1' },
+      ])
     })
 
     it('leaves the row moved, but not a group U joined, when the team goes just after the commit', async () => {

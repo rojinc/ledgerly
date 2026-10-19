@@ -32,6 +32,7 @@ export type LogEvent =
   | 'merge_left_locked_transaction'
   | 'merge_left_schedule'
   | 'merge_left_stray_row'
+  | 'merge_put_off_team_gone'
   | 'merge_typed_keys_deleted'
   | 'merge_finished'
   | 'merge_carries_on'
@@ -57,6 +58,7 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_left_locked_transaction: 'warn',
   merge_left_schedule: 'warn',
   merge_left_stray_row: 'warn',
+  merge_put_off_team_gone: 'warn',
   merge_stopped: 'warn',
 }
 

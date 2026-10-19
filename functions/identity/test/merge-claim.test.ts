@@ -507,6 +507,15 @@ describe('POST /claim, merging a placeholder', () => {
   // #334: an account deletion purging a group deletes its team first and its rows last.
   it('puts off a group a purge is deleting, merges the others, and finishes once its rows go', async () => {
     const services = house()
+    // As the purge does it: g1 is archived first, then its team deleted.
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'groups',
+        rowId: 'g1',
+        data: { archivedAt: '2026-10-19T00:00:00.000Z' },
+      }),
+    )
     const add = services.teams.createMembership.bind(services.teams)
     vi.spyOn(services.teams, 'createMembership').mockImplementation(async (params) => {
       if (params.teamId === 'g1')
@@ -515,7 +524,12 @@ describe('POST /claim, merging a placeholder', () => {
     })
     expect((await claim(services)).body).toEqual({ ok: true, data: { linkedGroupIds: [] } })
     expect(stopped()).toEqual([])
-    // g2 is done. g1 waits whole, and so does the phone.
+    expect(events(warn)).toContainEqual({
+      event: 'merge_put_off_team_gone',
+      personId: 'pP',
+      groupId: 'g1',
+    })
+    // g2 is done. g1 waits, and so does the phone.
     expect(namingSammy(services)).toEqual({
       identities: ['iPhone'],
       members: ['m1'],
