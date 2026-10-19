@@ -153,11 +153,11 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 `/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
 
-**Receipts.** `POST /transactions/{id}/receipts` sets the transaction's receipt list and changes nothing else. It rebuilds no shares or items, and writes one `transaction.updated` activity row; sending the stored list again writes nothing. Otherwise its rules are `PATCH`'s: status `scheduled`, `due` or `posted`, `LOCKED` and `ARCHIVED` as for `PATCH`, `NOT_FOUND` for non-members, and it sets `overridden` on a schedule occurrence.
+**Receipts.** `POST /transactions/{id}/receipts` sets the transaction's receipt list and changes nothing else. It rebuilds no shares or items, and writes one `transaction.updated` activity row; sending the stored list again, in the same order, writes nothing. Otherwise its rules are `PATCH`'s: status `scheduled`, `due` or `posted`, `LOCKED` and `ARCHIVED` as for `PATCH`, `NOT_FOUND` for non-members, and it sets `overridden` on a schedule occurrence.
 
-- Every write that attaches a file (`POST /transactions`, `PATCH` and `/receipts`) checks it and limits it to the group's team first ([permissions](permissions.md#storage)).
+- Every write that attaches a file (`POST /transactions`, `PATCH` and `/receipts`) checks it and limits it to the group's team first ([permissions](permissions.md#storage)). The check runs after step 1's membership, role, archived and locked checks, so a refused caller never changes a file.
 - A `PATCH` body without `receiptFileIds` keeps the stored list, so edit forms that don't show receipts don't drop them. `[]` clears it.
-- Taking a file off a list never deletes it or changes its permissions. The same file may be on two transactions of one group.
+- Taking a file off a list doesn't delete it or change its permissions; the scheduler's clean-up ([#163](https://github.com/rojinc/ledgerly/issues/163)) deletes files no transaction lists. The same file may be on two transactions of one group.
 
 ## groups
 
@@ -218,7 +218,7 @@ type ScheduleInput = {
   groupId: string
   kind: 'shift' | 'bill' | 'expense' | 'income'
   description: string
-  template: Omit<TransactionInput, 'id' | 'groupId' | 'date' | 'kind' | 'description'>
+  template: Omit<TransactionInput, 'id' | 'groupId' | 'date' | 'kind' | 'description' | 'receiptFileIds'>
   rrule: string                 // RFC 5545; only the shapes in scheduling.md#rules-the-ui-builds
   startsOn: LocalDate
   endsOn?: LocalDate
