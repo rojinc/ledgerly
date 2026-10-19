@@ -41,7 +41,7 @@
     "ignore": ["*", "!dist/", "!dist/**", "!package.json"],
     "execute": ["users"],
     "events": [],
-    "schedule": "",
+    "interval": 60,
     "timeout": 15,
     "enabled": true,
     "logging": true,

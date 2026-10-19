@@ -9,6 +9,7 @@ import { bootstrap } from './routes/bootstrap'
 import { postClaim } from './routes/claim'
 import { joinPendingGroup, listPendingGroups } from './routes/pending-groups'
 import { updateProfile } from './routes/profile'
+import { run } from './routes/run'
 import { type Services, servicesFromRequest } from './services'
 
 // The commit this bundle was built from (scripts/build-functions.mjs).
@@ -20,6 +21,7 @@ export function identityRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
+    route('POST', '/', async (ctx) => run(ctx.scheduled, () => services(ctx))),
     route('POST', '/bootstrap', async (ctx) =>
       bootstrap(services(ctx), requireUser(ctx.userId), ctx.body),
     ),

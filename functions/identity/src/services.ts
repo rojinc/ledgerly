@@ -6,7 +6,7 @@ import { type Models, Teams, Users } from 'node-appwrite'
 /** The parts of the caller's Appwrite account that identity reads. */
 export type AccountUser = Pick<
   Models.User,
-  '$id' | 'name' | 'email' | 'emailVerification' | 'phone' | 'phoneVerification'
+  '$id' | 'name' | 'email' | 'emailVerification' | 'phone' | 'phoneVerification' | 'labels'
 >
 
 /** The parts of Users that identity uses; the real `Users` satisfies it. */
