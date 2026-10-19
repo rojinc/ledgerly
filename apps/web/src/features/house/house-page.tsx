@@ -2,7 +2,7 @@ import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import type { UpdateGroupBody } from '@ledgerly/core/schemas/groups'
 import { type ReactNode, type RefObject, useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
-import { Navigate, useNavigate, useParams } from 'react-router'
+import { Link, Navigate, useNavigate, useParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
@@ -112,6 +112,15 @@ function House({
       <p role="status" className="text-sm text-muted-foreground empty:hidden">
         {newRole && `Your role here is now ${ROLE_LABEL[newRole]}.`}
       </p>
+      {/* #180. `role` is unset in an archived house. */}
+      {(role === 'admin' || role === 'member') && (
+        <Link
+          to={`/transactions/new?groupId=${group.$id}`}
+          className="inline-flex h-10 items-center self-start rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          Add expense
+        </Link>
+      )}
       <section aria-labelledby="housemates" className="flex flex-col gap-2">
         <h2 id="housemates" className="font-medium">
           Housemates
