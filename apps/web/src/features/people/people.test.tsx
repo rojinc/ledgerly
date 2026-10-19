@@ -660,6 +660,8 @@ describe('PairPage: send a reminder (#266)', () => {
     await openForm()
     type('Their email address', 'sam@example.com')
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    // The form checks the address first, so the call starts a moment after the click.
+    await waitFor(() => expect(answers).toHaveLength(1))
     answers[0]?.(refused('VALIDATION_FAILED', 'Use an address you added them with.'))
     await waitFor(() =>
       expect(input('Their email address').getAttribute('aria-invalid')).toBe('true'),
@@ -716,14 +718,19 @@ describe('PairPage: send a reminder (#266)', () => {
     call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
     await openForm()
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
-      'Enter their email address',
+    // The form checks the address a moment after the click.
+    await waitFor(() =>
+      expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
+        'Enter their email address',
+      ),
     )
     expect(document.activeElement).toBe(input('Their email address'))
     type('Their email address', 'sam')
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
-      'Enter an email address like name@example.com',
+    await waitFor(() =>
+      expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
+        'Enter an email address like name@example.com',
+      ),
     )
     expect(call).not.toHaveBeenCalled()
     type('Their email address', 'sam@example.com')
@@ -738,6 +745,22 @@ describe('PairPage: send a reminder (#266)', () => {
     expect(screen.getByLabelText('Their email address')).toBeTruthy()
     answer(ok({ sentAt: NOW.toISOString() }))
     await sentNews()
+    // A second send would start a moment after its click, so count again once it's all done.
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('treats an address of only spaces as empty', async () => {
+    mockGroup(5000)
+    mockRows()
+    await openForm()
+    type('Their email address', '   ')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() =>
+      expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
+        'Enter their email address',
+      ),
+    )
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('reloads the group when the reminder is refused as ARCHIVED', async () => {
