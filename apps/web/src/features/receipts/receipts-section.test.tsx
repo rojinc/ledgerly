@@ -57,9 +57,11 @@ function renderSection(transaction: Transactions, mayChange = true) {
 }
 const fetches: string[] = []
 let previewType = 'image/webp'
+let downloadType = 'application/pdf'
 beforeEach(() => {
   mockVerified = true
   previewType = 'image/webp'
+  downloadType = 'application/pdf'
   fetches.length = 0
   localStorage.setItem('cookieFallback', '{"a_session":"s"}')
   // The SDK's methods are overloaded; the object form is the one used.
@@ -79,8 +81,9 @@ beforeEach(() => {
     'fetch',
     vi.fn(async (url: string, init: RequestInit) => {
       fetches.push(`${url} ${JSON.stringify(init.headers)} ${init.credentials}`)
-      // Appwrite's preview is the format asked for; a download is the file as stored.
-      const type = url.includes('/preview') ? previewType : 'application/pdf'
+      // Appwrite's preview is the format asked for; a download is the file as stored, its
+      // type whatever the answer claims.
+      const type = url.includes('/preview') ? previewType : downloadType
       return new Response(new Uint8Array([1, 2, 3]), {
         status: 200,
         headers: { 'Content-Type': type },
@@ -135,10 +138,14 @@ describe('ReceiptsSection', () => {
 
   it('offers a PDF as a download only, never shown in the page', async () => {
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    downloadType = 'text/html'
     renderSection(row(['pdf1']))
     fireEvent.click(await screen.findByRole('button', { name: 'Download PDF' }))
     await waitFor(() => expect(click).toHaveBeenCalledTimes(1))
     expect(fetches[0]).toMatch(/^https:\/\/store\/pdf1\/download /)
+    // Saved as a PDF, whatever type the answer claimed.
+    const saved = vi.mocked(URL.createObjectURL).mock.calls.at(-1)?.[0] as Blob | undefined
+    expect(saved?.type).toBe('application/pdf')
     expect(document.querySelector('iframe, object, embed')).toBeNull()
     expect(screen.queryByRole('img')).toBeNull()
   })

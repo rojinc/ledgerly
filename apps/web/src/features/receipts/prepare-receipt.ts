@@ -30,6 +30,7 @@ function canEncodeWebp(): boolean {
 export type Prepared = { file: File } | { error: string }
 
 const TOO_BIG = 'This file is over 10 MB. Try a smaller photo or PDF.'
+const NOT_A_PDF = 'This file isn’t a PDF. Add a photo or a PDF.'
 
 /**
  * The file to upload, named `receipt.webp`, `receipt.jpg` or `receipt.pdf` (never the device's
@@ -38,6 +39,8 @@ const TOO_BIG = 'This file is over 10 MB. Try a smaller photo or PDF.'
 export async function prepareReceipt(picked: File): Promise<Prepared> {
   if (picked.type === 'application/pdf') {
     if (picked.size > MAX_BYTES) return { error: TOO_BIG }
+    // The type comes from the name: a photo renamed .pdf mustn't go up with its location.
+    if ((await picked.slice(0, 5).text()) !== '%PDF-') return { error: NOT_A_PDF }
     return { file: new File([picked], 'receipt.pdf', { type: 'application/pdf' }) }
   }
   if (!picked.type.startsWith('image/')) return { error: 'Add a photo or a PDF.' }

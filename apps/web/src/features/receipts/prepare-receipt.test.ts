@@ -68,6 +68,9 @@ describe('prepareReceipt', () => {
       'receipt.webp',
       'image/webp',
     ])
+    // The canvas's output goes up, never the photo's own bytes with their location.
+    expect('file' in prepared && prepared.file.size).toBe(blobSize)
+    expect(blobSize).not.toBe(photo().size)
   })
 
   it('saves JPEG where the browser can’t make WebP', async () => {
@@ -75,6 +78,15 @@ describe('prepareReceipt', () => {
     const prepared = await prepareReceipt(photo('image/png'))
     expect(encoded.type).toBe('image/jpeg')
     expect('file' in prepared && prepared.file.name).toBe('receipt.jpg')
+  })
+
+  it('refuses a file named .pdf that isn’t one, such as a renamed photo', async () => {
+    const renamed = new File([new Uint8Array([0xff, 0xd8, 0xff, 0xe1, 0, 0])], 'r.pdf', {
+      type: 'application/pdf',
+    })
+    expect(await prepareReceipt(renamed)).toEqual({
+      error: 'This file isn’t a PDF. Add a photo or a PDF.',
+    })
   })
 
   it('uploads a PDF unchanged, as receipt.pdf', async () => {

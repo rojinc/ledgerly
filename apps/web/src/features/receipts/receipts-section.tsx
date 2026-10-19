@@ -296,7 +296,8 @@ function DownloadPdf({ fileId }: { fileId: string }) {
             const blob = await fetchFileBlob(
               storage.getFileDownload({ bucketId: RECEIPTS_BUCKET, fileId }),
             )
-            const url = URL.createObjectURL(blob)
+            // Saved as a PDF whatever type the answer claimed.
+            const url = URL.createObjectURL(new Blob([blob], { type: 'application/pdf' }))
             const link = document.createElement('a')
             link.href = url
             link.download = 'receipt.pdf'
