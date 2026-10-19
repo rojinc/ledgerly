@@ -198,9 +198,11 @@ describe('HouseHistory', () => {
       })),
     )
     renderHistory()
-    await waitFor(async () =>
-      expect((await rowTexts())[0]).toMatch(/Paid by Alice, Bob,? and Cara/),
-    )
+    // As in the first test: the payers come last, from the second read, so wait for them by text
+    // (3 s for a cold start), then read the row once. Role queries re-run inside waitFor used up
+    // its 1 s when this test ran cold under load.
+    await screen.findByText(/Paid by Alice, Bob,? and Cara/, {}, { timeout: 3000 })
+    expect((await rowTexts())[0]).toMatch(/Paid by Alice, Bob,? and Cara/)
   })
 
   it('reads each page’s payers once, and only that page’s', async () => {
@@ -258,10 +260,10 @@ describe('HouseHistory', () => {
         <RouterProvider router={router} />
       </QueryClientProvider>,
     )
-    // The last expense's payers all come from the second read.
-    await waitFor(async () =>
-      expect((await rowTexts()).at(-1)).toMatch(/Paid by ALICE, BOB, CARA, DAN,? and EVE/),
-    )
+    // The last expense's payers all come from the second read, and every row's payers show at
+    // once, after both reads: wait for them by text, then read the rows once, as above.
+    await screen.findAllByText(/Paid by ALICE, BOB, CARA, DAN,? and EVE/, {}, { timeout: 3000 })
+    expect((await rowTexts()).at(-1)).toMatch(/Paid by ALICE, BOB, CARA, DAN,? and EVE/)
     expect(calls('shares').map((queries) => queries.at(-1))).toEqual([
       Query.limit(100),
       Query.cursorAfter(shares[99]?.$id as string),

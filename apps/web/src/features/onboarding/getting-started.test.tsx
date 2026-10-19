@@ -179,7 +179,10 @@ describe('GettingStarted: step 1', () => {
   it('reads one transaction ID across the joined groups, once', async () => {
     joined = [PERSONAL, group('g1', 'employer', 'Acme')]
     renderHome()
-    await screen.findByRole('heading', { name: STEP_2 })
+    // As in the test above: wait by text, then check the role once. Polling the role query by name
+    // used up findByRole's 1 s when this test ran cold under load.
+    await screen.findByText(STEP_2, {}, { timeout: 3000 })
+    expect(screen.getByRole('heading', { name: STEP_2 })).toBeTruthy()
     // The groups in useGroups' order: by name.
     expect(entryReads()).toEqual([
       [Query.equal('groupId', ['g1', 'g0']), Query.select(['$id']), Query.limit(1)],
@@ -189,7 +192,9 @@ describe('GettingStarted: step 1', () => {
   it('shows pending groups first, and after a join announces it and moves on', async () => {
     pending = [KIM as PendingGroup]
     const view = renderHome()
-    const join = await screen.findByRole('button', { name: 'Join Kim' })
+    // As above: wait for Join by text, then find it by role and name once.
+    await screen.findByText('Join', { selector: 'button' }, { timeout: 3000 })
+    const join = screen.getByRole('button', { name: 'Join Kim' })
     // The status region is there, empty, before the join, so the announcement is read out.
     const status = screen.getAllByRole('status').find((node) => node.textContent === '')
     const waiting = screen.getByRole('heading', { name: 'Waiting for you to join' })
@@ -209,7 +214,9 @@ describe('GettingStarted: step 1', () => {
     pending = [KIM as PendingGroup]
     withEntries = ['g2']
     renderHome()
-    fireEvent.click(await screen.findByRole('button', { name: 'Join Kim' }))
+    // As above: wait for Join by text, then find it by role and name once.
+    await screen.findByText('Join', { selector: 'button' }, { timeout: 3000 })
+    fireEvent.click(screen.getByRole('button', { name: 'Join Kim' }))
     await waitFor(() => expect(entryReads()).toHaveLength(2))
     await waitFor(() => expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull())
     expect(screen.queryByRole('heading', { name: STEP_2 })).toBeNull()
