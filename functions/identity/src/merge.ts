@@ -257,8 +257,9 @@ export async function memberOf(
  * status as in joining and `member.joined` by U. Each write carries a fresh `rev`, so it's a
  * real change that guards the row (ledger.md#concurrency) even when nothing else on it changes.
  * The same transaction guards U's person row (`guardInto`), so no merge joins a person whose
- * account is being deleted. True if this call moved it and U is joined there; false if a merge running at the same time
- * moved it, or a leave of U's own landed just after (so the group isn't one U joined).
+ * account is being deleted. True if this call moved it and U is joined there; false if a merge
+ * running at the same time moved it, or a leave of U's own landed just after (so the group isn't
+ * one U joined).
  */
 async function moveMember(
   { db, teams, now }: Services,
