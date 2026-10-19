@@ -66,6 +66,12 @@
         "type": "key",
         "columns": ["mergedInto"],
         "orders": ["ASC"]
+      },
+      {
+        "key": "idx_deletedAt",
+        "type": "key",
+        "columns": ["deletedAt"],
+        "orders": ["ASC"]
       }
     ]
   },
@@ -1111,6 +1117,14 @@
       },
       {
         "key": "transactionId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "subjectPersonId",
         "type": "varchar",
         "size": 36,
         "required": false,
