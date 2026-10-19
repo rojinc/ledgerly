@@ -1,5 +1,6 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
 import type {
+  Groups,
   Identities,
   Members,
   Persons,
@@ -73,8 +74,10 @@ export type MembersResult = { kept: Set<string>; joined: string[]; done: boolean
 
 /**
  * Step 2: P's member rows, one at a time (`idx_person_status`). U joins each of P's groups,
- * archived ones too, except where U left on their own: there P keeps its row and its shares
- * (the kept groups). A row is finished once it no longer points at P, so a retry carries on.
+ * archived ones too, except where U left on their own, or where U is already in a pair or
+ * employer group: there P keeps its row and its shares (the kept groups), since merging would
+ * leave a pair of one, or an employer group paying itself. A row is finished once it no longer
+ * points at P, so a retry carries on.
  */
 export async function moveMembers(
   services: Services,
@@ -101,7 +104,11 @@ export async function moveMembers(
     const theirs = rows[0]
     if (!theirs) return { kept, joined, done: true }
     const own = await memberOf(db, theirs.groupId, intoId)
-    if (own && (await leftOnTheirOwn(db, own.groupId, intoId, own.$createdAt))) {
+    if (
+      own &&
+      ((await twoSided(db, own.groupId)) ||
+        (await leftOnTheirOwn(db, own.groupId, intoId, own.$createdAt)))
+    ) {
       kept.add(theirs.groupId)
     } else if (
       (await moveMember(services, userId, theirs, own, intoId)) &&
@@ -110,6 +117,12 @@ export async function moveMembers(
       joined.push(theirs.groupId)
     }
   }
+}
+
+/** Whether the group is a pair or an employer group, where both sides must stay two people. */
+async function twoSided(db: Db, groupId: string): Promise<boolean> {
+  const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+  return group?.type === 'pair' || group?.type === 'employer'
 }
 
 /** The person's member row in the group (`uniq_group_person`), or undefined. */
@@ -410,15 +423,21 @@ function combined(theirs: readonly Shares[], ours: readonly Shares[], intoId: st
         { action: 'update', tableId: TABLES.shares, rowId: share.$id, data: { personId: intoId } },
       ]
     }
+    const givenCents = own.givenCents + share.givenCents
+    const receivedCents = own.receivedCents + share.receivedCents
+    // An adjustment's two shares can cancel out: like buildShares, keep no share at 0/0.
+    if (givenCents === 0 && receivedCents === 0) {
+      return [
+        { action: 'delete', tableId: TABLES.shares, rowId: own.$id },
+        { action: 'delete', tableId: TABLES.shares, rowId: share.$id },
+      ]
+    }
     return [
       {
         action: 'update',
         tableId: TABLES.shares,
         rowId: own.$id,
-        data: {
-          givenCents: own.givenCents + share.givenCents,
-          receivedCents: own.receivedCents + share.receivedCents,
-        },
+        data: { givenCents, receivedCents },
       },
       { action: 'delete', tableId: TABLES.shares, rowId: share.$id },
     ]

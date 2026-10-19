@@ -278,6 +278,38 @@ describe('moveMembers (step 2)', () => {
     expect(members(services).map(([id]) => id)).toEqual(['m1', 'm2'])
   })
 
+  it('keeps a pair or employer group U is already in: P keeps its row and shares there', async () => {
+    const services = setUp({
+      persons: [U, P],
+      groups: [
+        { $id: 'g1', type: 'pair', name: 'Sam and Sammy' },
+        { $id: 'g2', type: 'employer', name: 'Acme' },
+        { $id: 'g3', type: 'employer', name: 'Bakery' },
+      ],
+      members: [
+        placeholderRow('m1', 'g1', 'pP', CREATED),
+        ownRow('m2', 'g1'),
+        // In g2, P is the employer and U the worker.
+        placeholderRow('m3', 'g2', 'pP', CREATED),
+        ownRow('m4', 'g2', { role: 'admin' }),
+        // U isn't in g3: P's row there moves to U, as anywhere else.
+        placeholderRow('m5', 'g3', 'pP', CREATED),
+      ],
+    })
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toEqual({
+      kept: new Set(['g1', 'g2']),
+      joined: ['g3'],
+      done: true,
+    })
+    expect(members(services)).toEqual([
+      ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],
+      ['m2', 'g1', 'pU', 'active', '2026-10-01'],
+      ['m3', 'g2', 'pP', 'placeholder', '2026-09-01'],
+      ['m4', 'g2', 'pU', 'active', '2026-10-01'],
+      ['m5', 'g3', 'pU', 'active', '2026-09-01'],
+    ])
+  })
+
   describe('a leave of U’s own, after U moved out, is final', () => {
     // U moved out of g1 and is still in its team; P has a row there too.
     function movedOut() {
@@ -498,6 +530,13 @@ describe('moveShares (step 3)', () => {
     expect(store.rows('shares').find((row) => row.$id === 's4')?.personId).toBe('pU')
     // The group's guard was written.
     expect(store.rows('groups').find((row) => row.$id === 'g1')?.rev).not.toBe('r0')
+  })
+
+  it('drops a combined share that comes to 0/0, as buildShares keeps none', async () => {
+    // An adjustment that moved 3 from U to P: once P is U, it cancels out.
+    const store = seed([share('s1', 't1', 'pP', 300, 0), share('s2', 't1', 'pU', -300, 0)])
+    expect(await moveShares(store, 'pP', 'pU', new Set(), FAR)).toMatchObject({ moved: 1 })
+    expect(store.rows('shares')).toEqual([])
   })
 
   it('leaves P’s shares in kept groups and puts off a group that is finalizing', async () => {
