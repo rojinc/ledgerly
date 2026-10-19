@@ -62,6 +62,7 @@ export class FakeTeams implements TeamsApi {
   }): Promise<{ total: number; memberships: Membership[] }> {
     let memberships = this.team(params.teamId).memberships
     let limit = 25
+    let offset = 0
     for (const { method, attribute, values = [] } of (params.queries ?? []).map(
       (query) => JSON.parse(query) as Query,
     )) {
@@ -69,13 +70,17 @@ export class FakeTeams implements TeamsApi {
         memberships = memberships.filter((membership) => values.includes(membership.userId))
       } else if (method === 'limit') {
         limit = Number(values[0])
+      } else if (method === 'offset') {
+        offset = Number(values[0])
       } else {
         throw new Error(`FakeTeams does not support the "${method}" query`)
       }
     }
     return {
       total: memberships.length,
-      memberships: memberships.slice(0, limit).map((membership) => structuredClone(membership)),
+      memberships: memberships
+        .slice(offset, offset + limit)
+        .map((membership) => structuredClone(membership)),
     }
   }
 
