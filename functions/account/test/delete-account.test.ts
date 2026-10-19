@@ -51,42 +51,44 @@ const ALL_TABLES = [
 // run too. Sam's weekly groceries in h1 are made up to 2 November.
 const groceries = schedule('sGroceries', 'h1', 'p1', ['p1', 'p2'])
 
-function kept(accountOverrides: Parameters<typeof account>[0] = {}) {
-  return fakes(
-    {
-      persons: [
-        // Bootstrap gives the user read access to their own person; step 6 takes it away.
-        person('p1', 'u1', { displayName: 'Sam Lee', $permissions: ['read("user:u1")'] }),
-        person('p2', 'u2'),
-        person('p3', 'u3'),
-      ],
-      identities: [
-        identity('i1', 'email:sam@example.com', 'p1'),
-        identity('i2', 'phone:+61412345678', 'p1'),
-        identity('i3', 'email:alex@example.com', 'p2'),
-      ],
-      profiles: [profile('u1', 'p1'), profile('u2', 'p2')],
-      invites: [invite('v1', 'p1'), invite('v2', 'p1'), invite('v3', 'p2')],
-      groups: [group('h1', 'house', 'p2'), group('e1', 'employer', 'p1')],
-      members: [
-        member('h1', 'p1', { displayName: 'Sam' }),
-        member('h1', 'p2'),
-        member('e1', 'p1', { displayName: 'Sam' }),
-        member('e1', 'p3', { role: 'viewer' }),
-      ],
-      schedules: [groceries],
-      transactions: [
-        occurrence(groceries, '2026-10-12'),
-        occurrence(groceries, '2026-10-19'),
-        occurrence(groceries, '2026-10-26'),
-        occurrence(groceries, '2026-11-02'),
-      ],
-    },
-    {
-      accounts: [account(accountOverrides)],
-      teams: { h1: ['u1', 'u2'], e1: ['u1', 'u3'] },
-    },
-  )
+// `extra` adds seed rows, which may set `$createdAt` (a write may not).
+function kept(accountOverrides: Parameters<typeof account>[0] = {}, extra: Seed = {}) {
+  const seed: Seed = {
+    persons: [
+      // Bootstrap gives the user read access to their own person; step 6 takes it away.
+      person('p1', 'u1', { displayName: 'Sam Lee', $permissions: ['read("user:u1")'] }),
+      person('p2', 'u2'),
+      person('p3', 'u3'),
+    ],
+    identities: [
+      identity('i1', 'email:sam@example.com', 'p1'),
+      identity('i2', 'phone:+61412345678', 'p1'),
+      identity('i3', 'email:alex@example.com', 'p2'),
+    ],
+    profiles: [profile('u1', 'p1'), profile('u2', 'p2')],
+    invites: [invite('v1', 'p1'), invite('v2', 'p1'), invite('v3', 'p2')],
+    groups: [group('h1', 'house', 'p2'), group('e1', 'employer', 'p1')],
+    members: [
+      member('h1', 'p1', { displayName: 'Sam' }),
+      member('h1', 'p2'),
+      member('e1', 'p1', { displayName: 'Sam' }),
+      member('e1', 'p3', { role: 'viewer' }),
+    ],
+    schedules: [groceries],
+    transactions: [
+      occurrence(groceries, '2026-10-12'),
+      occurrence(groceries, '2026-10-19'),
+      occurrence(groceries, '2026-10-26'),
+      occurrence(groceries, '2026-11-02'),
+    ],
+  }
+  for (const [tableId, rows] of Object.entries(extra)) {
+    seed[tableId] = [...(seed[tableId] ?? []), ...rows]
+  }
+  return fakes(seed, {
+    accounts: [account(accountOverrides)],
+    teams: { h1: ['u1', 'u2'], e1: ['u1', 'u3'] },
+  })
 }
 
 function identity(id: string, key: string, personId: string) {
@@ -141,6 +143,38 @@ function finalizing(id: string, groupId: string) {
 
 function remove(services: Fakes) {
   return ok<DeleteAccountResult>(services)
+}
+
+type Seed = NonNullable<Parameters<typeof fakes>[0]>
+
+// Before DELETED_AT, as Appwrite writes times (`+00:00`).
+const BEFORE = '2026-10-18T19:00:00.000+00:00'
+
+// kept(), plus Sam's pair group q1 with Alex (p2), the other admin, so it isn't archived; and the
+// employer group e2, where Sam (p1) is the employer and Kim (p3) the admin who logs the shifts.
+async function withPairAndEmployer(extra: Seed): Promise<Fakes> {
+  const services = kept(
+    {},
+    {
+      ...extra,
+      groups: [group('q1', 'pair', 'p2'), group('e2', 'employer', 'p3')],
+      members: [
+        member('q1', 'p1'),
+        member('q1', 'p2'),
+        member('e2', 'p1', { role: 'viewer' }),
+        member('e2', 'p3'),
+      ],
+    },
+  )
+  for (const [teamId, userId] of [
+    ['q1', 'u2'],
+    ['e2', 'u3'],
+  ] as const) {
+    await services.teams.create({ teamId, name: teamId })
+    await services.teams.createMembership({ teamId, roles: [], userId: 'u1' })
+    await services.teams.createMembership({ teamId, roles: [], userId })
+  }
+  return services
 }
 
 // Their personal group: nobody else is ever in its team, so it's purged (purge.test.ts).
@@ -555,6 +589,73 @@ describe('POST /delete: each group they joined', () => {
       'sOther_20261026',
       'sArchived_20261026',
     ])
+  })
+
+  it('ends every schedule made before the deletion in a kept pair or employer group (#320)', async () => {
+    // Made by the other side before the deletion, and their templates don't name Sam.
+    const pair = schedule('sPair', 'q1', 'p2', ['p2'], { $createdAt: BEFORE })
+    const shifts = schedule('sShifts', 'e2', 'p3', ['p3'], { $createdAt: BEFORE })
+    // Not started, with nothing posted: deleted, as it can't end before it starts.
+    const soon = schedule('sSoon', 'q1', 'p2', ['p2'], {
+      $createdAt: BEFORE,
+      startsOn: '2026-11-02',
+    })
+    // The same in the house h1: it keeps running.
+    const house = schedule('sHouse', 'h1', 'p2', ['p2'], { $createdAt: BEFORE })
+    const services = await withPairAndEmployer({
+      schedules: [pair, shifts, soon, house],
+      transactions: [
+        occurrence(pair, '2026-10-26'),
+        occurrence(shifts, '2026-10-26'),
+        occurrence(soon, '2026-11-02'),
+        occurrence(house, '2026-10-26'),
+      ],
+    })
+    const houseBefore = rowOf(services, 'schedules', 'sHouse')
+    expect((await remove(services)).finished).toBe(true)
+
+    expect(rowOf(services, 'groups', 'q1')).toMatchObject({ archivedAt: null })
+    expect(rowOf(services, 'groups', 'e2')).toMatchObject({ archivedAt: null })
+    for (const id of ['sPair', 'sShifts']) {
+      expect(rowOf(services, 'schedules', id)).toMatchObject({ endsOn: TODAY })
+    }
+    expect(rowOf(services, 'schedules', 'sSoon')).toBeUndefined()
+    expect(rowOf(services, 'schedules', 'sHouse')).toEqual(houseBefore)
+    const ids = services.db.rows('transactions').map((row) => row.$id)
+    expect(ids).toContain('sHouse_20261026')
+    for (const id of ['sPair_20261026', 'sShifts_20261026', 'sSoon_20261102']) {
+      expect(ids).not.toContain(id)
+    }
+  })
+
+  it('leaves a schedule the other side made after the deletion, on every rerun (#320)', async () => {
+    const services = await withPairAndEmployer({
+      schedules: [
+        schedule('sPair', 'q1', 'p2', ['p2'], { $createdAt: BEFORE }),
+        schedule('sPairB', 'q1', 'p2', ['p2'], { $createdAt: BEFORE }),
+      ],
+    })
+    // Out of time once the first is ended, so the run stops inside q1 and the next one comes back.
+    services.outOfTime = () => rowOf(services, 'schedules', 'sPair')?.endsOn === TODAY
+    expect((await remove(services)).finished).toBe(false)
+    expect(rowOf(services, 'schedules', 'sPairB')).toMatchObject({ endsOn: null })
+    // Alex makes two more meanwhile, one not started yet. Written now, so after DELETED_AT.
+    await insert(services, 'schedules', [
+      schedule('sLater', 'q1', 'p2', ['p2']),
+      schedule('sLaterSoon', 'q1', 'p2', ['p2'], { startsOn: '2026-11-02' }),
+    ])
+    const before = [
+      rowOf(services, 'schedules', 'sLater'),
+      rowOf(services, 'schedules', 'sLaterSoon'),
+    ]
+    services.outOfTime = () => false
+    expect((await remove(services)).finished).toBe(true)
+
+    expect(rowOf(services, 'schedules', 'sPairB')).toMatchObject({ endsOn: TODAY })
+    expect([
+      rowOf(services, 'schedules', 'sLater'),
+      rowOf(services, 'schedules', 'sLaterSoon'),
+    ]).toEqual(before)
   })
 
   it('ends an ended schedule again only while it has a future occurrence an end would delete', async () => {
