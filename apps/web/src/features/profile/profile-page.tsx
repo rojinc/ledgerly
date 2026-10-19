@@ -1,5 +1,6 @@
 import { useCurrentUser } from '../auth/use-current-user'
 import { BusinessForm } from './business-form'
+import { PhoneSection } from './phone-section'
 import { ProfileForm } from './profile-form'
 import { usePerson, useProfile, useUpdateProfile } from './use-profile'
 
@@ -33,6 +34,7 @@ export function ProfilePage() {
         displayName={person.data.displayName}
         onSave={update.mutateAsync}
       />
+      <PhoneSection />
       <BusinessForm profile={profile.data} onSave={update.mutateAsync} />
     </div>
   )
