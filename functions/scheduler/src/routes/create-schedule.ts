@@ -68,7 +68,7 @@ export async function createSchedule(
         await guardGroupAndMembers(tx, db, membership.group, ledger, people)
         await refuseDeletedPeople(tx, db, ledger, {
           kind: input.kind,
-          input: input.template,
+          people,
           guard: true,
         })
         await tx.write({

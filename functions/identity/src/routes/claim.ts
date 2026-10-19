@@ -1,4 +1,4 @@
-import type { IdentitiesType, Members, Persons } from '@ledgerly/core/generated/rows'
+import type { Identities, IdentitiesType, Members, Persons } from '@ledgerly/core/generated/rows'
 import { identityKey } from '@ledgerly/core/identity/normalize'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { ClaimResult } from '@ledgerly/core/schemas/identity'
@@ -81,10 +81,10 @@ export async function claim(
   // A merge that fails is left for the next claim, so it never stops a login.
   const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
     logProblem('merge_stopped', { intoPersonId: person.$id, error })
-    return { joined: [], finished: 0 }
+    return { joined: [], finished: [] }
   })
   // A finished merge moved P's identities here, the claimed one too: it's verified now.
-  if (merges.finished > 0) await claimIdentities(services, person.$id, identities)
+  if (merges.finished.length > 0) await claimIdentities(services, person.$id, identities)
   const linked = new Set(merges.joined)
   for (const member of await rowsToJoin(services.db, person)) {
     if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
@@ -138,16 +138,7 @@ async function claimIdentity(
     return
   }
   if (identity.personId === personId) {
-    if (identity.verified && identity.verifiedAt) return
-    await withTransaction(db, async (tx) => {
-      await tx.write({
-        action: 'update',
-        tableId: TABLES.identities,
-        rowId: identity.$id,
-        data: { verified: true, verifiedAt: identity.verifiedAt ?? now.toISOString() },
-      })
-      await guardPerson(tx, db, personId, setUpFirst)
-    })
+    await markVerified(db, now, identity, setUpFirst)
     return
   }
   // Someone else's: a registered person keeps it. A placeholder is the same human as the
@@ -155,6 +146,28 @@ async function claimIdentity(
   // carries the merge on (`finishMerges`). markMerged leaves alone a person with an account,
   // or one another adoption or merge got first. Only the keys the user verified move to them.
   await markMerged(db, identity.personId, personId, verified)
+}
+
+/**
+ * Marks the person's own identity verified, keeping its first `verifiedAt`. Throws `deleted()`
+ * once the person's account is being deleted (guardPerson).
+ */
+export async function markVerified(
+  db: Db,
+  now: Date,
+  identity: Identities,
+  deleted: () => AppError,
+): Promise<void> {
+  if (identity.verified && identity.verifiedAt) return
+  await withTransaction(db, async (tx) => {
+    await tx.write({
+      action: 'update',
+      tableId: TABLES.identities,
+      rowId: identity.$id,
+      data: { verified: true, verifiedAt: identity.verifiedAt ?? now.toISOString() },
+    })
+    await guardPerson(tx, db, identity.personId, deleted)
+  })
 }
 
 // Step 3: the person's `placeholder` rows added strictly before `claimedAt`, while they had no

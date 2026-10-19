@@ -1482,6 +1482,97 @@ describe('a person who deleted their account, in a group they had joined', () =>
     expect(services.db.rows('schedules')).toEqual([])
   })
 
+  it('can’t get a share from a template’s default split', async () => {
+    const services = seeded()
+    await deleteAccount(services)
+    // No split: everyone in the house on each occurrence's date, Alex included.
+    const { split, ...everyone } = rent.template
+    const body = { ...rent, template: everyone }
+    expect(await failure(services, 'POST', '/schedules', { body })).toEqual(refused)
+    expect(services.db.rows('schedules')).toEqual([])
+  })
+
+  it('can’t reopen a schedule they created by an edit, which can still be ended or deleted', async () => {
+    const services = seeded()
+    const forSam = {
+      ...rent,
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await ok(services, 'POST', '/schedules', { body: forSam, userId: 'u2' })
+    await deleteAccount(services)
+    const renamed = { ...forSam, description: 'Rent (Sam)' }
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: renamed })).toEqual(
+      refused,
+    )
+    expect(scheduleRow(services, rent.id)?.description).toBe('Rent')
+    await ok(services, 'POST', `/schedules/${rent.id}/end`, { body: { endsOn: '2026-12-01' } })
+    await ok(services, 'DELETE', `/schedules/${rent.id}`, {})
+  })
+
+  it('can’t reopen a schedule they created when the deletion commits while the edit does', async () => {
+    const services = seeded()
+    const forSam = {
+      ...rent,
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await ok(services, 'POST', '/schedules', { body: forSam, userId: 'u2' })
+    beforeCommit(services.db, () => deleteAccount(services))
+    const renamed = { ...forSam, description: 'Rent (Sam)' }
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: renamed })).toEqual(
+      refused,
+    )
+    expect(scheduleRow(services, rent.id)?.description).toBe('Rent')
+  })
+
+  it('is checked from a later start, not today, on the deletion day', async () => {
+    // Rent from 1 November with no split. Alex moves out today (19 October), as a deletion does,
+    // so a trial today would still split to Alex, but one on the start date doesn't.
+    const services = seeded()
+    const { split, ...everyone } = rent.template
+    const fromNovember = { ...rent, template: everyone }
+    await ok(services, 'POST', '/schedules', { body: fromNovember })
+    await setRow(services, 'members', 'elm-pAlex', {
+      status: 'left',
+      role: 'viewer',
+      leftOn: '2026-10-19',
+    })
+    await deleteAccount(services)
+    const renamed = { ...fromNovember, description: 'Rent and water' }
+    await ok(services, 'PATCH', `/schedules/${rent.id}`, { body: renamed })
+  })
+
+  it('can’t be kept in a template’s default split by an edit', async () => {
+    const services = seeded()
+    const { split, ...everyone } = rent.template
+    const body = { ...rent, template: everyone }
+    await ok(services, 'POST', '/schedules', { body })
+    await deleteAccount(services)
+    const renamed = { ...body, description: 'Rent and water' }
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: renamed })).toEqual(
+      refused,
+    )
+  })
+
+  it('is checked from the first day an edit can make, not a past start date', async () => {
+    // Rent since 1 October with no split: Alex shares it until moving out on 10 October.
+    const services = seeded()
+    const { split, ...everyone } = rent.template
+    const sinceOctober = { ...rent, template: everyone, startsOn: '2026-10-01' }
+    await ok(services, 'POST', '/schedules', { body: sinceOctober })
+    await setRow(services, 'members', 'elm-pAlex', {
+      status: 'left',
+      role: 'viewer',
+      leftOn: '2026-10-10',
+    })
+    await deleteAccount(services)
+    // From today on, no occurrence the edit makes splits to Alex.
+    const renamed = { ...sinceOctober, description: 'Rent and water' }
+    await ok(services, 'PATCH', `/schedules/${rent.id}`, { body: renamed })
+    // A new schedule from 1 October makes its past occurrences at once, and those would.
+    const again = { ...sinceOctober, id: 'rentElmSam0000000002' }
+    expect(await failure(services, 'POST', '/schedules', { body: again })).toEqual(refused)
+  })
+
   it('can’t be added to a template, or kept in one, so an ended schedule doesn’t start again', async () => {
     const services = seeded()
     const samOnly = {
