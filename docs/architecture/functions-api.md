@@ -38,7 +38,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again), a merge into one of the people is still open in the group (`details: { reason: 'merging' }`; try again shortly, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
-| `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
+| `INVITE_INVALID` | 400 | Invite token unknown, expired, or used by someone else |
 | `RATE_LIMITED` | 429 | Too many invites or reminders |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |

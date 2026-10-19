@@ -185,9 +185,10 @@ An invite is a convenience: a link that tells someone they've been added and hel
 
 `identity POST /invites/accept` with `{ token }`:
 
-1. Hash the token and find the invite. If it is missing, expired or already accepted, return `INVITE_INVALID`.
-2. The caller must be signed in and have **verified** the invite's identity. If not, return `{ needsVerification: 'email' | 'phone' }`, and the app runs Appwrite's verification flow and then calls accept again.
-3. Run Claim. Then, if the caller's own person has a member row in the invite's group that is still `placeholder`, join it. (The invite's `memberId` may have been merged away or removed since.) A row the caller's person left on their own is never touched. Set `acceptedAt`.
+1. Hash the token and find the invite. If it is missing or expired (from `expiresAt` on), return `INVITE_INVALID`. Every `INVITE_INVALID` here has the same message, so it never says which case it was.
+2. The caller must be signed in and have **verified** the invite's identity: the account's verified email (for an email invite) or phone (for an SMS one), normalised, is the invite's `identityKey`. If the invite is **already accepted**, return `{ groupId }` when the identity is the caller's (they have verified it, and its identity row is on their person, or on a placeholder merged into it), so a retry or a second accept at the same time gets the same answer; anyone else gets `INVITE_INVALID`. Either way nothing is written. Otherwise, if the caller hasn't verified it, return `{ needsVerification: 'email' | 'phone' }` (by the invite's channel) before writing anything, and the app runs Appwrite's verification flow and then calls accept again.
+3. Run Claim. If the invite's identity still isn't the caller's (another registered person holds it), return `INVITE_INVALID`. Then, if the caller's own person has a member row in the invite's group that is still `placeholder`, join it. (The invite's `memberId` may have been merged away or removed since.) Any other row is never touched: it has joined already, or left on its own, which is final. If a merge is cut off before it moves the invited row, the next `/claim` joins it.
+4. Set `acceptedAt`, last, so an accept cut off before it can simply run again: every earlier step is safe to repeat. Stage it, then check the stored row; if another accept set it first, keep that time and return `{ groupId }`, as in step 2.
 
 ## Reminders
 

@@ -5,6 +5,7 @@ import {
   type RouteContext,
   route,
 } from '@ledgerly/server/http/create-handler'
+import { acceptInvite } from './routes/accept-invite'
 import { bootstrap } from './routes/bootstrap'
 import { postClaim } from './routes/claim'
 import { createInvite } from './routes/invites'
@@ -44,6 +45,9 @@ export function identityRoutes(
     ),
     route('POST', '/invites', async (ctx) =>
       createInvite(services(ctx), requireUser(ctx.userId), ctx.body),
+    ),
+    route('POST', '/invites/accept', async (ctx) =>
+      acceptInvite(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
     route('POST', '/reminders', async (ctx) =>
       sendReminder(services(ctx), requireUser(ctx.userId), ctx.body),
