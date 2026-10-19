@@ -12,6 +12,10 @@ import { invalid, type Ledger, plan } from './transactions'
 // Balances with a former member can still be settled.
 const EXEMPT: readonly TransactionKind[] = ['payment', 'adjustment']
 
+// Large enough that the default split gives everyone it takes at least a cent (15 people, `days`
+// over a long period), far below MAX_AMOUNT_CENTS.
+const NOMINAL_CENTS = 1_000_000
+
 /**
  * functions-api.md#ledger ("Deleted people"): VALIDATION_FAILED when `people` (everyone the write
  * names, as `plan()` lists them: shares included) has a person who deleted their account, in a
@@ -46,7 +50,9 @@ export async function refuseDeletedPeople(
 ): Promise<void> {
   if (EXEMPT.includes(kind)) return
   const named = new Set(before)
-  const added = [...new Set(people)].filter((personId) => !named.has(personId))
+  // A shift names the group's two members, even one of no minutes that gives no shares.
+  const all = kind === 'shift' ? [...people, ...ledger.memberIds] : people
+  const added = [...new Set(all)].filter((personId) => !named.has(personId))
   if (added.length === 0) return
   const { rows: members } = await db.listRows<Members>({
     databaseId: DATABASE_ID,
@@ -91,12 +97,18 @@ export async function refuseDeletedPeople(
 
 type StoredInput = TransactionTemplate & { kind: TransactionKind; date: LocalDate }
 
-// Who an unposted row's stored input splits it to: the people who'd owe a share, by its split or
-// the default split, and a shift's two people. Never a payer the server fills in.
-function splitTo(input: StoredInput, ledger: Ledger): string[] {
-  const shares = plan(input, 'posted', ledger).shares
-  const owing = input.kind === 'shift' ? shares : shares.filter((share) => share.receivedCents > 0)
-  return owing.map((share) => share.personId)
+// Who an unposted row's stored input splits it to, whatever its amount: a shift's two people, or
+// those its default split takes. Never a payer the server fills in. An explicit split or items
+// name their people already (`before`). The default split names them only through its shares,
+// which a zero total, a refund or a share rounded to nothing would hide, so it's planned at a
+// nominal amount, paid by the server's filled-in payer.
+function splitTo(input: StoredInput, ledger: Ledger): readonly string[] {
+  if (input.kind === 'shift') return ledger.memberIds
+  if (input.split || input.items?.length) return []
+  const nominal = { ...input, payers: undefined, totalCents: NOMINAL_CENTS }
+  return plan(nominal, 'posted', ledger)
+    .shares.filter((share) => share.receivedCents > 0)
+    .map((share) => share.personId)
 }
 
 /**

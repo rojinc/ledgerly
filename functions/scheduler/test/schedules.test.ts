@@ -1524,6 +1524,23 @@ describe('a person who deleted their account, in a group they had joined', () =>
     expect(scheduleRow(services, rent.id)?.description).toBe('Rent')
   })
 
+  it('is checked from a later start, not today, on the deletion day', async () => {
+    // Rent from 1 November with no split. Alex moves out today (19 October), as a deletion does,
+    // so a trial today would still split to Alex, but one on the start date doesn't.
+    const services = seeded()
+    const { split, ...everyone } = rent.template
+    const fromNovember = { ...rent, template: everyone }
+    await ok(services, 'POST', '/schedules', { body: fromNovember })
+    await setRow(services, 'members', 'elm-pAlex', {
+      status: 'left',
+      role: 'viewer',
+      leftOn: '2026-10-19',
+    })
+    await deleteAccount(services)
+    const renamed = { ...fromNovember, description: 'Rent and water' }
+    await ok(services, 'PATCH', `/schedules/${rent.id}`, { body: renamed })
+  })
+
   it('can’t be kept in a template’s default split by an edit', async () => {
     const services = seeded()
     const { split, ...everyone } = rent.template

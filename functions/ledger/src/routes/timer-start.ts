@@ -98,7 +98,9 @@ export const startTimer = (services: ServicesFor) =>
       await withTransaction(db, async (tx) => {
         await guardGroupAndMembers(tx, db, group, ledger, planned.people)
         // Its shift names the group's two members, the employer included, though a running timer
-        // has no shares yet. Stopping it isn't checked again (functions-api.md#ledger).
+        // has no shares yet, so the guard above stages none of their member rows. This check reads
+        // them without one, as ledger writes may (ledger.md#concurrency). Stopping the timer isn't
+        // checked again (functions-api.md#ledger).
         await refuseDeletedPeople(tx, db, ledger, { kind: 'shift', people: ledger.memberIds })
         // Every start by this person, in any group, also writes their personal group's row. So of
         // two starts at once one commit fails, and its rerun finds the other's timer below
