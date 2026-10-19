@@ -1,7 +1,8 @@
-import type { Identities, Persons } from '@ledgerly/core/generated/rows'
+import type { Identities, Persons, Shares, Statements } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { Query } from 'node-appwrite'
 import { getRowOrNull, isAppwriteError } from './rows'
 
@@ -93,3 +94,171 @@ export async function moveIdentities(db: Db, fromId: string, intoId: string): Pr
 
 /** Thrown inside a batch when a row it staged had changed. */
 class Changed extends Error {}
+
+/** Shares moved per transaction: each may take two writes (combine), plus the group's guard. */
+const SHARES_PER_BATCH = Math.floor((MERGE_BATCH - 1) / 2)
+
+/** What became of the groups whose shares a call looked at. */
+export type SharesResult = { moved: number; putOff: string[] }
+
+/**
+ * Step 3, shares: repoints P's shares to U, a group at a time, skipping `kept` groups (U left
+ * them on their own, so P keeps its shares there). Where U already has a share in the same
+ * transaction, the two become U's one share (I-5), locked ones included (I-7's merge exception):
+ * no total changes, so every group still sums to 0 after each batch (I-1).
+ *
+ * Each batch stages a fresh `rev` on the group row first, so a ledger write or a `/balances`
+ * read that overlaps it runs again (ledger.md#concurrency), then checks that no statement of the
+ * group is `finalizing`. If one is, the group is put off until the next `/claim`. It stops
+ * starting batches once `deadline` (epoch ms) has passed.
+ */
+export async function moveShares(
+  db: Db,
+  fromId: string,
+  intoId: string,
+  kept: ReadonlySet<string>,
+  deadline: number,
+): Promise<SharesResult> {
+  const skip = new Set(kept)
+  const putOff: string[] = []
+  let moved = 0
+  while (Date.now() < deadline) {
+    const { rows } = await db.listRows<Shares>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.shares,
+      queries: [
+        Query.equal('personId', fromId),
+        ...[...skip].map((groupId) => Query.notEqual('groupId', groupId)),
+        Query.limit(1),
+      ],
+      total: false,
+    })
+    const groupId = rows[0]?.groupId
+    if (groupId === undefined) break
+    const batch = await moveShareBatch(db, fromId, intoId, groupId)
+    if (batch === 'putOff') {
+      skip.add(groupId)
+      putOff.push(groupId)
+    } else {
+      moved += batch
+    }
+  }
+  return { moved, putOff }
+}
+
+/** Thrown inside a batch when the group has a statement being finalized. */
+class Finalizing extends Error {}
+
+/** One batch of P's shares in one group: the number moved, or `putOff` while it's finalizing. */
+async function moveShareBatch(
+  db: Db,
+  fromId: string,
+  intoId: string,
+  groupId: string,
+): Promise<number | 'putOff'> {
+  for (;;) {
+    const { rows: theirs } = await db.listRows<Shares>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.shares,
+      queries: [
+        Query.equal('groupId', groupId),
+        Query.equal('personId', fromId),
+        Query.limit(SHARES_PER_BATCH),
+      ],
+      total: false,
+    })
+    // Another merge of P moved them meanwhile.
+    if (theirs.length === 0) return 0
+    const transactionIds = theirs.map((share) => share.transactionId)
+    const { rows: ours } = await db.listRows<Shares>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.shares,
+      queries: [
+        Query.equal('transactionId', transactionIds),
+        Query.equal('personId', intoId),
+        Query.limit(transactionIds.length),
+      ],
+      total: false,
+    })
+    const oursByTransaction = new Map(ours.map((share) => [share.transactionId, share]))
+    const writes: Write[] = theirs.flatMap((share): Write[] => {
+      const own = oursByTransaction.get(share.transactionId)
+      if (!own) {
+        return [
+          {
+            action: 'update',
+            tableId: TABLES.shares,
+            rowId: share.$id,
+            data: { personId: intoId },
+          },
+        ]
+      }
+      return [
+        {
+          action: 'update',
+          tableId: TABLES.shares,
+          rowId: own.$id,
+          data: {
+            givenCents: own.givenCents + share.givenCents,
+            receivedCents: own.receivedCents + share.receivedCents,
+          },
+        },
+        { action: 'delete', tableId: TABLES.shares, rowId: share.$id },
+      ]
+    })
+    try {
+      await withTransaction(db, async (tx) => {
+        // The guard first (ledger.md#concurrency), then the finalizing check.
+        await tx.write({
+          action: 'update',
+          tableId: TABLES.groups,
+          rowId: groupId,
+          data: { rev: randomId() },
+        })
+        if (await isFinalizing(db, groupId)) throw new Finalizing()
+        await tx.write(...writes)
+        // Stage, then check: both sides as stored, so two merges can't add P's share twice.
+        if (!(await unchanged(db, [...theirs, ...ours]))) throw new Changed()
+      })
+      return theirs.length
+    } catch (error) {
+      if (error instanceof Finalizing) return 'putOff'
+      if (!(error instanceof Changed || isAppwriteError(error, 409))) throw error
+    }
+  }
+}
+
+async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
+  const { rows } = await db.listRows<Statements>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.statements,
+    queries: [Query.equal('groupId', groupId), Query.equal('status', 'finalizing'), Query.limit(1)],
+    total: false,
+  })
+  return rows.length > 0
+}
+
+/** True when every share is still stored as it was read: same person and amounts. */
+async function unchanged(db: Db, shares: readonly Shares[]): Promise<boolean> {
+  const { rows } = await db.listRows<Shares>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.shares,
+    queries: [
+      Query.equal(
+        '$id',
+        shares.map((share) => share.$id),
+      ),
+      Query.limit(shares.length),
+    ],
+    total: false,
+  })
+  const stored = new Map(rows.map((row) => [row.$id, row]))
+  return shares.every((share) => {
+    const now = stored.get(share.$id)
+    return (
+      now?.personId === share.personId &&
+      now.givenCents === share.givenCents &&
+      now.receivedCents === share.receivedCents
+    )
+  })
+}
