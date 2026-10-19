@@ -254,7 +254,7 @@ Which transactions list each file in the `receipts` bucket, so the scheduler can
 - **Every writer of a row,** the ledger and those above included, stages its write and then reads the row again as committed (not through its transaction), and runs again if it changed. A group guard isn't enough on its own, because two attaches in two groups at once can list one file in both ([#43](https://github.com/rojinc/ledgerly/issues/43)'s accepted race). In one database transaction a file gets at most one row write, however many of its transactions that transaction changes or deletes.
 - **The scheduler** sets `deletingAt`, makes the row for a file that was never attached, deletes the file, and deletes the row once its `deletingAt` is at least an hour old. Until then the row refuses any attach of that ID, including one that read the rows before the scheduler made this one.
 - **Backfill:** `scripts/backfill-receipt-files.mjs` is for files uploaded before the ledger wrote these rows. The lead runs it once in each environment, from `main`, after the ledger change is deployed there and a minute has passed (no execution of the old ledger, which times out after 15 s, can still be attaching files without rows), with a one-off key (`rows.read`, `rows.write`, `files.read`) deleted afterwards. In order:
-  1. **Listed files:** one full pass over `transactions` where `receiptFileIds` isn't null, paged by `$id` (a one-off, so no index). For each file, it adds every transaction that lists it to its row, creating the row if needed and clearing `detachedAt`. Each write is staged and the row read again as committed; on a change or a 409 it reads the row again and retries, and it never skips a file. A row already marked `deletingAt` is left alone and reported, and the script exits non-zero: step 5 is deleting a file a transaction lists.
+  1. **Listed files:** one full pass over `transactions` where `receiptFileIds` isn't null, paged by `$id` (a one-off, so no index). That query also matches `[]` (checked on `ledgerly-dev`), so only a non-empty list counts. For each file, on every attempt, it reads the file's row, then reads the transactions the pass found for it again, as committed, and adds those that still list the file to its row, creating the row if needed and clearing `detachedAt`. It stages that write, then reads the row and those transactions again as committed; on a change or a 409 it starts the file again, and it never skips one. A transaction that dropped the file since the pass is never added, so a receipt taken off meanwhile is still deleted. A row already marked `deletingAt` is left alone and reported, and the script exits non-zero: step 5 is deleting a file a transaction lists.
   2. **The sweep:** every other file in the bucket that has no row gets one with `detachedAt = now`, so step 5 deletes it a day later. These are uploads that were never attached, and files taken off before the rows existed. It only creates rows; a 409 means the ledger attached the file first, and the file is skipped.
   3. **Last,** the [`checkpoints`](#checkpoints) row `receipt-clean-up`, with `through` = when the script started: every file created by then is in the sweep's listing. Step 5 does nothing until it exists.
 
@@ -272,7 +272,7 @@ How far a background job has got, for a job that must not lose its place from on
 | --- | --- | --- |
 | `through` | datetime | The job has dealt with everything up to this time |
 
-- `receipt-clean-up`: made by the [backfill](#receiptfiles) as its last write, then moved forward by [step 5](scheduling.md#step-5-receipt-clean-up)'s pass 1. Step 5 reads it once per run, and does nothing until it exists.
+- `receipt-clean-up`: made by the [backfill](#receiptfiles) as its last write, then moved forward by [step 5](scheduling.md#step-5-receipt-clean-up)'s pass 1. Step 5 reads it once per run, and does nothing until it exists. Step 5 only ever updates it, never creates it, so deleting it stops even a run already in progress from writing it again.
 
 Permissions: none (server only).
 
@@ -389,7 +389,7 @@ Each item below is written only by the functions listed and can be rebuilt from 
 | `shares.groupId/date/kind/category` | the transaction | rebuilt with the shares |
 | `statements.snapshotJson`, PDFs | transactions and shares at finalize time | `statements` (an intentional historical snapshot) |
 | `balances` rows | shares | every writer of shares, inside the same transaction ([ledger](ledger.md#balances)); created and repaired by the scheduler's [nightly check](scheduling.md#step-6-nightly-check) |
-| `receiptFiles.transactionIds` | `transactions.receiptFileIds` | `ledger`, inside the same transaction. The backfill script rebuilds them. `detachedAt`, `deletingAt` and the rows of never-attached files are the scheduler's clean-up state, not a copy. |
+| `receiptFiles.transactionIds` | `transactions.receiptFileIds` | every writer of a receipt list or a transaction row that lists receipts, inside the same transaction as the list change or the row delete: `ledger`, `scheduler` (`DELETE /schedules/{id}`) and `account` (the purge). The backfill script rebuilds them. `detachedAt`, `deletingAt` and the rows of never-attached files are the scheduler's clean-up state, not a copy. |
 
 ## Categories
 
