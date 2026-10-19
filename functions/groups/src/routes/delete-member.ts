@@ -98,15 +98,25 @@ export async function deleteMember(
 /**
  * Whether the person is named, as the ledger names people (everyPersonId), in a transaction that
  * isn't posted yet (its stored input and its items' splits) or in a schedule's template. Posted
- * ones are covered by the shares check; void ones name no one any more.
+ * ones are covered by the shares check; void ones name no one any more. The creator of an expense
+ * or bill schedule whose template names no payers counts too: they pay its occurrences (the trial
+ * occurrence and auto-post, scheduling.md), so removing them would break the schedule for good.
  */
 async function isNamed(db: Db, groupId: string, personId: string): Promise<boolean> {
   const names = (template: TransactionTemplate) => everyPersonId(template).includes(personId)
+  const paysFor = (schedule: Schedules, template: TransactionTemplate) =>
+    schedule.createdBy === personId &&
+    (schedule.kind === 'expense' || schedule.kind === 'bill') &&
+    template.payers === undefined
   const inSchedule = await anyPage<Schedules>(
     db,
     TABLES.schedules,
     [Query.equal('groupId', groupId)],
-    (rows) => rows.some((schedule) => names(JSON.parse(schedule.templateJson))),
+    (rows) =>
+      rows.some((schedule) => {
+        const template: TransactionTemplate = JSON.parse(schedule.templateJson)
+        return names(template) || paysFor(schedule, template)
+      }),
   )
   if (inSchedule) return true
   const unposted = [
