@@ -153,7 +153,12 @@ function archive(services: Fakes, groupId = 'acme') {
   )
 }
 
-function setRow(services: Fakes, tableId: 'transactions' | 'members', rowId: string, data: object) {
+function setRow(
+  services: Fakes,
+  tableId: 'transactions' | 'members' | 'persons',
+  rowId: string,
+  data: object,
+) {
   return withTransaction(services.db, (tx) =>
     tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
   )
@@ -1460,5 +1465,42 @@ describe('DELETE /schedules/{id}', () => {
       expect(services.db.rows('receiptFiles')).toHaveLength(200)
       expect(occurrences(services, groceries.id)).toEqual([])
     })
+  })
+})
+
+// functions-api.md#ledger ("Deleted people"): the same rule as the ledger's, for templates.
+describe('a person who deleted their account, in a group they had joined', () => {
+  const deleteAccount = (services: Fakes) =>
+    setRow(services, 'persons', 'pAlex', { deletedAt: '2026-10-17T00:00:00.000Z' })
+
+  it('can’t be named in a new schedule', async () => {
+    const services = seeded()
+    await deleteAccount(services)
+    expect(await failure(services, 'POST', '/schedules', { body: rent })).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+    })
+    expect(services.db.rows('schedules')).toEqual([])
+  })
+
+  it('stays in a template that already names them, but can’t be added to one', async () => {
+    const services = seeded()
+    const samOnly = {
+      ...rent,
+      id: 'rentElmSam0000000002',
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, rent)
+    await create(services, samOnly)
+    await deleteAccount(services)
+    const renamed = await call(services, 'PATCH', `/schedules/${rent.id}`, {
+      body: { ...rent, description: 'House rent' },
+    })
+    expect(renamed.status).toBe(200)
+    expect(
+      await failure(services, 'PATCH', `/schedules/${samOnly.id}`, {
+        body: { ...samOnly, template: rent.template },
+      }),
+    ).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
   })
 })

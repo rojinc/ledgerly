@@ -4,6 +4,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
 import { balanceWrite } from '@ledgerly/server/ledger/balances'
+import { refuseDeletedPeople } from '@ledgerly/server/ledger/deleted-people'
 import {
   activityWrite,
   changedColumns,
@@ -26,6 +27,7 @@ import {
   requireNotTooFarAhead,
   requireUnlocked,
   shareColumns,
+  storedInput,
   storedInputSchema,
   teamRead,
   transactionColumns,
@@ -130,6 +132,14 @@ export const updateTransaction = (services: ServicesFor) =>
             throw new Unchanged()
           }
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
+          await refuseDeletedPeople(
+            tx,
+            db,
+            ledger,
+            input.kind,
+            input,
+            await storedInput(db, existing),
+          )
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
           await attachReceipts(files, db, tx, {
             groupId: existing.groupId,
