@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_AMOUNT_CENTS } from '../constants/limits'
-import { centsToDecimal, formatMoney, netToDecimal, parseMoney } from './format'
+import { centsToDecimal, formatMoney, formatNet, netToDecimal, parseMoney } from './format'
 
 // ICU puts a no-break space between a currency code and the number.
 const plain = (text: string) => text.replace(/\s/g, ' ')
@@ -90,6 +90,17 @@ describe('centsToDecimal (#50)', () => {
 
   it('refuses an amount that isn’t whole cents', () => {
     expect(() => centsToDecimal(1.5, 'AUD')).toThrow()
+  })
+})
+
+describe('formatNet', () => {
+  it('formats a net past the amount cap, but only an exact integer', () => {
+    expect(() => formatMoney(2 * MAX_AMOUNT_CENTS, 'AUD', 'en-AU')).toThrow()
+    expect(formatNet(2 * MAX_AMOUNT_CENTS, 'AUD', 'en-AU')).toBe('$200,000,000.00')
+    expect(formatNet(-1234, 'AUD', 'en-AU')).toBe('-$12.34')
+    for (const bad of [1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN]) {
+      expect(() => formatNet(bad, 'AUD')).toThrow(RangeError)
+    }
   })
 })
 

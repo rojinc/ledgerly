@@ -1,5 +1,5 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatNet } from '@ledgerly/core/money/format'
 import type { ReactNode } from 'react'
 import { Link, useParams } from 'react-router'
 import { Button } from '../../ui/button'
@@ -82,7 +82,7 @@ export function StatementsPage() {
                   </span>
                 </span>
                 {balance !== undefined && (
-                  <span className="text-sm tabular-nums">{formatMoney(balance, currency)}</span>
+                  <span className="text-sm tabular-nums">{formatNet(balance, currency)}</span>
                 )}
               </Link>
             </li>

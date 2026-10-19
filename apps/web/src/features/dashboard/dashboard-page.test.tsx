@@ -167,6 +167,23 @@ describe('DashboardPage: owed to me / I owe', () => {
     expect(nzd.textContent).toMatch(/owed to you .*300\.00 · you owe .*0\.00$/)
   })
 
+  it('shows a balance and a total past the amount cap', async () => {
+    // Worked out from many amounts, so it can pass MAX_AMOUNT_CENTS (ledger.md).
+    call.mockImplementation(async (_fn, _method, path) => ({
+      ok: true as const,
+      data: {
+        people: [{ personId: 'p1', netCents: path.includes('/g1/') ? 20_000_000_000 : 0 }],
+        transfers: [],
+      },
+    }))
+    renderPage()
+    const section = screen.getByRole('region', { name: 'Owed to me / I owe' })
+    const rows = within(section).getAllByRole('listitem')
+    expect(await within(rows[0] as HTMLElement).findByText(/^Owed .*200,000,000\.00$/)).toBeTruthy()
+    const aud = (await within(section).findByText('Total in AUD:')).parentElement as HTMLElement
+    expect(aud.textContent).toMatch(/owed to you .*200,000,000\.00/)
+  })
+
   it('names a pair group by its other member (#149)', async () => {
     // Alex added the viewer, so the group's own name is the viewer's.
     groupsHook.mockReturnValue({

@@ -28,6 +28,16 @@ export function formatMoney(cents: number, currency: string, locale?: string): s
 }
 
 /**
+ * `formatMoney` for a figure worked out from amounts, such as a net, a balance or a total, which
+ * can pass the amount cap (ledger.md#allocation-and-rounding): it only has to be an exact integer.
+ */
+export function formatNet(cents: number, currency: string, locale?: string): string {
+  if (!Number.isSafeInteger(cents)) throw new RangeError('A net must be a whole number of cents')
+  const { format, digits } = currencyFormat(currency, locale)
+  return format.format(decimal(cents, digits) as Intl.StringNumericLiteral)
+}
+
+/**
  * Cents as a plain decimal with the currency's digits, for exports (#50):
  * `centsToDecimal(-1230, 'AUD')` → `-12.30`, `(5, 'AUD')` → `0.05`, `(1234, 'JPY')` → `1234`.
  * Built from the integer's digits, never through a float.

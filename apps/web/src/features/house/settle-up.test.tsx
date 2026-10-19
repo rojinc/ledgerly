@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type ErrorCode, type Result } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
-import { SettleUp } from './settle-up'
+import { balanceLine, SettleUp } from './settle-up'
 
 vi.mock('../../lib/appwrite', () => ({ DATABASE_ID: 'main', tablesDB: {}, teams: {} }))
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
@@ -129,6 +129,13 @@ afterEach(() => {
   cleanup()
   vi.useRealTimers()
   vi.resetAllMocks()
+})
+
+describe('balanceLine', () => {
+  it('words a balance past the amount cap', () => {
+    expect(balanceLine('Alice', 20_000_000_000, 'AUD')).toMatch(/^Alice is owed .*200,000,000\.00$/)
+    expect(balanceLine('Cara', -20_000_000_000, 'AUD')).toMatch(/^Cara owes .*200,000,000\.00$/)
+  })
 })
 
 describe('SettleUp', () => {
