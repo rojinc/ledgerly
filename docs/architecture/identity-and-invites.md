@@ -195,7 +195,7 @@ When an account's email or phone number changes, a notice goes out by email, so 
 
 `identity` also subscribes to `users.*.update.email` and `users.*.update.phone`. Each runs `POST /` as an [event run](permissions.md#function-side-checks):
 
-1. **Which event:** the route matches the whole name in `x-appwrite-event`: `users.<userId>.update.password`, `users.<userId>.update.email` or `users.<userId>.update.phone`, where `<userId>` is everything between `users.` and that ending (an Appwrite user ID can contain `.`). For the two change events the ID must also equal the body's `$id`, or nothing is sent. An event run with any other name gets `FORBIDDEN`. A signed-in call gets `FORBIDDEN`, as for the password notice.
+1. **Which event:** the route matches the whole name in `x-appwrite-event`: `users.<userId>.update.password` or `users.<userId>.recovery.<tokenId>.update` (the [password notice](#password-notice)), `users.<userId>.update.email` or `users.<userId>.update.phone`, where `<userId>` is everything between `users.` and that ending (an Appwrite user ID can contain `.`). For the two change events the ID must also equal the body's `$id`, or nothing is sent. An event run with any other name gets `FORBIDDEN`. A signed-in call gets `FORBIDDEN`, as for the password notice.
 2. **The user:** the route reads it again with `users.get`, and takes nothing else from the event: not the old or new value, even if the payload holds one. It writes nothing, ever: no row stores the change. Checks run in this order, each one ending the run:
    - the user is gone, or their person has `deletedAt` (`gone`), so a deletion under way changes nothing here;
    - then, for an email change, the old addresses (step 3); for a phone change, the account's verified email (step 4).
