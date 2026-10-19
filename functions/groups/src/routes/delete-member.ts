@@ -35,8 +35,9 @@ const TWO_MEMBERS = 'Employer and pair groups always keep both members. Archive 
 
 /**
  * `groups DELETE /groups/{id}/members/{memberId}`: removes someone completely, only while they
- * have no shares in the group and aren't named in an unposted transaction or a schedule's
- * template (permissions.md#leaving-a-group), team membership first.
+ * have no shares in the group, aren't named in an unposted transaction or a schedule's template,
+ * and didn't create a schedule that names no payers (permissions.md#leaving-a-group), team
+ * membership first.
  */
 export async function deleteMember(
   { db, teams, now }: Services,
@@ -98,16 +99,15 @@ export async function deleteMember(
 /**
  * Whether the person is named, as the ledger names people (everyPersonId), in a transaction that
  * isn't posted yet (its stored input and its items' splits) or in a schedule's template. Posted
- * ones are covered by the shares check; void ones name no one any more. The creator of an expense
- * or bill schedule whose template names no payers counts too: they pay its occurrences (the trial
- * occurrence and auto-post, scheduling.md), so removing them would break the schedule for good.
+ * ones are covered by the shares check; void ones name no one any more. The creator of a schedule
+ * whose template names no payers counts too: the scheduler charges them for its trial occurrence
+ * and its auto-posts (scheduling.md), so removing them would break the schedule for good. Only
+ * houses get here, and their schedules are all expenses or bills, which have payers.
  */
 async function isNamed(db: Db, groupId: string, personId: string): Promise<boolean> {
   const names = (template: TransactionTemplate) => everyPersonId(template).includes(personId)
   const paysFor = (schedule: Schedules, template: TransactionTemplate) =>
-    schedule.createdBy === personId &&
-    (schedule.kind === 'expense' || schedule.kind === 'bill') &&
-    template.payers === undefined
+    schedule.createdBy === personId && template.payers === undefined
   const inSchedule = await anyPage<Schedules>(
     db,
     TABLES.schedules,
