@@ -8,16 +8,17 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { ID, Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
+import { markMerged } from '../merge'
 import { parseBody } from '../parse-body'
 import {
   conflictAsTryAgain,
   findIdentity,
   findPersonOfUser,
-  getRowOrNull,
   guardPerson,
   isAppwriteError,
   SET_UP_FIRST,
 } from '../rows'
+import { finishMerges, MERGE_BUDGET_MS } from '../run-merge'
 import type { AccountUser, Services } from '../services'
 
 export type VerifiedIdentity = { type: IdentitiesType; key: string }
@@ -73,22 +74,41 @@ export async function claim(
   // A person with deletedAt is never resolved from a userId (identity-and-invites.md#order).
   // Each write below checks again (guardPerson).
   if (!person || person.deletedAt) throw setUpFirst()
+  const deadline = Date.now() + MERGE_BUDGET_MS
+  await claimIdentities(services, person.$id, identities)
+  // Every merge into this person that isn't finished: one just marked, or one cut off before.
+  // A merge that fails is left for the next claim, so it never stops a login.
+  const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
+    console.warn(`merge into ${person.$id} stopped: ${errorName(error)}`)
+    return { joined: [], finished: 0 }
+  })
+  // A finished merge moved P's identities here, the claimed one too: it's verified now.
+  if (merges.finished > 0) await claimIdentities(services, person.$id, identities)
+  const linked = new Set(merges.joined)
+  for (const member of await rowsToJoin(services.db, person)) {
+    if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
+      linked.add(member.groupId)
+    }
+  }
+  return [...linked]
+}
+
+// Step 2, for each verified identity.
+async function claimIdentities(
+  services: Services,
+  personId: string,
+  identities: VerifiedIdentity[],
+): Promise<void> {
+  const verified = identities.map((identity) => identity.key)
   for (const identity of identities) {
     try {
-      await claimIdentity(services, person.$id, identity)
+      await claimIdentity(services, personId, identity, verified)
     } catch (error) {
       if (!isAppwriteError(error, 409)) throw error
       // Another claim created the same key first (`key` is unique), so look again.
-      await conflictAsTryAgain(() => claimIdentity(services, person.$id, identity))
+      await conflictAsTryAgain(() => claimIdentity(services, personId, identity, verified))
     }
   }
-  const linked: string[] = []
-  for (const member of await rowsToJoin(services.db, person)) {
-    if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
-      linked.push(member.groupId)
-    }
-  }
-  return linked
 }
 
 function setUpFirst(): AppError {
@@ -100,6 +120,7 @@ async function claimIdentity(
   { db, now }: Services,
   personId: string,
   { type, key }: VerifiedIdentity,
+  verified: readonly string[],
 ): Promise<void> {
   const identity = await findIdentity(db, key)
   if (!identity) {
@@ -128,11 +149,11 @@ async function claimIdentity(
     })
     return
   }
-  // Someone else's: a registered person keeps it. A placeholder would have to be merged into
-  // the caller's person, which is #39; until then it stays where it is. The log is a fixed
-  // line, never the key (security-and-privacy.md).
-  const owner = await getRowOrNull<Persons>(db, TABLES.persons, identity.personId)
-  if (owner && !owner.userId) console.warn('claim needs a merge; skipped')
+  // Someone else's: a registered person keeps it. A placeholder is the same human as the
+  // caller, so it's merged into the caller's person: step 1 marks it here, and the claim
+  // carries the merge on (`finishMerges`). markMerged leaves alone a person with an account,
+  // or one another adoption or merge got first. Only the keys the user verified move to them.
+  await markMerged(db, identity.personId, personId, verified)
 }
 
 // Step 3: the person's `placeholder` rows added strictly before `claimedAt`, while they had no
@@ -162,4 +183,11 @@ async function rowsToJoin(db: Db, person: Persons): Promise<Members[]> {
     if (page.length < PAGE_SIZE) return rows
     cursor = page.at(-1)?.$id
   }
+}
+
+/** An error's code or class name, never its message, which may quote stored data. */
+function errorName(error: unknown): string {
+  if (error instanceof AppError) return error.code
+  if (isAppwriteError(error, 409)) return 'conflict'
+  return error instanceof Error ? error.name : 'unknown'
 }

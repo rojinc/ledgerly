@@ -44,6 +44,14 @@ function claimFixture(members: Row[], extra: { persons?: Row[]; identities?: Row
     {
       persons: [SAM, ...(extra.persons ?? [])],
       identities: [VERIFIED_EMAIL, ...(extra.identities ?? [])],
+      // Their rows, for the guard a merge writes on each group.
+      groups: ['g1', 'g2', 'g3'].map((id) => ({
+        $id: id,
+        type: 'house',
+        name: 'Flat',
+        rev: 'r0',
+        settingsJson: '{"type":"house","autoFinalize":false,"defaultBillSplit":"equal"}',
+      })),
       members,
     },
     { teams: { g1: ['uAdmin'], g2: ['uAdmin'], g3: ['uAdmin'] } },
@@ -141,7 +149,7 @@ describe('POST /claim', () => {
     })
   })
 
-  it("skips a placeholder's identity, which would need a merge, and logs only that", async () => {
+  it('merges a placeholder whose identity the caller verified, logging IDs and counts only', async () => {
     const services = claimFixture([placeholderRow('m1', 'g1', 'pOther', BEFORE)], {
       persons: [{ $id: 'pOther', userId: null, displayName: 'Sam', claimedAt: null }],
       identities: [
@@ -155,13 +163,23 @@ describe('POST /claim', () => {
       ],
     })
     services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(await claimed(services)).toEqual(['g1'])
+    const other = services.db.rows('persons').find((row) => row.$id === 'pOther')
+    expect(other).toMatchObject({ userId: null, mergedInto: 'pSam' })
+    // The merge moved the identity, and the claim then verified it for Sam.
+    expect(services.db.rows('identities')[1]).toMatchObject({ personId: 'pSam', verified: true })
+    expect(services.db.rows('members')).toEqual([
+      expect.objectContaining({ $id: 'm1', personId: 'pSam', status: 'active' }),
+    ])
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin', 'u1'])
+    expect(warn).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledTimes(1)
+    for (const args of log.mock.calls) expect(String(args)).not.toMatch(/@|\d{6,}|Sam Lee/)
+    // Finished: the next claim leaves P alone.
     expect(await claimed(services)).toEqual([])
-    expect(warn.mock.calls).toEqual([['claim needs a merge; skipped']])
-    expect(services.db.rows('identities')[1]).toMatchObject({
-      personId: 'pOther',
-      verified: false,
-    })
-    expect(statusOf(services, 'm1')).toBe('placeholder')
+    expect(log).toHaveBeenCalledTimes(1)
+    log.mockRestore()
   })
 
   it('silently leaves an identity that belongs to another registered person', async () => {
