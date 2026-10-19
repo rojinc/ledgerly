@@ -1,5 +1,6 @@
 import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { formatMoney } from '@ledgerly/core/money/format'
+import { missingGlyphs, printable } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces'
 import {
@@ -38,6 +39,14 @@ export async function renderInvoicePdf(
   const money = (cents: number) => formatMoney(cents, snapshot.group.currency, LOCALE)
   const dueOn = addDays(details.issuedOn, invoice.paymentTermsDays)
   const business = issuer.business
+  // Roboto can't draw every script, and pdfmake would leave out what it can't draw, so every text
+  // from the snapshot or the profile prints through printable(): a missing character shows as �.
+  let replaced = 0
+  const print = (text: string) => {
+    replaced += missingGlyphs(text).length
+    return printable(text)
+  }
+  const number = print(details.displayNumber)
   const worker = snapshot.people.find((person) => person.personId === issuer.personId)
   const openingCents = worker?.openingCents ?? 0
 
@@ -55,14 +64,14 @@ export async function renderInvoicePdf(
     {
       columns: [
         [
-          { text: business.businessName ?? issuer.name, style: 'issuer' },
+          { text: print(business.businessName ?? issuer.name), style: 'issuer' },
           ...present([
             business.abn &&
               `ABN ${business.abn.replace(/^(\d{2})(\d{3})(\d{3})(\d{3})$/, '$1 $2 $3 $4')}`,
             business.address,
             business.email,
             business.phone,
-          ]),
+          ]).map(print),
         ],
         {
           width: 'auto',
@@ -72,7 +81,7 @@ export async function renderInvoicePdf(
               layout: 'noBorders',
               table: {
                 body: [
-                  field('Number', details.displayNumber),
+                  field('Number', number),
                   field('Issued', formatDate(details.issuedOn)),
                   field('Due', formatDate(dueOn)),
                   field(
@@ -87,8 +96,8 @@ export async function renderInvoicePdf(
       ],
     },
     heading('Bill to'),
-    { text: recipient.name, bold: true },
-    ...recipient.emails,
+    { text: print(recipient.name), bold: true },
+    ...recipient.emails.map(print),
     amountLine('Opening balance (from the previous invoice)', money(openingCents)),
   ]
 
@@ -100,7 +109,7 @@ export async function renderInvoicePdf(
         ['Date', 'Description', 'Hours', 'Rate', 'Amount'],
         charges.map((line) => [
           formatDate(line.date),
-          lineText(line),
+          print(lineText(line)),
           line.shift ? hoursText(line.shift.minutes) : '',
           line.shift ? `${money(line.shift.rateCents)}/h` : '',
           money(owed(line)),
@@ -115,7 +124,7 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        credits.map((line) => [formatDate(line.date), lineText(line), money(owed(line))]),
+        credits.map((line) => [formatDate(line.date), print(lineText(line)), money(owed(line))]),
         { total: ['Total payments and deductions', money(total(credits))] },
       ),
     )
@@ -137,7 +146,11 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        records.map((line) => [formatDate(line.date), lineText(line), money(line.totalCents)]),
+        records.map((line) => [
+          formatDate(line.date),
+          print(lineText(line)),
+          money(line.totalCents),
+        ]),
       ),
     )
   }
@@ -151,20 +164,22 @@ export async function renderInvoicePdf(
           business.bank &&
             `Bank transfer: ${business.bank.accountName}, BSB ${business.bank.bsb.replace(/^(\d{3})(\d{3})$/, '$1-$2')}, account ${business.bank.accountNumber}`,
           business.payId && `PayID: ${business.payId}`,
-          `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with ${details.displayNumber} as the reference.`,
-        ]),
+          `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with ${number} as the reference.`,
+        ]).map(print),
       ],
     })
   }
   if (business.invoiceNotes) {
     // Not unbreakable: notes taller than a page would be dropped, heading and all.
-    content.push(heading('Notes'), business.invoiceNotes)
+    content.push(heading('Notes'), print(business.invoiceNotes))
   }
+  // The count only, never the text (security-and-privacy.md#personal-data).
+  if (replaced > 0) console.warn(`invoice PDF: ${replaced} characters print as U+FFFD`)
 
   const doc: TDocumentDefinitions = {
     ...PAGE,
     info: { title: `Invoice ${details.displayNumber}`, creator: 'Ledgerly', producer: 'Ledgerly' },
-    footer: footer(details.displayNumber),
+    footer: footer(number),
     content,
   }
   return pdfmake.createPdf(doc).getBuffer()
