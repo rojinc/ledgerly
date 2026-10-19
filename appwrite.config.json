@@ -5,6 +5,7 @@
   "includes": {
     "tables": "./appwrite/tables.json",
     "buckets": "./appwrite/buckets.json",
-    "functions": "./appwrite/functions.json"
+    "functions": "./appwrite/functions.json",
+    "sites": "./appwrite/sites.json"
   }
 }
