@@ -146,11 +146,12 @@ describe('toEntryValues', () => {
       },
     ],
     [
+      // The other person first, so only the head count refuses it.
       'an equal split of two',
       'expense',
       {
         payers: [{ personId: 'pw', cents: 4000 }],
-        split: { mode: 'equal', personIds: ['pw', 'pe'] },
+        split: { mode: 'equal', personIds: ['pe', 'pw'] },
       },
     ],
     [

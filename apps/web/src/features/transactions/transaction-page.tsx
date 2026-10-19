@@ -1,4 +1,4 @@
-import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
@@ -22,7 +22,7 @@ import {
   CHANGED_MEANWHILE,
   employerPeople,
   LedgerError,
-  useHasItems,
+  useItems,
   useMembers,
   useShares,
   useTransaction,
@@ -117,6 +117,13 @@ function Details({ row }: { row: Transactions }) {
   const member = useMyMember(row.groupId, personId)
   const members = useMembers(row.groupId)
   const shares = useShares(row.$id)
+  const { note, shift, splitText: storedSplit } = storedParts(row.inputJson)
+  // Items are rows of their own, never in inputJson (data-model.md#items): read them for the
+  // kinds that can have them, and it's itemised when some come back.
+  const items = useItems(row.$id, row.kind === 'expense' || row.kind === 'bill')
+  const itemCount = items.data?.length ?? 0
+  const splitText =
+    itemCount > 0 ? `Itemised (${itemCount} ${itemCount === 1 ? 'item' : 'items'})` : storedSplit
   // Here, not in the void form: an optimistic void hides the form, and after a rollback the
   // error and the typed reason must still be there.
   const voidRow = useVoidTransaction(row.$id)
@@ -140,7 +147,6 @@ function Details({ row }: { row: Transactions }) {
   const locked = row.statementId !== null
   const archived = group.data.archivedAt !== null
   const open = mayChange && !locked && !archived
-  const { note, shift, splitText } = storedParts(row.inputJson)
 
   return (
     <>
@@ -198,6 +204,14 @@ function Details({ row }: { row: Transactions }) {
           </>
         )}
       </dl>
+      {itemCount > 0 && items.data && (
+        <ItemList items={items.data} names={names} currency={group.data.currency} />
+      )}
+      {items.isError && (
+        <Message alert>
+          We couldn’t load this expense’s items. Reload the page to try again.
+        </Message>
+      )}
       {shares.data && shares.data.length > 0 && (
         <section aria-labelledby="shares-heading" className="flex flex-col gap-2">
           <h2 id="shares-heading" className="font-medium">
@@ -247,6 +261,66 @@ function Details({ row }: { row: Transactions }) {
   )
 }
 
+/** `Alice, Bob and Cara`. */
+function namesText(names: string[]): string {
+  return names.length < 2
+    ? (names[0] ?? '')
+    : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+}
+
+/** Who an item is for, in words, from its stored split; equal or by shares (#42). */
+function itemPeopleText(splitJson: string, names: Map<string, string>): string | undefined {
+  try {
+    const split = JSON.parse(splitJson) as {
+      mode?: unknown
+      personIds?: unknown
+      weights?: unknown
+    } | null
+    const name = (id: unknown) => names.get(String(id)) ?? 'Someone'
+    if (split?.mode === 'equal' && Array.isArray(split.personIds)) {
+      return `for ${namesText(split.personIds.map(name))}`
+    }
+    if (split?.mode === 'weights' && Array.isArray(split.weights)) {
+      const people = split.weights.map((entry: { personId?: unknown }) => name(entry?.personId))
+      return `by shares, for ${namesText(people)}`
+    }
+  } catch {
+    // Shown without who it's for.
+  }
+  return undefined
+}
+
+/** An itemised transaction's items, in the order entered (#42). */
+function ItemList({
+  items,
+  names,
+  currency,
+}: {
+  items: Items[]
+  names: Map<string, string>
+  currency: string
+}) {
+  return (
+    <section aria-labelledby="items-heading" className="flex flex-col gap-2">
+      <h2 id="items-heading" className="font-medium">
+        Items
+      </h2>
+      <ul className="flex flex-col gap-1 text-sm">
+        {items.map((item) => {
+          const people = itemPeopleText(item.splitJson, names)
+          return (
+            <li key={item.$id} className="break-words">
+              {item.name}:{' '}
+              <span className="tabular-nums">{formatMoney(item.amountCents, currency)}</span>
+              {people && `, ${people}`}
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
 /** A save refused by a change made meanwhile, once the form has gone with it: focus moves here. */
 function Refused({ message }: { message: string }) {
   const ref = useRef<HTMLParagraphElement>(null)
@@ -282,8 +356,13 @@ function Change({
   personId: string
   edit: EditState
 }) {
-  // The bill page changes a due bill only, and the shift page a scheduled or posted shift.
-  if (row.kind === 'bill' && group.type === 'personal' && row.status === 'due') {
+  // The bill page changes a due personal or house bill only (#75, #44), and the shift page a
+  // scheduled or posted shift.
+  if (
+    row.kind === 'bill' &&
+    (group.type === 'personal' || group.type === 'house') &&
+    row.status === 'due'
+  ) {
     return (
       <Link to={`/bills/${row.$id}`} className="self-start underline underline-offset-4">
         Change this bill
@@ -326,13 +405,10 @@ function EditEntry({
   personId: string
   edit: EditState
 }) {
-  const items = useHasItems(row.$id)
-  if (items.isError) {
-    return (
-      <Message alert>We couldn’t check this entry for items. Reload the page to try again.</Message>
-    )
-  }
-  if (!members || items.data !== false) return null
+  // Only an expense can have items (ledger.md#items), and an itemised one gets no Edit yet
+  // (#42). The page reads them too, and says so if it can't.
+  const items = useItems(row.$id, row.kind === 'expense')
+  if (!members || (row.kind === 'expense' && items.data?.length !== 0)) return null
   let form: ReactNode
   if (group.type === 'house') {
     const values = toHouseExpenseValues(row, members, group.currency)

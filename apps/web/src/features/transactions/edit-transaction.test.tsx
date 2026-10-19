@@ -160,14 +160,10 @@ async function openForm() {
   return heading
 }
 
-/** Waits until the page knows whether the row is itemised, so no Edit is the answer. */
+/** Waits until every read is in, items included, so no Edit is the answer. */
 async function settled(queryClient: QueryClient) {
   await screen.findByText('Group')
-  await waitFor(() =>
-    expect(queryClient.getQueryState(['transaction', 't1', 'items'])?.status ?? 'none').not.toBe(
-      'pending',
-    ),
-  )
+  await waitFor(() => expect(queryClient.isFetching()).toBe(0))
 }
 
 beforeEach(() => {
@@ -578,7 +574,23 @@ describe('TransactionPage, who sees Edit', () => {
     ['a void row', { ...reimbursable, status: 'void' }, {}, false],
     ['a scheduled row', { ...reimbursable, status: 'scheduled' }, {}, false],
     ['a due row', { ...lent, status: 'due' }, { group: pair, members: PAIR_MEMBERS }, false],
-    ['an itemised row', reimbursable, { items: [{ $id: 'i1', transactionId: 't1' }] }, false],
+    [
+      'an itemised row',
+      reimbursable,
+      {
+        items: [
+          {
+            $id: 'i1',
+            transactionId: 't1',
+            position: 0,
+            name: 'Paint',
+            amountCents: 4000,
+            splitJson: JSON.stringify({ mode: 'equal', personIds: ['pe'] }),
+          },
+        ],
+      },
+      false,
+    ],
     ['a loan in an employer group', { ...lent, groupId: 'g1' }, {}, false],
     [
       'an expense in a pair group',
@@ -617,23 +629,32 @@ describe('TransactionPage, who sees Edit', () => {
       return { total: rows.length, rows }
     }) as never)
     renderPage()
+    // The page's own message (#42); Edit waits for the items, so it never shows.
     expect(
       await screen.findByText(
-        'We couldn’t check this entry for items. Reload the page to try again.',
+        'We couldn’t load this expense’s items. Reload the page to try again.',
       ),
     ).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
   })
 
-  it('runs no items query for a row it can’t change', async () => {
-    mock({ ...reimbursable, status: 'void' })
-    renderPage()
-    await screen.findByText('Group')
-    expect(
-      listRows.mock.calls.some(
+  it('reads the items once, with the page, and none for a loan', async () => {
+    mock(reimbursable)
+    const { queryClient } = renderPage()
+    await screen.findByRole('button', { name: 'Edit' })
+    await settled(queryClient)
+    const itemReads = () =>
+      listRows.mock.calls.filter(
         ([params]) => (params as unknown as { tableId: string }).tableId === 'items',
-      ),
-    ).toBe(false)
+      ).length
+    expect(itemReads()).toBe(1)
+    cleanup()
+    listRows.mockClear()
+    mock(lent, { group: pair, members: PAIR_MEMBERS })
+    const second = renderPage()
+    await screen.findByRole('button', { name: 'Edit' })
+    await settled(second.queryClient)
+    expect(itemReads()).toBe(0)
   })
 })
 
@@ -642,14 +663,16 @@ describe('TransactionPage, bills and shifts', () => {
   const bill = row({}, { groupId: 'g4', kind: 'bill', status: 'due', description: 'Power' })
   const shift = row({ shift: { minutes: 480, rateCents: 2500 } }, { kind: 'shift', category: null })
 
-  it('links a due personal bill and a shift to their own pages', async () => {
-    mock(bill, { group: personal })
-    renderPage()
-    expect(
-      (await screen.findByRole('link', { name: 'Change this bill' })).getAttribute('href'),
-    ).toBe('/bills/t1')
-    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
-    cleanup()
+  it('links a due personal or house bill and a shift to their own pages', async () => {
+    for (const group of [personal, { ...personal, type: 'house', name: 'The flat' } as Groups]) {
+      mock(bill, { group })
+      renderPage()
+      expect(
+        (await screen.findByRole('link', { name: 'Change this bill' })).getAttribute('href'),
+      ).toBe('/bills/t1')
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+      cleanup()
+    }
     for (const status of ['scheduled', 'posted'] as const) {
       mock({ ...shift, status })
       renderPage()

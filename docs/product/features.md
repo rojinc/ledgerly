@@ -6,12 +6,13 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 
 | ID | Feature | Milestone |
 | --- | --- | --- |
-| F-01 | Sign up and log in with email + password or email code (OTP). Google sign-in later. | M0 |
+| F-01 | Sign up and log in with email + password or email code (OTP). Google sign-in later. Set a password on Profile (an account made with an email code has none) or change it with the current one. | M0 |
 | F-02 | Email verification. Required before you can invite people or claim records made with your email. | M0 |
 | F-03 | Profile: display name, timezone, holiday region (e.g. `AU-NSW`), default currency. | M1 |
 | F-04 | Business details printed on invoices: business name, ABN, address, contact email, bank details (account name, BSB, account number) and PayID. | M1 |
 | F-05 | Phone verification (optional). Needed to claim records made with your phone number. | M3 |
 | F-06 | Delete account and export your data. | M4 |
+| F-07 | Getting started: the dashboard asks what you want to track until you've recorded something. | M4 |
 
 ## Groups (shared by every module)
 
