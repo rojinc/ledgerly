@@ -11,7 +11,7 @@ export type RunResult = {
   posted: PostCounts
   reminders: ReminderCounts
   summaries: SummaryCounts
-  checked: CheckCounts
+  nightly: CheckCounts
 }
 
 /**
@@ -27,5 +27,5 @@ export async function run(scheduled: boolean, services: () => Services): Promise
   const posted = await autoPost(built)
   const reminders = await sendReminders(built)
   const summaries = await sendSummaries(built)
-  return { expanded, posted, reminders, summaries, checked: await nightlyCheck(built) }
+  return { expanded, posted, reminders, summaries, nightly: await nightlyCheck(built) }
 }
