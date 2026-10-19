@@ -5,7 +5,7 @@ import {
   MAX_WEIGHT,
 } from '@ledgerly/core/constants/limits'
 import { isLocalDate, type LocalDate } from '@ledgerly/core/dates/local-date'
-import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { buildShares, type Share } from '@ledgerly/core/ledger/build-shares'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
 import { formatMoney } from '@ledgerly/core/money/format'
@@ -411,10 +411,66 @@ function pairs(list: unknown, key: 'cents' | 'basisPoints' | 'weight') {
 const inOrder = (ids: readonly string[]) =>
   ids.every((id, i) => i === 0 || (ids[i - 1] as string) < id)
 
+/** An item row as the form reads it back. */
+type StoredItem = Pick<Items, 'name' | 'quantity' | 'amountCents' | 'category' | 'splitJson'>
+
+/**
+ * The item rows as the form's items (#225 decision 1), with who's sharing the receipt: everyone
+ * in any item's split. Undefined for an item the form can't show (decision 2): a split other
+ * than `equal` or `weights`, a `quantity` other than 1, nobody, someone who isn't `known`, or
+ * anything the form would refuse or change on save. A negative amount reads back with its minus.
+ */
+function toItemValues(
+  items: readonly StoredItem[],
+  known: (ids: readonly string[]) => boolean,
+  currency: string,
+): { sharing: string[]; items: ItemValues[] } | undefined {
+  const read: { people: string[]; item: ItemValues }[] = []
+  for (const item of items) {
+    if (item.quantity !== 1 || item.amountCents === 0) return undefined
+    const split = readStored(item.splitJson) as StoredSplit
+    let people: string[]
+    let shares: Record<string, string> = {}
+    if (split.mode === 'equal' && Array.isArray(split.personIds)) {
+      // `known` refuses anything that isn't a member's ID.
+      people = split.personIds
+    } else if (split.mode === 'weights') {
+      const weights = pairs(split.weights, 'weight')
+      if (!weights?.every(([, weight]) => parseShares(String(weight)) === weight)) return undefined
+      people = weights.map(([id]) => id)
+      shares = Object.fromEntries(weights.map(([id, weight]) => [id, String(weight)]))
+    } else {
+      return undefined
+    }
+    if (people.length === 0 || !known(people) || !inOrder(people)) return undefined
+    read.push({
+      people,
+      item: {
+        name: item.name,
+        amount: centsToText(item.amountCents, currency),
+        discount: false,
+        category: (item.category ?? '') as Category | '',
+        mode: split.mode,
+        excluded: [],
+        shares,
+      },
+    })
+  }
+  const sharing = sortedIds(read.flatMap(({ people }) => people))
+  return {
+    sharing,
+    items: read.map(({ people, item }) => ({
+      ...item,
+      excluded: sharing.filter((id) => !people.includes(id)),
+    })),
+  }
+}
+
 /**
  * The house expense form's values for a posted expense (#202), or undefined when its stored
  * input is one the form can't show (decision 4): a `days` split or none, an empty note, or
- * someone who isn't a member. `toHouseExpenseBody()` of the result gives the stored input back.
+ * someone who isn't a member. With its item rows, in `position` order, it's itemised (#225), and
+ * may be a refund. `toHouseExpenseBody()` of the result gives the stored input back.
  */
 export function toHouseExpenseValues(
   row: Pick<
@@ -423,8 +479,12 @@ export function toHouseExpenseValues(
   >,
   members: readonly Pick<Members, 'personId'>[],
   currency: string,
+  items: readonly StoredItem[] = [],
 ): HouseExpenseValues | undefined {
-  if (row.kind !== 'expense' || row.totalCents <= 0) return undefined
+  // Only items can make a refund (#42 decision 4); a total of 0 is never saved.
+  if (row.kind !== 'expense' || (items.length === 0 ? row.totalCents <= 0 : row.totalCents === 0)) {
+    return undefined
+  }
   const stored = readStored(row.inputJson) as {
     payers?: unknown
     split?: StoredSplit
@@ -444,6 +504,33 @@ export function toHouseExpenseValues(
   const onePayer = payers.length === 1 && first?.[1] === row.totalCents
   // Several people paid: each amount above 0, as the form asks for.
   if (!onePayer && payers.some(([, paid]) => paid <= 0)) return undefined
+  const common = {
+    date: row.date,
+    description: row.description,
+    category: (row.category ?? '') as Category | '',
+    paidBy: first?.[0] ?? '',
+    severalPaid: !onePayer,
+    paid: onePayer
+      ? {}
+      : Object.fromEntries(payers.map(([id, paid]) => [id, centsToText(paid, currency)])),
+    note: typeof stored.note === 'string' ? stored.note : '',
+  }
+
+  if (items.length > 0) {
+    // The items carry the splits: an input with its own can't be sent back.
+    const read = stored.split === undefined ? toItemValues(items, everyone, currency) : undefined
+    if (!read) return undefined
+    // Items replace the amount, and the split mode and parts.
+    return {
+      ...common,
+      amount: '',
+      splitMode: 'equal',
+      splitBetween: read.sharing,
+      parts: {},
+      itemised: true,
+      items: read.items,
+    }
+  }
 
   const split = stored.split
   let splitMode: SplitMode
@@ -475,21 +562,12 @@ export function toHouseExpenseValues(
   if (ids.length === 0 || !everyone(ids) || !inOrder(ids)) return undefined
 
   return {
+    ...common,
     amount: centsToText(row.totalCents, currency),
-    date: row.date,
-    description: row.description,
-    category: (row.category ?? '') as Category | '',
-    paidBy: first?.[0] ?? '',
-    severalPaid: !onePayer,
-    paid: onePayer
-      ? {}
-      : Object.fromEntries(payers.map(([id, paid]) => [id, centsToText(paid, currency)])),
     splitMode,
     splitBetween: ids,
     parts,
-    note: typeof stored.note === 'string' ? stored.note : '',
-    // Never itemised: an itemised row has no Edit, and the edit form hides the switch. One empty
-    // item keeps the values the shape a new expense has.
+    // Plain, and it stays so (#225 decision 3); one empty item is ready, as on a new expense.
     itemised: false,
     items: [{ ...NEW_ITEM, excluded: [], shares: {} }],
   }

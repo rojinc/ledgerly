@@ -802,3 +802,209 @@ describe('toHouseExpenseValues (#202)', () => {
     ).toBeUndefined()
   })
 })
+
+describe('toHouseExpenseValues, itemised (#225)', () => {
+  type Item = {
+    name: string
+    amountCents: number
+    category?: string
+    split: object
+    quantity?: number
+  }
+  /** The `items` rows the ledger keeps for these items (data-model.md#items). */
+  const rows = (items: Item[]) =>
+    items.map(({ split, quantity = 1, category, ...item }) => ({
+      ...item,
+      quantity,
+      category: category ?? null,
+      splitJson: JSON.stringify(split),
+    }))
+  /** The items as the form sends them: no quantity, and a category only when there is one. */
+  const sent = (items: Item[]) => items.map(({ quantity, ...item }) => item)
+  const everyone = { mode: 'equal', personIds: ['alice', 'bob', 'cara'] }
+  // User flow 7: Bob pays; milk, bread and the discount are for everyone, the beer for Bob.
+  const FLOW_7: Item[] = [
+    { name: 'Milk', amountCents: 450, category: 'groceries', split: everyone },
+    { name: 'Bread', amountCents: 600, split: everyone },
+    {
+      name: 'Beer',
+      amountCents: 2000,
+      category: 'food',
+      split: { mode: 'equal', personIds: ['bob'] },
+    },
+    { name: 'Discount', amountCents: -150, split: everyone },
+  ]
+  const BY_SHARES: Item[] = [
+    {
+      name: 'Pizza',
+      amountCents: 3000,
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'alice', weight: 2 },
+          { personId: 'bob', weight: 1 },
+        ],
+      },
+    },
+    { name: 'Drinks', amountCents: 900, split: { mode: 'equal', personIds: ['alice', 'cara'] } },
+  ]
+  const total = (items: Item[]) => items.reduce((sum, item) => sum + item.amountCents, 0)
+  function row(items: Item[], stored: Record<string, unknown> = {}, extra = {}) {
+    return {
+      kind: 'expense' as const,
+      totalCents: total(items),
+      date: '2026-10-19',
+      description: 'Shop',
+      category: 'groceries',
+      inputJson: JSON.stringify({
+        payers: [{ personId: 'bob', cents: total(items) }],
+        ...stored,
+      }),
+      ...extra,
+    }
+  }
+
+  // Saving unchanged sends the stored input and items back exactly: no total and no split.
+  it.each<[string, Item[], Record<string, unknown>, string]>([
+    [
+      'equal items, a discount and an item for one person, with a note',
+      FLOW_7,
+      { note: 'Corner shop' },
+      'AUD',
+    ],
+    ['by shares', BY_SHARES, {}, 'AUD'],
+    [
+      'several payers',
+      FLOW_7,
+      {
+        payers: [
+          { personId: 'alice', cents: 1000 },
+          { personId: 'bob', cents: 1900 },
+        ],
+      },
+      'AUD',
+    ],
+    [
+      'a refund',
+      [
+        {
+          name: 'Kettle back',
+          amountCents: -3000,
+          split: { mode: 'equal', personIds: ['alice', 'bob'] },
+        },
+      ],
+      { payers: [{ personId: 'alice', cents: -3000 }] },
+      'AUD',
+    ],
+    ['a currency without cents', [{ name: 'Rice', amountCents: 1200, split: everyone }], {}, 'JPY'],
+  ])('round-trips %s', (_case, items, stored, currency) => {
+    const stored_ = row(items, stored)
+    const values = toHouseExpenseValues(stored_, MEMBERS, currency, rows(items))
+    expect(values).toBeDefined()
+    expect(toHouseExpenseBody(values as HouseExpenseValues, IDS, currency)).toStrictEqual({
+      ...IDS,
+      kind: 'expense',
+      date: '2026-10-19',
+      description: 'Shop',
+      category: 'groceries',
+      ...JSON.parse(stored_.inputJson),
+      items: sent(items),
+    })
+  })
+
+  it('fills the form from the rows: everyone sharing, each item’s people and shares', () => {
+    const values = toHouseExpenseValues(row(BY_SHARES), MEMBERS, 'AUD', rows(BY_SHARES))
+    expect(values).toMatchObject({
+      itemised: true,
+      paidBy: 'bob',
+      severalPaid: false,
+      // Everyone in any item's split.
+      splitBetween: ['alice', 'bob', 'cara'],
+      items: [
+        {
+          name: 'Pizza',
+          amount: '30.00',
+          discount: false,
+          category: '',
+          mode: 'weights',
+          excluded: ['cara'],
+          shares: { alice: '2', bob: '1' },
+        },
+        { name: 'Drinks', amount: '9.00', mode: 'equal', excluded: ['bob'], shares: {} },
+      ],
+    })
+  })
+
+  it('reads a discount back typed with a minus, and Discount unticked', () => {
+    const values = toHouseExpenseValues(row(FLOW_7), MEMBERS, 'AUD', rows(FLOW_7))
+    expect(values?.items[3]).toMatchObject({ amount: '-1.50', discount: false })
+    expect(values?.items[2]).toMatchObject({ category: 'food', excluded: ['alice', 'cara'] })
+  })
+
+  // Decision 2, and what the form would refuse or change on save.
+  const ONE = { name: 'Milk', amountCents: 450 }
+  it.each<[string, Item[], Record<string, unknown>?]>([
+    [
+      'a split by amounts',
+      [{ ...ONE, split: { mode: 'exact', amounts: [{ personId: 'alice', cents: 450 }] } }],
+    ],
+    ['a quantity of 2', [{ ...ONE, quantity: 2, split: everyone }]],
+    ['an item for nobody', [{ ...ONE, split: { mode: 'equal', personIds: [] } }]],
+    ['someone who isn’t a member', [{ ...ONE, split: { mode: 'equal', personIds: ['zed'] } }]],
+    ['people out of order', [{ ...ONE, split: { mode: 'equal', personIds: ['bob', 'alice'] } }]],
+    [
+      'an amount of 0',
+      [
+        { ...ONE, amountCents: 0, split: everyone },
+        { ...ONE, split: everyone },
+      ],
+    ],
+    [
+      'a share of 0',
+      [{ ...ONE, split: { mode: 'weights', weights: [{ personId: 'alice', weight: 0 }] } }],
+    ],
+    [
+      'more shares than the form takes',
+      [{ ...ONE, split: { mode: 'weights', weights: [{ personId: 'alice', weight: 10_001 }] } }],
+    ],
+    ['a stored split next to items', [{ ...ONE, split: everyone }], { split: everyone }],
+    ['an empty note', [{ ...ONE, split: everyone }], { note: '' }],
+    [
+      'a total of 0',
+      [
+        { ...ONE, split: everyone },
+        { ...ONE, amountCents: -450, split: everyone },
+      ],
+    ],
+    [
+      'a refund several people paid',
+      [{ ...ONE, amountCents: -3000, split: everyone }],
+      {
+        payers: [
+          { personId: 'alice', cents: -1000 },
+          { personId: 'bob', cents: -2000 },
+        ],
+      },
+    ],
+  ])('gives undefined for %s', (_case, items, stored = {}) => {
+    expect(toHouseExpenseValues(row(items, stored), MEMBERS, 'AUD', rows(items))).toBeUndefined()
+  })
+
+  it('gives undefined for an item split that isn’t JSON', () => {
+    const items = rows([{ ...ONE, split: everyone }]).map((item) => ({
+      ...item,
+      splitJson: 'nope',
+    }))
+    expect(
+      toHouseExpenseValues(row([{ ...ONE, split: everyone }]), MEMBERS, 'AUD', items),
+    ).toBeUndefined()
+  })
+
+  it('still gives undefined for a refund with no items (#202)', () => {
+    const refund = row([{ ...ONE, amountCents: -450, split: everyone }], {
+      payers: [{ personId: 'bob', cents: -450 }],
+      split: everyone,
+    })
+    expect(toHouseExpenseValues(refund, MEMBERS, 'AUD')).toBeUndefined()
+  })
+})
