@@ -22,6 +22,8 @@ import {
 import type { AccountUser, Services } from '../services'
 import { claim, type VerifiedIdentity, verifiedIdentities } from './claim'
 
+// The Appwrite label of a user whose account is being deleted (account's step 3).
+const DELETED_LABEL = 'deleted'
 const PERSONAL_GROUP_NAME = 'Personal'
 const MAX_NAME_LENGTH = 100 // persons.displayName
 
@@ -35,7 +37,7 @@ export async function bootstrap(
   const { db } = services
   const user = await services.users.get({ userId })
   // identity-and-invites.md#order: a deleted account never gets a person or profile again.
-  if (user.labels.includes('deleted') || (await hasDeletedPerson(db, userId))) {
+  if (user.labels.includes(DELETED_LABEL) || (await hasDeletedPerson(db, userId))) {
     throw accountDeleted()
   }
   const identities = verifiedIdentities(user)
@@ -52,7 +54,7 @@ export async function bootstrap(
 // Step 2: the person, profile, personal group, its team and an admin membership. Returns the
 // new profile, or the one a bootstrap for the same user running at the same time made first.
 async function setUp(
-  { db, teams, now }: Services,
+  { db, teams, users, now }: Services,
   user: AccountUser,
   identities: VerifiedIdentity[],
   timeZone: string,
@@ -120,6 +122,8 @@ async function setUp(
         const stored = await getRowOrNull<Persons>(db, TABLES.persons, person.personId)
         if (stored?.deletedAt) throw accountDeleted()
       }
+      // On every path: a deletion's step 3 may have labelled the user since that check too.
+      if ((await users.get({ userId })).labels.includes(DELETED_LABEL)) throw accountDeleted()
     })
   } catch (error) {
     if (!isAppwriteError(error, 409)) throw error
