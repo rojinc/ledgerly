@@ -37,7 +37,7 @@ The JSON holds one entry for each person who has a share in the group: tens of e
 
 | Problem at scale | Now | When the signal appears |
 | --- | --- | --- |
-| The scheduler loops over every user | Not an issue: it only queries `schedules` with `nextRunAt <= now` (indexed) and `groups` with `nextCloseAt <= now`. Work grows with what is **due**. | If one run can't finish the due work within the hour, run the cron every 15 minutes, then split by schedule kind into separate functions. |
+| The scheduler loops over every user | Not an issue: it only queries `schedules` with `nextRunAt <= now` (indexed) and `groups` with `nextCloseAt <= now`. Work grows with what is **due**. | If one run can't finish the due work within the hour, split it by schedule kind into separate functions (the plan's shortest interval is 60 minutes). |
 | Balances are summed on every dashboard load | A `balances` row per group, kept by every write of shares in its own transaction. `GET /balances` reads that one row, and the scheduler's [nightly check](scheduling.md#step-6-nightly-check) compares it with a fresh sum ([ledger](ledger.md#balances)). | Nothing more needed. Clients didn't change. |
 | The nightly check reads every group's shares again each day | Step 6 reads each due group whole once a day, in what's left of the hourly runs' budget. Work grows with all shares, not with what changed. | When step 6 can't check every due group within a day's runs (groups still due after 24 hours): skip a group whose `rev` hasn't changed since its last finished check (an additive `groups.checkedRev`). |
 | Long history lists | Cursor pagination, filtered by date range | Nothing more needed. |
