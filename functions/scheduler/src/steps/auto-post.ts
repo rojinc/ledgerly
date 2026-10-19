@@ -81,7 +81,7 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
         changes: {},
         now,
         // Moved, posted or voided since it was read: run again, which reads it again.
-        ready: (staged) => isDue(staged, group, now),
+        ready: (staged) => isDue(staged, group, now) && !madeLate(staged, group.timezone),
       }),
     )
     return true

@@ -1,8 +1,8 @@
 import type { Activity, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { ScheduleResult } from '@ledgerly/core/schemas/scheduler'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ScheduleResult } from '../src/routes/create-schedule'
 import type { RunResult } from '../src/routes/run'
 import {
   beforeCommit,
@@ -12,6 +12,7 @@ import {
   fakes,
   group,
   member,
+  NOW,
   ok,
   person,
 } from './harness'
@@ -199,6 +200,15 @@ describe('step 2: auto-post', () => {
     }
   })
 
+  it('posts an expense made on its own day, on that day', async () => {
+    // Made this morning in Sydney, starting today: on its day, not after it.
+    vi.setSystemTime(NOW)
+    const services = seeded()
+    await create(services, { ...groceries, startsOn: '2026-10-19' })
+    expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('posted')
+  })
+
   it('looks back 7 days from the UTC date, and no further', async () => {
     const services = seeded()
     await create(services, {
@@ -345,6 +355,23 @@ describe('step 2: auto-post', () => {
     expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
     expect(row(services, moved)).toMatchObject({ status: 'scheduled', date: '2026-10-30' })
     expect(row(services, `${groceries.id}_20261019`).status).toBe('posted')
+  })
+
+  it('doesn’t post an occurrence moved to before the day it was made, just before its guard', async () => {
+    // Made on 15 October: the 12th waits for the user, and the 19th is on time until a person
+    // moves it to the 13th.
+    vi.setSystemTime(new Date('2026-10-15T00:00:00.000Z'))
+    const services = seeded()
+    await create(services, groceries)
+    const moved = `${groceries.id}_20261019`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(moved),
+      () => update(services, 'transactions', moved, { date: '2026-10-13', overridden: true }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, moved)).toMatchObject({ status: 'scheduled', date: '2026-10-13' })
+    expect(row(services, `${groceries.id}_20261012`).status).toBe('scheduled')
   })
 
   it('leaves an occurrence a person posted after the page was read', async () => {

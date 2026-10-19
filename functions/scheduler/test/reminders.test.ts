@@ -196,7 +196,7 @@ describe('step 3: shift to confirm', () => {
     const late = transaction('t1', { scheduleId: 'auto', $createdAt: NOW.toISOString() })
     const services = seeded([late])
     expect(await runCron(services)).toMatchObject({
-      posted: { posted: 0 },
+      posted: { posted: 0, skipped: 0, failed: 0 },
       reminders: { sent: 1, skipped: 0, failed: 0 },
     })
   })
