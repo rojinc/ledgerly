@@ -1,7 +1,10 @@
+import type { Members } from '@ledgerly/core/generated/rows'
 import type { DeleteAccountResult } from '@ledgerly/core/schemas/identity'
 import { TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
+import { purge } from '../src/purge'
+import { FORMER_MEMBER } from '../src/rows'
 import {
   beforeStaging,
   call,
@@ -74,7 +77,7 @@ function world(moreActivity = 0) {
       transactions: [
         posted('t1', 'me', 3000, { receiptFileIds: ['r1'] }),
         posted('t2', 'me', 5000, { kind: 'income' }),
-        posted('t3', 'h2', 9000, { receiptFileIds: ['r2', 'r3', 'r4', 'r5', 'r6'] }),
+        posted('t3', 'h2', 9000, { receiptFileIds: ['r2', 'r3', 'r4', 'r5', 'r6', 'r7'] }),
         posted('t4', 'h2', 600, { statementId: 'st1' }),
         posted('t9', 'h1', 4000, { receiptFileIds: ['r9', 'r3', 'r5'] }),
       ],
@@ -102,6 +105,7 @@ function world(moreActivity = 0) {
         receipt('r3', ['t3', 't9']),
         receipt('r4', ['t3']),
         receipt('r5', ['t3', 't9']),
+        receipt('r7', ['t3']),
         receipt('r9', ['t9']),
       ],
       schedules: [schedule('sMe', 'me', 'p1', ['p1']), schedule('sH2', 'h2', 'p1', ['p1', 'pKim'])],
@@ -132,6 +136,8 @@ function world(moreActivity = 0) {
   // Attached in h1 and h2 at once (#43's accepted race), h2's permissions last.
   services.files.upload('receipts', 'r5', [team('h2')])
   services.files.upload('receipts', 'r6', [team('h2')])
+  // Attached in h2 and h1 at once, h1's permissions last; h1's transaction has taken it off since.
+  services.files.upload('receipts', 'r7', [team('h1')])
   services.files.upload('receipts', 'r9', [team('h1')])
   services.files.upload('statements', 'st1', [team('h2')])
   services.files.upload('statements', 'st2', [team('h2')])
@@ -315,6 +321,7 @@ describe('POST /delete: purging a group nobody else is in', () => {
       'receipts/r4',
       'receipts/r5',
       'receipts/r6',
+      'receipts/r7',
       'receipts/r9',
       'statements/st9',
     ])
@@ -402,6 +409,11 @@ describe('POST /delete: purging a group nobody else is in', () => {
     }
     expect(batches[first]).not.toContain('transactions/tBig2')
     expect(batches[first + 1]).toContain('items/tBig2-item29')
+    // Member rows only once no share of the group is left (I-3).
+    const writes = batches.flat()
+    const lastShare = writes.findLastIndex((write) => /^shares\/(t3|t4|tBig\d)-/.test(write))
+    expect(lastShare).toBeGreaterThan(-1)
+    expect(writes.findIndex((write) => write.startsWith('members/h2-'))).toBeGreaterThan(lastShare)
   })
 
   it('deletes a balances row a nightly check built again after the first batch', async () => {
@@ -414,6 +426,74 @@ describe('POST /delete: purging a group nobody else is in', () => {
     )
     expect((await remove(services)).finished).toBe(true)
     expect(rowOf(services, 'balances', 'h2')).toBeUndefined()
+  })
+
+  it('deletes a balances row a nightly check builds again just after the last transaction reads it', async () => {
+    const services = world()
+    // Its rebuild stages a guard write to the group row, then the row (nightly-check.ts).
+    const rebuild = () =>
+      withTransaction(services.db, (tx) =>
+        tx.write(
+          { action: 'update', tableId: 'groups', rowId: 'h2', data: { rev: 'rebuilt' } },
+          { action: 'upsert', tableId: 'balances', rowId: 'h2', data: { peopleJson: '[]' } },
+        ),
+      )
+    // The purge reads balances/h2 twice: before the first batch, then in the last transaction.
+    let reads = 0
+    const getRow = services.db.getRow.bind(services.db)
+    vi.spyOn(services.db, 'getRow').mockImplementation(async (params) => {
+      try {
+        return await getRow(params)
+      } finally {
+        if (params.tableId === 'balances' && params.rowId === 'h2' && ++reads === 2) {
+          await rebuild()
+        }
+      }
+    })
+    // The group row's delete was staged before the read, so the rebuild fails this commit.
+    expect((await remove(services)).finished).toBe(false)
+    vi.restoreAllMocks()
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'balances', 'h2')).toBeUndefined()
+    expect(leftOf(services, PURGED)).toEqual([])
+  })
+
+  it('leaves the row of someone else whose deletion purges the group too: both finish, and the group goes', async () => {
+    const services = world()
+    // Alex is being deleted too, and purges h3 just before Sam's last transaction there.
+    await setRow(services, 'persons', 'p2', { deletedAt: DELETED_AT })
+    let alex: unknown
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"rowId":"h3-p1"'),
+      async () => {
+        const own = rowOf(services, 'members', 'h3-p2') as unknown as Members
+        alex = await purge(services, own).catch((error: unknown) => error)
+      },
+    )
+    // Alex's purge deleted the group row first, so Sam's last transaction waits for a rerun.
+    expect((await remove(services)).finished).toBe(false)
+    expect(alex).toBe(true)
+    vi.restoreAllMocks()
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'groups', 'h3')).toBeUndefined()
+    expect(leftOf(services, ['h3'])).toEqual([])
+  })
+
+  it('deletes the rows of someone being deleted that their own deletion doesn’t come back to', async () => {
+    const services = world()
+    // Alex was added to h2 and never joined; Ray's deletion, still under way, kept h2 for them.
+    await insert(services, 'members', [
+      member('h2', 'p2', { role: 'member', status: 'placeholder' }),
+    ])
+    await setRow(services, 'members', 'h2-p3', { displayName: FORMER_MEMBER })
+    await setRow(services, 'persons', 'p2', { deletedAt: DELETED_AT })
+    await setRow(services, 'persons', 'p3', { deletedAt: DELETED_AT })
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h2-p2')).toBeUndefined()
+    expect(rowOf(services, 'members', 'h2-p3')).toBeUndefined()
+    // Alex's own `left` row in h3 is left to Alex's purge of it.
+    expect(leftOf(services, PURGED)).toEqual(['members/h3-p2'])
   })
 
   it('purges a group they left on their own once nobody else is left in its team', async () => {
@@ -473,10 +553,13 @@ describe('POST /delete: purging a group nobody else is in', () => {
         vi.setSystemTime(NOW.getTime() - 61 * 60 * 1000)
         await insert(services, 'statements', [statement('st3', 'h2', 'finalizing')])
         vi.useRealTimers()
+        // Step 7 uploaded its PDF, under the statement's ID, and stopped before `pdfFileId`.
+        services.files.upload('statements', 'st3', [team('h2')])
       },
     )
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
     expect(leftOf(services, PURGED)).toEqual([])
+    expect(services.files.ids()).not.toContain('statements/st3')
   })
 
   it('doesn’t wait for a timer someone else left running: it goes with the group', async () => {
@@ -510,6 +593,15 @@ describe('POST /delete: purging a group nobody else is in', () => {
       const { finished } = await remove(services)
       services.outOfTime = () => false
       if (finished) break
+      // Stopped after step 6, which clears `userId`: POST /delete no longer finds the person,
+      // and the hourly job deletes the Appwrite user, the only step left (step 7).
+      if (rowOf(services, 'persons', 'p1')?.userId === null) {
+        const { users, ...rows } = state(services)
+        const { users: _, ...endRows } = end
+        expect(rows).toEqual(endRows)
+        expect(users[0]).toMatchObject({ labels: ['deleted'], status: false })
+        continue
+      }
       expect((await remove(services)).finished).toBe(true)
       expect(state(services)).toEqual(end)
     }
@@ -565,11 +657,50 @@ describe('POST /delete: a purged group’s receipts (#248)', () => {
     expect(rowOf(services, 'receiptFiles', 'r6')).toMatchObject(detached)
   })
 
-  it('keeps a receipt readable by more than the group’s team, though only its transactions list it', async () => {
+  it('keeps a receipt not readable by exactly the group’s team, though only its transactions list it', async () => {
     const services = world()
     expect((await remove(services)).finished).toBe(true)
+    // More than h2's team can read r4; only h1's team can read r7.
     expect(services.files.ids()).toContain('receipts/r4')
+    expect(services.files.ids()).toContain('receipts/r7')
     expect(rowOf(services, 'receiptFiles', 'r4')).toMatchObject(detached)
+    expect(rowOf(services, 'receiptFiles', 'r7')).toMatchObject(detached)
+  })
+
+  it('stops before the next file once the time budget is used up, and a rerun finishes with the same rows', async () => {
+    const withReceipts = async () => {
+      const services = world()
+      const ids = ['tMany0', 'tMany1']
+      await insert(
+        services,
+        'transactions',
+        ids.map((id) => posted(id, 'h2', 1000)),
+      )
+      for (const id of ids) {
+        await setRow(services, 'transactions', id, {
+          receiptFileIds: await tenReceipts(services, id),
+        })
+      }
+      return services
+    }
+    const once = await withReceipts()
+    expect((await remove(once)).finished).toBe(true)
+    const services = await withReceipts()
+    let deleted = 0
+    const deleteFile = services.files.deleteFile.bind(services.files)
+    vi.spyOn(services.files, 'deleteFile').mockImplementation(async (params) => {
+      deleted += 1
+      await deleteFile(params)
+      return {}
+    })
+    // Used up once the fifth of h2's 21 deletable receipts is gone, all in its first 100.
+    services.outOfTime = () => deleted >= 5
+    expect((await remove(services)).finished).toBe(false)
+    expect(deleted).toBe(5)
+    expect(rowOf(services, 'transactions', 't3')).toBeDefined()
+    services.outOfTime = () => false
+    expect((await remove(services)).finished).toBe(true)
+    expect(state(services)).toEqual(state(once))
   })
 
   it('reads the receipt rows 100 file IDs at a time, as Appwrite allows', async () => {
