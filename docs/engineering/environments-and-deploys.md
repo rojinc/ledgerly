@@ -45,16 +45,16 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 - **The CLI takes the endpoint from `APPWRITE_ENDPOINT` over the config file's,** so nothing in the CLI notices a mismatch. The workflow checks that `APPWRITE_ENDPOINT` is exactly the config's `endpoint` and that the project secret matches its `projectId` before it pushes.
 - **The API key** is passed only to the two steps that use it, never to `npm ci` or the build.
 - **Until the secrets exist (#3),** a deploy is skipped with a warning. One with only some of its secrets fails instead.
-- **The web app** (`appwrite/sites.json`) is a static site.
-  - CI builds it and uploads only `dist/`, so Appwrite never runs `npm install` (the same reason as for functions, below).
-  - Its build command only checks that `dist/index.html` arrived; the CLI skips a site with no build command.
+- **The web app** (`appwrite/sites.json`) is the static site `web` ("Ledgerly web"), at `https://ledgerly.appwrite.network`.
+  - CI builds it and uploads the contents of `apps/web/dist`, with no install or build command, so Appwrite only serves the files and never runs `npm install` (the same reason as for functions, below).
+  - Its settings match the site the owner created: framework `other`, runtime `static-1`, adapter `static`, output `./`, logging off. `push site` writes them back on every deploy. The CLI refuses to change a site's framework ("Framework mismatch"), so that would need the site deleted in the console first: an owner's job.
   - `fallbackFile` is `index.html`, so client routes such as `/shifts/123` load the app.
 
 GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_API_KEY`.
 
 **Owner setup for deploys (#3):**
-- Add the three secrets as repository secrets. `APPWRITE_ENDPOINT` must be exactly the config's `endpoint` (`https://syd.cloud.appwrite.io/v1`). The API key needs the scopes for tables, buckets, functions and sites.
-- Create the web site's domain once in the Appwrite console: an API key can't create it.
+- Add the three secrets as repository secrets. `APPWRITE_ENDPOINT` must be exactly the config's `endpoint` (`https://syd.cloud.appwrite.io/v1`). The API key needs the scopes for tables, buckets and functions, plus `sites.read`, `sites.write` and `rules.read` (`push site` reads the site's domain rules, and fails without it).
+- The web site's domain (`ledgerly.appwrite.network`) is a manual rule made once in the Appwrite console: an API key can't create it.
 - **Who can deploy:** every merge to `main`, and anyone who can press **Run workflow**. Agents work through the owner's GitHub account, so GitHub can't tell them apart from the owner: "agents never run a deploy by hand" is a process rule (AGENTS.md).
 
 ## Function settings
