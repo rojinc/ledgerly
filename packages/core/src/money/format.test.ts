@@ -96,9 +96,13 @@ describe('centsToDecimal (#50)', () => {
 describe('netToDecimal (#50)', () => {
   it('writes a net past the amount cap, but only an exact integer', () => {
     expect(() => centsToDecimal(-2 * MAX_AMOUNT_CENTS, 'AUD')).toThrow()
-    expect(netToDecimal(-2 * MAX_AMOUNT_CENTS, 'JPY')).toBe(String(-2 * MAX_AMOUNT_CENTS))
+    expect(netToDecimal(-2 * MAX_AMOUNT_CENTS, 'JPY')).toBe('-20000000000')
     expect(netToDecimal(-1230, 'AUD')).toBe('-12.30')
-    expect(() => netToDecimal(1.5, 'AUD')).toThrow(RangeError)
-    expect(() => netToDecimal(Number.MAX_SAFE_INTEGER + 1, 'AUD')).toThrow(RangeError)
+    expect(netToDecimal(1234, 'KWD')).toBe('1.234')
+    expect(netToDecimal(Number.MAX_SAFE_INTEGER, 'JPY')).toBe('9007199254740991')
+    expect(netToDecimal(Number.MIN_SAFE_INTEGER, 'JPY')).toBe('-9007199254740991')
+    for (const bad of [1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => netToDecimal(bad, 'AUD')).toThrow(RangeError)
+    }
   })
 })
