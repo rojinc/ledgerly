@@ -23,7 +23,7 @@ import { useGroups } from '../groups/use-groups'
 const PATH = '/account/delete'
 
 /** What the screen says to a refusal: plain words, and whether signing in again is the way on. */
-type Refusal = { message: string; groupIds?: string[]; signIn?: boolean; timer?: boolean }
+type Refusal = { message: string; groupIds?: string[]; signIn?: boolean }
 
 /**
  * When a sign-in detail changed at `passwordUpdate` is old enough to delete, in words. A time not
@@ -63,9 +63,9 @@ export function refusalOf(error: Err['error'], passwordUpdate?: string): Refusal
       groupIds: details.groupIds,
     }
   }
-  if (error.code === 'CONFLICT') {
-    return { message: 'You have a timer running. Stop or void it first.', timer: true }
-  }
+  // Any other refusal in the function's own words: CONFLICT alone means a running timer, a
+  // statement being finalized, or a write that raced (functions-api.md#account), and only the
+  // message tells them apart.
   return { message: error.message }
 }
 
@@ -371,11 +371,6 @@ function RefusalNotice({
               )
             })}
           </ul>
-        )}
-        {refusal.timer && (
-          <Link to="/today" className="self-start underline underline-offset-4">
-            Go to Today
-          </Link>
         )}
         {refusal.signIn && (
           <Button type="button" variant="outline" className="self-start" onClick={onSignIn}>

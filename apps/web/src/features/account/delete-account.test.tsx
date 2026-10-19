@@ -410,13 +410,16 @@ describe('DeleteAccountPage', () => {
     ])
   })
 
-  it('points to Today when a timer is running', async () => {
-    call.mockResolvedValue(refused('CONFLICT', 'Timer running'))
+  it.each([
+    'A timer is running. Stop or void it first.',
+    'A statement is being finalized. Finish it first.',
+    'Something else changed this at the same time. Try again.',
+  ])('shows each CONFLICT in the function’s words: %s', async (message) => {
+    call.mockResolvedValue(refused('CONFLICT', message))
     renderPage()
     confirm()
     submit()
-    expect((await screen.findByRole('alert')).textContent).toMatch(/timer running/)
-    expect(screen.getByRole('link', { name: 'Go to Today' }).getAttribute('href')).toBe('/today')
+    expect((await screen.findByRole('alert')).textContent).toContain(message)
   })
 
   it('shows any other refusal as the function words it', async () => {
