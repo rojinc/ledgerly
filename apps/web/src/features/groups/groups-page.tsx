@@ -6,7 +6,7 @@ import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { PendingGroups, TYPE_LABEL } from './pending-groups'
-import { useGroupName } from './use-group-name'
+import { useGroupName, useSortedByName } from './use-group-name'
 import { useBalances, useGroups } from './use-groups'
 
 export function GroupsPage() {
@@ -68,10 +68,11 @@ export function GroupsPage() {
 }
 
 function GroupList({ groups }: { groups: Groups[] }) {
+  const sorted = useSortedByName(groups)
   if (groups.length === 0) return null
   return (
     <ul className="divide-y divide-border rounded-md border border-border">
-      {groups.map((group) => (
+      {sorted.map((group) => (
         <GroupRow key={group.$id} group={group} />
       ))}
     </ul>
