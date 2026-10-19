@@ -191,9 +191,11 @@ export async function generateOccurrences(
     if (outOfTime()) break
     const last = index === batches.length - 1
     const reached = batch.at(-1)?.date ?? to
+    // Never back, between batches either: after an end before yesterday, `to` is earlier than
+    // `after`, and a rerun from there would reach past occurrences that wait for the user.
     const progress = last
       ? done
-      : { generatedThrough: compareDates(reached, to) < 0 ? reached : to }
+      : { generatedThrough: laterOf(compareDates(reached, to) < 0 ? reached : to, after) }
     await withTransaction(db, async (tx) => {
       await guardSchedule(tx, db, seen, progress)
       if (batch.length === 0) return

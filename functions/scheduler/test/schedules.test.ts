@@ -1103,6 +1103,30 @@ describe('POST /schedules/{id}/end', () => {
     expect(scheduleRow(services)).toMatchObject({ generatedThrough: '2026-10-18', nextRunAt: null })
   })
 
+  it('keeps past occurrences when the run after an end before today loses a race partway', async () => {
+    const services = seeded()
+    // Every day from 1 October, so the run after the end has two batches of deletes.
+    const daily = {
+      ...thursdays,
+      rrule: 'FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR,SA,SU',
+      horizonDays: 120,
+    }
+    await create(services, daily)
+    const past = occurrences(services)
+      .filter((row) => row.date < '2026-10-19')
+      .map((row) => row.date)
+    // The end's own deletes time out, so the cron run does them; its second batch loses a race,
+    // and it runs again.
+    const timeout = failCommit(services, 2)
+    await failure(services, 'POST', `/schedules/${ID}/end`, { body: { endsOn: '2026-10-05' } })
+    timeout.mockRestore()
+    failCommit(services, 2, lostRace)
+    await runCron(services)
+    vi.restoreAllMocks()
+    // From 6 to 18 October they wait for the user; only the ones from today on are gone.
+    expect(occurrences(services).map((row) => row.date)).toEqual(past)
+  })
+
   it('carries on from today when an end long past is moved later', async () => {
     const services = seeded()
     await create(services, { ...thursdays, startsOn: '2026-09-03', endsOn: '2026-09-20' })
