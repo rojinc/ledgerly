@@ -21,8 +21,8 @@ export type Tx = {
   id: string
   /**
    * Stages the writes in one request, after every earlier `write` call has staged, so writes
-   * apply in call order. If any of these rows changes outside the transaction after this, the
-   * commit fails with 409. Always await it (Biome's `noFloatingPromises` checks). As a safety
+   * apply in call order. Staging an update or delete of a row that is gone fails with 409, and
+   * if any of these rows changes outside the transaction after this, the commit fails with 409. Always await it (Biome's `noFloatingPromises` checks). As a safety
    * net, `withTransaction` waits for every staging before it commits, and if one failed it
    * rolls back and throws that error, even if the route caught it. Once `work` has resolved,
    * `write` stages nothing and throws.
@@ -32,8 +32,8 @@ export type Tx = {
 
 /**
  * Runs `work` in a TablesDB transaction and commits what it staged. If `work` throws, the
- * transaction is rolled back and the error rethrown. A commit conflict (409) is rethrown for
- * the route to retry. One transaction holds at most MAX_OPS_PER_DB_TRANSACTION writes
+ * transaction is rolled back and the error rethrown. A conflict (409), at the commit or when a
+ * write to a row deleted meanwhile is staged, is rethrown for the route to retry. One transaction holds at most MAX_OPS_PER_DB_TRANSACTION writes
  * (scaling.md).
  *
  * To guard a row, for example never to change a locked transaction (I-7): stage the write to

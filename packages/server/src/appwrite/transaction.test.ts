@@ -330,6 +330,23 @@ describe('withTransaction', () => {
     ])
   })
 
+  it('keeps any other 404 at staging, such as an expired transaction, as it is', async () => {
+    const db = seeded()
+    vi.spyOn(db, 'createOperations').mockRejectedValueOnce(
+      new AppwriteException('Transaction not found.', 404, 'transaction_not_found'),
+    )
+    const edit = withTransaction(db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't1',
+        data: { description: 'Rent (Oct)' },
+      }),
+    )
+    await expect(edit).rejects.toMatchObject({ code: 404, type: 'transaction_not_found' })
+    expect(db.rows('transactions')[0]).toMatchObject({ description: 'Rent' })
+  })
+
   it('does not see a change made before the write was staged, so checks come after staging', async () => {
     const db = seeded()
     await withTransaction(db, async (tx) => {

@@ -241,15 +241,15 @@ describe('FakeDb transactions', () => {
     await expect(
       commit(db, [
         op('create', 'activity', 'a2', rowsFor.activity()),
-        // Missing its required columns, which Appwrite checks when it applies the row.
+        // Missing its required columns: assumed to fail at the commit, as the fake does.
         op('create', 'activity', 'a3', {}),
       ]),
     ).rejects.toMatchObject({ code: 400, type: 'document_invalid_structure' })
     expect(db.rows('activity').map((row) => row.$id)).toEqual(['a1'])
   })
 
-  // Checked on ledgerly-dev (#238): a row deleted before an update or delete of it is staged
-  // fails the staging, not the commit.
+  // Checked on ledgerly-dev for an update (#238): a row deleted before the update is staged
+  // fails the staging, not the commit. A delete, and staging nothing, are assumed the same.
   describe('staging an update or delete of a row that is not there', () => {
     it.each([
       ['an update', op('update', 'activity', 'gone', { summary: 'x' })],
