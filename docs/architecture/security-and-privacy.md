@@ -67,6 +67,8 @@ Rules, in `packages/core/src/export/`:
 - **RFC 4180:** CRLF line ends, a UTF-8 byte order mark, quotes doubled, and quotes around any field holding `,`, `"`, CR or LF.
 - **Spreadsheet formulas:** a text cell starting with `=`, `+`, `-`, `@` (or their full-width forms `＝＋－＠`), tab or CR gets a leading `'`, so opening the file never runs a formula someone typed. Names, descriptions, categories and profile values are all text cells; money cells never get one.
 - Any member can export a group they can read, viewers and people who moved out included. Nothing is written or uploaded.
+- **What a spreadsheet does on opening** is outside the file: Excel may drop the leading zeros of a BSB or account number, show an ABN in scientific notation, read a text like `1/2` as a date, or read `12.30` wrongly where the decimal separator is a comma. The values in the file are exact; CSV has no way to mark a column as text.
+- **Your data** is two files, offered as two links once both are made, since browsers don't reliably allow two downloads from one click.
 
 ## Retention
 
