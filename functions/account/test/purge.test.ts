@@ -74,9 +74,9 @@ function world(moreActivity = 0) {
       transactions: [
         posted('t1', 'me', 3000, { receiptFileIds: ['r1'] }),
         posted('t2', 'me', 5000, { kind: 'income' }),
-        posted('t3', 'h2', 9000, { receiptFileIds: ['r2', 'r3', 'r4'] }),
+        posted('t3', 'h2', 9000, { receiptFileIds: ['r2', 'r3', 'r4', 'r5', 'r6'] }),
         posted('t4', 'h2', 600, { statementId: 'st1' }),
-        posted('t9', 'h1', 4000, { receiptFileIds: ['r9'] }),
+        posted('t9', 'h1', 4000, { receiptFileIds: ['r9', 'r3', 'r5'] }),
       ],
       shares: [
         share('t1', 'me', 'p1', 3000, 3000),
@@ -94,6 +94,15 @@ function world(moreActivity = 0) {
         { $id: 'me', peopleJson: '[]' },
         { $id: 'h2', peopleJson: '[]' },
         { $id: 'h1', peopleJson: '[]' },
+      ],
+      // r6 has none: attached before the ledger kept them.
+      receiptFiles: [
+        receipt('r1', ['t1']),
+        receipt('r2', ['t3']),
+        receipt('r3', ['t3', 't9']),
+        receipt('r4', ['t3']),
+        receipt('r5', ['t3', 't9']),
+        receipt('r9', ['t9']),
       ],
       schedules: [schedule('sMe', 'me', 'p1', ['p1']), schedule('sH2', 'h2', 'p1', ['p1', 'pKim'])],
       statements: [
@@ -120,6 +129,9 @@ function world(moreActivity = 0) {
   services.files.upload('receipts', 'r3', [team('h1')])
   // Not exactly the team's read.
   services.files.upload('receipts', 'r4', [team('h2'), 'delete("user:u1")'])
+  // Attached in h1 and h2 at once (#43's accepted race), h2's permissions last.
+  services.files.upload('receipts', 'r5', [team('h2')])
+  services.files.upload('receipts', 'r6', [team('h2')])
   services.files.upload('receipts', 'r9', [team('h1')])
   services.files.upload('statements', 'st1', [team('h2')])
   services.files.upload('statements', 'st2', [team('h2')])
@@ -129,6 +141,22 @@ function world(moreActivity = 0) {
 
 function identity(id: string, key: string, personId: string) {
   return { $id: id, key, type: key.split(':')[0], personId, verified: false, verifiedAt: null }
+}
+
+function receipt(fileId: string, transactionIds: string[]) {
+  return { $id: fileId, transactionIds, detachedAt: null, deletingAt: null }
+}
+
+// Ten receipts, readable by exactly h2's team, each listed only by `transactionId`.
+async function tenReceipts(services: Fakes, transactionId: string) {
+  const fileIds = Array.from({ length: 10 }, (_, n) => `${transactionId}-f${n}`)
+  await insert(
+    services,
+    'receiptFiles',
+    fileIds.map((fileId) => receipt(fileId, [transactionId])),
+  )
+  for (const fileId of fileIds) services.files.upload('receipts', fileId, [team('h2')])
+  return fileIds
 }
 
 function posted(id: string, groupId: string, totalCents: number, extra: object = {}) {
@@ -248,6 +276,21 @@ function leftOf(services: Fakes, groupIds: string[]) {
   )
 }
 
+// The writes each database transaction staged, as `tableId/rowId`, in the order they began.
+function stagedByTransaction(services: Fakes): Map<string, string[]> {
+  const staged = new Map<string, string[]>()
+  const stage = services.db.createOperations.bind(services.db)
+  vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+    const writes = params.operations as Array<{ tableId: string; rowId: string }>
+    staged.set(params.transactionId, [
+      ...(staged.get(params.transactionId) ?? []),
+      ...writes.map(({ tableId, rowId }) => `${tableId}/${rowId}`),
+    ])
+    return stage(params)
+  })
+  return staged
+}
+
 function deleteRow(services: Fakes, tableId: TableId, rowId: string) {
   return withTransaction(services.db, (tx) => tx.write({ action: 'delete', tableId, rowId }))
 }
@@ -265,10 +308,13 @@ describe('POST /delete: purging a group nobody else is in', () => {
     expect(leftOf(services, PURGED)).toEqual([])
     expect(teamOf(services, 'me')).toBeUndefined()
     expect(teamOf(services, 'h2')).toBeUndefined()
-    // Only files readable by exactly the purged group's team go.
+    // Only files readable by exactly the purged group's team go, and a receipt only when its
+    // receiptFiles row lists no other group's transaction.
     expect(services.files.ids().sort()).toEqual([
       'receipts/r3',
       'receipts/r4',
+      'receipts/r5',
+      'receipts/r6',
       'receipts/r9',
       'statements/st9',
     ])
@@ -329,15 +375,10 @@ describe('POST /delete: purging a group nobody else is in', () => {
         Array.from({ length: 30 }, (_, position) => item(`tBig${n}`, position, 150)),
       )
     }
-    const batches: string[][] = []
-    const stage = services.db.createOperations.bind(services.db)
-    vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
-      const writes = params.operations as Array<{ tableId: string; rowId: string }>
-      batches.push(writes.map(({ tableId, rowId }) => `${tableId}/${rowId}`))
-      return stage(params)
-    })
+    const staged = stagedByTransaction(services)
     expect((await remove(services)).finished).toBe(true)
     expect(leftOf(services, PURGED)).toEqual([])
+    const batches = [...staged.values()]
     expect(batches.every((writes) => writes.length <= 90)).toBe(true)
     const first = batches.findIndex((writes) => writes.includes('balances/h2'))
     expect(batches[first]?.slice(0, 2)).toEqual(['groups/h2', 'balances/h2'])
@@ -490,6 +531,147 @@ describe('POST /delete: purging a group nobody else is in', () => {
   })
 })
 
+describe('POST /delete: a purged group’s receipts (#248)', () => {
+  const detached = { transactionIds: null, detachedAt: DELETED_AT, deletingAt: null }
+
+  it('deletes a receipt only its transactions list, and keeps its receiptFiles row, detached', async () => {
+    const services = world()
+    expect((await remove(services)).finished).toBe(true)
+    expect(services.files.ids()).not.toContain('receipts/r1')
+    expect(services.files.ids()).not.toContain('receipts/r2')
+    // Taken off with its transaction; scheduler step 5 deletes the row later.
+    expect(rowOf(services, 'receiptFiles', 'r1')).toMatchObject(detached)
+    expect(rowOf(services, 'receiptFiles', 'r2')).toMatchObject(detached)
+  })
+
+  it('keeps a receipt another group’s transaction also lists, which then lists only that one', async () => {
+    const services = world()
+    expect((await remove(services)).finished).toBe(true)
+    // Readable by exactly h2's team, but h1's t9 lists it too.
+    expect(services.files.ids()).toContain('receipts/r5')
+    expect(rowOf(services, 'receiptFiles', 'r5')).toMatchObject({
+      transactionIds: ['t9'],
+      detachedAt: null,
+      deletingAt: null,
+    })
+    expect(rowOf(services, 'receiptFiles', 'r3')).toMatchObject({ transactionIds: ['t9'] })
+  })
+
+  it('keeps a receipt with no receiptFiles row, which may be listed elsewhere', async () => {
+    const services = world()
+    expect((await remove(services)).finished).toBe(true)
+    expect(services.files.ids()).toContain('receipts/r6')
+    // Taken off as the ledger takes off a file with no row: it gets one that lists nothing.
+    expect(rowOf(services, 'receiptFiles', 'r6')).toMatchObject(detached)
+  })
+
+  it('keeps a receipt readable by more than the group’s team, though only its transactions list it', async () => {
+    const services = world()
+    expect((await remove(services)).finished).toBe(true)
+    expect(services.files.ids()).toContain('receipts/r4')
+    expect(rowOf(services, 'receiptFiles', 'r4')).toMatchObject(detached)
+  })
+
+  it('reads the receipt rows 100 file IDs at a time, as Appwrite allows', async () => {
+    const services = world()
+    const ids = Array.from({ length: 12 }, (_, n) => `tMany${String(n).padStart(2, '0')}`)
+    await insert(
+      services,
+      'transactions',
+      ids.map((id) => posted(id, 'h2', 1000)),
+    )
+    const fileIds: string[] = []
+    for (const id of ids) {
+      const listed = await tenReceipts(services, id)
+      await setRow(services, 'transactions', id, { receiptFileIds: listed })
+      fileIds.push(...listed)
+    }
+    const listRows = vi.spyOn(services.db, 'listRows')
+    expect((await remove(services)).finished).toBe(true)
+    const sizes = listRows.mock.calls.flatMap(([params]) =>
+      (params.queries ?? [])
+        .map((query) => JSON.parse(query) as { method: string; attribute?: string; values: [] })
+        .filter((query) => query.method === 'equal' && query.attribute === '$id')
+        .map((query) => query.values.length),
+    )
+    expect(sizes.length).toBeGreaterThan(0)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(100)
+    // 125 of h2's receipts: every one of these went, and its row is detached.
+    expect(services.files.ids().filter((id) => id.includes('tMany'))).toEqual([])
+    for (const fileId of fileIds) {
+      expect(rowOf(services, 'receiptFiles', fileId)).toMatchObject(detached)
+    }
+  })
+
+  it('takes up to 10 receipts off with each transaction, within 90 writes with the guard', async () => {
+    const services = world()
+    const people = Array.from({ length: 15 }, (_, n) => `pWide${n}`)
+    const ids = Array.from({ length: 6 }, (_, n) => `tWide${n}`)
+    await insert(
+      services,
+      'transactions',
+      ids.map((id) => posted(id, 'h2', 1500)),
+    )
+    const fileIds = new Map<string, string[]>()
+    for (const id of ids) {
+      fileIds.set(id, await tenReceipts(services, id))
+      await setRow(services, 'transactions', id, { receiptFileIds: fileIds.get(id) })
+      await insert(
+        services,
+        'shares',
+        people.map((personId) => share(id, 'h2', personId, 100, 100)),
+      )
+    }
+    // The largest a transaction can be: 15 people, 30 items and 10 receipts.
+    await insert(
+      services,
+      'items',
+      Array.from({ length: 30 }, (_, position) => item('tWide5', position, 50)),
+    )
+    const staged = stagedByTransaction(services)
+    expect((await remove(services)).finished).toBe(true)
+    const batches = [...staged.values()]
+    expect(Math.max(...batches.map((writes) => writes.length))).toBeLessThanOrEqual(90)
+    // Shares, items and receipt files have IDs `<transactionId>-…` here.
+    for (const id of ids) {
+      const holding = batches.filter((writes) =>
+        writes.some((write) => write === `transactions/${id}` || write.includes(`/${id}-`)),
+      )
+      expect(holding).toHaveLength(1)
+      expect(holding[0]?.[0]).toBe('groups/h2')
+      expect(holding[0]).toEqual(
+        expect.arrayContaining([
+          `transactions/${id}`,
+          ...people.map((personId) => `shares/${id}-${personId}`),
+          ...(fileIds.get(id) ?? []).map((fileId) => `receiptFiles/${fileId}`),
+        ]),
+      )
+    }
+    expect(leftOf(services, PURGED)).toEqual([])
+    for (const fileId of [...fileIds.values()].flat()) {
+      expect(rowOf(services, 'receiptFiles', fileId)).toMatchObject(detached)
+    }
+  })
+
+  it('leaves a group to the next run when a receipt row changes meanwhile, as by an attach elsewhere', async () => {
+    const services = world()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"receiptFiles"'),
+      () => setRow(services, 'receiptFiles', 'r5', { transactionIds: ['t3', 't9', 'tElsewhere'] }),
+    )
+    expect((await remove(services)).finished).toBe(false)
+    expect(rowOf(services, 'transactions', 't3')).toBeDefined()
+    vi.restoreAllMocks()
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'receiptFiles', 'r5')).toMatchObject({
+      transactionIds: ['t9', 'tElsewhere'],
+      detachedAt: null,
+    })
+    expect(leftOf(services, PURGED)).toEqual([])
+  })
+})
+
 describe('POST /delete: a purge cut off by a crash, then run again', () => {
   // Groups go in $id order: h1 (kept), h2, then me. h2's rows take three batches.
   const staging =
@@ -506,6 +688,7 @@ describe('POST /delete: a purge cut off by a crash, then run again', () => {
     ['deleting the team', (services) => crashOnCall(services.files, 'getFile')],
     ['a file', (services) => crashOnCall(services.files, 'deleteFile', () => true, 2)],
     ['the files', staging('"tableId":"balances","rowId":"h2"')],
+    ['taking a batch’s receipts off', staging('"tableId":"receiptFiles"')],
     ['a batch of rows', staging('aMany', 2)],
     ['two batches of rows', staging('aMany', 3)],
     ['the rows', staging('"rowId":"h2-p3"')],
