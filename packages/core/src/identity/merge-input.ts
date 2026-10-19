@@ -6,7 +6,7 @@ import {
   type Share,
   type ShareInput,
 } from '../ledger/build-shares'
-import { byPersonId, type Part } from '../ledger/split-amount'
+import { byPersonId, type Part, type SplitContext, splitAmount } from '../ledger/split-amount'
 import { everyPersonId, type TransactionTemplate } from '../schemas/ledger'
 import type { SplitSpec } from '../schemas/split'
 
@@ -101,21 +101,36 @@ const DEFAULT_SPLIT_KINDS: readonly TransactionKind[] = ['expense', 'bill', 'loa
 
 /**
  * A posted transaction, for `mergeInput` to check that an edit after the merge keeps every net:
- * its date and total, its shares (P's still on P), and its group as step 2 left it.
+ * its date and total, its shares (P's still on P), its group as step 2 left it, and who pays
+ * where the input names no payers (whoever posted it, as an edit has it).
  */
 export type Posted = {
   date: LocalDate
   totalCents: number
   shares: readonly Pick<Share, 'personId' | 'receivedCents'>[]
   ctx: LedgerContext
+  payer: string
 }
+
+const addCents = (a: Part, b: Part) => ({ ...a, cents: a.cents + b.cents })
 
 /** What each person received, P's added to U's, by personId: the parts an edit must keep. */
 function mergedParts(posted: Posted, merge: Merge): Part[] {
   const parts = posted.shares
     .filter((share) => share.receivedCents !== 0)
     .map((share) => ({ personId: share.personId, cents: share.receivedCents }))
-  return mergeEntries(parts, merge, (a, b) => ({ ...a, cents: a.cents + b.cents })).sort(byPersonId)
+  return mergeEntries(parts, merge, addCents).sort(byPersonId)
+}
+
+/** Whether two lists give everyone the same part, whatever their order; a 0 is no part. */
+function sameParts(a: readonly Part[], b: readonly Part[]): boolean {
+  const key = (parts: readonly Part[]) =>
+    parts
+      .filter((part) => part.cents !== 0)
+      .map((part) => `${part.personId} ${part.cents}`)
+      .sort()
+      .join()
+  return key(a) === key(b)
 }
 
 /** Whether `input`, planned again as an edit would plan it, gives exactly `parts`. */
@@ -123,19 +138,43 @@ function plansTo(input: Named, kind: TransactionKind, posted: Posted, parts: rea
   try {
     const { shares } = buildShares(
       { ...input, kind, date: posted.date, totalCents: posted.totalCents } as ShareInput,
-      posted.ctx,
+      { ...posted.ctx, callerPersonId: posted.payer },
     )
-    const received = shares.filter((share) => share.receivedCents !== 0)
-    return (
-      received.length === parts.length &&
-      received.every((share, i) => {
-        const part = parts[i] as Part
-        return share.personId === part.personId && share.receivedCents === part.cents
-      })
+    return sameParts(
+      shares.map((share) => ({ personId: share.personId, cents: share.receivedCents })),
+      parts,
     )
   } catch {
     return false
   }
+}
+
+/**
+ * An item's split in a posted transaction, with P renamed to U (lead, #242). Item splits are
+ * explicit, so where the renamed split wouldn't give the item's parts again (P's and U's added
+ * up: an `equal` or `weights` split's leftover cent can fall elsewhere once two entries are one),
+ * it's written out as `exact` from those parts. One that can't be planned now (a `days` split
+ * naming P, whose member row step 2 removed) is renamed only.
+ */
+export function mergePostedSplit(
+  split: SplitSpec,
+  merge: Merge,
+  amountCents: number,
+  ctx: SplitContext,
+): SplitSpec {
+  const renamed = mergeSplit(split, merge)
+  let parts: Part[]
+  try {
+    parts = mergeEntries(splitAmount(split, amountCents, ctx), merge, addCents)
+  } catch {
+    return renamed
+  }
+  try {
+    if (sameParts(splitAmount(renamed, amountCents, ctx), parts)) return renamed
+  } catch {
+    // The renamed split can't be planned (weights past MAX_WEIGHT): the parts still stand.
+  }
+  return { mode: 'exact', amounts: parts }
 }
 
 /**
@@ -167,7 +206,14 @@ export function mergeInput<T extends Named>(
     }))
   }
   if (input.split) result.split = mergeSplit(input.split, merge)
-  if (posted && !input.items && DEFAULT_SPLIT_KINDS.includes(kind)) {
+  // Only a row that is P's: its input names P, or P has a share in it (lead, #242).
+  if (
+    posted &&
+    !input.items &&
+    DEFAULT_SPLIT_KINDS.includes(kind) &&
+    (everyPersonId(input).includes(merge.from) ||
+      posted.shares.some((share) => share.personId === merge.from))
+  ) {
     writeOut(result, kind, merge, posted)
   }
   if (input.items) {
@@ -190,7 +236,8 @@ export function mergeInput<T extends Named>(
       })),
     }
   }
-  return { input: result, voided: fromItselfToItself(result, kind, merge.into) }
+  const lender = input.payers?.length ? undefined : posted?.payer
+  return { input: result, voided: fromItselfToItself(result, kind, merge.into, lender) }
 }
 
 /** Writes `input`'s split out where the renamed input wouldn't plan the parts again. */
@@ -211,14 +258,25 @@ function writeOut(input: Named, kind: TransactionKind, merge: Merge, posted: Pos
 
 /**
  * A payment or loan from U to U, which moves no money between two people any more. Only the
- * people an input names count, so a loan counts only with its payers and its split both stated:
- * with no split, everyone but the lender borrows (ledger.md#default-split), and with no payers,
- * whoever posts it lends.
+ * people an input names count, so a loan counts only with its split stated (with no split,
+ * everyone but the lender borrows, ledger.md#default-split) and a lender known: its payers, or,
+ * with none, `lender`, whoever posted it. An unposted loan without payers is lent by whoever
+ * posts it, so it never counts.
  */
-function fromItselfToItself(input: Named, kind: TransactionKind, into: string): boolean {
+function fromItselfToItself(
+  input: Named,
+  kind: TransactionKind,
+  into: string,
+  lender: string | undefined,
+): boolean {
   if (kind === 'payment') {
     return input.payment?.fromPersonId === into && input.payment.toPersonId === into
   }
-  if (kind !== 'loan' || !input.payers?.length || !input.split) return false
-  return everyPersonId(input).every((personId) => personId === into)
+  const lenders = input.payers?.length
+    ? input.payers.map((payer) => payer.personId)
+    : lender === undefined
+      ? []
+      : [lender]
+  if (kind !== 'loan' || lenders.length === 0 || !input.split) return false
+  return [...lenders, ...everyPersonId(input)].every((personId) => personId === into)
 }

@@ -3,7 +3,7 @@ import type { LocalDate } from '../dates/local-date'
 import { buildShares } from '../ledger/build-shares'
 import { type TransactionTemplate, transactionTemplateSchema } from '../schemas/ledger'
 import { type SplitSpec, splitSpecSchema } from '../schemas/split'
-import { mergeInput, mergeSplit } from './merge-input'
+import { mergeInput, mergePostedSplit, mergeSplit } from './merge-input'
 
 // P is merged into U; X and Y are other people.
 const merge = { from: 'P', into: 'U' }
@@ -33,13 +33,17 @@ function house(
   }
 }
 
-/** A posted row dated 1 October, with what its shares gave each person as [person, cents]. */
-function posted(parts: [string, number][], ctx = house()) {
+/**
+ * A posted row dated 1 October, posted by X, with what its shares gave each person as
+ * [person, cents].
+ */
+function posted(parts: [string, number][], ctx = house(), payer = 'X') {
   return {
     date: '2026-10-01' as LocalDate,
     totalCents: parts.reduce((sum, [, cents]) => sum + cents, 0),
     shares: parts.map(([personId, receivedCents]) => ({ personId, receivedCents })),
     ctx,
+    payer,
   }
 }
 
@@ -321,6 +325,13 @@ describe('mergeInput', () => {
     })
     // U lent to P alone: a loan from U to U, voided.
     expect(mergeInput(lentByU, 'loan', merge, posted([['P', 9000]])).voided).toBe(true)
+    // So is one that stores no payers, posted by U, who lent it.
+    const posting: TransactionTemplate = {}
+    const byU = posted([['P', 9000]], house(), 'U')
+    expect(mergeInput(posting, 'loan', merge, byU)).toEqual({
+      input: { split: { mode: 'equal', personIds: ['U'] } },
+      voided: true,
+    })
   })
 
   it('writes out as exact a split whose leftover cent would fall elsewhere once merged', () => {
@@ -384,29 +395,14 @@ describe('mergeInput', () => {
       ]),
     )
     // P lived there until March, and U came on 16 September. U's kept row starts in January, so
-    // a bill U alone had a part of would give U all of September, and so would one neither had:
-    // that one keeps X alone, as `equal`.
-    const fromJanuary = house([
-      ['U', JAN, null],
-      ['X', JAN, null],
+    // a bill U alone had a part of would now give U all of September, and so would one neither
+    // had. Neither is P's, so both are left as they are (lead, #242).
+    const uFromThe16th = posted([
+      ['U', 3000],
+      ['X', 6000],
     ])
-    const uFromThe16th = posted(
-      [
-        ['U', 3000],
-        ['X', 6000],
-      ],
-      fromJanuary,
-    )
-    expect(mergeInput(byDefault, 'bill', merge, uFromThe16th).input.split).toEqual(
-      exact([
-        ['U', 3000],
-        ['X', 6000],
-      ]),
-    )
-    expect(mergeInput(byDefault, 'bill', merge, posted([['X', 9000]])).input.split).toEqual({
-      mode: 'equal',
-      personIds: ['X'],
-    })
+    expect(mergeInput(byDefault, 'bill', merge, uFromThe16th).input).toEqual(byDefault)
+    expect(mergeInput(byDefault, 'bill', merge, posted([['X', 9000]])).input).toEqual(byDefault)
   })
 
   it('keeps a split that plans the same parts once merged', () => {
@@ -476,7 +472,14 @@ describe('mergeInput', () => {
     ])
     // Unposted, or with no shares to go by: renamed only.
     expect(mergeInput(groceries, 'expense', merge).input).toEqual(groceries)
-    expect(mergeInput(groceries, 'expense', merge, posted([])).input).toEqual(groceries)
+    const namesP: TransactionTemplate = {
+      ...paidByX(9000),
+      split: { mode: 'equal', personIds: ['P', 'X'] },
+    }
+    expect(mergeInput(namesP, 'expense', merge, posted([])).input.split).toEqual({
+      mode: 'equal',
+      personIds: ['U', 'X'],
+    })
     // Items have splits of their own, and only expenses, bills and loans have a split.
     const items: TransactionTemplate = {
       items: [{ name: 'Milk', amountCents: 300, split: { mode: 'equal', personIds: ['P'] } }],
@@ -536,5 +539,49 @@ describe('mergeInput', () => {
         .reduce((sum, share) => sum + share.givenCents - share.receivedCents, 0)
     expect(net(after, ['U'])).toBe(net(before, ['P', 'U']))
     expect(net(after, ['X'])).toBe(net(before, ['X']))
+  })
+})
+
+describe('mergePostedSplit', () => {
+  const ctx = { members: house().members }
+  const equal = (...personIds: string[]): SplitSpec => ({ mode: 'equal', personIds })
+
+  it('writes an item split out as exact where its leftover cent would fall elsewhere', () => {
+    // 1.00 split equally by A, P and U: A 34, P 33, U 33. As weights A 1, U 2, A would get 33.
+    expect(mergePostedSplit(equal('A', 'P', 'U'), merge, 100, ctx)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'A', cents: 34 },
+        { personId: 'U', cents: 66 },
+      ],
+    })
+    // Where it doesn't, the renamed split stays, and so does a split without P.
+    expect(mergePostedSplit(equal('P', 'U', 'X'), merge, 900, ctx)).toEqual(
+      mergeSplit(equal('P', 'U', 'X'), merge),
+    )
+    expect(mergePostedSplit(equal('U', 'X'), merge, 100, ctx)).toEqual(equal('U', 'X'))
+  })
+
+  it('writes out as exact weights the rename takes past MAX_WEIGHT', () => {
+    const heavy: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'P', weight: 6000 },
+        { personId: 'U', weight: 6000 },
+      ],
+    }
+    expect(mergePostedSplit(heavy, merge, 300, ctx)).toEqual({
+      mode: 'exact',
+      amounts: [{ personId: 'U', cents: 300 }],
+    })
+  })
+
+  it('renames only a split it can’t plan now: days naming P, whose row is gone', () => {
+    const days: SplitSpec = { mode: 'days', personIds: ['P', 'X'] }
+    const september = { start: '2026-09-01' as LocalDate, end: '2026-09-30' as LocalDate }
+    expect(mergePostedSplit(days, merge, 900, { ...ctx, period: september })).toEqual({
+      mode: 'days',
+      personIds: ['U', 'X'],
+    })
   })
 })

@@ -388,6 +388,46 @@ describe('moveMembers (step 2)', () => {
       await moveMembers(services, 'u1', 'pP', 'pU', FAR)
       expect(services.teams.members('g1')).toEqual([])
     })
+
+    it('doesn’t count a group U left just after joining it as one U joined', async () => {
+      // U had no row in g1: P's row becomes U's, and U leaves it on their own right after.
+      const services = fakes(
+        { persons: [U, P], members: [placeholderRow('m1', 'g1', 'pP', CREATED)] },
+        { teams: { g1: [] } },
+      )
+      const commit = services.db.updateTransaction.bind(services.db)
+      let done = false
+      vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+        const result = await commit(params)
+        if (!done && params.commit) {
+          done = true
+          await withTransaction(services.db, (tx) =>
+            tx.write(
+              { action: 'update', tableId: 'members', rowId: 'm1', data: { status: 'left' } },
+              {
+                action: 'create',
+                tableId: 'activity',
+                rowId: 'aLeft',
+                data: {
+                  groupId: 'g1',
+                  actorPersonId: 'pU',
+                  action: 'member.left',
+                  summary: 'Sam Lee left',
+                  at: new Date(Date.now() + 1000).toISOString(),
+                },
+              },
+            ),
+          )
+        }
+        return result
+      })
+      // So it isn't in linkedGroupIds.
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toMatchObject({
+        joined: [],
+        done: true,
+      })
+      expect(services.teams.members('g1')).toEqual([])
+    })
   })
 
   it('starts no row once the deadline has passed', async () => {

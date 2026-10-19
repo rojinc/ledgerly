@@ -171,6 +171,95 @@ describe('moveInputs (step 3)', () => {
     })
   })
 
+  it('writes out an item split the merge would change, so an edit after it keeps every net', async () => {
+    // X paid 1.00 of milk, split equally by A, P and U: A 34, P 33, U 33.
+    const store = seed(
+      [transaction('t1', { payers: [{ personId: 'pX', cents: 100 }] }, { totalCents: 100 })],
+      {
+        items: [
+          {
+            $id: 'i1',
+            transactionId: 't1',
+            position: 0,
+            name: 'Milk',
+            quantity: 1,
+            amountCents: 100,
+            category: null,
+            splitJson: JSON.stringify({ mode: 'equal', personIds: ['pA', 'pP', 'pU'] }),
+          },
+        ],
+        shares: [
+          {
+            $id: 's1',
+            transactionId: 't1',
+            groupId: 'g1',
+            personId: 'pX',
+            givenCents: 100,
+            receivedCents: 0,
+          },
+          {
+            $id: 's2',
+            transactionId: 't1',
+            groupId: 'g1',
+            personId: 'pA',
+            givenCents: 0,
+            receivedCents: 34,
+          },
+          {
+            $id: 's3',
+            transactionId: 't1',
+            groupId: 'g1',
+            personId: 'pP',
+            givenCents: 0,
+            receivedCents: 33,
+          },
+          {
+            $id: 's4',
+            transactionId: 't1',
+            groupId: 'g1',
+            personId: 'pU',
+            givenCents: 0,
+            receivedCents: 33,
+          },
+        ],
+        members: ['pA', 'pU', 'pX'].map((personId) => ({
+          $id: `m${personId}`,
+          groupId: 'g1',
+          personId,
+          status: 'active',
+          joinedOn: '2026-01-01',
+          leftOn: null,
+        })),
+      },
+    )
+    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    await moveShares(store, 'pP', 'pU', new Set(), FAR)
+    // As weights A 1, U 2, A would get 33.
+    const split = JSON.parse(store.rows('items')[0]?.splitJson as string)
+    expect(split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pA', cents: 34 },
+        { personId: 'pU', cents: 66 },
+      ],
+    })
+    const members = ['pA', 'pU', 'pX'].map((personId) => ({
+      personId,
+      joinedOn: '2026-01-01' as LocalDate,
+      leftOn: null,
+    }))
+    const replanned = buildShares(
+      {
+        ...input(store, 't1'),
+        kind: 'expense',
+        date: '2026-10-01' as LocalDate,
+        items: [{ name: 'Milk', amountCents: 100, split }],
+      },
+      { groupType: 'house', ownerPersonId: 'pX', callerPersonId: 'pX', members },
+    ).shares
+    expect(netsFromShares(replanned)).toEqual(netsFromShares(store.rows('shares') as never))
+  })
+
   it('voids a payment or loan whose two sides are now both U, as the ledger voids one', async () => {
     const store = seed(
       [
@@ -213,6 +302,39 @@ describe('moveInputs (step 3)', () => {
       ['t1', 'transaction.voided', 'pU'],
       ['t2', 'transaction.voided', 'pU'],
     ])
+  })
+
+  it('voids a posted loan with no stored payers only where U posted it, so lent it', async () => {
+    const toP = (id: string, createdBy: string) => transaction(id, {}, { kind: 'loan', createdBy })
+    const store = seed([toP('t1', 'pU'), toP('t2', 'pX')], {
+      shares: ['t1', 't2'].flatMap((transactionId) => [
+        {
+          $id: `${transactionId}p`,
+          transactionId,
+          personId: 'pP',
+          givenCents: 0,
+          receivedCents: 9000,
+        },
+      ]),
+      members: ['pU', 'pX'].map((personId) => ({
+        $id: `m${personId}`,
+        groupId: 'g1',
+        personId,
+        status: 'active',
+        joinedOn: '2026-01-01',
+        leftOn: null,
+      })),
+    })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+      rewritten: 0,
+      voided: 1,
+    })
+    expect(store.rows('transactions').map((row) => [row.$id, row.status])).toEqual([
+      ['t1', 'void'],
+      ['t2', 'posted'],
+    ])
+    // X lent it to P: its default, X's one borrower, is U now, so it stays as it was.
+    expect(input(store, 't2')).toEqual({})
   })
 
   it('never voids a loan whose borrowers come from the default split', async () => {
@@ -412,13 +534,9 @@ describe('moveInputs (step 3)', () => {
         { personId: 'pX', cents: 4000 },
       ],
     })
-    expect(input(store, 't11').split).toEqual({
-      mode: 'exact',
-      amounts: [
-        { personId: 'pU', cents: 3000 },
-        { personId: 'pX', cents: 6000 },
-      ],
-    })
+    // Not P's (no part, and not named), so left as it is, though U's kept row has changed what an
+    // edit would plan (lead, #242: only rows that name P or that P has a share in).
+    expect(input(store, 't11').split).toBeUndefined()
 
     // An edit plans each row again with the members as they are after the merge, X and U: every
     // net is the one its merged shares give.
@@ -428,7 +546,7 @@ describe('moveInputs (step 3)', () => {
       callerPersonId: 'pX',
       members,
     }
-    for (const [id, kind] of rows) {
+    for (const [id, kind] of rows.filter(([id]) => id !== 't11')) {
       const replanned = buildShares(
         { ...input(store, id), kind: kind as 'expense', date: '2026-10-01', totalCents: 9000 },
         after,
@@ -594,6 +712,42 @@ describe('moveInputs (step 3)', () => {
       perTransaction.set(params.transactionId, count + (params.operations?.length ?? 0))
     }
     for (const count of perTransaction.values()) expect(count).toBeLessThanOrEqual(MERGE_BATCH)
+  })
+
+  it('keeps a batch with a void and the balances row delete within 90 writes', async () => {
+    // t000, P paying U back, is voided: its update, two share deletes and an activity row. The
+    // 86 renames after it take one write each.
+    const rows = [
+      transaction(
+        't000',
+        { payment: { fromPersonId: 'pP', toPersonId: 'pU' } },
+        { kind: 'payment' },
+      ),
+      ...Array.from({ length: 86 }, (_, n) =>
+        transaction(`t${String(n + 1).padStart(3, '0')}`, EXPENSE),
+      ),
+    ]
+    const store = seed(rows, {
+      shares: [
+        { $id: 's1', transactionId: 't000', personId: 'pP', givenCents: 9000, receivedCents: 0 },
+        { $id: 's2', transactionId: 't000', personId: 'pU', givenCents: 0, receivedCents: 9000 },
+      ],
+      balances: [{ $id: 'g1', peopleJson: '[]' }],
+    })
+    const staged = vi.spyOn(store, 'createOperations')
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+      rewritten: 86,
+      voided: 1,
+      done: true,
+    })
+    const perTransaction = new Map<string, number>()
+    for (const [params] of staged.mock.calls) {
+      const count = perTransaction.get(params.transactionId) ?? 0
+      perTransaction.set(params.transactionId, count + (params.operations?.length ?? 0))
+    }
+    // The first: the guard, the delete, the void's 4 and 84 renames.
+    expect([...perTransaction.values()]).toEqual([MERGE_BATCH, 3])
+    expect(store.rows('balances')).toEqual([])
   })
 
   it('starts nothing once the deadline has passed, and says it isn’t done', async () => {

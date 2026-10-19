@@ -1,7 +1,12 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
-import type { LocalDate } from '@ledgerly/core/dates/local-date'
+import type { DateRange, LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Items, Schedules, Shares, Transactions } from '@ledgerly/core/generated/rows'
-import { type Merge, mergeInput, mergeSplit } from '@ledgerly/core/identity/merge-input'
+import {
+  type Merge,
+  mergeInput,
+  mergePostedSplit,
+  mergeSplit,
+} from '@ledgerly/core/identity/merge-input'
 import type { LedgerContext } from '@ledgerly/core/ledger/build-shares'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { splitSpecSchema } from '@ledgerly/core/schemas/split'
@@ -178,6 +183,8 @@ async function planRewrites(
             totalCents: row.totalCents,
             shares: shares.filter((share) => share.transactionId === row.$id),
             ctx,
+            // As an edit has it: without payers, whoever posted it pays.
+            payer: row.createdBy,
           }
         : undefined
     const input = renamed(row.inputJson, storedInputSchema, (raw) =>
@@ -197,14 +204,24 @@ async function planRewrites(
       })
       continue
     }
+    // A posted row's items must each plan the same parts after the merge (lead, #242).
+    const splitCtx =
+      ctx !== undefined && row.status === 'posted'
+        ? { members: ctx.members, period: billPeriod(row) }
+        : undefined
     const splits = items
       .filter((item) => item.transactionId === row.$id)
       .map((item) => ({
         item,
-        split: renamed(item.splitJson, splitSpecSchema, (raw) => ({
-          input: mergeSplit(raw as z.infer<typeof splitSpecSchema>, merge),
-          voided: false,
-        })),
+        split: renamed(item.splitJson, splitSpecSchema, (raw) => {
+          const split = raw as z.infer<typeof splitSpecSchema>
+          return {
+            input: splitCtx
+              ? mergePostedSplit(split, merge, item.amountCents, splitCtx)
+              : mergeSplit(split, merge),
+            voided: false,
+          }
+        }),
       }))
     if (splits.some(({ split }) => !split)) {
       skipped.push(row.$id)
@@ -247,6 +264,13 @@ async function planRewrites(
  * Undefined when the JSON can't be read, or is no longer valid once renamed (weights that add up
  * past `MAX_WEIGHT`, say): nothing invalid is ever written.
  */
+/** A bill's billing period from its stored input, for a `days` split. */
+function billPeriod(row: Transactions): DateRange | undefined {
+  const stored = storedInputSchema.safeParse(JSON.parse(row.inputJson))
+  const { periodStart, periodEnd } = (stored.success && stored.data.bill) || {}
+  return periodStart && periodEnd ? { start: periodStart, end: periodEnd } : undefined
+}
+
 function renamed(
   text: string,
   schema: z.ZodType,
@@ -295,6 +319,9 @@ function voidWrites(row: Transactions, shares: Shares[], by: string, now: Date):
   ]
 }
 
+// A batch's own writes: the group's guard, and the delete of its `balances` row.
+const OWN_WRITES = 2
+
 /**
  * Rewrites packed into batches of at most 90 writes, the group's guard and the delete of its
  * `balances` row included.
@@ -302,12 +329,12 @@ function voidWrites(row: Transactions, shares: Shares[], by: string, now: Date):
 function batches(rewrites: readonly Rewrite[]): Rewrite[][] {
   const result: Rewrite[][] = []
   let batch: Rewrite[] = []
-  let size = 2
+  let size = OWN_WRITES
   for (const rewrite of rewrites) {
     if (batch.length > 0 && size + rewrite.writes.length > MAX_OPS_PER_DB_TRANSACTION) {
       result.push(batch)
       batch = []
-      size = 2
+      size = OWN_WRITES
     }
     batch.push(rewrite)
     size += rewrite.writes.length

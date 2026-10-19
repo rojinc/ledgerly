@@ -142,8 +142,9 @@ async function memberOf(db: Db, groupId: string, personId: string): Promise<Memb
  * transaction U's own row is kept (with the earlier `joinedOn`) and P's deleted, or P's row is
  * repointed to U, with the status as in joining and `member.joined` by U. Each write carries a
  * fresh `rev`, so it's a real change that guards the row (ledger.md#concurrency) even when
- * nothing else on it changes. True if this call moved it; false if a merge running at the same
- * time did.
+ * nothing else on it changes. True if this call moved it and U is joined there; false if a merge
+ * running at the same time moved it, or a leave of U's own landed just after (so the group isn't
+ * one U joined).
  */
 async function moveMember(
   { db, teams, now }: Services,
@@ -217,6 +218,7 @@ async function moveMember(
   await addToTeam(teams, theirs.groupId, userId)
   if (!(await joinedHere(db, theirs.groupId, intoId))) {
     await removeFromTeam(teams, theirs.groupId, userId)
+    return false
   }
   return true
 }
