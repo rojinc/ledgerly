@@ -69,7 +69,7 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
       tableId: TABLES.groups,
       rowId: row.groupId,
     })
-    if (group.archivedAt || !isDue(row, group, now) || madeLate(row, group.timezone)) return false
+    if (group.archivedAt || !isDue(row, group, now) || forTheUser(row, group)) return false
     const ledger = await loadGroupLedger(db, group, schedule.createdBy)
     await withTransaction(db, (tx) =>
       postInTransaction(tx, db, {
@@ -81,11 +81,17 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
         changes: {},
         now,
         // Moved, posted or voided since it was read: run again, which reads it again.
-        ready: (staged) => isDue(staged, group, now) && !madeLate(staged, group.timezone),
+        ready: (staged) => isDue(staged, group, now) && !forTheUser(staged, group),
       }),
     )
     return true
   })
+}
+
+// Left for the user (scheduling.md#step-2-auto-post): made after its own day, or already
+// reminded to confirm it (step 3), also when `autoPost` is turned on later.
+function forTheUser(row: Transactions, group: Groups): boolean {
+  return madeLate(row, group.timezone) || row.remindedAt !== null
 }
 
 // Still `scheduled`, and its day has come in the group's time zone: a shift's once it's over,
