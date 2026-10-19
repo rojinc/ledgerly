@@ -7,14 +7,15 @@ import {
   type PersonalReport,
   reportByMonth,
 } from '@ledgerly/core/reports/personal-report'
-import type { ReactNode } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { type ReactNode, useRef } from 'react'
+import { useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { type Month, monthOf, parseMonth, shiftMonth } from '../calendar/month-grid'
 import { GroupName } from '../groups/use-group-name'
 import { useGroups } from '../groups/use-groups'
+import { GettingStarted } from '../onboarding/getting-started'
 import { useProfile } from '../profile/use-profile'
 import { useAllBalances, useMyShares } from './use-dashboard'
 
@@ -45,24 +46,23 @@ function categoryLabel(category: string): string {
 export function DashboardPage() {
   const user = useCurrentUser().data
   const groups = useGroups()
+  const heading = useRef<HTMLHeadingElement>(null)
   return (
     <div className="flex flex-col gap-8">
-      <h1 className="text-2xl font-semibold">Hi{user?.name ? `, ${user.name}` : ''}</h1>
+      <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+        Hi{user?.name ? `, ${user.name}` : ''}
+      </h1>
       {groups.data ? (
-        groups.data.length === 0 ? (
-          <p className="text-muted-foreground">
-            Nothing here yet.{' '}
-            <Link to="/groups/new-employer" className="underline underline-offset-4">
-              Add an employer
-            </Link>{' '}
-            to start.
-          </p>
-        ) : (
-          <>
-            <BalancesSection groups={groups.data} />
-            <MonthSections groups={groups.data} refetchGroups={() => groups.refetch()} />
-          </>
-        )
+        <>
+          <GettingStarted groups={groups.data} focusHeading={() => heading.current?.focus()} />
+          {/* No groups: nothing to sum yet, only the guide. */}
+          {groups.data.length > 0 && (
+            <>
+              <BalancesSection groups={groups.data} />
+              <MonthSections groups={groups.data} refetchGroups={() => groups.refetch()} />
+            </>
+          )}
+        </>
       ) : groups.isError ? (
         <div className="flex flex-col items-start gap-3">
           <p role="alert" className="text-destructive">

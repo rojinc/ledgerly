@@ -84,8 +84,10 @@ ledgerly/
 │               ├── transactions/
 │               ├── statements/
 │               ├── house/
+│               ├── onboarding/
 │               ├── people/
-│               └── profile/
+│               ├── profile/
+│               └── receipts/
 │
 └── scripts/                   small repo scripts (build functions, seed dev data)
 ```
