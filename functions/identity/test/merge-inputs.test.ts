@@ -1068,6 +1068,22 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't150', left: ['t001'] }])
   })
 
+  it('counts a row once when another run stored it past this run’s cursor', async () => {
+    // Two runs at once: the slower one's earlier `after` was written last, with the other's
+    // left row t001 kept, so the scan reads t001 again on its page.
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const stored = [{ groupId: 'g1', after: 't000', left: ['t001'] }]
+    const broken = { ...transaction('t001', {}), inputJson: '{' }
+    const store = withP([transaction('t000', RENAMED), broken], stored)
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      skipped: 1,
+      done: false,
+    })
+    // Logged when a run first left it, not again.
+    expect(warns).not.toHaveBeenCalled()
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't001', left: ['t001'] }])
+  })
+
   it('clears a row it left that has been locked or deleted since', async () => {
     const stored = [{ groupId: 'g1', after: 't002', left: ['t001', 't002'] }]
     const locked = transaction('t001', EXPENSE, { statementId: 'st1' })
