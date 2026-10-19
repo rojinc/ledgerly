@@ -11,20 +11,19 @@ import {
 
 const codePoints = (text: string) => Array.from(text, (char) => char.codePointAt(0))
 
+// No font of the PDF has these: Roboto, Noto Sans CJK or Noto Emoji.
 describe('missingGlyphs and printable', () => {
   it.each([
-    ['Chinese', '张三 Pty Ltd', '张三', '�� Pty Ltd'],
-    ['Japanese', 'カフェ', 'カフェ', '���'],
-    ['Korean', '한식당', '한식당', '���'],
     ['Hebrew', 'שלום Ltd', 'שלום', '���� Ltd'],
     ['Arabic', 'عمر', 'عمر', '���'],
     ['Thai', 'ร้าน ก', 'ร้านก', '���� �'],
-    // A surrogate pair: one character, one mark.
-    ['an emoji', 'Thanks 😀!', '😀', 'Thanks �!'],
-    // Half a pair can't be drawn either.
+    // Half a surrogate pair can't be drawn.
     ['a lone surrogate', 'a\uD83Db', '\uD83D', 'a�b'],
-    // Roboto has no tab either.
+    // No font has a tab either.
     ['a tab', 'a\tb', '\t', 'a�b'],
+    // Only what fontRuns() prints as �. Roboto has no selector or joiner, so it leaves them out.
+    ['VS16 on Thai', 'ร\u{FE0F}', 'ร', '�'],
+    ['a joiner after Thai', 'ก\u{200D}x', 'ก', '�x'],
   ])('marks %s', (_, text, missing, printed) => {
     expect(missingGlyphs(text)).toEqual(codePoints(missing))
     expect(printable(text)).toBe(printed)
@@ -36,6 +35,11 @@ describe('missingGlyphs and printable', () => {
     ['Greek', 'Αθηνά'],
     ['money and punctuation', '€12 · ₹5 · £3 – “quoted” … ¥7'],
     ['the mark itself', '�'],
+    // In Noto Sans CJK and Noto Emoji (#270).
+    ['Chinese', '张三 Pty Ltd'],
+    ['Japanese', 'カフェ'],
+    ['Korean', '한식당'],
+    ['an emoji', 'Thanks 😀!'],
     // pdfmake starts a new line there instead of drawing it.
     ['line breaks', 'Line 1\nLine 2\r\nLine 3'],
     // breakable() (server pdf/layout.ts) puts these into long words.
@@ -73,19 +77,19 @@ describe('missingGlyphs and printable', () => {
     }
   })
 
-  it('marks an accent Roboto has neither composed nor on its own', () => {
+  it('marks an accent no font has, composed or on its own', () => {
     expect(missingGlyphs('x̂')).toEqual([0x0302])
     expect(printable('x̂')).toBe('x�')
   })
 
   it('counts each time a character occurs', () => {
-    expect(missingGlyphs('张张 and 张')).toEqual([0x5f20, 0x5f20, 0x5f20])
+    expect(missingGlyphs('กก and ก')).toEqual([0x0e01, 0x0e01, 0x0e01])
   })
 })
 
 describe('the Noto tables', () => {
-  // The sizes #270 measured from each font file's cmap, with the first and last range. A server
-  // test checks each table against its file once the files are in the repo.
+  // The sizes #270 measured from each font file's cmap, with the first and last range.
+  // packages/server/src/pdf/pdf-glyphs.test.ts checks each table against its file.
   it.each([
     ['cjkRanges', cjkRanges, 2032, 44810, [0x20, 0x7e], [0x3106c, 0x3106c]],
     ['emojiRanges', emojiRanges, 162, 1512, [0x0, 0x0], [0xfe82e, 0xfe837]],
@@ -120,7 +124,7 @@ describe('the Noto tables', () => {
     expect(holders).toEqual(sequenceMarks.map(() => ['NotoEmoji']))
   })
 
-  // The web app imports this module for printable(), so starting it must not unpack them.
+  // The web app imports this module for missingGlyphs(), so starting it must not unpack them.
   it('unpacks each table on first use, once', async () => {
     vi.resetModules()
     const parse = vi.spyOn(Number, 'parseInt')
@@ -143,6 +147,8 @@ describe('fontRuns', () => {
     ['Chinese', '张三 Pty Ltd', runs(['NotoSansCJK', '张三'], ['Roboto', ' Pty Ltd'])],
     ['Japanese', '山田太郎（カタカナ）', runs(['NotoSansCJK', '山田太郎（カタカナ）'])],
     ['Korean', '김민준 Café', runs(['NotoSansCJK', '김민준'], ['Roboto', ' Café'])],
+    // Roboto has no Ṣ, but draws it from S + U+0323, as printable() did (#269).
+    ['a letter Roboto draws from its parts', 'Ṣàdé', runs(['Roboto', 'S\u{323}àdé'])],
     ['an emoji', 'Thanks 😀', runs(['Roboto', 'Thanks '], ['NotoEmoji', '😀'])],
     ['a flag', 'Sydney 🇦🇺', runs(['Roboto', 'Sydney '], ['NotoEmoji', '🇦🇺'])],
     ['a skin tone', 'Great 👍🏽', runs(['Roboto', 'Great '], ['NotoEmoji', '👍🏽'])],
@@ -223,10 +229,29 @@ describe('fontRuns', () => {
   // stays with the character before it.
   it.each([
     ['an ideographic variation', '葛\u{E0100}城', runs(['NotoSansCJK', '葛\u{E0100}城'])],
-    ['VS16 on a character no font has', 'ร\u{FE0F}', runs(['Roboto', '�\u{FE0F}'])],
+    // Roboto has neither, and would draw a box, so it leaves them out.
+    ['VS16 on a character no font has', 'ร\u{FE0F}', runs(['Roboto', '�'])],
     // a + U+200D is one cluster, then b.
-    ['a joiner after a letter', 'a\u{200D}b', runs(['Roboto', 'a\u{200D}b'])],
+    ['a joiner after a letter', 'a\u{200D}b', runs(['Roboto', 'ab'])],
   ])('splits %s by character', (_, text, expected) => {
     expect(fontRuns(text)).toEqual(expected)
+  })
+
+  // The web app's draft page calls missingGlyphs() on every render (statement-page.tsx).
+  // A fresh module: this one already built its segmenter in the tests above.
+  it('splits by code point where the browser has no Intl.Segmenter (Firefox before 125)', async () => {
+    const segmenter = Intl.Segmenter
+    Object.assign(Intl, { Segmenter: undefined })
+    onTestFinished(() => {
+      Object.assign(Intl, { Segmenter: segmenter })
+    })
+    vi.resetModules()
+    const glyphs = await import('./pdf-glyphs')
+    const text = 'ร้าน 张三 Thanks 😀 Ṣ'
+    expect(glyphs.missingGlyphs(text)).toEqual(codePoints('ร้าน'))
+    expect(glyphs.printable(text)).toBe('���� 张三 Thanks 😀 S\u{323}')
+    expect(glyphs.fontRuns('张三 Pty Ltd')).toEqual(
+      runs(['NotoSansCJK', '张三'], ['Roboto', ' Pty Ltd']),
+    )
   })
 })

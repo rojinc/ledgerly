@@ -36,6 +36,14 @@ export async function getRowOrNull<R extends Models.Row>(
   }
 }
 
+/**
+ * No account, not being merged, not a deleted account: identity's `isPlaceholder()`
+ * (functions/identity/src/rows.ts), copied, since functions don't share code outside packages.
+ */
+export function isPlaceholder(person: Persons): boolean {
+  return !person.userId && !person.mergedInto && !person.deletedAt
+}
+
 /** Every person naming the user (`idx_userId`): one, unless a bootstrap raced a deletion. */
 export function personsOfUser(db: Db, userId: string): Promise<Persons[]> {
   return allRows<Persons>(db, TABLES.persons, [Query.equal('userId', userId)])

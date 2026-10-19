@@ -8,8 +8,8 @@ import {
 import { acceptInvite } from './routes/accept-invite'
 import { bootstrap } from './routes/bootstrap'
 import { postClaim } from './routes/claim'
+import { eventRun } from './routes/event-run'
 import { createInvite } from './routes/invites'
-import { passwordNotice } from './routes/password-notice'
 import { joinPendingGroup, listPendingGroups } from './routes/pending-groups'
 import { updateProfile } from './routes/profile'
 import { sendReminder } from './routes/reminders'
@@ -24,16 +24,12 @@ export function identityRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
-    // identity-and-invites.md#password-notice: the users.*.update.password and
-    // users.*.recovery.*.update events.
-    route(
-      'POST',
-      '/',
-      async (ctx) => passwordNotice(services(ctx), ctx.event, ctx.headers, ctx.body),
-      {
-        event: true,
-      },
-    ),
+    // identity-and-invites.md#password-notice and #email-and-phone-change-notice: the
+    // users.*.update.password, users.*.recovery.*.update, users.*.update.email and
+    // users.*.update.phone events.
+    route('POST', '/', async (ctx) => eventRun(services(ctx), ctx.event, ctx.headers, ctx.body), {
+      event: true,
+    }),
     route('POST', '/bootstrap', async (ctx) =>
       bootstrap(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
