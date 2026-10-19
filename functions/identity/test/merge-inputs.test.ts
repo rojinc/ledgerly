@@ -1453,6 +1453,60 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
       { groupId: 'g1', after: 't000', left: [] },
     ])
   })
+
+  // AI A's probe on #242: a scan of unlocked rows only would pass t0 for good, and the merge
+  // would finish with t0 naming P once its statement is voided.
+  it('renames a locked row behind the cursor, so voiding its statement later leaves no P', async () => {
+    const store = withP(
+      [
+        transaction('t000', EXPENSE, { statementId: 'st0' }),
+        transaction('t001', EXPENSE),
+        transaction('t002', EXPENSE, { groupId: 'g2' }),
+      ],
+      null,
+      {
+        groups: [
+          { $id: 'g1', type: 'house', name: 'Flat', rev: 'r0', settingsJson: HOUSE },
+          { $id: 'g2', type: 'house', name: 'Work', rev: 'r0', settingsJson: HOUSE },
+        ],
+        statements: [
+          { $id: 'st0', groupId: 'g1', status: 'final', periodStart: '2026-08-01' },
+          { $id: 'st2', groupId: 'g2', status: 'finalizing', periodStart: '2026-09-01' },
+        ],
+      },
+    )
+    const dates = [...DATES, { groupId: 'g2', from: ALL_YEAR, into: ALL_YEAR }]
+    // Claim 1: g1 is scanned to its end, and g2 is put off while it's finalizing.
+    expect(await moveInputs(store, merge, ['g1', 'g2'], NOW, FAR, dates, [])).toMatchObject({
+      putOff: ['g2'],
+      done: false,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't001', left: [] }])
+    // Then st0 is voided, which unlocks t000, and g2's finalize ends.
+    await withTransaction(store, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't000',
+        data: { statementId: null },
+      })
+      await tx.write({
+        action: 'update',
+        tableId: 'statements',
+        rowId: 'st2',
+        data: { status: 'final' },
+      })
+    })
+    // Claim 2 starts after t001 in g1 and finishes the merge: nothing in g1 names P.
+    expect(
+      await moveInputs(store, merge, ['g1', 'g2'], NOW, FAR, dates, cursors(store)),
+    ).toMatchObject({ done: true })
+    for (const id of ['t000', 't001', 't002']) {
+      expect(store.rows('transactions').find((row) => row.$id === id)?.inputJson).not.toMatch(
+        /\bpP\b/,
+      )
+    }
+  })
 })
 
 describe('moveTemplates (step 3)', () => {
