@@ -317,25 +317,40 @@ describe('POST /claim, merging a placeholder', () => {
     })
   })
 
-  it('carries on a merge cut off by the time budget, and adds nothing twice', async () => {
-    const services = house()
-    // Mark it as a claim would, then run out of time partway through.
-    await withTransaction(services.db, (tx) =>
-      tx.write({ action: 'update', tableId: 'persons', rowId: 'pP', data: { mergedInto: 'pSam' } }),
-    )
-    const start = Date.now()
-    let reads = 0
-    vi.spyOn(Date, 'now').mockImplementation(() => (++reads > 4 ? start + 60_000 : start))
-    await finishMerges(services, 'u1', 'pSam', start + 1000)
-    vi.mocked(Date.now).mockRestore()
-    expect(namingSammy(services).identities).toEqual(['iPhone'])
+  // Cut off after every step and batch in turn: each read of the clock is one place it can stop.
+  // A whole merge of this house reads it 9 times, so the 10th run isn't cut at all.
+  it.each(Array.from({ length: 10 }, (_, n) => n + 1))(
+    'carries on a merge cut off at clock read %i, and adds nothing twice',
+    async (cutAt) => {
+      const services = house()
+      // Marked as a claim would; then time runs out partway through.
+      await withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pP',
+          data: { mergedInto: 'pSam' },
+        }),
+      )
+      const start = Date.now()
+      let reads = 0
+      vi.spyOn(Date, 'now').mockImplementation(() => (++reads > cutAt ? start + 60_000 : start))
+      await finishMerges(services, 'u1', 'pSam', start + 1000)
+      vi.mocked(Date.now).mockRestore()
 
-    await claim(services)
-    expect(namingSammy(services).shares).toEqual([])
-    expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
-    expect(nets(services, 'g2')).toEqual({ pSam: 0 })
-    expect(services.db.rows('shares').filter((row) => row.transactionId === 't2')).toHaveLength(1)
-  })
+      await claim(services)
+      expect(namingSammy(services)).toEqual({
+        identities: [],
+        members: [],
+        shares: [],
+        transactions: [],
+        schedules: [],
+      })
+      expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
+      expect(nets(services, 'g2')).toEqual({ pSam: 0 })
+      expect(services.db.rows('shares').filter((row) => row.transactionId === 't2')).toHaveLength(1)
+    },
+  )
 
   it('ends the same way when two claims run at once', async () => {
     const services = house()
