@@ -131,6 +131,34 @@ export function divideEmail(input: {
 }
 
 /**
+ * To each joined admin of the group, up to 2 days before a bill is due
+ * (scheduling.md#step-3-reminders): "Rent is due on Wednesday 21 October".
+ */
+export function billDueSoonEmail(input: {
+  groupName: string
+  description: string
+  amountCents: number
+  currency: string
+  dueOn: LocalDate
+  // Its schedule auto-posts it on the due date.
+  autoPay: boolean
+  url: string
+}): EmailContent {
+  const day = dayLabel(input.dueOn)
+  const amount = formatMoney(input.amountCents, input.currency, LOCALE)
+  return message(
+    `${input.description} is due on ${day}`,
+    [
+      `${input.description} in ${input.groupName} (${amount}) is due on ${day}.`,
+      input.autoPay
+        ? 'Autopay puts it on the ledger as paid that day.'
+        : 'Once it’s paid, mark it paid so it goes on the ledger.',
+    ],
+    [{ label: 'Open the bill', url: input.url }],
+  )
+}
+
+/**
  * To the group owner when a past shift is still unconfirmed: one that doesn't auto-post, or one
  * step 2 couldn't post (scheduling.md#step-3-reminders).
  */

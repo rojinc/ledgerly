@@ -1,6 +1,7 @@
 import { type LocalDate, parseLocalDate } from '@ledgerly/core/dates/local-date'
 import { describe, expect, it } from 'vitest'
 import {
+  billDueSoonEmail,
   divideEmail,
   type EmailContent,
   emailChangedEmail,
@@ -588,6 +589,54 @@ describe('summaryEmail', () => {
       balances: [{ groupName: '<b>Tom & Jo</b>', currency: 'AUD', cents: 100 }],
     })
     expect(content.html).toContain('<li>&lt;b&gt;Tom &amp; Jo&lt;/b&gt;: $1.00</li>')
+    expect(content.html).not.toContain('<b>')
+  })
+})
+
+describe('billDueSoonEmail', () => {
+  it('names the bill, its group, amount and due day', () => {
+    const content = billDueSoonEmail({
+      groupName: 'Elm St',
+      description: 'Rent',
+      amountCents: 90_000,
+      currency: 'AUD',
+      dueOn: day('2026-10-21'),
+      autoPay: false,
+      url: 'https://app.example/groups/elm/transactions/t1',
+    })
+    expectWellFormed(content)
+    expect(content.subject).toBe('Rent is due on Wednesday 21 October')
+    expect(content.text).toContain('Rent in Elm St ($900.00) is due on Wednesday 21 October.')
+    expect(content.text).toContain('mark it paid')
+    expect(content.text).toContain('Open the bill: https://app.example/groups/elm/transactions/t1')
+  })
+
+  it('says autopay will post it, rather than asking to mark it paid', () => {
+    const content = billDueSoonEmail({
+      groupName: 'Elm St',
+      description: 'Rent',
+      amountCents: 90_000,
+      currency: 'AUD',
+      dueOn: day('2026-10-21'),
+      autoPay: true,
+      url: 'https://app.example/t',
+    })
+    expect(content.text).toContain('Autopay puts it on the ledger as paid that day.')
+    expect(content.text).not.toContain('mark it paid')
+  })
+
+  it('escapes the description in the HTML and keeps the subject on one line', () => {
+    const content = billDueSoonEmail({
+      groupName: 'Elm St',
+      description: '<b>Gas</b>\r\nBcc: x@example.com',
+      amountCents: 5_000,
+      currency: 'AUD',
+      dueOn: day('2026-10-21'),
+      autoPay: false,
+      url: 'https://app.example/t',
+    })
+    expect(content.subject).toBe('<b>Gas</b> Bcc: x@example.com is due on Wednesday 21 October')
+    expect(content.html).toContain('&lt;b&gt;Gas&lt;/b&gt;')
     expect(content.html).not.toContain('<b>')
   })
 })

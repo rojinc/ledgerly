@@ -27,33 +27,43 @@ export type PostCounts = { posted: number; skipped: number; failed: number }
 const FLOOR_DAYS = 7
 
 /**
- * Step 2 (scheduling.md#step-2-auto-post): posts the `scheduled` occurrences of schedules that
- * auto-post, with the ledger's own post (`postInTransaction`): shifts once their day is over,
- * expenses and income on their day. Bills come with #33. An occurrence a finalizing statement
- * covers is skipped until a later run; one that fails (a template a member change has broken,
- * say) is counted and stays `scheduled`.
+ * Step 2 (scheduling.md#step-2-auto-post): posts the occurrences of schedules that auto-post,
+ * with the ledger's own post (`postInTransaction`): `scheduled` shifts once their day is over,
+ * expenses and income on their day, and `due` bills (autopay) on their due date, dated then.
+ * An occurrence a finalizing statement covers is skipped until a later run; one that fails (a
+ * template a member change has broken, say) is counted and stays as it is.
  */
 export async function autoPost(services: Services): Promise<PostCounts> {
   const counts: PostCounts = { posted: 0, skipped: 0, failed: 0 }
   const utcToday = localToday('UTC', services.now)
-  // idx_status_date. Some time zones are a day ahead of UTC.
+  // Some time zones are a day ahead of UTC.
+  const window = [addDays(utcToday, -FLOOR_DAYS), addDays(utcToday, 1)] as const
+  // idx_status_date
   const occurrences = pages<Transactions>(services, TABLES.transactions, [
     Query.equal('status', 'scheduled'),
-    Query.between('date', addDays(utcToday, -FLOOR_DAYS), addDays(utcToday, 1)),
+    Query.between('date', ...window),
     Query.isNotNull('scheduleId'),
     // Never posted, so not read every hour; post() checks it again.
     Query.isNull('remindedAt'),
   ])
-  for await (const { $id, groupId } of occurrences) {
-    try {
-      if (await post(services, $id)) counts.posted += 1
-    } catch (error) {
-      // A finalizing statement, or a merge still open in the group: a later run posts it.
-      if ((error instanceof AppError && error.code === 'LOCKED') || isMergingRefusal(error)) {
-        counts.skipped += 1
-      } else {
-        counts.failed += 1
-        logProblem('auto_post_failed', { groupId, transactionId: $id, error })
+  // idx_status_dueOn
+  const bills = pages<Transactions>(services, TABLES.transactions, [
+    Query.equal('status', 'due'),
+    Query.between('dueOn', ...window),
+    Query.isNotNull('scheduleId'),
+  ])
+  for (const rows of [occurrences, bills]) {
+    for await (const { $id, groupId } of rows) {
+      try {
+        if (await post(services, $id)) counts.posted += 1
+      } catch (error) {
+        // A finalizing statement, or a merge still open in the group: a later run posts it.
+        if ((error instanceof AppError && error.code === 'LOCKED') || isMergingRefusal(error)) {
+          counts.skipped += 1
+        } else {
+          counts.failed += 1
+          logProblem('auto_post_failed', { groupId, transactionId: $id, error })
+        }
       }
     }
   }
@@ -61,11 +71,11 @@ export async function autoPost(services: Services): Promise<PostCounts> {
 }
 
 /**
- * Posts the occurrence if it is still due to be: still `scheduled`, its schedule auto-posts and
- * isn't waiting for step 1, its group isn't archived and its day has come in the group's time
- * zone. It posts as the schedule's creator, who pays when the occurrence names no payers (not
- * once they're no longer an active member), with no actor on the activity row
- * (data-model.md#activity). True when it posted.
+ * Posts the occurrence if it is still due to be: still `scheduled` (a bill: `due`), its
+ * schedule auto-posts and isn't waiting for step 1, its group isn't archived and its day has
+ * come in the group's time zone. It posts as the schedule's creator, who pays when the
+ * occurrence names no payers (not once they're no longer an active member), with no actor on
+ * the activity row (data-model.md#activity); a bill is dated its due date. True when it posted.
  */
 async function post({ db, now }: Services, rowId: string): Promise<boolean> {
   return ledgerRoute(async () => {
@@ -92,10 +102,11 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
         ledger,
         actorPersonId: null,
         updatedBy: schedule.createdBy,
-        changes: {},
+        changes: row.kind === 'bill' ? { date: row.dueOn as LocalDate } : {},
         now,
         // Moved, posted or voided since it was read: run again, which reads it again.
-        ready: (staged) => isDue(staged, group, now) && !forTheUser(staged, group),
+        ready: (staged) =>
+          isDue(staged, group, now) && !forTheUser(staged, group) && staged.dueOn === row.dueOn,
       })
       // Again now that the row and the creator's member row (they pay, so they're named) are
       // staged: an edit that dropped its payers, or the creator moving out, since the check
@@ -137,16 +148,21 @@ async function creatorWouldPayAfterLeaving(
   return Boolean(person.deletedAt)
 }
 
-// Left for the user (scheduling.md#step-2-auto-post): made after its own day, or already
-// reminded to confirm it (step 3), also when `autoPost` is turned on later.
+// Left for the user (scheduling.md#step-2-auto-post): made after its own day (a bill: its due
+// date), or a `scheduled` one already reminded to confirm it (step 3), also when `autoPost` is
+// turned on later. A bill's "due soon" reminder doesn't hold its autopay.
 function forTheUser(row: Transactions, group: Groups): boolean {
-  return madeLate(row, group.timezone) || row.remindedAt !== null
+  return madeLate(row, group.timezone) || (row.status === 'scheduled' && row.remindedAt !== null)
 }
 
-// Still `scheduled`, and its day has come in the group's time zone: a shift's once it's over,
-// an expense's or income's on the day.
+// Its day has come in the group's time zone: a `scheduled` shift's once it's over, an expense's
+// or income's on the day, and a `due` bill's on its due date.
 function isDue(row: Transactions, group: Groups, now: Date): boolean {
+  const today = localToday(group.timezone, now)
+  if (row.kind === 'bill') {
+    return row.status === 'due' && !!row.dueOn && compareDates(row.dueOn as LocalDate, today) <= 0
+  }
   if (row.status !== 'scheduled') return false
-  const day = compareDates(row.date as LocalDate, localToday(group.timezone, now))
+  const day = compareDates(row.date as LocalDate, today)
   return row.kind === 'shift' ? day < 0 : day <= 0
 }
