@@ -362,7 +362,7 @@ export function HouseExpenseForm({
         </h2>
       )}
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
-      {/* A change can't itemise an expense: an itemised row has no Edit (#202 decision 1). */}
+      {/* A change keeps it itemised, or not (#225 decision 3). */}
       {!edit && (
         <label className="flex items-center gap-2 text-sm">
           <input type="checkbox" {...form.register('itemised')} />
@@ -477,6 +477,7 @@ export function HouseExpenseForm({
           currency={group.currency}
           total={total}
           message={message}
+          nested={edit !== undefined}
         />
       )}
       <SharePreview
