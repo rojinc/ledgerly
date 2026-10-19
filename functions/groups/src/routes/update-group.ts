@@ -67,8 +67,9 @@ export async function updateGroup(
     data.settingsJson = JSON.stringify(settings)
   }
   // data-model.md#groups: a new cycle, anchor or time zone moves the next statement. One that
-  // is already due stays, so the statements cron still drafts the period that just ended and
-  // then moves it on; without a cycle there is none.
+  // is already due stays for the same period (in a new time zone, re-expressed there), so the
+  // statements cron still drafts the period that just ended and then moves it on; without a
+  // cycle there is none.
   if ('statementCycle' in after || 'cycleAnchor' in after || 'timezone' in after) {
     const stored = group.nextCloseAt
     const timeZone = columns.timezone ?? group.timezone
@@ -78,7 +79,7 @@ export async function updateGroup(
     else if ('timezone' in after) {
       // The due period's end, read in the time zone the close was made in, closes in the new
       // one (#126). Kept as it was, a move west of more than 18 hours would split the period in
-      // two, and one east of more than 6 would give it a day of the next.
+      // two, and one east of 6 hours or more would give it a day of the next.
       data.nextCloseAt = closeAtFor(periodEndClosedAt(stored, group.timezone), timeZone)
     } else data.nextCloseAt = stored
   }

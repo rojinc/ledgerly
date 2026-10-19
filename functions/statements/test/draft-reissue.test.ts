@@ -249,7 +249,8 @@ describe('the statements job (POST /, cron)', () => {
         .sort()
 
     it('starts the day after the last statement when the group moved from New York to Sydney', async () => {
-      // October was due at 06:00 on 1 November in New York; Sydney is 15 hours ahead.
+      // October was due at 06:00 on 1 November in New York; Sydney is 15 hours ahead. A close
+      // stored before #126: groups now re-expresses it in Sydney when the time zone changes.
       const nextCloseAt = closeAtFor('2026-10-31' as LocalDate, 'America/New_York')
       const services = fakes({
         groups: [job({}, { timezone: 'Australia/Sydney', nextCloseAt })],

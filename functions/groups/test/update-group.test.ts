@@ -151,6 +151,18 @@ describe('PATCH /groups/{id}', () => {
     expect(moved).toMatchObject({ timezone: to, nextCloseAt: closeAt })
   })
 
+  it('closes a due October in the new time zone when the cycle changes too', async () => {
+    const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
+    services.now = new Date('2026-10-31T19:05:00.000Z')
+    const moved = await ok(services, 'PATCH', '/groups/g1', {
+      timezone: 'Pacific/Honolulu',
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    // October still ends on the 31st; the weekly periods start after it.
+    expect(moved).toMatchObject({ nextCloseAt: '2026-11-01T16:00:00.000Z' })
+  })
+
   it('keeps a due nextCloseAt exactly as stored when the time zone stays the same', async () => {
     // Stored before #126: New York's October close, after a move to Sydney.
     const due = '2026-11-01T11:00:00.000Z'
