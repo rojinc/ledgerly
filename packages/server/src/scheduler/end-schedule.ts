@@ -68,6 +68,40 @@ export async function endScheduleOn(
 }
 
 /**
+ * Deletes the schedule and all its occurrences, voided and edited ones included, with their
+ * items, as `scheduler DELETE /schedules/{id}` does once it has checked the caller and that none
+ * is posted (scheduling.md#schedule-routes), and as deleting an account does with one that
+ * hasn't started (identity-and-invites.md#each-group-they-joined). A post meanwhile leaves that
+ * occurrence, so the schedule isn't deleted: `Raced`.
+ */
+export async function deleteScheduleRows(db: Db, group: Groups, scheduleId: string): Promise<void> {
+  await removeOccurrences(db, group, scheduleId, null, { all: true })
+  await withTransaction(db, async (tx) => {
+    await tx.write({ action: 'delete', tableId: TABLES.schedules, rowId: scheduleId })
+    // An archive that lands meanwhile makes this run again and get ARCHIVED.
+    await guardGroup(tx, db, group)
+    // An occurrence created meanwhile (a cron run) would be left without its schedule. One
+    // created after this was staged also wrote the schedule row, so the commit fails.
+    if (await hasOccurrence(db, scheduleId, [])) throw new Raced()
+  })
+}
+
+/** Whether the schedule has an occurrence that matches `queries` (`idx_schedule_date`). */
+export async function hasOccurrence(
+  db: Db,
+  scheduleId: string,
+  queries: string[],
+): Promise<boolean> {
+  const { rows } = await db.listRows<Transactions>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.transactions,
+    queries: [Query.equal('scheduleId', scheduleId), ...queries, Query.limit(1)],
+    total: false,
+  })
+  return rows.length > 0
+}
+
+/**
  * Deletes the schedule's occurrences dated `from` or later that are still `scheduled` or `due`
  * and not edited (`overridden`), with their items. `all` deletes every one that isn't posted,
  * for `DELETE /schedules/{id}`, voided and edited ones last, so a delete that stops partway

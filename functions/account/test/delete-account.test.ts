@@ -714,6 +714,106 @@ describe('POST /delete: each group they joined', () => {
     expect(teamOf(services, 'h1')).toEqual([])
     expect(activityIn(services, 'h1')).toHaveLength(1)
   })
+
+  it.each([
+    ['with their name, as an admin', { role: 'admin' }],
+    ['with their name, as a viewer', { role: 'viewer' }],
+    ['renamed "Former member" by an admin', { displayName: 'Former member', role: 'member' }],
+  ])('gives the keep to a row they left on their own after step 2, %s', async (_, row) => {
+    const services = kept()
+    // Their own leave, checked before step 2 and committed after it.
+    await setRow(services, 'members', 'h1-p1', { status: 'left', leftOn: TODAY, ...row })
+    await insert(services, 'activity', [
+      {
+        $id: 'aLeft',
+        groupId: 'h1',
+        actorPersonId: 'p1',
+        action: 'member.left',
+        subjectPersonId: 'p1',
+        summary: 'left',
+        at: DELETED_AT,
+      },
+    ])
+    await removeFromTeam(services.teams, 'h1', 'u1')
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'members', 'h1-p1')).toMatchObject({
+      displayName: 'Former member',
+      status: 'left',
+      role: 'viewer',
+      leftOn: TODAY,
+    })
+    expect(rowOf(services, 'schedules', 'sGroceries')).toMatchObject({ endsOn: TODAY })
+  })
+
+  it('retries the schedules once the keep is done, even when they’re no longer in the team', async () => {
+    const services = kept()
+    crashOnList(services, (tableId) => tableId === 'schedules', 2)
+    expect((await call(services)).status).toBe(500)
+    expect(rowOf(services, 'members', 'h1-p1')).toMatchObject({ displayName: 'Former member' })
+    vi.restoreAllMocks()
+    // Out of the team before the rerun, as when they had left the group on their own earlier.
+    await removeFromTeam(services.teams, 'h1', 'u1')
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'schedules', 'sGroceries')).toMatchObject({ endsOn: TODAY })
+    // The keep isn't done twice.
+    expect(activityIn(services, 'h1')).toHaveLength(1)
+  })
+
+  it('waits with the archive while a timer someone else started runs, then finishes once it stops', async () => {
+    const services = kept()
+    await insert(services, 'transactions', [
+      { ...timer('t3', 'e1'), createdBy: 'p3', updatedBy: 'p3' },
+    ])
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
+    expect(rowOf(services, 'members', 'e1-p1')).toMatchObject({ displayName: 'Former member' })
+    expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: null })
+    expect(teamOf(services, 'e1')).toEqual(['u1', 'u3'])
+    expect(rowOf(services, 'identities', 'i1')).toBeDefined()
+
+    await setRow(services, 'transactions', 't3', { status: 'posted' })
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: DELETED_AT })
+    expect(teamOf(services, 'e1')).toEqual(['u3'])
+  })
+
+  it('deletes a schedule of theirs that hasn’t started, with its occurrences, unless one is posted', async () => {
+    const services = kept()
+    const later = schedule('sLater', 'h1', 'p1', ['p1', 'p2'], { startsOn: '2026-11-02' })
+    const posted = schedule('sPosted', 'h1', 'p2', ['p1', 'p2'], { startsOn: '2026-11-02' })
+    await insert(services, 'schedules', [later, posted])
+    await insert(services, 'transactions', [
+      occurrence(later, '2026-11-02'),
+      occurrence(later, '2026-11-09', { status: 'void', voidReason: 'Away' }),
+      occurrence(posted, '2026-11-02', { status: 'posted' }),
+      occurrence(posted, '2026-11-09'),
+    ])
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'schedules', 'sLater')).toBeUndefined()
+    expect(rowOf(services, 'transactions', 'sLater_20261102')).toBeUndefined()
+    expect(rowOf(services, 'transactions', 'sLater_20261109')).toBeUndefined()
+    // A posted occurrence keeps the schedule, which is ended instead.
+    expect(rowOf(services, 'schedules', 'sPosted')).toMatchObject({ endsOn: TODAY })
+    expect(rowOf(services, 'transactions', 'sPosted_20261102')).toBeDefined()
+    expect(rowOf(services, 'transactions', 'sPosted_20261109')).toBeUndefined()
+  })
+
+  it('skips a template that can’t be read, logging its ID: their own schedule still ends', async () => {
+    const services = kept()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    await insert(services, 'schedules', [
+      schedule('sBadOwn', 'h1', 'p1', [], { templateJson: '{' }),
+      schedule('sBadOther', 'h1', 'p2', [], { templateJson: 'null' }),
+    ])
+    const otherBefore = rowOf(services, 'schedules', 'sBadOther')
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'schedules', 'sBadOwn')).toMatchObject({ endsOn: TODAY })
+    expect(rowOf(services, 'schedules', 'sBadOther')).toEqual(otherBefore)
+    // Their own needs no template, so only the other one is read.
+    expect(errors.mock.calls).toEqual([
+      ["account: schedule sBadOther has a template that can't be read"],
+    ])
+    errors.mockRestore()
+  })
 })
 
 describe('POST /delete: steps 5 to 7', () => {
@@ -934,6 +1034,18 @@ describe('POST /delete: reruns and the time budget', () => {
     services.outOfTime = () => false
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
     expect(state(services)).toEqual(await oneRun())
+  })
+  it('stops between schedules once out of time, and a rerun carries on', async () => {
+    const services = kept()
+    await insert(services, 'schedules', [schedule('sMore', 'h1', 'p1', ['p1'])])
+    services.outOfTime = () => rowOf(services, 'schedules', 'sGroceries')?.endsOn === TODAY
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
+    expect(rowOf(services, 'schedules', 'sMore')).toMatchObject({ endsOn: null })
+    expect(teamOf(services, 'h1')).toEqual(['u1', 'u2'])
+    services.outOfTime = () => false
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'schedules', 'sMore')).toMatchObject({ endsOn: TODAY })
+    expect(teamOf(services, 'h1')).toEqual(['u2'])
   })
 })
 
