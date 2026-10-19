@@ -48,11 +48,12 @@ Every email or phone number goes through `normalizeEmail()` or `normalizePhone()
 
 Because of steps 2 and 4, the member row looks the same whether or not the person has an account, so neither the response nor the members list reveals it. That stops people using the form to find out who uses Ledgerly.
 
-Accepted risks, none of which shows whether someone has an account:
+Accepted risks:
 
 - A person has the same ID in every group, so someone who shares a group with them can add a guessed email to another group and see whether the IDs match. `CONFLICT` on adding someone twice tells the same thing within one group.
 - Known and unknown keys take different times to add: an unknown one creates rows, and a known one costs a guard write and a second lookup. Known keys include placeholders others added, and the guard runs the same way for placeholders and registered people, so it shows only that someone has used the key before.
-- An invite to an address that isn't the member's gets `VALIDATION_FAILED` ([invites](#invites), step 2), so an inviter can test guesses at a placeholder's email or phone, within the invite limits. It's the same kind of leak as `CONFLICT` above.
+- An invite to an address that isn't the member's gets `VALIDATION_FAILED` ([invites](#invites), step 2), so an inviter can test guesses at a placeholder's email or phone. A failed check commits nothing, so guesses aren't counted. It's the same kind of leak as `CONFLICT` above.
+- **Until [#274](https://github.com/rojinc/ledgerly/issues/274) is built,** that check can show that someone has an account. A registered person holds every key they verified, and a placeholder only the one it was added with. So when an inviter guesses a member's second address and the check passes, the member has an account. #274 will count a failed address check against the inviter's limits.
 
 ## Claim (linking records to a new account)
 
@@ -175,15 +176,20 @@ An invite is a convenience: a link that tells someone they've been added and hel
 
 1. The caller must be allowed to add members in that group ([permissions](permissions.md#roles)) and must have a verified email ([F-02](../product/features.md#accounts-and-profile)); otherwise `FORBIDDEN`.
 2. `memberId` must be in that group (otherwise `NOT_FOUND`) and still a `placeholder` (otherwise `VALIDATION_FAILED`). The invite goes only to the address the caller typed. After normalising, it must be an identity of that member's person, otherwise `VALIDATION_FAILED`. Ledgerly never picks an address the caller didn't give, so it never emails an address the inviter doesn't already know.
-3. **Rate limits:** at most 20 invites per inviter in the last 24 hours, and 3 per identity in the last 7 days. Otherwise return `RATE_LIMITED`, before anything is committed. So that a burst of parallel requests can't pass the count together, first stage a guard write (a fresh `rev`) on the inviter's and the target's `persons` rows, then count.
+3. **Guards, then checks, in one database transaction.** So that a burst of parallel requests can't pass the count together, first stage a guard write (a fresh `rev`) on the inviter's and the target's `persons` rows. Then follow the target's `mergedInto` to the end, as stored (`mergedTarget()`, as `resolvePerson()` does). If it ends at someone other than the target and the inviter, stage a guard write on that **end person** too: a placeholder mid-merge holds only keys the end person verified ([only verified keys move](#only-verified-keys-move)) until the merge moves them, last ([merging](#merging-two-persons), step 3), so the address is the end person's. A merge that marks the target after its guard was staged fails this commit. Then:
+   1. Read the guarded rows again, as stored (not through the transaction). An inviter with `deletedAt` (their account deletion started while the request ran) gets `UNAUTHENTICATED`, since one that started before was already refused as `NOT_A_MEMBER` ([permissions](permissions.md), step 2); a target or end person with `deletedAt` gets the same `VALIDATION_FAILED` as a wrong address (step 2), so the answer doesn't show the deletion. So no invite goes to the address of someone whose account deletion has started, even before [deletion step 5](#order) removes the identities of persons merged into them. A deletion that commits after the guard was staged fails this commit, and the one retry then refuses.
+   2. **Rate limits:** at most 20 invites per inviter in the last 24 hours, and 3 per identity in the last 7 days. Otherwise return `RATE_LIMITED`, before anything is committed.
 4. Create a random 32-byte token (base64url). Store only its SHA-256 hash, with `expiresAt` 14 days ahead. Commit the invite row before sending, so a failed send still counts toward the limits (it returns `INTERNAL`).
 5. Send `https://<app>/invite#<token>` by email (Resend) or SMS (M3). The token goes in the URL fragment, which browsers never send to servers or in `Referer` headers, so it stays out of logs. The message names the inviter and the group, nothing else. It is sent the same way, with the same response, whether or not the person has an account.
+   - **Subject:** "You've been invited to a group on Ledgerly", fixed: both names are free text, so they stay out of it.
+   - **Body:** "{inviter} added you to the group “{group}” on Ledgerly and invited you to join.", then "If you weren't expecting this, you can ignore this email." and the link. `{inviter}` is the inviter's `members.displayName` in that group and `{group}` the group's name. Each is put on one line, without bidi control characters, and cut to 40 characters as people see them (with "…"), as a reminder's `{sender}` is ([reminders](#reminders), step 9), and HTML-escaped.
 
 `identity POST /invites/accept` with `{ token }`:
 
-1. Hash the token and find the invite. If it is missing, expired or already accepted, return `INVITE_INVALID`.
-2. The caller must be signed in and have **verified** the invite's identity. If not, return `{ needsVerification: 'email' | 'phone' }`, and the app runs Appwrite's verification flow and then calls accept again.
-3. Run Claim. Then, if the caller's own person has a member row in the invite's group that is still `placeholder`, join it. (The invite's `memberId` may have been merged away or removed since.) A row the caller's person left on their own is never touched. Set `acceptedAt`.
+1. Hash the token and find the invite. If it is missing or expired (from `expiresAt` on), return `INVITE_INVALID`. Every `INVITE_INVALID` here has the same message, so it never says which case it was.
+2. The caller must be signed in and have **verified** the invite's identity: the account's verified email (for an email invite) or phone (for an SMS one), normalised, is the invite's `identityKey`. If the invite is **already accepted**, return `{ groupId }` when the identity is the caller's (they have verified it, and its identity row is on their person, or on a placeholder merged into it), so a retry or a second accept at the same time gets the same answer; anyone else gets `INVITE_INVALID`. Either way nothing is written. Otherwise, if the caller hasn't verified it, return `{ needsVerification: 'email' | 'phone' }` (by the invite's channel) before writing anything, and the app runs Appwrite's verification flow and then calls accept again.
+3. Run Claim. If the invite's identity still isn't the caller's (another registered person holds it), return `INVITE_INVALID`. Then, if the caller's own person has a member row in the invite's group that is still `placeholder`, join it. (The invite's `memberId` may have been merged away or removed since.) Any other row is never touched: it has joined already, or left on its own, which is final. If a merge is cut off before it moves the invited row, the next `/claim` joins it.
+4. Set `acceptedAt`, last, so an accept cut off before it can simply run again: every earlier step is safe to repeat. Stage it, then check the stored row; if another accept set it first, keep that time and return `{ groupId }`, as in step 2.
 
 ## Reminders
 
@@ -205,7 +211,7 @@ Someone owed money in a lend & borrow group can email the other person a reminde
 9. **The email:**
    - **Subject:** "You have a payment reminder", fixed: the sender's name is free text they chose, so it stays out of the subject.
    - **Body:** "{sender} sent you a reminder that you owe them {amount}." and "If you've already paid, let them know so they can record it.", and one link to the app (`APP_URL`).
-   - `{sender}` is the sender's `members.displayName` in that group, put on one line (each run of spaces and line breaks becomes one space), cut to 40 characters as people see them, so an emoji isn't split (with "…"), and HTML-escaped. `{amount}` is the whole balance in the group's currency.
+   - `{sender}` is the sender's `members.displayName` in that group, put on one line (each run of spaces and line breaks becomes one space), with its bidi control characters removed (U+202A–U+202E, U+2066–U+2069, U+200E and U+200F, which could make the text around it read in another order; the zero-width joiner stays, since emoji need it), cut to 40 characters as people see them, so an emoji isn't split (with "…"), and HTML-escaped. `{amount}` is the whole balance in the group's currency.
    - **Nothing else:** no recipient or group name (both are what the sender calls them), no transactions, no note (a phishing risk) and no `replyTo` (it would show the sender's account email).
 
 The response and the email are the same whether the recipient is a placeholder without an account, one with an account, or a joined member. The address typed and the amount are stored nowhere, and logs hold IDs, error codes and Resend's email ID only.
@@ -213,7 +219,7 @@ The response and the email are the same whether the recipient is a placeholder w
 **Accepted risks:**
 - Hitting the recipient limit tells the sender that someone else reminded that person this week.
 - Whether a typed address matches tells the sender which address the person is known by. The check comes before the limits and a failed one stores nothing, so guesses aren't counted yet, exactly as for an invite's address check (step 2). It only answers for the one person the sender shares a pair group with, and never says whether they have an account. Counting failed checks for both is [#274](https://github.com/rojinc/ledgerly/issues/274).
-- **The sender's name is free text** in the body, up to 40 characters: enough for a short misleading phrase, not a message. Invites have the same exposure (a follow-up).
+- **The sender's name is free text** in the body, up to 40 characters: enough for a short misleading phrase, not a message. Invites have the same exposure, for two names ([invites](#invites)).
 - **One inbox can be several persons** (`a+1@x`, `a+2@x`): each has its own recipient limit. Accepted.
 - **Retention:** `reminders` rows hold person and group IDs only, and are kept until either person's account is deleted (or a purge). Pruning old rows is a later follow-up.
 
