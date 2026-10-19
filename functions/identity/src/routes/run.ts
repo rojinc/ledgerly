@@ -60,11 +60,10 @@ export async function run(scheduled: boolean, services: () => Services): Promise
       const { finished } = await finishMerges(built, into.userId, intoId, deadline)
       done = fromIds.filter((fromId) => finished.includes(fromId)).length
       result.finished += done
-      if (done < count) {
-        if (Date.now() >= deadline) result.cutOff += count - done
-        continue
-      }
-      await verifyKeys(built, into.userId, intoId)
+      if (done < count && Date.now() >= deadline) result.cutOff += count - done
+      // After any merge this run finished, as /claim does (the co-lead on #330), so moved keys
+      // reach statement emails before U's next login. Only keys U's account verifies are marked.
+      if (finished.length > 0) await verifyKeys(built, into.userId, intoId)
     } catch (error) {
       // One U's trouble doesn't stop the others; the next run tries again. A race with a claim
       // (`CONFLICT`) or a deletion (`NOT_FOUND`) is expected; anything else is an error line,
