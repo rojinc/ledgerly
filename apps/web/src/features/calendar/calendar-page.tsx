@@ -6,6 +6,7 @@ import { Link, useSearchParams } from 'react-router'
 import { cn } from '../../lib/utils'
 import { Button } from '../../ui/button'
 import { useCurrentUser } from '../auth/use-current-user'
+import { GroupName } from '../groups/use-group-name'
 import { useGroups } from '../groups/use-groups'
 import { useProfile } from '../profile/use-profile'
 import { type Month, monthGrid, monthOf, parseMonth, shiftMonth } from './month-grid'
@@ -170,7 +171,7 @@ function MonthView({
               className="size-3 rounded-sm"
               style={{ backgroundColor: colours.get(group.$id) }}
             />
-            {group.name}
+            <GroupName group={group} />
           </li>
         ))}
       </ul>
@@ -290,7 +291,7 @@ function DayList({
                         {item.description}
                       </span>
                       <span className="block truncate text-sm text-muted-foreground">
-                        {group?.name ?? 'Group'}
+                        {group ? <GroupName group={group} /> : 'Group'}
                         {` · ${status}`}
                       </span>
                     </span>

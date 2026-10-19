@@ -13,6 +13,7 @@ import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { type Month, monthOf, parseMonth, shiftMonth } from '../calendar/month-grid'
+import { GroupName } from '../groups/use-group-name'
 import { useGroups } from '../groups/use-groups'
 import { useProfile } from '../profile/use-profile'
 import { useAllBalances, useMyShares } from './use-dashboard'
@@ -116,7 +117,9 @@ function BalancesSection({ groups }: { groups: Groups[] }) {
         {groups.map((group, index) => (
           <li key={group.$id} className="flex items-center justify-between gap-3 px-4 py-3">
             <div className="min-w-0">
-              <p className="font-medium break-words">{group.name}</p>
+              <p className="font-medium break-words">
+                <GroupName group={group} />
+              </p>
               <p className="text-sm text-muted-foreground">
                 {TYPE_LABEL[group.type]}
                 {group.archivedAt ? ' · Archived' : ''}
