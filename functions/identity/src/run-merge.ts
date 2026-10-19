@@ -63,8 +63,15 @@ async function runMerge(
   const joined: string[] = []
   const putOff = new Set<string>()
   const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
-  const recorded = memberDatesOf(placeholder)
+  const recorded = memberDatesOf(placeholder) ?? []
   const cursors = cursorsOf(placeholder)
+  // Step 3 never plans a posted row's items without step 1's dates (#301), so a group without
+  // them waits whole, P's row included, and keeps the merge open. A kept group needs none.
+  const ready = (groupId: string) => {
+    if (recorded.some((entry) => entry.groupId === groupId)) return true
+    console.error(`merge ${fromId}: no recorded member dates for group ${groupId}`)
+    return false
+  }
   let done = true
   // Only P's groups can name P; never U's others, so a merge costs what P had. A group P has no
   // row in any more comes first: step 2 is done there, so it may be part done, and a later claim
@@ -82,14 +89,7 @@ async function runMerge(
       done = false
       break
     }
-    // Step 3 never plans a posted row's items without step 1's dates (#301): a group without them
-    // waits whole, P's row included, and keeps the merge open.
-    if (!recorded?.some((entry) => entry.groupId === groupId)) {
-      console.error(`merge ${fromId}: no recorded member dates for group ${groupId}`)
-      putOff.add(groupId)
-      continue
-    }
-    const members = await moveMembers(services, userId, fromId, intoId, [groupId], deadline)
+    const members = await moveMembers(services, userId, fromId, intoId, [groupId], deadline, ready)
     joined.push(...members.joined)
     if (members.kept.size > 0) {
       kept.add(groupId)

@@ -220,13 +220,15 @@ function namingSammy(services: Fakes) {
 
 let log: ReturnType<typeof vi.spyOn>
 let warn: ReturnType<typeof vi.spyOn>
+let error: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   log = vi.spyOn(console, 'log').mockImplementation(() => {})
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  error = vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => {
   // No personal data in logs: IDs and counts only.
-  for (const args of [...log.mock.calls, ...warn.mock.calls]) {
+  for (const args of [...log.mock.calls, ...warn.mock.calls, ...error.mock.calls]) {
     expect(String(args)).not.toMatch(/@|\d{6,}|Sam Lee|Sammy|Alex/)
   }
   vi.restoreAllMocks()
@@ -578,8 +580,8 @@ describe('POST /claim, merging a placeholder', () => {
   })
 
   // Cut off after every step and batch in turn: each read of the clock is one place it can stop.
-  // A whole merge of this house reads it 21 times, so the 22nd run isn't cut at all.
-  it.each(Array.from({ length: 22 }, (_, n) => n + 1))(
+  // A whole merge of this house reads it 23 times, so the 23rd run isn't cut at all.
+  it.each(Array.from({ length: 23 }, (_, n) => n + 1))(
     'carries on a merge cut off at clock read %i, and adds nothing twice',
     async (cutAt) => {
       const services = house()
@@ -661,10 +663,10 @@ describe('POST /claim, merging a placeholder', () => {
 
   // Two claims cut off in turn: the second finishes the group the first left part done before
   // it starts another, since both walk Sammy's groups in step 1's order.
-  it.each(Array.from({ length: 21 }, (_, n) => n + 1))(
+  it.each(Array.from({ length: 22 }, (_, n) => n + 1))(
     'leaves at most one group part done after two claims, the first cut off at read %i',
     async (first) => {
-      for (let second = 1; second <= 21; second += 1) {
+      for (let second = 1; second <= 22; second += 1) {
         const services = house()
         await withTransaction(services.db, (tx) =>
           tx.write({
@@ -687,10 +689,10 @@ describe('POST /claim, merging a placeholder', () => {
 
   // AI A's F on #242: the first claim puts g1 off (a finalize) and is cut off in g2. The second,
   // once the finalize has ended, finishes g2 before it starts g1 again.
-  it.each(Array.from({ length: 21 }, (_, n) => n + 1))(
+  it.each(Array.from({ length: 22 }, (_, n) => n + 1))(
     'leaves at most one group part done when the first claim put a group off and was cut off at read %i',
     async (first) => {
-      for (let second = 1; second <= 21; second += 1) {
+      for (let second = 1; second <= 22; second += 1) {
         const services = house({
           statements: [
             { $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' },
@@ -780,7 +782,6 @@ describe('POST /claim, merging a placeholder', () => {
     // The next claim walks Sammy's rows too, but step 1 recorded no dates for g9, so the group
     // waits whole (#301) and the merge stays open, logged.
     vi.mocked(services.db.listRows).mockRestore()
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     await claim(services)
     expect(namingSammy(services).identities).toEqual(['iPhone'])
     expect(services.db.rows('members').find((member) => member.$id === 'm9')?.personId).toBe('pP')
@@ -887,7 +888,6 @@ describe('POST /claim, merging a placeholder', () => {
 
   it('puts every group off, and keeps the merge open, when the recorded dates can’t be read', async () => {
     // #301: step 3 never plans a posted row's items without step 1's dates.
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const services = house()
     await withTransaction(services.db, (tx) =>
       tx.write({
@@ -902,6 +902,75 @@ describe('POST /claim, merging a placeholder', () => {
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], members: ['m1', 'm3'] })
     expect(error).toHaveBeenCalledWith('merge pP: its recorded member dates are unreadable')
     expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
+  })
+
+  it('carries each group’s input scan on from its own resume point (#242 G)', async () => {
+    const services = house()
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'persons',
+        rowId: 'pP',
+        data: {
+          mergedInto: 'pSam',
+          mergeGroupIds: ['g1', 'g2'],
+          mergeMembersJson: recorded(services, ['g1', 'g2']),
+          mergeCursorsJson: JSON.stringify([
+            { groupId: 'g2', after: 't1', left: [] },
+            { groupId: 'g1', after: 't0', left: [] },
+          ]),
+        },
+      }),
+    )
+    const reads = vi.spyOn(services.db, 'listRows')
+    await claim(services)
+    const resumed = reads.mock.calls.flatMap(([params]) => {
+      const queries = (params.queries ?? []).map(
+        (query) => JSON.parse(query) as { method: string; attribute?: string; values: string[] },
+      )
+      const groupId = queries.find((query) => query.attribute === 'groupId')?.values[0]
+      const after = queries.find((query) => query.method === 'greaterThan')?.values[0]
+      return params.tableId === 'transactions' && after ? [[groupId, after]] : []
+    })
+    expect(resumed).toEqual([
+      ['g1', 't0'],
+      ['g2', 't1'],
+    ])
+    expect(namingSammy(services).identities).toEqual([])
+  })
+
+  it('keeps the merge open when step 1 recorded no dates for a group Sammy’s row has left', async () => {
+    // An earlier claim's step 2 gave Sammy's g1 row to Sam; the record lists g2 only.
+    const services = house()
+    await withTransaction(services.db, (tx) =>
+      tx.write(
+        {
+          action: 'update',
+          tableId: 'members',
+          rowId: 'm1',
+          data: { personId: 'pSam', status: 'active' },
+        },
+        {
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pP',
+          data: {
+            mergedInto: 'pSam',
+            mergeGroupIds: ['g1', 'g2'],
+            mergeMembersJson: recorded(services, ['g2']),
+          },
+        },
+      ),
+    )
+    await claim(services)
+    // g1's input and share wait; g2 is done.
+    expect(namingSammy(services)).toMatchObject({
+      identities: ['iPhone'],
+      shares: ['s2'],
+      transactions: ['t1'],
+    })
+    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
+    expect(stopped()).toEqual([])
   })
 
   it('still logs the user in, and joins their own rows, when a merge stops on an error', async () => {

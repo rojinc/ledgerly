@@ -153,7 +153,8 @@ export type MembersResult = { kept: Set<string>; joined: string[]; putOff: strin
  * leave a pair of one, or an employer group paying itself. A group with a statement being
  * finalized is put off whole, P's row included: its inputs and shares must wait, and P's row
  * moved without them would let a leave, a removal or an edit count P's part as someone else's.
- * A row is finished once it no longer points at P, so a retry carries on.
+ * A group step 3 can't go on in (`ready` false) is put off the same way, before anything is
+ * written. A row is finished once it no longer points at P, so a retry carries on.
  */
 export async function moveMembers(
   services: Services,
@@ -162,6 +163,7 @@ export async function moveMembers(
   intoId: string,
   groupIds: readonly string[],
   deadline: number,
+  ready: (groupId: string) => boolean,
 ): Promise<MembersResult> {
   const { db } = services
   const result: MembersResult = { kept: new Set(), joined: [], putOff: [], done: true }
@@ -175,6 +177,10 @@ export async function moveMembers(
       ((await twoSided(db, groupId)) || (await leftOnTheirOwn(db, groupId, intoId, own.$createdAt)))
     ) {
       result.kept.add(groupId)
+      continue
+    }
+    if (!ready(groupId)) {
+      result.putOff.push(groupId)
       continue
     }
     try {
