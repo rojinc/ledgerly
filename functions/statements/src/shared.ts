@@ -1,12 +1,11 @@
-import type { Role as MemberRole } from '@ledgerly/core/constants/domain'
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/schemas/statements'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
-import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { type Membership, requireMember } from '@ledgerly/server/auth/require-member'
 import { EmailError } from '@ledgerly/server/email/send-email'
+import { periodLabel } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
@@ -105,34 +104,14 @@ export function chunks<T>(values: readonly T[], size = PAGE_SIZE): T[][] {
 
 const PAGE_SIZE = 100
 
-const NO_SUCH_STATEMENT = 'There is no such statement.'
+/** A missing statement's NOT_FOUND message, which outsiders get too (`requireMemberOf`). */
+export const NO_SUCH_STATEMENT = 'There is no such statement.'
 
 /** The statement, or NOT_FOUND. */
 export async function getStatement(db: Db, statementId: string): Promise<Statements> {
   const statement = await getRowOrNull<Statements>(db, TABLES.statements, statementId)
   if (!statement) throw new AppError('NOT_FOUND', NO_SUCH_STATEMENT)
   return statement
-}
-
-/**
- * requireMember for the group of a statement that was looked up by ID. Someone who isn't a
- * member gets NOT_FOUND, the same as for an ID that doesn't exist, so IDs can't be probed (#136).
- */
-export async function requireMemberOf(
-  db: Db,
-  teams: Pick<TeamsApi, 'listMemberships'>,
-  userId: string,
-  statement: Statements,
-  options: { roles?: readonly MemberRole[] } = {},
-): Promise<Membership> {
-  try {
-    return await requireMember(db, teams, userId, statement.groupId, options)
-  } catch (error) {
-    if (error instanceof AppError && error.code === 'NOT_A_MEMBER') {
-      throw new AppError('NOT_FOUND', NO_SUCH_STATEMENT)
-    }
-    throw error
-  }
 }
 
 export function teamRead(groupId: string): string[] {
@@ -165,6 +144,18 @@ export function activityWrite(
     },
     permissions: teamRead(groupId),
   }
+}
+
+/**
+ * How activity rows name a statement (statements.md#2-finalize): an invoice by its number, and
+ * one with no number (a divide, or an invoice draft being discarded) by its period.
+ */
+export function statementName(
+  statement: Pick<Statements, 'type' | 'displayNumber' | 'periodStart' | 'periodEnd'>,
+): string {
+  if (statement.displayNumber) return `Invoice ${statement.displayNumber}`
+  const period = periodLabel(statement.periodStart as LocalDate, statement.periodEnd as LocalDate)
+  return `${statement.type === 'divide' ? 'Divide' : 'Invoice draft'} for ${period}`
 }
 
 export function snapshotOf(statement: Statements): StatementSnapshot {

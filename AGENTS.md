@@ -49,7 +49,7 @@ Run lint, typecheck, test and build before you mark a PR ready.
 apps/web/          React + Vite PWA (features/<feature>/ per feature)
 packages/core/     pure TypeScript domain logic: money, dates, ledger, schemas (no I/O)
 packages/server/   helpers for functions only (Appwrite client, auth, email, pdf)
-functions/<name>/  Appwrite Functions: ledger, groups, identity, scheduler, statements
+functions/<name>/  Appwrite Functions: ledger, groups, identity, account, scheduler, statements
 appwrite/          tables, buckets, functions as code
 docs/              design docs (GitBook)
 ```

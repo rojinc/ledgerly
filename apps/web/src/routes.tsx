@@ -12,6 +12,7 @@ import { groupRoutes } from './features/groups/routes'
 import { houseRoutes } from './features/house/routes'
 import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
+import { scheduleRoutes } from './features/schedules/routes'
 import { shiftRoutes } from './features/shifts/routes'
 import { statementRoutes } from './features/statements/routes'
 import { transactionRoutes } from './features/transactions/routes'
@@ -41,6 +42,7 @@ export const routes: RouteObject[] = [
           statementRoutes,
           peopleRoutes,
           shiftRoutes,
+          scheduleRoutes,
           billRoutes,
           { path: 'activity', element: <ActivityPage /> },
         ],

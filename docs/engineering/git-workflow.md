@@ -29,7 +29,7 @@ Refs #17
 ```
 
 - **Types:** `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `ci`, `perf`.
-- **Scopes:** `core`, `server`, `ledger`, `groups`, `identity`, `scheduler`, `statements`, `web`, `appwrite`, `infra`, `docs`.
+- **Scopes:** `core`, `server`, `ledger`, `groups`, `identity`, `account`, `scheduler`, `statements`, `web`, `appwrite`, `infra`, `docs`.
 - Example: `feat(core): add allocate() with largest-remainder rounding`.
 - Small, focused commits. They are squashed on merge, but they help review.
 
