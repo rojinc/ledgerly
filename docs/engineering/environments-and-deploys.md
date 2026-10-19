@@ -41,8 +41,8 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 - **One deploy at a time,** and a running one is never cancelled.
 - **Every run deploys `main`'s latest commit, never an older one.** `push table --force` makes the database match the commit's `tables.json`, so deploying an older commit would drop columns added since, with their data.
-  - **A run for an older commit** (or a re-run of an old run) checks out `main`'s latest and deploys that, with a notice naming both commits.
-  - **Why it doesn't skip:** merges that land together can get the newer runs cancelled, since `concurrency` keeps only one pending run, and a skip would leave `main`'s latest undeployed.
+  - **A run for an older commit** (or a re-run of an old run) deploys `main`'s latest instead, with a notice naming both commits. The checkout step names `ref: main` for this: without it, `actions/checkout` resets `origin/main` to the run's own commit, so the run can't see anything newer.
+  - **Why it doesn't skip:** merges that land together can leave an older commit's run as the only one that survives, since `concurrency` keeps one pending run and cancels the rest. A skip would leave `main`'s latest undeployed.
   - **One exception:** a run's steps come from its own commit. So if `main`'s latest changed `deploy.yml` or the plan script, that run fails without deploying, and a person runs **Deploy** on `main`.
   - **A run on another branch** fails.
   - **To undo a change,** revert it on `main`.
