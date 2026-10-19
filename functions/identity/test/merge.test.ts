@@ -728,6 +728,8 @@ describe('moveMembers (step 2)', () => {
         ['m2', 'g2', 'pU', 'active', '2026-09-01'],
       ])
       expect(joinedRows(services).map(([groupId]) => groupId)).toEqual(['g2'])
+      // Not even g1's guard was written.
+      expect(services.db.rows('groups').find((row) => row.$id === 'g1')?.rev).toBe('r0')
     })
 
     it('leaves the row moved, but not a group U joined, when the team goes just after the commit', async () => {

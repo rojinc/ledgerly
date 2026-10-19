@@ -528,6 +528,8 @@ describe('POST /claim, merging a placeholder', () => {
             ['transactions', 't1'],
             ['schedules', 'sc1'],
             ['reminders', 'rToSammy'],
+            // The group row goes last, while mergeGroupIds still lists it.
+            ['groups', 'g1'],
           ] as const
         ).map(([tableId, rowId]) => ({ action: 'delete' as const, tableId, rowId })),
       ),

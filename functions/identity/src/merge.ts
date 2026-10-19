@@ -168,8 +168,8 @@ async function memberDates(
 
 /**
  * What step 2 did: the kept groups (U left them on their own), the groups U joined, where U had
- * no joined row before (`linkedGroupIds`), the groups put off while a statement is finalizing,
- * and whether every one of the groups was seen to.
+ * no joined row before (`linkedGroupIds`), the groups put off (a statement is finalizing, step 3
+ * can't go on, or a purge deleted the team), and whether every one of the groups was seen to.
  */
 export type MembersResult = { kept: Set<string>; joined: string[]; putOff: string[]; done: boolean }
 
@@ -181,7 +181,8 @@ export type MembersResult = { kept: Set<string>; joined: string[]; putOff: strin
  * finalized is put off whole, P's row included: its inputs and shares must wait, and P's row
  * moved without them would let a leave, a removal or an edit count P's part as someone else's.
  * A group step 3 can't go on in (`ready` false) is put off the same way, before anything is
- * written. A row is finished once it no longer points at P, so a retry carries on.
+ * written, and so is one whose team is gone: an account deletion is purging it, its rows last
+ * (#334). A row is finished once it no longer points at P, so a retry carries on.
  */
 export async function moveMembers(
   services: Services,
@@ -257,8 +258,9 @@ export async function memberOf(
  * real change that guards the row (ledger.md#concurrency) even when nothing else on it changes.
  * The same transaction guards U's person row (`guardInto`), so no merge joins a person whose
  * account is being deleted. True if this call moved it and U is joined there; false if a merge
- * running at the same time moved it, or a leave of U's own landed just after (so the group isn't
- * one U joined).
+ * running at the same time moved it, or a leave of U's own landed just after, or the team was
+ * gone by the add after the commit (so the group isn't one U joined). Throws `TeamGone` if the
+ * team is gone at the first add, before anything is written.
  */
 async function moveMember(
   { db, teams, now }: Services,
