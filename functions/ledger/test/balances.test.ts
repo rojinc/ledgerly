@@ -227,7 +227,7 @@ describe('GET /groups/{groupId}/balances', () => {
       { personId: 'bob', netCents: 5100 },
     ])
     expect(error.mock.calls).toEqual([
-      ["balances: the row of group house doesn't add up; summed the shares"],
+      ["balances: the row of group house can't be read or doesn't add up; summed the shares"],
     ])
     error.mockRestore()
   })
