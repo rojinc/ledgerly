@@ -174,7 +174,20 @@ function house(more: Record<string, object[]> = {}): Fakes {
         },
         ...(more.reminders ?? []),
       ],
-      activity: more.activity ?? [],
+      activity: [
+        // Alex added Sammy to g1 (#257: once merged, the feed names Sam).
+        {
+          $id: 'aAdded',
+          $createdAt: BEFORE,
+          at: BEFORE,
+          groupId: 'g1',
+          actorPersonId: 'pX',
+          action: 'member.added',
+          subjectPersonId: 'pP',
+          summary: 'was added',
+        },
+        ...(more.activity ?? []),
+      ],
     } as Parameters<typeof fakes>[0],
     { teams: { g1: ['u2'], g2: ['u1'], g3: ['u2'] } },
   )
@@ -205,6 +218,7 @@ function namingSammy(services: Fakes) {
     'transactions',
     'schedules',
     'reminders',
+    'activity',
   ] as const
   return Object.fromEntries(
     tables.map((table) => [
@@ -293,6 +307,13 @@ describe('POST /claim, merging a placeholder', () => {
     expect(body).toEqual({ ok: true, data: { linkedGroupIds: ['g1'] } })
 
     expect(nets(services, 'g1')).toEqual({ pX: before.g1.pX, pSam: before.g1.pP })
+    // The feed names Sam on the row written when Alex added Sammy (#257); nothing else changed.
+    expect(services.db.rows('activity').find((row) => row.$id === 'aAdded')).toMatchObject({
+      subjectPersonId: 'pSam',
+      actorPersonId: 'pX',
+      action: 'member.added',
+      summary: 'was added',
+    })
     expect(nets(services, 'g2')).toEqual({ pSam: (before.g2.pSam ?? 0) + (before.g2.pP ?? 0) })
     // One share per person in t2 (I-5).
     expect(
@@ -339,6 +360,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: [],
       schedules: [],
       reminders: [],
+      activity: [],
     })
 
     // The schedule names Sam now; Sam's personal group was never searched.
@@ -444,6 +466,17 @@ describe('POST /claim, merging a placeholder', () => {
           action: 'member.left',
           summary: 'Left',
         },
+        // Sammy stays Sammy in a kept group, activity included (#257).
+        {
+          $id: 'aKept',
+          $createdAt: BEFORE,
+          at: BEFORE,
+          groupId: 'g3',
+          actorPersonId: 'pX',
+          action: 'member.added',
+          subjectPersonId: 'pP',
+          summary: 'was added',
+        },
       ],
     })
     expect((await claim(services)).body).toEqual({ ok: true, data: { linkedGroupIds: ['g1'] } })
@@ -454,6 +487,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: ['t3'],
       schedules: [],
       reminders: ['rKept'],
+      activity: ['aKept'],
     })
     expect(services.teams.members('g3')?.map((member) => member.userId)).toEqual(['u2'])
     expect(nets(services, 'g3')).toEqual({ pX: 1000, pP: -1000 })
@@ -472,6 +506,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: ['t1'],
       schedules: ['sc1'],
       reminders: [],
+      activity: ['aAdded'],
     })
     await withTransaction(services.db, (tx) =>
       tx.write({
@@ -489,6 +524,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: [],
       schedules: [],
       reminders: [],
+      activity: [],
     })
     expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
   })
@@ -574,6 +610,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: ['t3'],
       schedules: [],
       reminders: [],
+      activity: [],
     })
   })
 
@@ -611,6 +648,7 @@ describe('POST /claim, merging a placeholder', () => {
         transactions: [],
         schedules: [],
         reminders: [],
+        activity: [],
       })
       expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
       expect(nets(services, 'g2')).toEqual({ pSam: 0 })

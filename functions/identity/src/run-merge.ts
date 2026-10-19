@@ -3,7 +3,14 @@ import { type MergeMembers, mergeMembersSchema } from '@ledgerly/core/schemas/id
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
-import { memberOf, moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
+import {
+  memberOf,
+  moveIdentities,
+  moveMembers,
+  moveReminders,
+  moveShares,
+  moveSubjects,
+} from './merge'
 import { cursorsOf, moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
 
@@ -62,7 +69,7 @@ async function runMerge(
   const kept = new Set<string>()
   const joined: string[] = []
   const putOff = new Set<string>()
-  const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
+  const moved = { inputs: 0, voided: 0, shares: 0, subjects: 0, skipped: 0 }
   const recorded = memberDatesOf(placeholder)
   const cursors = cursorsOf(placeholder)
   let done = true
@@ -125,6 +132,13 @@ async function runMerge(
     }
     // Rows left as they are keep the merge open, but their group's shares can still move.
     if (!templates.done || !inputs.done) done = false
+    // Activity rows about P are about U from now on (#257): the feed names U, not "A former member".
+    const subjects = await moveSubjects(db, fromId, intoId, [groupId], deadline)
+    moved.subjects += subjects.moved
+    if (!subjects.done) {
+      done = false
+      break
+    }
     // Neither has a row here (U's, once P's, was removed since): a share moved to U would be one
     // with no member row (I-3), so P's stay, and `stray()` keeps the merge open while one is left.
     // An input naming P names a non-member already, so renaming it changed nothing there.
@@ -139,7 +153,7 @@ async function runMerge(
     }
   }
   const reminders = await moveReminders(db, fromId, intoId, kept, deadline)
-  const counts = `${joined.length} groups joined, ${moved.inputs} inputs, ${moved.voided} voided, ${moved.shares} shares, ${reminders.moved} reminders, ${moved.skipped} left as they are`
+  const counts = `${joined.length} groups joined, ${moved.inputs} inputs, ${moved.voided} voided, ${moved.shares} shares, ${moved.subjects} activity rows, ${reminders.moved} reminders, ${moved.skipped} left as they are`
   if (
     done &&
     putOff.size === 0 &&
