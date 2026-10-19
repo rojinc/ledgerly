@@ -1,0 +1,15 @@
+{
+  "name": "@ledgerly/fn-account",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node ../../scripts/build-functions.mjs account",
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@ledgerly/core": "*",
+    "@ledgerly/server": "*",
+    "node-appwrite": "^30.0.1"
+  }
+}

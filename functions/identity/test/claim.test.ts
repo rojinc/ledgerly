@@ -44,6 +44,14 @@ function claimFixture(members: Row[], extra: { persons?: Row[]; identities?: Row
     {
       persons: [SAM, ...(extra.persons ?? [])],
       identities: [VERIFIED_EMAIL, ...(extra.identities ?? [])],
+      // Their rows, for the guard a merge writes on each group.
+      groups: ['g1', 'g2', 'g3'].map((id) => ({
+        $id: id,
+        type: 'house',
+        name: 'Flat',
+        rev: 'r0',
+        settingsJson: '{"type":"house","autoFinalize":false,"defaultBillSplit":"equal"}',
+      })),
       members,
     },
     { teams: { g1: ['uAdmin'], g2: ['uAdmin'], g3: ['uAdmin'] } },
@@ -141,7 +149,7 @@ describe('POST /claim', () => {
     })
   })
 
-  it("skips a placeholder's identity, which would need a merge, and logs only that", async () => {
+  it('merges a placeholder whose identity the caller verified, logging IDs and counts only', async () => {
     const services = claimFixture([placeholderRow('m1', 'g1', 'pOther', BEFORE)], {
       persons: [{ $id: 'pOther', userId: null, displayName: 'Sam', claimedAt: null }],
       identities: [
@@ -155,13 +163,23 @@ describe('POST /claim', () => {
       ],
     })
     services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(await claimed(services)).toEqual(['g1'])
+    const other = services.db.rows('persons').find((row) => row.$id === 'pOther')
+    expect(other).toMatchObject({ userId: null, mergedInto: 'pSam' })
+    // The merge moved the identity, and the claim then verified it for Sam.
+    expect(services.db.rows('identities')[1]).toMatchObject({ personId: 'pSam', verified: true })
+    expect(services.db.rows('members')).toEqual([
+      expect.objectContaining({ $id: 'm1', personId: 'pSam', status: 'active' }),
+    ])
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin', 'u1'])
+    expect(warn).not.toHaveBeenCalled()
+    expect(log).toHaveBeenCalledTimes(1)
+    for (const args of log.mock.calls) expect(String(args)).not.toMatch(/@|\d{6,}|Sam Lee/)
+    // Finished: the next claim leaves P alone.
     expect(await claimed(services)).toEqual([])
-    expect(warn.mock.calls).toEqual([['claim needs a merge; skipped']])
-    expect(services.db.rows('identities')[1]).toMatchObject({
-      personId: 'pOther',
-      verified: false,
-    })
-    expect(statusOf(services, 'm1')).toBe('placeholder')
+    expect(log).toHaveBeenCalledTimes(1)
+    log.mockRestore()
   })
 
   it('silently leaves an identity that belongs to another registered person', async () => {
@@ -306,6 +324,84 @@ describe('POST /claim', () => {
     const linked = await claimed(services)
     expect(linked).toHaveLength(101)
     expect(new Set(linked).size).toBe(101)
+  })
+
+  it('is NOT_FOUND for a deleted account, whose person is never resolved from its userId', async () => {
+    const deleted = {
+      $id: 'p1',
+      userId: 'u1',
+      displayName: 'Former member',
+      claimedAt: BEFORE,
+      mergedInto: null,
+      deletedAt: BEFORE,
+    }
+    expect((await failure(fakes({ persons: [deleted] }), 'POST', '/claim')).code).toBe('NOT_FOUND')
+  })
+
+  describe('when the deletion passes its point of no return after the lookup', () => {
+    const setUpFirst = { status: 404, code: 'NOT_FOUND', message: 'Set up your account first.' }
+    const deletion = (services: Fakes) => () =>
+      updateRow(services.db, 'persons', 'pSam', { deletedAt: AFTER })
+
+    function withNewPhone() {
+      const services = claimFixture([])
+      services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
+      return services
+    }
+
+    it('creates no identity row, before it is staged', async () => {
+      const services = withNewPhone()
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('phone:+61412345678'),
+        deletion(services),
+      )
+      expect(await failure(services, 'POST', '/claim')).toEqual(setUpFirst)
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iEmail'])
+    })
+
+    it('creates no identity row, after it is staged', async () => {
+      const services = withNewPhone()
+      beforeCommit(services.db, deletion(services))
+      expect(await failure(services, 'POST', '/claim')).toEqual(setUpFirst)
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iEmail'])
+    })
+
+    it('leaves an identity row unverified', async () => {
+      const services = claimFixture([], {
+        identities: [
+          {
+            $id: 'iPhone',
+            key: 'phone:+61412345678',
+            type: 'phone',
+            personId: 'pSam',
+            verified: false,
+            verifiedAt: null,
+          },
+        ],
+      })
+      services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"iPhone"'),
+        deletion(services),
+      )
+      expect(await failure(services, 'POST', '/claim')).toEqual(setUpFirst)
+      expect(services.db.rows('identities')[1]).toMatchObject({ verified: false, verifiedAt: null })
+    })
+
+    it('joins nothing, and takes back the team membership', async () => {
+      const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"tableId":"members"'),
+        deletion(services),
+      )
+      expect(await failure(services, 'POST', '/claim')).toEqual(setUpFirst)
+      expect(statusOf(services, 'm1')).toBe('placeholder')
+      expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+      expect(services.db.rows('activity')).toEqual([])
+    })
   })
 
   it('is NOT_FOUND before bootstrap', async () => {

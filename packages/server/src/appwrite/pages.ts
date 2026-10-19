@@ -1,7 +1,7 @@
-import { DATABASE_ID, type TableId } from '@ledgerly/server/appwrite/tables'
 import type { Models } from 'node-appwrite'
 import { Query } from 'node-appwrite'
-import type { Services } from './services'
+import type { Db } from './client'
+import { DATABASE_ID, type TableId } from './tables'
 
 const PAGE = 100
 
@@ -11,7 +11,7 @@ const PAGE = 100
  * deleted meanwhile, and a deleted cursor row fails the query.
  */
 export async function* pages<R extends Models.Row>(
-  { db, outOfTime }: Pick<Services, 'db' | 'outOfTime'>,
+  { db, outOfTime }: { db: Db; outOfTime: () => boolean },
   tableId: TableId,
   queries: string[],
 ): AsyncGenerator<R> {
@@ -40,7 +40,7 @@ export async function* pages<R extends Models.Row>(
 
 /** Every matching row, however far the run has got, paged as `pages` does. */
 export async function allRows<R extends Models.Row>(
-  db: Services['db'],
+  db: Db,
   tableId: TableId,
   queries: string[],
 ): Promise<R[]> {

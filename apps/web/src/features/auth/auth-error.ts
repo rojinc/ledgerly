@@ -7,6 +7,11 @@ const MESSAGES: Record<string, string> = {
   general_rate_limit_exceeded: 'Too many attempts. Wait a minute and try again.',
 }
 
+/** Appwrite's error type (its response code), if it is one of Appwrite's errors. */
+export function errorType(error: unknown): string | undefined {
+  return error instanceof AppwriteException ? error.type : undefined
+}
+
 export function authErrorMessage(error: unknown): string {
   const known = error instanceof AppwriteException ? MESSAGES[error.type] : undefined
   return known ?? 'Something went wrong. Check your connection and try again.'

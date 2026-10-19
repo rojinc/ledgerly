@@ -63,6 +63,7 @@
 | --- | --- | --- |
 | `scheduler` | every 60 minutes | Creates occurrences for due schedules, auto-posts past shifts and autopay bills, sends reminders and summary emails, deletes receipt files no transaction lists, and runs the nightly check (balances row, ledger invariants, team memberships) |
 | `statements` | every 60 minutes | Drafts statements for periods that ended, and auto-finalizes where enabled |
+| `identity` | every 60 minutes | Carries on person merges a claim left unfinished ([finishing merges](identity-and-invites.md#finishing-merges)) |
 
 All jobs are **idempotent**: running them twice does no harm. They use deterministic row IDs and conflict-checked transactions. → [Scheduling](scheduling.md)
 
