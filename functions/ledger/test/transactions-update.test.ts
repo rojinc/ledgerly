@@ -246,11 +246,11 @@ describe('PATCH /transactions/{id}', () => {
   })
 
   it('clears remindedAt when a due bill gets a new due date, and only then', async () => {
-    const bill = (dueOn: string) => ({
+    const bill = (dueOn: string, date = '2026-10-20') => ({
       id: 'b1',
       groupId: 'house',
       kind: 'bill',
-      date: '2026-10-20',
+      date,
       description: 'Electricity',
       totalCents: 12000,
       bill: { status: 'due', dueOn },
@@ -275,6 +275,12 @@ describe('PATCH /transactions/{id}', () => {
     })
     await call(db, 'PATCH', '/transactions/b1', bill('2026-10-25'))
     expect(rows.transactions(db)[0]?.remindedAt).toBe('2026-10-23T20:00:00.000Z')
+    // Its `date` isn't what "Bill due soon" is about, and it isn't `scheduled`.
+    await call(db, 'PATCH', '/transactions/b1', bill('2026-10-25', '2026-10-21'))
+    expect(rows.transactions(db)[0]).toMatchObject({
+      date: '2026-10-21',
+      remindedAt: '2026-10-23T20:00:00.000Z',
+    })
     await call(db, 'PATCH', '/transactions/b1', bill('2026-10-30'))
     expect(rows.transactions(db)[0]).toMatchObject({ dueOn: '2026-10-30', remindedAt: null })
   })

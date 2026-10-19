@@ -534,7 +534,10 @@ describe('step 2: auto-post', () => {
       reminders: { sent: 1, skipped: 0, failed: 0 },
     })
     expect(services.sendEmail).toHaveBeenCalledWith(
-      expect.objectContaining({ to: 'sam@example.com', idempotencyKey: `reminder-${ID}_20261015` }),
+      expect.objectContaining({
+        to: 'sam@example.com',
+        idempotencyKey: `reminder-${ID}_20261015-2026-10-15`,
+      }),
     )
   })
 
