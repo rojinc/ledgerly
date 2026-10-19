@@ -10,7 +10,7 @@ export interface TeamsApi {
   listMemberships(params: {
     teamId: string
     queries?: string[]
-  }): Promise<{ memberships: Array<Pick<Models.Membership, '$id' | 'userId'>> }>
+  }): Promise<{ memberships: Array<Pick<Models.Membership, '$id' | 'userId' | '$createdAt'>> }>
   deleteMembership(params: { teamId: string; membershipId: string }): Promise<unknown>
 }
 

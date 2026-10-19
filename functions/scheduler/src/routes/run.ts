@@ -2,9 +2,15 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import type { Services } from '../services'
 import { autoPost, type PostCounts } from '../steps/auto-post'
 import { type ExpandCounts, expandDueSchedules } from '../steps/expand'
+import { type CheckCounts, nightlyCheck } from '../steps/nightly-check'
 import { type ReminderCounts, sendReminders } from '../steps/reminders'
 
-export type RunResult = { expanded: ExpandCounts; posted: PostCounts; reminders: ReminderCounts }
+export type RunResult = {
+  expanded: ExpandCounts
+  posted: PostCounts
+  reminders: ReminderCounts
+  checked: CheckCounts
+}
 
 /**
  * The hourly cron run (scheduling.md#the-scheduler-job): Appwrite sends it as `POST /` with
@@ -17,5 +23,6 @@ export async function run(scheduled: boolean, services: () => Services): Promise
   const built = services()
   const expanded = await expandDueSchedules(built)
   const posted = await autoPost(built)
-  return { expanded, posted, reminders: await sendReminders(built) }
+  const reminders = await sendReminders(built)
+  return { expanded, posted, reminders, checked: await nightlyCheck(built) }
 }

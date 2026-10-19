@@ -155,6 +155,16 @@ describe('POST / (cron run)', () => {
         expanded: { schedules: 0, created: 0, failed: 0 },
         posted: { posted: 0, skipped: 0, failed: 0 },
         reminders: { sent: 1, skipped: 0, failed: 0 },
+        // Step 5's first pass backfills each group's balances row.
+        checked: {
+          checked: 4,
+          busy: 0,
+          findings: 0,
+          merging: 0,
+          repaired: 4,
+          removed: 0,
+          failed: 0,
+        },
       },
     })
     expect(logs.join('\n')).not.toContain('sam@example.com')
