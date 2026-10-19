@@ -12,6 +12,7 @@ const NAV = [
   { to: '/calendar', label: 'Calendar' },
   { to: '/transactions', label: 'History' },
   { to: '/groups', label: 'Groups' },
+  { to: '/people', label: 'People' },
   { to: '/profile', label: 'Profile' },
 ]
 
