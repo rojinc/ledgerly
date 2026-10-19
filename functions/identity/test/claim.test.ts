@@ -1,6 +1,6 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
-import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AFTER,
   account,
@@ -44,6 +44,14 @@ function claimFixture(members: Row[], extra: { persons?: Row[]; identities?: Row
     {
       persons: [SAM, ...(extra.persons ?? [])],
       identities: [VERIFIED_EMAIL, ...(extra.identities ?? [])],
+      // Their rows, for the guard a merge writes on each group.
+      groups: ['g1', 'g2', 'g3'].map((id) => ({
+        $id: id,
+        type: 'house',
+        name: 'Flat',
+        rev: 'r0',
+        settingsJson: '{"type":"house","autoFinalize":false,"defaultBillSplit":"equal"}',
+      })),
       members,
     },
     { teams: { g1: ['uAdmin'], g2: ['uAdmin'], g3: ['uAdmin'] } },
@@ -62,12 +70,29 @@ async function claimed(services: Fakes) {
   return (await ok<{ linkedGroupIds: string[] }>(services, 'POST', '/claim')).linkedGroupIds
 }
 
-// A claim's lines are warnings (log.ts LEVELS).
-let logged: MockInstance<typeof console.warn>
+// Every line written, with its level (log.ts LEVELS): a claim warns, a finished merge logs.
+let logged: Array<{ level: string; line: string }>
 beforeEach(() => {
-  logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  logged = []
+  for (const level of ['log', 'warn', 'error'] as const) {
+    vi.spyOn(console, level).mockImplementation((line: unknown) => {
+      logged.push({ level, line: String(line) })
+    })
+  }
 })
-afterEach(() => logged.mockRestore())
+afterEach(() => {
+  // No personal data in logs: no email, phone number or name.
+  for (const { line } of logged) expect(line).not.toMatch(/@|\d{6,}|Sam Lee/)
+  vi.restoreAllMocks()
+})
+// The logProblem lines written at a level, without `fn`.
+const lines = (level: string) =>
+  logged
+    .filter((written) => written.level === level)
+    .map(({ line }) => {
+      const { fn: _fn, ...event } = JSON.parse(line) as Record<string, unknown>
+      return event
+    })
 
 describe('POST /claim', () => {
   it('joins only placeholder rows added strictly before claimedAt', async () => {
@@ -142,7 +167,7 @@ describe('POST /claim', () => {
     })
   })
 
-  it("skips a placeholder's identity, which would need a merge, and logs only that", async () => {
+  it('merges a placeholder whose identity the caller verified, logging IDs and counts only', async () => {
     const services = claimFixture([placeholderRow('m1', 'g1', 'pOther', BEFORE)], {
       persons: [{ $id: 'pOther', userId: null, displayName: 'Sam', claimedAt: null }],
       identities: [
@@ -156,15 +181,20 @@ describe('POST /claim', () => {
       ],
     })
     services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
-    expect(await claimed(services)).toEqual([])
-    expect(logged.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
-      { fn: 'unknown', event: 'claim_needs_merge' },
+    expect(await claimed(services)).toEqual(['g1'])
+    const other = services.db.rows('persons').find((row) => row.$id === 'pOther')
+    expect(other).toMatchObject({ userId: null, mergedInto: 'pSam' })
+    // The merge moved the identity, and the claim then verified it for Sam.
+    expect(services.db.rows('identities')[1]).toMatchObject({ personId: 'pSam', verified: true })
+    expect(services.db.rows('members')).toEqual([
+      expect.objectContaining({ $id: 'm1', personId: 'pSam', status: 'active' }),
     ])
-    expect(services.db.rows('identities')[1]).toMatchObject({
-      personId: 'pOther',
-      verified: false,
-    })
-    expect(statusOf(services, 'm1')).toBe('placeholder')
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin', 'u1'])
+    expect(lines('warn')).toEqual([])
+    expect(lines('log')).toHaveLength(1)
+    // Finished: the next claim leaves P alone.
+    expect(await claimed(services)).toEqual([])
+    expect(lines('log')).toHaveLength(1)
   })
 
   it('silently leaves an identity that belongs to another registered person', async () => {
@@ -174,7 +204,7 @@ describe('POST /claim', () => {
     })
     services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
     await claimed(services)
-    expect(logged).not.toHaveBeenCalled()
+    expect(logged).toEqual([])
     expect(services.db.rows('identities')[1]).toMatchObject({ personId: 'pOther' })
   })
 

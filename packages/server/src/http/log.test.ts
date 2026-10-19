@@ -67,8 +67,8 @@ group('logProblem', () => {
   })
 
   it('writes `unknown` for the function outside Appwrite', () => {
-    logProblem('claim_needs_merge')
-    expect(lines()).toEqual([{ fn: 'unknown', event: 'claim_needs_merge' }])
+    logProblem('merge_member_dates_unreadable')
+    expect(lines()).toEqual([{ fn: 'unknown', event: 'merge_member_dates_unreadable' }])
   })
 
   it('writes `invalid` for a value passed as an ID that isn’t one', () => {
@@ -126,12 +126,24 @@ group('logProblem', () => {
     logProblem('team_membership_removed', { groupId: 'g1', membershipId: 'm1' })
     logProblem('typed_keys_deleted', { personId: 'p1', count: 1 })
     logProblem('claim_identity_unusable', { identityType: 'phone' })
-    logProblem('claim_needs_merge')
     logProblem('nightly_check_cut_off', { groupId: 'g1' })
     logProblem('pdf_characters_replaced', { count: 2 })
     for (const outcome of ['sent', 'stale', 'unverified', 'gone', 'failed'] as const) {
       logProblem('password_notice', { userId: 'u1', outcome })
     }
+    // A merge (#242): what it did logs, what it left warns, what stops it is an error.
+    const merge = { personId: 'pP', intoPersonId: 'pU' }
+    logProblem('merge_typed_keys_deleted', { ...merge, count: 1 })
+    logProblem('merge_finished', merge)
+    logProblem('merge_carries_on', merge)
+    logProblem('merge_stopped_into_deleted', merge)
+    logProblem('merge_left_transaction', { ...merge, transactionId: 't1' })
+    logProblem('merge_left_locked_transaction', { ...merge, transactionId: 't1' })
+    logProblem('merge_left_schedule', { ...merge, scheduleId: 's1' })
+    logProblem('merge_left_stray_row', { ...merge, table: 'shares', rowId: 'r1' })
+    logProblem('merge_stopped', { intoPersonId: 'pU', error: new Error('x') })
+    logProblem('merge_no_member_dates', { personId: 'pP', groupId: 'g1' })
+    logProblem('merge_member_dates_unreadable', { personId: 'pP' })
     expect(levels()).toEqual([
       'error',
       'error',
@@ -139,11 +151,21 @@ group('logProblem', () => {
       'warn',
       'warn',
       'warn',
+      'log',
+      'log',
+      'log',
+      'log',
+      'error',
+      'log',
+      'log',
+      'log',
+      'log',
       'warn',
-      'log',
-      'log',
-      'log',
-      'log',
+      'warn',
+      'warn',
+      'warn',
+      'warn',
+      'error',
       'error',
     ])
     expect(lines()[1]).toEqual({
@@ -152,6 +174,29 @@ group('logProblem', () => {
       groupId: 'g1',
       membershipId: 'm1',
     })
+  })
+
+  it('writes counts by name, each a whole number, and no other key', () => {
+    logProblem('merge_finished', {
+      personId: 'pP',
+      intoPersonId: 'Sam Smith',
+      rowId: 'sam@example.com',
+      counts: { groupsJoined: 2, shares: -1, identities: 1.5, inputs: 0 },
+    })
+    logProblem('merge_carries_on', {
+      counts: { groupsPutOff: 1, ...({ name: 7 } as Record<string, number>) },
+    })
+    expect(lines()).toEqual([
+      {
+        fn: 'unknown',
+        event: 'merge_finished',
+        personId: 'pP',
+        intoPersonId: 'invalid',
+        rowId: 'invalid',
+        counts: { groupsJoined: 2, inputs: 0, shares: 'invalid', identities: 'invalid' },
+      },
+      { fn: 'unknown', event: 'merge_carries_on', counts: { groupsPutOff: 1 } },
+    ])
   })
 
   it('names an error that is undefined', () => {

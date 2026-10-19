@@ -45,28 +45,30 @@ function addedBeforeSignUp(typed: ReturnType<typeof identity>[] = []) {
   )
 }
 
-// Every line written, at any level: an adoption logs, a claim warns (log.ts LEVELS).
-let logged: string[]
+// Every line written, with its level: an adoption logs, a claim warns (log.ts LEVELS).
+let logged: Array<{ level: string; line: string }>
 beforeEach(() => {
   logged = []
   for (const level of ['log', 'warn', 'error'] as const) {
     vi.spyOn(console, level).mockImplementation((line: unknown) => {
-      logged.push(String(line))
+      logged.push({ level, line: String(line) })
     })
   }
 })
 afterEach(() => {
   // No personal data in logs: no email, phone number or name.
-  for (const line of logged) expect(line).not.toMatch(/@|\+?\d{6,}|\bSam\b/)
+  for (const { line } of logged) expect(line).not.toMatch(/@|\+?\d{6,}|\bSam\b/)
   vi.restoreAllMocks()
 })
 
 // The logProblem lines written, without `fn`.
 const events = () =>
-  logged.map((line) => {
+  logged.map(({ line }) => {
     const { fn: _fn, ...event } = JSON.parse(line) as Record<string, unknown>
     return event
   })
+// Lines worth a look: warnings and errors.
+const warnings = () => logged.filter(({ level }) => level !== 'log')
 // The adoption's line (#252): IDs and counts only, never a key.
 const adoptions = () => events().filter(({ event }) => event === 'typed_keys_deleted')
 
@@ -269,7 +271,7 @@ describe('POST /bootstrap', () => {
     expect(services.teams.members('g1')).toHaveLength(1)
   })
 
-  it("adopts the email's placeholder over the phone's, and leaves the phone's for a merge", async () => {
+  it("adopts the email's placeholder over the phone's, and merges the phone's into it", async () => {
     const services = fakes({
       persons: [placeholder('pEmail'), placeholder('pPhone')],
       identities: [
@@ -281,11 +283,14 @@ describe('POST /bootstrap', () => {
     const result = await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)
     expect(result.personId).toBe('pEmail')
     expect(services.db.rows('identities')).toEqual([
-      expect.objectContaining({ $id: 'i1', personId: 'pPhone', verified: false }),
+      expect.objectContaining({ $id: 'i1', personId: 'pEmail', verified: true }),
       expect.objectContaining({ $id: 'i2', personId: 'pEmail', verified: true }),
     ])
-    expect(services.db.rows('persons').find((row) => row.$id === 'pPhone')?.userId).toBeNull()
-    expect(events()).toEqual([{ event: 'claim_needs_merge' }])
+    expect(services.db.rows('persons').find((row) => row.$id === 'pPhone')).toMatchObject({
+      userId: null,
+      mergedInto: 'pEmail',
+    })
+    expect(warnings()).toEqual([])
   })
 
   it('names a new person "Me" when the account has no name, and keeps the name an adopted one had', async () => {
