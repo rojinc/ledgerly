@@ -20,8 +20,8 @@ export interface UsersApi {
 export type Services = {
   db: Db
   /**
-   * For requireMember, which asks it only about a `left` member, and for step 5, the only one
-   * that removes or adds back a membership (scheduling.md#step-5-nightly-check).
+   * For requireMember, which asks it only about a `left` member, and for step 6, the only one
+   * that removes or adds back a membership (scheduling.md#step-6-nightly-check).
    */
   teams: Pick<TeamsApi, 'listMemberships' | 'deleteMembership' | 'createMembership'>
   users: UsersApi
