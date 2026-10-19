@@ -43,8 +43,12 @@ function posted(parts: [string, number][], ctx = house()) {
   }
 }
 
-const paidByX = (cents: number) => ({ payers: [{ personId: 'X', cents }] })
-const SEPTEMBER = { status: 'paid' as const, periodStart: '2026-09-01', periodEnd: '2026-09-30' }
+const paidByX = (cents: number): TransactionTemplate => ({ payers: [{ personId: 'X', cents }] })
+const SEPTEMBER = {
+  status: 'paid' as const,
+  periodStart: '2026-09-01' as LocalDate,
+  periodEnd: '2026-09-30' as LocalDate,
+}
 
 describe('mergeSplit', () => {
   it('renames P in an equal split, and leaves a split without P alone', () => {
