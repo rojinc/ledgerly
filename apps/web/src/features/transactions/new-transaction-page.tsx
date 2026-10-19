@@ -12,6 +12,7 @@ import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { centsToText } from '../groups/employer-form'
 import { useGroups, useMyMember } from '../groups/use-groups'
 import { type EmployerPeople, ENTRY_TYPES, type EntryValues, toEntryBody } from './presets'
 import { employerPeople, LedgerError, useCreateTransaction, useMembers } from './use-transactions'
@@ -25,9 +26,15 @@ const ERROR_FIELD: Record<string, keyof EntryValues> = {
   note: 'note',
 }
 
+/** An amount as typed in this currency: `40.50`, or `4050` for one without cents. */
+function amountExample(currency: string): string {
+  return centsToText(4050, currency)
+}
+
 /** Schema errors on the fields the form shows, in plain words. */
 function entryResolver(
   toBody: (values: EntryValues) => ReturnType<typeof toEntryBody>,
+  currency: string,
 ): Resolver<EntryValues, unknown, TransactionInput> {
   const resolve = schemaResolver<EntryValues, TransactionInput>(transactionInputSchema, toBody)
   return async (values, context, options) => {
@@ -40,7 +47,7 @@ function entryResolver(
     const total = toBody(values).totalCents
     if (values.amount.trim() === '') add('amount', 'Required')
     else if (get(found, 'totalCents') || Number.isNaN(total)) {
-      add('amount', 'Enter an amount like 40 or 40.50')
+      add('amount', `Enter an amount like ${amountExample(currency)}`)
     } else if (typeof total === 'number' && total <= 0) add('amount', 'Enter an amount above 0')
     for (const [path, field] of Object.entries(ERROR_FIELD)) {
       const message = get(found, path)?.message as string | undefined
@@ -100,8 +107,13 @@ export function NewTransactionPage() {
     )
   } else if (group.archivedAt) {
     content = <Message>This group is archived. You can see its history but not change it.</Message>
-  } else if (member.data?.role !== 'admin' && member.data?.role !== 'member') {
-    content = <Message>Only the people who keep this group’s records can add to it.</Message>
+  } else if (
+    // The presets are worded from the worker's side ("I paid for them"), so only the group's
+    // owner, the worker it pays, adds here (as only they start the timer).
+    group.ownerPersonId !== personId ||
+    (member.data?.role !== 'admin' && member.data?.role !== 'member')
+  ) {
+    content = <Message>Only the person this group pays adds expenses and payments here.</Message>
   } else {
     const people = employerPeople(group, members.data)
     content = people ? (
@@ -129,7 +141,7 @@ function EntryForm({ group, people }: { group: Groups; people: EmployerPeople })
   const toBody = (values: EntryValues) =>
     toEntryBody(values, { id, groupId: group.$id }, group.currency, people)
   const form = useForm<EntryValues, unknown, TransactionInput>({
-    resolver: entryResolver(toBody),
+    resolver: entryResolver(toBody, group.currency),
     defaultValues: {
       type: 'reimbursable',
       amount: '',
@@ -178,6 +190,7 @@ function EntryForm({ group, people }: { group: Groups; people: EmployerPeople })
         id="amount"
         inputMode="decimal"
         label={`Amount (${group.currency})`}
+        hint={`For example ${amountExample(group.currency)}.`}
         error={errors.amount}
         {...form.register('amount')}
       />

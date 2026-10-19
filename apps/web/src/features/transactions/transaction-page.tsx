@@ -22,15 +22,27 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
   )
 }
 
-// The stored input's note, or nothing if it can't be read.
-// Only the note is read: a full template parse fails on stored inputs it doesn't model, such as
-// a bill's.
-function noteOf(inputJson: string): string | undefined {
+// Only the parts shown are read: a full template parse fails on stored inputs it doesn't model,
+// such as a bill's.
+function storedParts(inputJson: string): {
+  note?: string
+  shift?: { minutes: number; rateCents: number }
+} {
   try {
-    const note = (JSON.parse(inputJson) as { note?: unknown } | null)?.note
-    return typeof note === 'string' && note !== '' ? note : undefined
+    const stored = JSON.parse(inputJson) as {
+      note?: unknown
+      shift?: { minutes?: unknown; rateCents?: unknown }
+    } | null
+    const note = typeof stored?.note === 'string' && stored.note !== '' ? stored.note : undefined
+    const minutes = stored?.shift?.minutes
+    const rateCents = stored?.shift?.rateCents
+    const shift =
+      Number.isInteger(minutes) && Number.isInteger(rateCents)
+        ? { minutes: minutes as number, rateCents: rateCents as number }
+        : undefined
+    return { ...(note ? { note } : {}), ...(shift ? { shift } : {}) }
   } catch {
-    return undefined
+    return {}
   }
 }
 
@@ -40,7 +52,9 @@ export function TransactionPage() {
   const transaction = useTransaction(id)
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold">{transaction.data?.description ?? 'Transaction'}</h1>
+      <h1 className="min-w-0 text-2xl font-semibold break-words">
+        {transaction.data?.description ?? 'Transaction'}
+      </h1>
       {transaction.data ? (
         <Details row={transaction.data} />
       ) : transaction.isError ? (
@@ -78,7 +92,7 @@ function Details({ row }: { row: Transactions }) {
   const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
   const locked = row.statementId !== null
   const archived = group.data.archivedAt !== null
-  const note = noteOf(row.inputJson)
+  const { note, shift } = storedParts(row.inputJson)
 
   return (
     <>
@@ -88,13 +102,22 @@ function Details({ row }: { row: Transactions }) {
       </Message>
       {archived && <Message>{ARCHIVED_NOTICE}</Message>}
       {!archived && locked && <Message>It’s on a final invoice, so it can’t be changed.</Message>}
-      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm">
+      <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm [&>dd]:min-w-0 [&>dd]:break-words">
         <dt className="text-muted-foreground">Amount</dt>
         <dd className="tabular-nums">
           {row.status === 'running'
             ? 'Timer running'
             : formatMoney(row.totalCents, group.data.currency)}
         </dd>
+        {row.kind === 'shift' && shift && (
+          <>
+            <dt className="text-muted-foreground">Shift</dt>
+            <dd>
+              {Math.floor(shift.minutes / 60)} h {shift.minutes % 60} min at{' '}
+              {formatMoney(shift.rateCents, group.data.currency)} an hour
+            </dd>
+          </>
+        )}
         <dt className="text-muted-foreground">Date</dt>
         <dd>{row.date}</dd>
         <dt className="text-muted-foreground">Kind</dt>
@@ -130,7 +153,7 @@ function Details({ row }: { row: Transactions }) {
                 {names.get(share.personId) ?? 'Someone'}:{' '}
                 {[
                   share.givenCents !== 0 &&
-                    `paid ${formatMoney(share.givenCents, group.data.currency)}`,
+                    `${row.kind === 'shift' ? 'earned' : 'paid'} ${formatMoney(share.givenCents, group.data.currency)}`,
                   share.receivedCents !== 0 &&
                     `${row.kind === 'payment' ? 'received' : 'for them'} ${formatMoney(share.receivedCents, group.data.currency)}`,
                 ]
