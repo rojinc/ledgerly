@@ -145,6 +145,22 @@ describe('sendEmail', () => {
     }
   })
 
+  it.each([
+    ['whole seconds', '2', 2000],
+    ['no header', null, undefined],
+    ['an HTTP date', 'Wed, 21 Oct 2026 07:28:00 GMT', undefined],
+    ['a fraction', '1.5', undefined],
+  ])("keeps Resend's retry-after when it is %s", async (_case, header, retryAfterMs) => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ name: 'rate_limit_exceeded' }), {
+        status: 429,
+        headers: header === null ? {} : { 'retry-after': header },
+      }),
+    )
+    const error = await failure(sendEmail(email))
+    expect(error).toMatchObject({ type: 'rate_limit_exceeded', status: 429, retryAfterMs })
+  })
+
   it('succeeds without an ID when Resend sends a 2xx without one', async () => {
     answer(200, 'accepted')
     await expect(sendEmail(email)).resolves.toEqual({ id: undefined })
@@ -175,5 +191,14 @@ describe('sendEmail', () => {
     const error = await failure(sendEmail(email))
     expect(timeout).toHaveBeenCalledWith(10_000)
     expect(error.type).toBe('timeout')
+  })
+
+  it.each([
+    [2_500, 2_500],
+    [30_000, 10_000],
+  ])('takes a timeout of %d ms as %d ms', async (timeoutMs, applied) => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout')
+    await sendEmail(email, { timeoutMs })
+    expect(timeout).toHaveBeenCalledWith(applied)
   })
 })
