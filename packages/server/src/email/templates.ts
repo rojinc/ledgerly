@@ -123,7 +123,7 @@ export function divideEmail(input: {
         ...input.pays.map((to) => `Pay ${to.name} ${money(to.cents)}.`),
         ...input.receives.map((from) => `${from.name} pays you ${money(from.cents)}.`),
       ],
-      { label: 'Open the divide', url: input.url },
+      [{ label: 'Open the divide', url: input.url }],
     ),
     attachments: [{ filename: `divide-${input.periodEnd}.pdf`, content: input.pdf }],
   }
