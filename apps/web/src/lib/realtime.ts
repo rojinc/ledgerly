@@ -16,6 +16,10 @@ type LiveTable = (typeof LIVE_TABLES)[number]
  */
 export const NOT_LIVE = ['currentUser', 'bootstrap', 'profile', 'person'] as const
 
+// Not live either: `pendingGroups` (features/groups/pending-groups.tsx). Those are groups the user
+// was only added to (D-016), whose rows they can't read until they join, so no event comes; the
+// list refetches on focus (#48's Out of scope).
+
 /** How long after the last event the collected keys are refreshed. */
 export const FLUSH_MS = 300
 
@@ -50,21 +54,8 @@ const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
 
 /** Every prefix an event can produce, refreshed once when the connection comes back. */
 export const LIVE_PREFIXES: Prefix[] = [
-  ['group'],
-  ['groups'],
-  ['balances'],
-  ['history'],
-  ['transaction'],
-  ['myShares'],
-  ['member'],
-  ['members'],
-  ['myRoles'],
-  ['calendar'],
-  ['today'],
-  ['bills'],
-  ['statements'],
-  ['statement'],
-]
+  ...new Set(Object.values(STALE).flatMap((stale) => stale('', '').map((key) => key[0] ?? ''))),
+].map((name) => [name])
 
 function isLiveTable(table: unknown): table is LiveTable {
   return (LIVE_TABLES as readonly unknown[]).includes(table)
@@ -91,6 +82,7 @@ export function staleKeys(event: unknown): Prefix[] {
 // whichever sync is mounted. The first open is the first connection; later ones are reconnects.
 const reconnectListeners = new Set<() => void>()
 let opens = 0
+let mounted = 0
 realtime.onOpen(() => {
   opens += 1
   if (opens > 1) for (const listener of reconnectListeners) listener()
@@ -115,6 +107,7 @@ function refresh(queryClient: QueryClient, prefixes: Prefix[]) {
 export function useRealtimeSync() {
   const queryClient = useQueryClient()
   useEffect(() => {
+    mounted += 1
     let stopped = false
     let pending: Prefix[] = []
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -150,11 +143,18 @@ export function useRealtimeSync() {
       .catch(() => undefined)
 
     return () => {
+      mounted -= 1
       stopped = true
       reconnectListeners.delete(onReconnect)
       if (timer !== undefined) clearTimeout(timer)
       // Waits for the subscription, so a quick unmount (StrictMode's) never leaves one behind.
       void subscription.then((active) => active?.unsubscribe().catch(() => undefined))
+      // Still unmounted once StrictMode's remount is done means signed out: close the socket. That
+      // ends the old session's auth on it, and drops a subscription whose connect failed, which
+      // unsubscribe can't reach and the SDK would keep retrying.
+      setTimeout(() => {
+        if (mounted === 0) void realtime.disconnect().catch(() => undefined)
+      }, 0)
     }
   }, [queryClient])
 }

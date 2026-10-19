@@ -10,6 +10,7 @@ const fake = vi.hoisted(() => {
     opens,
     subscribe: vi.fn(),
     unsubscribe: vi.fn(async () => {}),
+    disconnect: vi.fn(async () => {}),
   }
 })
 
@@ -18,6 +19,7 @@ vi.mock('./appwrite', () => ({
   realtime: {
     onOpen: (callback: () => void) => fake.opens.push(callback),
     subscribe: fake.subscribe,
+    disconnect: fake.disconnect,
   },
 }))
 
@@ -584,9 +586,15 @@ describe('useRealtimeSync', () => {
     const { unmount } = mount(new QueryClient(), true)
     await settle()
     expect(fake.subscribe.mock.calls.length - fake.unsubscribe.mock.calls.length).toBe(1)
+    act(() => vi.runOnlyPendingTimers())
+    // StrictMode's remount keeps the socket.
+    expect(fake.disconnect).not.toHaveBeenCalled()
     unmount()
     await settle()
     expect(fake.subscribe.mock.calls.length - fake.unsubscribe.mock.calls.length).toBe(0)
+    act(() => vi.runOnlyPendingTimers())
+    // Signed out: the socket closes, so the next user's subscription gets a fresh, authorised one.
+    expect(fake.disconnect).toHaveBeenCalledTimes(1)
   })
 
   it('keeps going quietly when Realtime can’t connect', async () => {
@@ -596,6 +604,9 @@ describe('useRealtimeSync', () => {
     unmount()
     await settle()
     expect(fake.unsubscribe).not.toHaveBeenCalled()
+    // The failed subscription has no handle: closing the socket drops it, so the SDK stops retrying.
+    act(() => vi.runOnlyPendingTimers())
+    expect(fake.disconnect).toHaveBeenCalledTimes(1)
   })
 
   it('ignores events once unmounted', async () => {
