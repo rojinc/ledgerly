@@ -791,14 +791,42 @@ describe('POST /claim, merging a placeholder', () => {
   // #338: subjects move only where Sam is joined, so no row g3's team reads links Sammy's key to
   // Sam's account (D-016). They don't hold the merge open: with nothing else of Sammy's left in
   // g3, the merge finishes and the phone moves.
+  // Sam left g3 on their own (their own member.left, the newest of theirs there), after step 1.
+  const leftOnTheirOwn = {
+    members: [
+      placeholderRow('m9', 'g3', 'pSam', BEFORE, {
+        status: 'left',
+        role: 'viewer',
+        displayName: 'Sam Lee',
+        leftOn: '2026-10-05',
+      }),
+    ],
+    activity: [
+      {
+        $id: 'aSamLeft',
+        $createdAt: '2026-10-05T00:00:00.000Z',
+        at: '2026-10-05T00:00:00.000Z',
+        groupId: 'g3',
+        actorPersonId: 'pSam',
+        action: 'member.left',
+        subjectPersonId: 'pSam',
+        summary: 'left',
+      },
+    ],
+  }
   it.each([
-    ['no row', []],
-    ['only a placeholder row', [placeholderRow('m9', 'g3', 'pSam', BEFORE)]],
-  ])('leaves Sammy’s activity in a group where Sam has %s, and still finishes', async (_, rows) => {
+    ['no row', { members: [], activity: [] }],
+    [
+      'only a placeholder row',
+      { members: [placeholderRow('m9', 'g3', 'pSam', BEFORE)], activity: [] },
+    ],
+    ['a row they left on their own', leftOnTheirOwn],
+  ])('leaves Sammy’s activity in a group where Sam has %s, and still finishes', async (_, more) => {
     const services = house({
       groups: [group('g3')],
-      members: rows,
+      members: more.members,
       activity: [
+        ...more.activity,
         {
           $id: 'aG3',
           $createdAt: BEFORE,
