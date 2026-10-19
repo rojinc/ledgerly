@@ -13,6 +13,7 @@ We store people's money records, contact details and bank details. Treat every c
 | Finding out who is a user by adding them to a group (enumeration) | Members added by someone else always start as placeholders, only the person can join, and person IDs carry no timestamp, so adding someone never reveals whether the email or phone has an account ([D-016](decisions.md)). Accepted: Appwrite's own sign-up says when an email is already registered. |
 | Teammates seeing each other's account emails | Appwrite's membership privacy setting hides account email, phone, name, MFA status and last access from team members; only the user ID is shown. Project settings aren't pushed by deploys: the lead set it on `ledgerly-dev` through the Appwrite MCP, and it must be set on prod when prod is created ([how](#membership-privacy)). |
 | Invite spam or SMS cost abuse | Rate limits: 20 invites per inviter in the last 24 hours, 3 per identity in the last 7 days (rolling), guarded so parallel requests can't pass them together. Tokens are hashed, single-use and expire in 14 days. |
+| Reminder spam ("you owe me" to anyone) | Only a joined admin or member of a pair group, with a verified email, whom the other member owes; only to an address the group already holds for that other member (an address the sender added them with). Rate limits: 1 per sender per group in 3 days, 3 per recipient in 7 days, 20 per sender in 24 hours, guarded like invites and committed before the email is sent. The subject is fixed; the only free text is the sender's name, cut to 40 characters, and the only link is the app ([reminders](identity-and-invites.md#reminders)). Accepted, as for invites: the recipient limit and the (uncounted, [#274](https://github.com/rojinc/ledgerly/issues/274)) address check each tell the sender a little, and the short name is free text. |
 | Edited history | Final statements lock transactions; activity is append-only and written only by functions. |
 | Leaked secrets | No secrets in git. Function secrets are Appwrite project variables. CI secrets are GitHub Actions secrets. `.env*` files are git-ignored except `.env.example`. |
 | Malicious uploads | `receipts` accepts only images and PDFs up to 10 MB, from verified users only. Files are only shown as images or downloaded, never run. When a file is attached, the ledger limits it to its group's team ([permissions](permissions.md#storage)). Files that no transaction lists are deleted by the scheduler after 24 hours ([#163](https://github.com/rojinc/ledgerly/issues/163)). Until that ships, it's an accepted risk that a file that's never attached keeps its uploader's permissions, `read("any")` included. |
@@ -40,6 +41,7 @@ Keep the user ID visible; everything else is hidden.
 | Bank details, ABN, address | `profiles.businessJson` | The owner; printed on invoices they send |
 | Receipts | `receipts` bucket | Members of the group |
 | Money records | ledger tables | Members of the group |
+| Reminders sent | `reminders` (who reminded whom, in which group, when; no address and no amount) | Server only. Deleted with either person's account. |
 
 Rules:
 
@@ -67,7 +69,7 @@ Rules, in `packages/core/src/export/`:
 - **RFC 4180:** CRLF line ends, a UTF-8 byte order mark, quotes doubled, and quotes around any field holding `,`, `"`, CR or LF.
 - **Spreadsheet formulas:** a text cell starting with `=`, `+`, `-`, `@` (or their full-width forms `＝＋－＠`), after any leading whitespace, or with a tab, CR or LF, gets a leading `'`, so opening the file never runs a formula someone typed. Names, descriptions, categories and profile values are all text cells; money cells never get one.
 - Any member can export a group they can read, viewers and people who moved out included. Nothing is written or uploaded.
-- **A group's records are one consistent read:** the group's `rev` is read before and after the pages, and everything is read again if it changed (ledger.md#concurrency), up to 3 times before the export fails. A page whose cursor row was deleted mid-read also starts again.
+- **A group's records are one consistent read:** the group's `rev` is read before and after the pages, and everything is read again if it changed (ledger.md#concurrency) or a page's cursor row was deleted mid-read (`general_cursor_not_found`). That's 3 reads in all, whatever the cause, before the export fails, as `GET /balances` does. `my-records.csv` reads again only for a lost cursor, within the same 3.
 - **What a spreadsheet does on opening** is outside the file: Excel may drop the leading zeros of a BSB or account number, show an ABN in scientific notation, read a text like `1/2` as a date, or read `12.30` wrongly where the decimal separator is a comma. The values in the file are exact; CSV has no way to mark a column as text.
 - **Your data** is two files, offered as two links once both are made, since browsers don't reliably allow two downloads from one click.
 
@@ -78,6 +80,7 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 - **Final statements and their PDFs stay as issued** after the worker deletes their account, ABN and bank details included, because the other side already holds them ([D-010](decisions.md#d-010-closed-periods-never-change)).
 - **A purged group's invoices are deleted** with it. The delete screen tells users to export first.
 - **Backups** follow Appwrite Cloud's retention, so deleted data can stay in a backup for that period.
+- **Reminders** (`reminders`) hold person and group IDs only, and are kept until either person deletes their account; pruning old rows is a later follow-up.
 - **Activity rows written before #50** keep the names in their text, as history; rows written since name no one ([activity](data-model.md#activity)).
 - **Deleting needs a recent sign-in and an old password.** The session must be under 10 minutes old, and `passwordUpdate` over 24 hours old, so a stolen session can't set a first password, sign in fresh and delete the account the same day ([refusals](identity-and-invites.md#refusals)). Accepted risk: signing in with Google (OAuth, later) would make a fresh session without a password change, so this rule must be revisited when OAuth is added. A follow-up emails the account's verified address whenever a password is set or changed.
 

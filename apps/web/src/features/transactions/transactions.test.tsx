@@ -1043,7 +1043,8 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
     expect(screen.queryByLabelText('Item 2 name')).toBeNull()
   })
 
-  it('stops at 30 items', async () => {
+  // Thirty renders of the whole form: about 4 s alone, more under a full parallel run.
+  it('stops at 30 items', { timeout: 15_000 }, async () => {
     await itemise()
     const add = screen.getByRole('button', { name: 'Add item' })
     for (let n = 1; n < 30; n++) fireEvent.click(add)
@@ -1062,6 +1063,8 @@ describe('HistoryPage', () => {
     [71500, /^Acme owes you .*715\.00$/],
     [-2050, /^You owe Acme .*20\.50$/],
     [0, /^All square$/],
+    // A balance can pass the amount cap.
+    [20_000_000_000, /^Acme owes you .*200,000,000\.00$/],
   ])('words a net of %i from the viewer’s side', async (net, text) => {
     mockGroups(acme, 'admin', net)
     mockRows()

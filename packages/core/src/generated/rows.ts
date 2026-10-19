@@ -114,6 +114,13 @@ export const InvitesChannel = {
 
 export type InvitesChannel = (typeof InvitesChannel)[keyof typeof InvitesChannel];
 
+export const RemindersChannel = {
+    EMAIL: "email",
+    SMS: "sms"
+} as const;
+
+export type RemindersChannel = (typeof RemindersChannel)[keyof typeof RemindersChannel];
+
 export type Persons = Models.Row & {
     userId: string | null;
     displayName: string;
@@ -274,4 +281,12 @@ export type Invites = Models.Row & {
     sentAt: string;
     expiresAt: string;
     acceptedAt: string | null;
+}
+
+export type Reminders = Models.Row & {
+    groupId: string;
+    sentBy: string;
+    toPersonId: string;
+    channel: RemindersChannel;
+    sentAt: string;
 }

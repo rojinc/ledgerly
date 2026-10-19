@@ -100,7 +100,7 @@ function revs(...seen: string[]) {
 }
 
 /** Appwrite's answer when a cursor's row was deleted between pages. */
-const lostCursor = (code: number) => new AppwriteException('Cursor not found', code)
+const lostCursor = () => new AppwriteException('Cursor not found', 400, 'general_cursor_not_found')
 
 function calls(): Params[] {
   return listRows.mock.calls.map(([params]) => params as unknown as Params)
@@ -333,7 +333,7 @@ describe('ExportPage: a group’s records', () => {
     expect(saved).not.toHaveBeenCalled()
   })
 
-  it.each([400, 404])('reads again from the start when a cursor is lost (%i)', async (code) => {
+  it('reads again from the start when a cursor is lost', async () => {
     const many = Array.from({ length: 101 }, (_, index) => transaction(`t${index}`))
     let lost = false
     listRows.mockImplementation((async ({ tableId, queries }: Params) => {
@@ -341,7 +341,7 @@ describe('ExportPage: a group’s records', () => {
       const after = queries.some((query) => query.includes('cursorAfter'))
       if (after && !lost) {
         lost = true
-        throw lostCursor(code)
+        throw lostCursor()
       }
       const rows = after ? many.slice(100) : many.slice(0, 100)
       return { total: rows.length, rows }
@@ -354,17 +354,41 @@ describe('ExportPage: a group’s records', () => {
   })
 
   it('gives up after 3 lost cursors, and never reads again on other errors', async () => {
-    listRows.mockRejectedValue(lostCursor(404))
+    listRows.mockRejectedValue(lostCursor())
     renderPage()
     fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
     await screen.findByRole('alert')
     expect(listRows).toHaveBeenCalledTimes(3)
-    listRows.mockClear()
-    listRows.mockRejectedValue(new AppwriteException('Server error', 500))
+    // A 404 (the group is gone) or another 400 can't be fixed by reading again.
+    for (const error of [
+      new AppwriteException('Not found', 404, 'row_not_found'),
+      new AppwriteException('Bad query', 400, 'general_query_invalid'),
+    ]) {
+      listRows.mockClear()
+      listRows.mockRejectedValue(error)
+      fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+      await waitFor(() => expect(listRows).toHaveBeenCalled())
+      await screen.findByRole('button', { name: 'Download CSV' })
+      expect(listRows).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('shares one budget of 3 reads between lost cursors and a changing group', async () => {
+    revs('r1', 'r2', 'r3', 'r4', 'r5', 'r6')
+    let lost = false
+    listRows.mockImplementation((async () => {
+      if (!lost) {
+        lost = true
+        throw lostCursor()
+      }
+      return { total: 0, rows: [] }
+    }) as never)
+    renderPage()
     fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
-    await waitFor(() => expect(listRows).toHaveBeenCalled())
-    await screen.findByRole('button', { name: 'Download CSV' })
-    expect(listRows).toHaveBeenCalledTimes(1)
+    await screen.findByRole('alert')
+    // One lost cursor, then two reads the group changed under: 3 reads, not 3 of each.
+    expect(getRow).toHaveBeenCalledTimes(5)
+    expect(saved).not.toHaveBeenCalled()
   })
 
   it('names the file as the app names the group, a pair by its other member', async () => {
@@ -565,7 +589,7 @@ describe('ExportPage: your data', () => {
       const after = queries.some((query) => query.includes('cursorAfter'))
       if (after && !lost) {
         lost = true
-        throw lostCursor(404)
+        throw lostCursor()
       }
       const rows = after ? shares.slice(100) : shares.slice(0, 100)
       return { total: rows.length, rows }
@@ -575,6 +599,16 @@ describe('ExportPage: your data', () => {
     await screen.findByText('Your files are ready. Download each one:')
     expect(calls().filter((params) => params.tableId === 'shares')).toHaveLength(4)
     expect(linkLines('my-records.csv')).toHaveLength(102)
+  })
+
+  it('gives up on your shares after 3 lost cursors', async () => {
+    listRows.mockRejectedValue(lostCursor())
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'We couldn’t make the files. Check your connection and try again.',
+    )
+    expect(listRows).toHaveBeenCalledTimes(3)
   })
 
   it('makes no files once the page is left', async () => {
@@ -652,15 +686,46 @@ describe('fileName', () => {
     expect(fileName('Café Night')).toBe('cafe-night')
     expect(fileName('Crème brûlée')).toBe('creme-brulee')
     expect(fileName('東京旅行')).toBe('東京旅行')
+    expect(fileName('Ｃａｆé')).toBe('cafe')
     expect(fileName('!!!')).toBe('group')
+  })
+
+  it('keeps the marks that are part of a word outside Latin', () => {
+    expect(fileName('नमस्ते घर')).toBe('नमस्ते-घर')
+    expect(fileName('สวัสดี')).toBe('สวัสดี')
+    expect(fileName('Café नमस्ते')).toBe('cafe-नमस्ते')
+    // Korean, typed or pasted decomposed, comes out as whole syllables.
+    expect(fileName('한국 집')).toBe('한국-집')
+    expect(fileName('한국'.normalize('NFD'))).toBe('한국')
+    // Only Latin accents come off a Latin letter; marks alone aren't a name.
+    expect(fileName('aा')).toBe('aा')
+    expect(fileName('İstanbul')).toBe('istanbul')
+    expect(fileName('\u0301\u0301')).toBe('group')
+  })
+
+  it('cuts by code point where the browser has no Intl.Segmenter', () => {
+    const segmenter = Intl.Segmenter
+    Object.assign(Intl, { Segmenter: undefined })
+    try {
+      expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(45))
+      expect(fileName('नमस्ते')).toBe('नमस्ते')
+    } finally {
+      Object.assign(Intl, { Segmenter: segmenter })
+    }
   })
 
   it('keeps 60 characters at most, without a dash at the end', () => {
     expect(fileName('a'.repeat(70))).toBe('a'.repeat(60))
     expect(fileName(`${'a'.repeat(59)} b`)).toBe('a'.repeat(59))
     expect(fileName(`-${'a'.repeat(60)}`)).toBe('a'.repeat(60))
-    // A letter outside the BMP counts once and isn't cut in half.
-    expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(60))
+    // A letter outside the BMP counts once and isn't cut in half; at 4 bytes, 45 fit in 180.
+    expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(45))
+    // A syllable, or a letter with its vowel sign, counts once and isn't split. And 180 bytes at
+    // most, so the name with its dates stays under 255: 한 is 3 bytes, की is 6.
+    expect(fileName('한'.repeat(61))).toBe('한'.repeat(60))
+    expect(fileName('की'.repeat(61))).toBe('की'.repeat(30))
+    // A character that would pass 180 bytes is left out whole, and nothing after it is kept.
+    expect(fileName(`a${'की'.repeat(30)}b`)).toBe(`a${'की'.repeat(29)}`)
   })
 })
 
