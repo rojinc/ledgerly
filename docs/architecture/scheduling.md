@@ -142,7 +142,7 @@ Profiles where `nextSummaryAt <= now` get the summary of the period that just en
 - Send times are worked out as local dates, then 07:00 on that date is converted to UTC (as `closeAtFor` does). Never add hours, or DST would move the send time.
 - Core's `nextSummaryAt(frequency, timeZone, now, previous?)` and `summaryPeriod(frequency, D)` implement this, so `identity` and the scheduler agree.
 
-The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
+The email goes only to a verified account email, never to a blocked account ([deleting one](identity-and-invites.md#order) blocks it first), and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
 
 For each profile, in this order:
 1. **Build the summary.** It covers the groups the person joined: an `active` or `left` member row, archived groups included ([D-016](decisions.md)). Their shares in those groups up to the period's end are read once (`idx_person_date`). `buildPersonalReport` turns the ones in the period into spending by category and income, one section per currency. Each group's balance is the person's net from `netsFromShares` up to the period's end; groups at 0 are left out. A failed read leaves `nextSummaryAt` as it is, so the next run tries again. A summary that can't be shown (an amount too big to format) moves on and counts as failed, because it would fail on every run.

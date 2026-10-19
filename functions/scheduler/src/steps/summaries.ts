@@ -187,11 +187,12 @@ async function joinedGroups({ db }: Services, personId: string): Promise<Groups[
   )
 }
 
-// Only to the account's own email, and only once it's verified (scheduling.md, step 4).
+// Only to the account's own email, once it's verified, and not once the account is blocked:
+// deleting it blocks it first (scheduling.md, step 4).
 async function verifiedEmail({ users }: Services, userId: string): Promise<string | undefined> {
   try {
     const user = await users.get({ userId })
-    return user.emailVerification && user.email ? user.email : undefined
+    return user.status && user.emailVerification && user.email ? user.email : undefined
   } catch (error) {
     // The account was deleted.
     if (error instanceof AppwriteException && error.code === 404) return undefined

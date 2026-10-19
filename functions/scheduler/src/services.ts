@@ -8,8 +8,8 @@ import { type Models, Teams, Users } from 'node-appwrite'
 // timeout; the next hourly run picks up the rest (scheduling.md#the-scheduler-job).
 const RUN_BUDGET_MS = 12 * 60_000
 
-/** The parts of an Appwrite account the reminders read. */
-export type AccountUser = Pick<Models.User, '$id' | 'email' | 'emailVerification'>
+/** The parts of an Appwrite account the reminders and summaries read. */
+export type AccountUser = Pick<Models.User, '$id' | 'email' | 'emailVerification' | 'status'>
 
 /** The parts of Users that the scheduler uses; the real `Users` satisfies it. */
 export interface UsersApi {

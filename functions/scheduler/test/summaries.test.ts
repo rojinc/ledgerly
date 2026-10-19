@@ -205,6 +205,10 @@ describe('step 4: summary emails', () => {
   it.each([
     ['an unverified email', { u1: { email: 'sam@example.com', emailVerification: false } }],
     ['a deleted account', {}],
+    [
+      'a blocked account, as one being deleted is',
+      { u1: { email: 'sam@example.com', emailVerification: true, status: false } },
+    ],
   ])('skips %s, and still moves on', async (_case, accounts) => {
     const services = seeded({ accounts })
     expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 1, failed: 0 })
