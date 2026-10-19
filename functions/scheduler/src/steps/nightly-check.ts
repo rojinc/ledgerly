@@ -14,11 +14,12 @@ import { type BalancesPeople, balancesPeopleSchema } from '@ledgerly/core/schema
 import { balancesFromShares } from '@ledgerly/core/settle/balances'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
+import { addToTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { readBalances } from '@ledgerly/server/ledger/balances'
-import { AppwriteException, Query } from 'node-appwrite'
+import { AppwriteException, type Models, Query } from 'node-appwrite'
 import { allRows, pages } from '../pages'
 import type { Services } from '../services'
 import { describe } from './auto-post'
@@ -27,7 +28,7 @@ import { describe } from './auto-post'
  * What step 6 did: groups checked to the end, groups left for the next run because writes kept
  * landing while they were read, groups the budget cut off, groups skipped because their team is
  * gone, error lines logged, shares of merged persons, `balances` rows written (backfills
- * included), and groups that failed.
+ * included), team memberships removed, and groups that failed.
  */
 export type CheckCounts = {
   checked: number
@@ -37,19 +38,22 @@ export type CheckCounts = {
   findings: number
   merging: number
   repaired: number
+  removed: number
   failed: number
 }
 
 const READS = 3
 const PAGE = 100
+// Joining and merging add the team membership before the member row.
+const MEMBERSHIP_GRACE_MS = 60 * 60 * 1000
 const CHECK_HOUR = 3
 const PUT_OFF_MS = 60 * 60 * 1000
 
 /**
  * Step 6 (scheduling.md#step-6-nightly-check): checks every group that is due, archived ones
- * too, until the run's budget is used: its `balances` row against a fresh sum, and its shares
- * against the invariants. It repairs only the row. Groups it doesn't reach stay due. Logs hold
- * IDs only.
+ * too, until the run's budget is used: its `balances` row against a fresh sum, its shares
+ * against the invariants, and its team against its member rows. It repairs only the row and
+ * stale memberships. Groups it doesn't reach stay due. Logs hold IDs only.
  */
 export async function nightlyCheck(services: Services): Promise<CheckCounts> {
   const counts = {
@@ -60,6 +64,7 @@ export async function nightlyCheck(services: Services): Promise<CheckCounts> {
     findings: 0,
     merging: 0,
     repaired: 0,
+    removed: 0,
     failed: 0,
   }
   // idx_nextCheckAt: never checked (the backfill), then due.
@@ -89,7 +94,8 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
   }
   // A purge in progress deletes the team first (identity-and-invites.md#deleting-an-account-m4),
   // then the group's rows: they're left alone, and the group stays due.
-  if (!(await teamExists(services.teams, groupId))) {
+  const memberships = await membershipsOf(services.teams, groupId)
+  if (memberships === null) {
     counts.skipped += 1
     return
   }
@@ -126,6 +132,12 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
   if (!(await teamExists(services.teams, groupId))) {
     counts.skipped += 1
     return
+  }
+  if (services.outOfTime()) return cutOff()
+  // The team first: a group whose balances below fail, or stay busy, still loses a stale
+  // membership, which is what keeps someone's read access.
+  if (!(await reconcileTeam(services, groupId, memberships, whole.members, counts, report))) {
+    return cutOff()
   }
   if (services.outOfTime()) return cutOff()
   counts.merging += await checkShares(db, whole, report)
@@ -306,11 +318,63 @@ async function rebuildBalances(db: Db, groupId: string): Promise<boolean> {
   }
 }
 
+/**
+ * Removes each team membership over an hour old that no joined member row backs: no `active` or
+ * `left` row for any of the user's persons, or only ones they left on their own. It reads the rows
+ * again just before removing. Counts each one in `counts.removed` as it goes; one already gone
+ * counts as removed. False when the budget ran out first: the rest wait for the next check.
+ */
+async function reconcileTeam(
+  { db, teams, now, outOfTime }: Services,
+  groupId: string,
+  memberships: readonly Membership[],
+  members: readonly Members[],
+  counts: CheckCounts,
+  report: (finding: string) => void,
+): Promise<boolean> {
+  const old = memberships.filter(
+    (membership) => now.getTime() - Date.parse(membership.$createdAt) > MEMBERSHIP_GRACE_MS,
+  )
+  if (old.length === 0) return true
+  const personsOf = await personsByUser(
+    db,
+    old.map((membership) => membership.userId),
+  )
+  for (const membership of old) {
+    if (await kept(db, groupId, personsOf.get(membership.userId) ?? [], members)) continue
+    if (outOfTime()) return false
+    // Again, just before removing: a join that has landed since keeps it.
+    if (await keptNow(db, groupId, membership.userId)) continue
+    try {
+      await teams.deleteMembership({ teamId: groupId, membershipId: membership.$id })
+    } catch (error) {
+      if (!notFound(error)) throw error
+    }
+    // A join or a merge that landed, or an account deletion that started, while it was removed
+    // gets it back.
+    if (await keptNow(db, groupId, membership.userId)) {
+      await addToTeam(teams, groupId, membership.userId)
+      continue
+    }
+    counts.removed += 1
+    report(`removed team membership ${membership.$id}`)
+  }
+  return true
+}
+
+/** Whether the membership stays, with the user's persons and their member rows read again now. */
+async function keptNow(db: Db, groupId: string, userId: string): Promise<boolean> {
+  const persons = (await personsByUser(db, [userId])).get(userId) ?? []
+  return kept(db, groupId, persons, await memberRows(db, groupId, persons))
+}
+
+type Membership = Pick<Models.Membership, '$id' | 'userId' | '$createdAt'>
+
 function notFound(error: unknown): boolean {
   return error instanceof AppwriteException && error.code === 404
 }
 
-/** False when the group's team is gone. */
+/** False when the group's team is gone: one membership read, not the whole team. */
 async function teamExists(
   teams: Pick<TeamsApi, 'listMemberships'>,
   teamId: string,
@@ -322,6 +386,82 @@ async function teamExists(
     if (notFound(error)) return false
     throw error
   }
+}
+
+/** Every membership of the group's team; null when the team is gone. */
+async function membershipsOf(
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  teamId: string,
+): Promise<Membership[] | null> {
+  const found: Membership[] = []
+  try {
+    for (;;) {
+      const { memberships } = await teams.listMemberships({
+        teamId,
+        queries: [Query.limit(PAGE), Query.offset(found.length)],
+      })
+      found.push(...memberships)
+      if (memberships.length < PAGE) return found
+    }
+  } catch (error) {
+    if (notFound(error)) return null
+    throw error
+  }
+}
+
+/** Each user's persons, by user ID (idx_userId, which isn't unique). */
+async function personsByUser(db: Db, userIds: readonly string[]): Promise<Map<string, Persons[]>> {
+  const personsOf = new Map<string, Persons[]>()
+  for (let start = 0; start < userIds.length; start += PAGE) {
+    const rows = await allRows<Persons>(db, TABLES.persons, [
+      Query.equal('userId', userIds.slice(start, start + PAGE)),
+    ])
+    for (const row of rows) {
+      if (row.userId) personsOf.set(row.userId, [...(personsOf.get(row.userId) ?? []), row])
+    }
+  }
+  return personsOf
+}
+
+async function memberRows(
+  db: Db,
+  groupId: string,
+  persons: readonly Persons[],
+): Promise<Members[]> {
+  if (persons.length === 0) return []
+  return allRows<Members>(db, TABLES.members, [
+    Query.equal('groupId', groupId),
+    Query.equal(
+      'personId',
+      persons.map((person) => person.$id),
+    ),
+  ])
+}
+
+/**
+ * Whether the membership stays: one of the user's persons is being deleted (account deletion
+ * leaves the team as its own last step for each group, and decides a rerun from it,
+ * identity-and-invites.md#deleting-an-account-m4), or has a joined row in the group that they
+ * didn't leave on their own. Any one of them keeps it.
+ */
+async function kept(
+  db: Db,
+  groupId: string,
+  persons: readonly Persons[],
+  members: readonly Members[],
+): Promise<boolean> {
+  if (persons.some((person) => person.deletedAt)) return true
+  const personIds = new Set(persons.map((person) => person.$id))
+  for (const row of members.filter((member) => personIds.has(member.personId))) {
+    if (row.status === 'active') return true
+    if (
+      row.status === 'left' &&
+      !(await leftOnTheirOwn(db, groupId, row.personId, row.$createdAt))
+    ) {
+      return true
+    }
+  }
+  return false
 }
 
 /** False when a write to the group row landed meanwhile: a later run checks it again. */
