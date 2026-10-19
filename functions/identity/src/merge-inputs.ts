@@ -54,9 +54,9 @@ type Rewrite = { row: Transactions; items: Items[]; writes: Write[]; voided: boo
 
 /**
  * Step 3, inputs: P becomes U inside the stored input (`inputJson`) and the items' `splitJson`
- * of every transaction in `groupIds` that isn't locked or void (`idx_group_statement_date`), as
- * `mergeInput` and `mergeSplit` say. A payment or loan whose two sides are now both U is voided
- * instead, as the ledger voids one. Each batch guards its group and checks for a `finalizing`
+ * of every transaction in `groupIds` that isn't void, locked ones included (I-7's merge
+ * exception, #263), as `mergeInput` and `mergeSplit` say. An unlocked payment or loan whose two
+ * sides are now both U is voided instead, as the ledger voids one; a locked one never is. Each batch guards its group and checks for a `finalizing`
  * statement first, as for shares, and a group with one is put off. It stops once `deadline`
  * (epoch ms) has passed.
  */
@@ -95,19 +95,20 @@ async function moveGroupInputs(
   for (;;) {
     if (Date.now() >= deadline) return 'cutOff'
     // Void rows are skipped below, not in the query, so the cursor row is always still there.
+    // Locked rows too (I-7): voiding their statement unlocks them. `idx_group_statement_date`,
+    // by its `groupId` prefix.
     const { rows } = await db.listRows<Transactions>({
       databaseId: DATABASE_ID,
       tableId: TABLES.transactions,
       queries: [
         Query.equal('groupId', groupId),
-        Query.isNull('statementId'),
         Query.orderAsc('$id'),
         Query.limit(PAGE),
         ...(cursor === undefined ? [] : [Query.cursorAfter(cursor)]),
       ],
       total: false,
     })
-    const { rewrites, skipped } = await planRewrites(
+    const { rewrites, skipped, left } = await planRewrites(
       db,
       rows.filter((row) => row.status !== 'void'),
       merge,
@@ -132,6 +133,12 @@ async function moveGroupInputs(
     for (const rowId of skipped) {
       console.warn(`merge ${merge.from} into ${merge.into} left transaction ${rowId} as it is`)
     }
+    // Nothing can ever change a locked row, so it doesn't hold the merge open (#263).
+    for (const rowId of left) {
+      console.warn(
+        `merge ${merge.from} into ${merge.into} left locked transaction ${rowId} as it is`,
+      )
+    }
     result.skipped += skipped.length
     const last = rows.at(-1)
     if (!last || rows.length < PAGE) return 'done'
@@ -141,8 +148,10 @@ async function moveGroupInputs(
 
 /**
  * The page's transactions whose input or items name P, with the writes that rename P, and the
- * IDs of those it can't rename. A receipt has at most 30 items (`MAX_ITEMS_PER_TRANSACTION`), so
- * one transaction's writes always fit a batch.
+ * IDs of those it can't rename: `skipped` if unlocked, `left` if locked. A locked row is renamed
+ * as a posted one is and never voided: a locked loan from U to U is renamed, and a locked
+ * payment between P and U, whose sides must differ, can't be, so it's left. A receipt has at most
+ * 30 items (`MAX_ITEMS_PER_TRANSACTION`), so one transaction's writes always fit a batch.
  */
 async function planRewrites(
   db: Db,
@@ -150,7 +159,7 @@ async function planRewrites(
   merge: Merge,
   now: Date,
   ctx: LedgerContext | undefined,
-): Promise<{ rewrites: Rewrite[]; skipped: string[] }> {
+): Promise<{ rewrites: Rewrite[]; skipped: string[]; left: string[] }> {
   const items =
     rows.length === 0
       ? []
@@ -175,7 +184,10 @@ async function planRewrites(
         ])
   const rewrites: Rewrite[] = []
   const skipped: string[] = []
+  const left: string[] = []
   for (const row of rows) {
+    const locked = row.statementId !== null
+    const cantRename = locked ? left : skipped
     const asPosted =
       ctx !== undefined && posted.includes(row)
         ? {
@@ -187,11 +199,12 @@ async function planRewrites(
             payer: row.createdBy,
           }
         : undefined
-    const input = renamed(row.inputJson, storedInputSchema, (raw) =>
-      mergeInput(raw as StoredInput, row.kind, merge, asPosted),
-    )
+    const input = renamed(row.inputJson, storedInputSchema, (raw) => {
+      const merged = mergeInput(raw as StoredInput, row.kind, merge, asPosted)
+      return locked ? { input: merged.input, voided: false } : merged
+    })
     if (!input) {
-      skipped.push(row.$id)
+      cantRename.push(row.$id)
       continue
     }
     if (input.voided) {
@@ -224,7 +237,7 @@ async function planRewrites(
         }),
       }))
     if (splits.some(({ split }) => !split)) {
-      skipped.push(row.$id)
+      cantRename.push(row.$id)
       continue
     }
     const changed = splits.flatMap(({ item, split }) =>
@@ -255,7 +268,7 @@ async function planRewrites(
       voided: false,
     })
   }
-  return { rewrites, skipped }
+  return { rewrites, skipped, left }
 }
 
 /**
@@ -345,7 +358,8 @@ function batches(rewrites: readonly Rewrite[]): Rewrite[][] {
 
 /**
  * One batch: the guard first (ledger.md#concurrency), then the finalizing check, the writes, and
- * the rows read again as stored, so one posted, edited or voided meanwhile runs it again.
+ * the rows read again as stored, so one posted, edited, voided, locked or unlocked meanwhile runs
+ * it again.
  */
 async function runBatch(db: Db, groupId: string, batch: readonly Rewrite[]): Promise<void> {
   await withTransaction(db, async (tx) => {
@@ -374,7 +388,7 @@ async function runBatch(db: Db, groupId: string, batch: readonly Rewrite[]): Pro
         const now = rows.get(rewrite.row.$id)
         return (
           now?.status === rewrite.row.status &&
-          now.statementId === null &&
+          now.statementId === rewrite.row.statementId &&
           now.inputJson === rewrite.row.inputJson
         )
       }) &&

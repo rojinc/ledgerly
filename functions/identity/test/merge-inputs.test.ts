@@ -52,7 +52,7 @@ afterEach(() => {
 })
 
 describe('moveInputs (step 3)', () => {
-  it('renames P in the inputs and item splits of unlocked rows, and leaves the rest alone', async () => {
+  it('renames P in the inputs and item splits of every row but a void one, locked ones too', async () => {
     const locked = transaction('t2', EXPENSE, { statementId: 'st1' })
     const voided = transaction('t3', EXPENSE, { status: 'void' })
     const without = transaction('t4', { split: { mode: 'equal', personIds: ['pU', 'pX'] } })
@@ -81,7 +81,7 @@ describe('moveInputs (step 3)', () => {
       },
     )
     expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
-      rewritten: 2,
+      rewritten: 3,
       voided: 0,
       skipped: 0,
       putOff: [],
@@ -102,9 +102,15 @@ describe('moveInputs (step 3)', () => {
       mode: 'equal',
       personIds: ['pU'],
     })
-    // A locked or void row keeps naming P, and a row without P isn't written.
+    // A locked row is renamed as a posted one is (I-7, #263), and nothing else on it changes.
     const stored = Object.fromEntries(store.rows('transactions').map((row) => [row.$id, row]))
-    expect(stored.t2?.inputJson).toBe(locked.inputJson)
+    expect(input(store, 't2')).toEqual(input(store, 't1'))
+    expect([stored.t2?.statementId, stored.t2?.status, stored.t2?.totalCents]).toEqual([
+      'st1',
+      'posted',
+      9000,
+    ])
+    // A void row keeps naming P, and a row without P isn't written.
     expect(stored.t3?.inputJson).toBe(voided.inputJson)
     expect(stored.t4?.inputJson).toBe(without.inputJson)
     expect(store.rows('groups')[0]?.rev).not.toBe('r0')
@@ -355,206 +361,212 @@ describe('moveInputs (step 3)', () => {
     expect(input(store, 't1')).toEqual({ payers: [{ personId: 'pU', cents: 900 }] })
   })
 
-  it('writes out a split the merge would change, so an edit after it keeps every net', async () => {
-    const share = (transactionId: string, personId: string, given: number, got: number) => ({
-      $id: `s-${transactionId}-${personId}`,
-      transactionId,
-      personId,
-      givenCents: given,
-      receivedCents: got,
-      groupId: 'g1',
-      date: '2026-10-01',
-      kind: 'expense',
-      category: null,
-    })
-    // X paid $90 for each row but t4, and each person's part is the shares' received.
-    const paidByX = (transactionId: string, parts: [string, number][]) => [
-      share(transactionId, 'pX', 9000, parts.find(([id]) => id === 'pX')?.[1] ?? 0),
-      ...parts.filter(([id]) => id !== 'pX').map(([id, got]) => share(transactionId, id, 0, got)),
-    ]
-    const paid = { payers: [{ personId: 'pX', cents: 9000 }] }
-    const period = { periodStart: '2026-09-01', periodEnd: '2026-09-30' }
-    const thirds: [string, number][] = [
-      ['pP', 3000],
-      ['pU', 3000],
-      ['pX', 3000],
-    ]
-    const byDays: [string, number][] = [
-      ['pP', 2000],
-      ['pU', 3000],
-      ['pX', 4000],
-    ]
-    const rows: [string, string, object, object[]][] = [
-      // The default split, with P and U both in it.
-      ['t1', 'expense', paid, paidByX('t1', thirds)],
-      // The default split, with P alone: U counts once, which is right.
-      [
-        't2',
-        'expense',
-        paid,
-        paidByX('t2', [
-          ['pP', 4500],
-          ['pX', 4500],
-        ]),
-      ],
-      // A September bill this house splits by days when it names no split.
-      ['t3', 'bill', { ...paid, bill: period }, paidByX('t3', thirds)],
-      // U lent $90 to P and X, with no split.
-      [
-        't4',
-        'loan',
-        { payers: [{ personId: 'pU', cents: 9000 }] },
-        [share('t4', 'pU', 9000, 0), share('t4', 'pP', 0, 4500), share('t4', 'pX', 0, 4500)],
-      ],
-      [
-        't6',
-        'expense',
-        { ...paid, split: { mode: 'equal', personIds: ['pP', 'pU', 'pX'] } },
-        paidByX('t6', thirds),
-      ],
-      [
-        't7',
-        'expense',
-        {
-          ...paid,
-          split: {
-            mode: 'weights',
-            weights: [
-              { personId: 'pP', weight: 1 },
-              { personId: 'pU', weight: 2 },
-              { personId: 'pX', weight: 3 },
-            ],
-          },
-        },
-        paidByX('t7', [
-          ['pP', 1500],
-          ['pU', 3000],
-          ['pX', 4500],
-        ]),
-      ],
-      [
-        't8',
-        'expense',
-        {
-          ...paid,
-          split: {
-            mode: 'exact',
-            amounts: byDays.map(([personId, cents]) => ({ personId, cents })),
-          },
-        },
-        paidByX('t8', byDays),
-      ],
-      [
-        't9',
-        'expense',
-        {
-          ...paid,
-          split: {
-            mode: 'percent',
-            percents: [
-              { personId: 'pP', basisPoints: 2500 },
-              { personId: 'pU', basisPoints: 2500 },
-              { personId: 'pX', basisPoints: 5000 },
-            ],
-          },
-        },
-        paidByX('t9', [
-          ['pP', 2250],
-          ['pU', 2250],
-          ['pX', 4500],
-        ]),
-      ],
-      [
-        't10',
-        'bill',
-        { ...paid, bill: period, split: { mode: 'days', personIds: ['pP', 'pU', 'pX'] } },
-        paidByX('t10', byDays),
-      ],
-      // U came on 16 September, but U's kept row now starts when P's did, in January.
-      [
-        't11',
-        'bill',
-        { ...paid, bill: period },
-        paidByX('t11', [
-          ['pU', 3000],
-          ['pX', 6000],
-        ]),
-      ],
-    ]
-    // The members as step 2 leaves them: P's row is gone, and U's starts at the earlier date.
-    const members = ['pU', 'pX'].map((personId) => ({
-      personId,
-      joinedOn: '2026-01-01' as LocalDate,
-      leftOn: null,
-    }))
-    const store = seed(
-      rows.map(([id, kind, input]) => transaction(id, input, { kind })),
-      {
-        groups: [
-          {
-            $id: 'g1',
-            type: 'house',
-            name: 'Flat',
-            rev: 'r0',
-            settingsJson: JSON.stringify({
-              type: 'house',
-              autoFinalize: false,
-              defaultBillSplit: 'days',
-            }),
-          },
+  it.each([
+    ['unlocked', null],
+    ['locked by a final statement', 'st1'],
+  ])(
+    'writes out a split the merge would change, so an edit after it keeps every net (%s)',
+    async (_case, statementId) => {
+      const share = (transactionId: string, personId: string, given: number, got: number) => ({
+        $id: `s-${transactionId}-${personId}`,
+        transactionId,
+        personId,
+        givenCents: given,
+        receivedCents: got,
+        groupId: 'g1',
+        date: '2026-10-01',
+        kind: 'expense',
+        category: null,
+      })
+      // X paid $90 for each row but t4, and each person's part is the shares' received.
+      const paidByX = (transactionId: string, parts: [string, number][]) => [
+        share(transactionId, 'pX', 9000, parts.find(([id]) => id === 'pX')?.[1] ?? 0),
+        ...parts.filter(([id]) => id !== 'pX').map(([id, got]) => share(transactionId, id, 0, got)),
+      ]
+      const paid = { payers: [{ personId: 'pX', cents: 9000 }] }
+      const period = { periodStart: '2026-09-01', periodEnd: '2026-09-30' }
+      const thirds: [string, number][] = [
+        ['pP', 3000],
+        ['pU', 3000],
+        ['pX', 3000],
+      ]
+      const byDays: [string, number][] = [
+        ['pP', 2000],
+        ['pU', 3000],
+        ['pX', 4000],
+      ]
+      const rows: [string, string, object, object[]][] = [
+        // The default split, with P and U both in it.
+        ['t1', 'expense', paid, paidByX('t1', thirds)],
+        // The default split, with P alone: U counts once, which is right.
+        [
+          't2',
+          'expense',
+          paid,
+          paidByX('t2', [
+            ['pP', 4500],
+            ['pX', 4500],
+          ]),
         ],
-        shares: rows.flatMap(([, , , shares]) => shares),
-        members: members.map((member) => ({
-          $id: `m${member.personId}`,
-          groupId: 'g1',
-          status: 'active',
-          ...member,
-        })),
-      },
-    )
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
-    await moveShares(store, 'pP', 'pU', new Set(), FAR)
+        // A September bill this house splits by days when it names no split.
+        ['t3', 'bill', { ...paid, bill: period }, paidByX('t3', thirds)],
+        // U lent $90 to P and X, with no split.
+        [
+          't4',
+          'loan',
+          { payers: [{ personId: 'pU', cents: 9000 }] },
+          [share('t4', 'pU', 9000, 0), share('t4', 'pP', 0, 4500), share('t4', 'pX', 0, 4500)],
+        ],
+        [
+          't6',
+          'expense',
+          { ...paid, split: { mode: 'equal', personIds: ['pP', 'pU', 'pX'] } },
+          paidByX('t6', thirds),
+        ],
+        [
+          't7',
+          'expense',
+          {
+            ...paid,
+            split: {
+              mode: 'weights',
+              weights: [
+                { personId: 'pP', weight: 1 },
+                { personId: 'pU', weight: 2 },
+                { personId: 'pX', weight: 3 },
+              ],
+            },
+          },
+          paidByX('t7', [
+            ['pP', 1500],
+            ['pU', 3000],
+            ['pX', 4500],
+          ]),
+        ],
+        [
+          't8',
+          'expense',
+          {
+            ...paid,
+            split: {
+              mode: 'exact',
+              amounts: byDays.map(([personId, cents]) => ({ personId, cents })),
+            },
+          },
+          paidByX('t8', byDays),
+        ],
+        [
+          't9',
+          'expense',
+          {
+            ...paid,
+            split: {
+              mode: 'percent',
+              percents: [
+                { personId: 'pP', basisPoints: 2500 },
+                { personId: 'pU', basisPoints: 2500 },
+                { personId: 'pX', basisPoints: 5000 },
+              ],
+            },
+          },
+          paidByX('t9', [
+            ['pP', 2250],
+            ['pU', 2250],
+            ['pX', 4500],
+          ]),
+        ],
+        [
+          't10',
+          'bill',
+          { ...paid, bill: period, split: { mode: 'days', personIds: ['pP', 'pU', 'pX'] } },
+          paidByX('t10', byDays),
+        ],
+        // U came on 16 September, but U's kept row now starts when P's did, in January.
+        [
+          't11',
+          'bill',
+          { ...paid, bill: period },
+          paidByX('t11', [
+            ['pU', 3000],
+            ['pX', 6000],
+          ]),
+        ],
+      ]
+      // The members as step 2 leaves them: P's row is gone, and U's starts at the earlier date.
+      const members = ['pU', 'pX'].map((personId) => ({
+        personId,
+        joinedOn: '2026-01-01' as LocalDate,
+        leftOn: null,
+      }))
+      const store = seed(
+        rows.map(([id, kind, input]) => transaction(id, input, { kind, statementId })),
+        {
+          groups: [
+            {
+              $id: 'g1',
+              type: 'house',
+              name: 'Flat',
+              rev: 'r0',
+              settingsJson: JSON.stringify({
+                type: 'house',
+                autoFinalize: false,
+                defaultBillSplit: 'days',
+              }),
+            },
+          ],
+          shares: rows.flatMap(([, , , shares]) => shares),
+          members: members.map((member) => ({
+            $id: `m${member.personId}`,
+            groupId: 'g1',
+            status: 'active',
+            ...member,
+          })),
+        },
+      )
+      await moveInputs(store, merge, ['g1'], NOW, FAR)
+      await moveShares(store, 'pP', 'pU', new Set(), FAR)
 
-    // What each split became.
-    expect(input(store, 't1').split).toEqual({
-      mode: 'weights',
-      weights: [
-        { personId: 'pU', weight: 2 },
-        { personId: 'pX', weight: 1 },
-      ],
-    })
-    expect(input(store, 't2').split).toBeUndefined()
-    // By days, P and U had a third each: weights plan that again.
-    expect(input(store, 't3').split).toEqual(input(store, 't1').split)
-    expect(input(store, 't4').split).toEqual({ mode: 'equal', personIds: ['pU', 'pX'] })
-    expect(input(store, 't10').split).toEqual({
-      mode: 'exact',
-      amounts: [
-        { personId: 'pU', cents: 5000 },
-        { personId: 'pX', cents: 4000 },
-      ],
-    })
-    // Not P's (no part, and not named), so left as it is, though U's kept row has changed what an
-    // edit would plan (lead, #242: only rows that name P or that P has a share in).
-    expect(input(store, 't11').split).toBeUndefined()
+      // What each split became.
+      expect(input(store, 't1').split).toEqual({
+        mode: 'weights',
+        weights: [
+          { personId: 'pU', weight: 2 },
+          { personId: 'pX', weight: 1 },
+        ],
+      })
+      expect(input(store, 't2').split).toBeUndefined()
+      // By days, P and U had a third each: weights plan that again.
+      expect(input(store, 't3').split).toEqual(input(store, 't1').split)
+      expect(input(store, 't4').split).toEqual({ mode: 'equal', personIds: ['pU', 'pX'] })
+      expect(input(store, 't10').split).toEqual({
+        mode: 'exact',
+        amounts: [
+          { personId: 'pU', cents: 5000 },
+          { personId: 'pX', cents: 4000 },
+        ],
+      })
+      // Not P's (no part, and not named), so left as it is, though U's kept row has changed what an
+      // edit would plan (lead, #242: only rows that name P or that P has a share in).
+      expect(input(store, 't11').split).toBeUndefined()
 
-    // An edit plans each row again with the members as they are after the merge, X and U: every
-    // net is the one its merged shares give.
-    const after = {
-      groupType: 'house' as const,
-      ownerPersonId: 'pX',
-      callerPersonId: 'pX',
-      members,
-    }
-    for (const [id, kind] of rows.filter(([id]) => id !== 't11')) {
-      const replanned = buildShares(
-        { ...input(store, id), kind: kind as 'expense', date: '2026-10-01', totalCents: 9000 },
-        after,
-      ).shares
-      const stored = store.rows('shares').filter((row) => row.transactionId === id) as never
-      expect([id, netsFromShares(replanned)]).toEqual([id, netsFromShares(stored)])
-    }
-  })
+      // An edit plans each row again with the members as they are after the merge, X and U: every
+      // net is the one its merged shares give.
+      const after = {
+        groupType: 'house' as const,
+        ownerPersonId: 'pX',
+        callerPersonId: 'pX',
+        members,
+      }
+      for (const [id, kind] of rows.filter(([id]) => id !== 't11')) {
+        const replanned = buildShares(
+          { ...input(store, id), kind: kind as 'expense', date: '2026-10-01', totalCents: 9000 },
+          after,
+        ).shares
+        const stored = store.rows('shares').filter((row) => row.transactionId === id) as never
+        expect([id, netsFromShares(replanned)]).toEqual([id, netsFromShares(stored)])
+      }
+    },
+  )
 
   it('leaves a row it can’t rename as it is, says so by ID, and isn’t done', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
@@ -640,7 +652,7 @@ describe('moveInputs (step 3)', () => {
     expect(store.rows('groups')[0]?.rev).toBe('r0')
   })
 
-  it('leaves a row a finalize locked after it was read (I-7)', async () => {
+  it('renames a row a finalize locked after it was read, by the same rule (I-7)', async () => {
     const store = seed([transaction('t1', EXPENSE)])
     beforeStaging(
       store,
@@ -655,10 +667,80 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 0 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 1 })
     const [row] = store.rows('transactions')
     expect(row?.statementId).toBe('st1')
-    expect(JSON.parse(row?.inputJson as string)).toEqual(EXPENSE)
+    expect(input(store, 't1').payers).toEqual([{ personId: 'pU', cents: 9000 }])
+  })
+
+  it('reads a row again when a void unlocked it after it was read, and voids it if it must', async () => {
+    // U lent to P: locked, it's renamed; once a void unlocks it, it's U to U and voided.
+    const loan = transaction(
+      't1',
+      { payers: [{ personId: 'pU', cents: 9000 }], split: { mode: 'equal', personIds: ['pP'] } },
+      { kind: 'loan', statementId: 'st1' },
+    )
+    const store = seed([loan])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { statementId: null },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+      rewritten: 0,
+      voided: 1,
+    })
+    expect(store.rows('transactions')[0]).toMatchObject({ status: 'void', statementId: null })
+  })
+
+  it('never voids a locked payment or loan: the loan is renamed, the payment left', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const loan = transaction(
+      't1',
+      { payers: [{ personId: 'pU', cents: 9000 }], split: { mode: 'equal', personIds: ['pP'] } },
+      { kind: 'loan', statementId: 'st1' },
+    )
+    // A payment's two sides must differ, so P to U can't become U to U.
+    const payment = transaction(
+      't2',
+      { payment: { fromPersonId: 'pP', toPersonId: 'pU' } },
+      { kind: 'payment', statementId: 'st1' },
+    )
+    const store = seed([loan, payment])
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+      rewritten: 1,
+      voided: 0,
+      skipped: 0,
+      putOff: [],
+      done: true,
+    })
+    expect(store.rows('transactions').map((row) => row.status)).toEqual(['posted', 'posted'])
+    expect(input(store, 't1').split).toEqual({ mode: 'equal', personIds: ['pU'] })
+    expect(input(store, 't2')).toEqual({ payment: { fromPersonId: 'pP', toPersonId: 'pU' } })
+    expect(warn).toHaveBeenCalledWith('merge pP into pU left locked transaction t2 as it is')
+  })
+
+  it('leaves a locked row it can’t read, says so by ID, and doesn’t hold the merge open', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const broken = { ...transaction('t1', {}, { statementId: 'st1' }), inputJson: '{' }
+    const store = seed([broken, transaction('t2', EXPENSE, { statementId: 'st1' })])
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+      rewritten: 1,
+      voided: 0,
+      skipped: 0,
+      putOff: [],
+      done: true,
+    })
+    expect(store.rows('transactions')[0]?.inputJson).toBe('{')
+    expect(warn).toHaveBeenCalledWith('merge pP into pU left locked transaction t1 as it is')
   })
 
   it('reads a row again when it was edited after it was read, so the edit isn’t lost', async () => {
