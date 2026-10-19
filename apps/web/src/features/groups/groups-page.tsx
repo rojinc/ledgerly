@@ -4,14 +4,8 @@ import { Link } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { PendingGroups, TYPE_LABEL } from './pending-groups'
 import { useBalances, useGroups } from './use-groups'
-
-const TYPE_LABEL: Record<Groups['type'], string> = {
-  personal: 'Personal',
-  employer: 'Employer',
-  house: 'House',
-  pair: 'Shared with one person',
-}
 
 export function GroupsPage() {
   const groups = useGroups()
@@ -26,6 +20,7 @@ export function GroupsPage() {
           New employer
         </Link>
       </div>
+      <PendingGroups />
       {groups.data ? (
         <>
           <GroupList groups={groups.data.filter((group) => !group.archivedAt)} />
@@ -68,13 +63,19 @@ function GroupList({ groups }: { groups: Groups[] }) {
 }
 
 function GroupRow({ group }: { group: Groups }) {
-  const settings = group.type === 'employer' ? `/groups/${group.$id}/settings` : null
+  // Employers open their settings; lend & borrow opens the person's page (#34).
+  const to =
+    group.type === 'employer'
+      ? `/groups/${group.$id}/settings`
+      : group.type === 'pair'
+        ? `/people/${group.$id}`
+        : null
   return (
     <li className="flex items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0">
         <p className="truncate font-medium">
-          {settings ? (
-            <Link to={settings} className="underline-offset-4 hover:underline">
+          {to ? (
+            <Link to={to} className="underline-offset-4 hover:underline">
               {group.name}
             </Link>
           ) : (

@@ -94,6 +94,16 @@ describe('GroupsPage', () => {
     )
   })
 
+  it('links a lend & borrow group to its page', async () => {
+    listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g4' }] } as never)
+    listRows.mockResolvedValue({ total: 1, rows: [group('g4', 'pair', 'Sam')] } as never)
+    call.mockResolvedValue({ ok: true, data: { people: [], transfers: [] } })
+    renderPage()
+    expect((await screen.findByRole('link', { name: 'Sam' })).getAttribute('href')).toBe(
+      '/people/g4',
+    )
+  })
+
   it('shows a dash when the balance is not available', async () => {
     listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g2' }] } as never)
     listRows.mockResolvedValue({ total: 1, rows: [group('g2', 'employer', 'Acme')] } as never)
