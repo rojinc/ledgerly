@@ -1,8 +1,15 @@
-import type { Groups, Identities, Members, Persons } from '@ledgerly/core/generated/rows'
+import type { Groups, Identities, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
-import { IntoDeleted, moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
+import {
+  IntoDeleted,
+  memberOf,
+  moveIdentities,
+  moveMembers,
+  moveReminders,
+  moveShares,
+} from './merge'
 import { moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
 
@@ -35,7 +42,7 @@ export async function finishMerges(
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
     if (placeholder.userId || placeholder.deletedAt) continue
     if (!(await hasIdentity(services.db, placeholder.$id))) continue
-    const { joined, finished } = await runMerge(services, userId, placeholder.$id, intoId, deadline)
+    const { joined, finished } = await runMerge(services, userId, placeholder, intoId, deadline)
     result.joined.push(...joined)
     if (finished) result.finished += 1
   }
@@ -46,59 +53,150 @@ export async function finishMerges(
 async function runMerge(
   services: Services,
   userId: string,
-  fromId: string,
+  placeholder: Persons,
   intoId: string,
   deadline: number,
 ): Promise<{ joined: string[]; finished: boolean }> {
   try {
-    return await runSteps(services, userId, fromId, intoId, deadline)
+    return await runSteps(services, userId, placeholder, intoId, deadline)
   } catch (error) {
     if (!(error instanceof IntoDeleted)) throw error
-    console.log(`merge ${fromId} into ${intoId} stopped: that account is being deleted`)
+    console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
     return { joined: [], finished: false }
   }
 }
 
-/** Steps 2 and 3 for P, then its identities once nothing else names P (step 4). */
+/**
+ * Steps 2 and 3 for P, one group at a time: P's member row there, then the group's templates,
+ * inputs and shares, before the next group. A cut-off then leaves at most one group part done,
+ * and a group that can't go on now (a statement being finalized) waits whole. Then reminders,
+ * and P's identities once nothing else names P (step 4).
+ */
 async function runSteps(
   services: Services,
   userId: string,
-  fromId: string,
+  placeholder: Persons,
   intoId: string,
   deadline: number,
 ): Promise<{ joined: string[]; finished: boolean }> {
   const { db, now } = services
+  const fromId = placeholder.$id
   const merge = { from: fromId, into: intoId }
-  const members = await moveMembers(services, userId, fromId, intoId, deadline)
-  // P's groups are U's now, so every group of U's but the kept ones may still name P.
-  const groupIds = (await groupsOf(db, intoId)).filter((groupId) => !members.kept.has(groupId))
-  // Templates first, so an expansion from now on names U.
-  const templates = await moveTemplates(db, merge, groupIds, deadline)
-  const inputs = await moveInputs(db, merge, groupIds, now, deadline)
-  // Not in a group whose inputs were put off: the Q2 rule needs P's share there to tell which
-  // rows were P's, and a finalize that ends meanwhile would let the shares go first.
-  const notYet = new Set([...members.kept, ...inputs.putOff])
-  const shares = await moveShares(db, fromId, intoId, notYet, deadline)
-  const reminders = await moveReminders(db, fromId, intoId, members.kept, deadline)
-  const counts = `${members.joined.length} groups joined, ${templates.rewritten + inputs.rewritten} inputs, ${inputs.voided} voided, ${shares.moved} shares, ${reminders.moved} reminders, ${templates.skipped + inputs.skipped} left as they are`
+  const kept = new Set<string>()
+  const joined: string[] = []
+  const putOff = new Set<string>()
+  const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
+  let done = true
+  // Only P's groups can name P; never U's others, so a merge costs what P had. They're walked in
+  // the order step 1 listed them, so a later claim finishes a part-done group before it starts
+  // another. P's member rows count too, in case an add landed outside the list.
+  const groupIds = new Set([...(placeholder.mergeGroupIds ?? []), ...(await groupsOf(db, fromId))])
+  for (const groupId of groupIds) {
+    if (Date.now() >= deadline) {
+      done = false
+      break
+    }
+    const members = await moveMembers(services, userId, fromId, intoId, [groupId], deadline)
+    joined.push(...members.joined)
+    if (members.kept.size > 0) {
+      kept.add(groupId)
+      continue
+    }
+    if (members.putOff.length > 0) {
+      putOff.add(groupId)
+      continue
+    }
+    if (!members.done) {
+      done = false
+      break
+    }
+    // Templates first, so an expansion from now on names U.
+    const templates = await moveTemplates(db, merge, [groupId], deadline)
+    moved.inputs += templates.rewritten
+    moved.skipped += templates.skipped
+    if (templates.putOff.length > 0) {
+      putOff.add(groupId)
+      continue
+    }
+    const inputs = await moveInputs(db, merge, [groupId], now, deadline)
+    moved.inputs += inputs.rewritten
+    moved.voided += inputs.voided
+    moved.skipped += inputs.skipped
+    if (inputs.putOff.length > 0) {
+      putOff.add(groupId)
+      continue
+    }
+    if (templates.cutOff || inputs.cutOff) {
+      done = false
+      break
+    }
+    // Rows left as they are keep the merge open, but their group's shares can still move.
+    if (!templates.done || !inputs.done) done = false
+    // Neither has a row here (U's, once P's, was removed since): a share moved to U would be one
+    // with no member row (I-3), so P's stay, and `stray()` keeps the merge open while one is left.
+    // An input naming P names a non-member already, so renaming it changed nothing there.
+    if (!(await memberOf(db, groupId, intoId))) continue
+    // Shares last: the rule for a posted row needs P's share to tell the row was P's.
+    const shares = await moveShares(db, fromId, intoId, [groupId], deadline)
+    moved.shares += shares.moved
+    if (shares.putOff.length > 0) putOff.add(groupId)
+    else if (!shares.done) {
+      done = false
+      break
+    }
+  }
+  const reminders = await moveReminders(db, fromId, intoId, kept, deadline)
+  const counts = `${joined.length} groups joined, ${moved.inputs} inputs, ${moved.voided} voided, ${moved.shares} shares, ${reminders.moved} reminders, ${moved.skipped} left as they are`
   if (
-    members.done &&
-    templates.done &&
-    inputs.done &&
-    shares.done &&
+    done &&
+    putOff.size === 0 &&
     reminders.done &&
-    Date.now() < deadline
+    Date.now() < deadline &&
+    !(await stray(db, fromId, intoId, kept))
   ) {
     const identities = await moveIdentities(db, fromId, intoId, deadline)
     console.log(`merge ${fromId} into ${intoId}: ${counts}, ${identities} identities`)
     // Cut off partway, some identities are still P's, and the next claim moves the rest.
-    return { joined: members.joined, finished: !(await hasIdentity(db, fromId)) }
+    return { joined, finished: !(await hasIdentity(db, fromId)) }
   }
-  const putOff = new Set([...templates.putOff, ...inputs.putOff, ...shares.putOff])
   console.log(
     `merge ${fromId} into ${intoId} carries on next claim: ${counts}, ${putOff.size} groups put off`,
   )
-  return { joined: members.joined, finished: false }
+  return { joined, finished: false }
+}
+
+/**
+ * Whether P still has a member row or a share outside the kept groups once each group was seen
+ * to: in a group this claim didn't list (a row added since, or a share whose member row was
+ * removed). It's logged by ID and keeps the merge open, so no share of P's is moved to a U with
+ * no member row there (I-3).
+ */
+async function stray(
+  db: Db,
+  fromId: string,
+  intoId: string,
+  kept: ReadonlySet<string>,
+): Promise<boolean> {
+  for (const tableId of [TABLES.members, TABLES.shares]) {
+    const { rows } = await db.listRows<Members | Shares>({
+      databaseId: DATABASE_ID,
+      tableId,
+      queries: [
+        Query.equal('personId', fromId),
+        ...[...kept].map((groupId) => Query.notEqual('groupId', groupId)),
+        Query.limit(1),
+      ],
+      total: false,
+    })
+    const row = rows[0]
+    if (row) {
+      console.warn(
+        `merge ${fromId} into ${intoId} left ${tableId} row ${row.$id} in group ${row.groupId} for a later claim`,
+      )
+      return true
+    }
+  }
+  return false
 }
 
 /** The persons merged into U. */
@@ -135,8 +233,8 @@ async function hasIdentity(db: Db, personId: string): Promise<boolean> {
 }
 
 /**
- * Every group U has a member row in (`idx_person_status`), archived ones too, but U's personal
- * group: a placeholder is never in one (`add-member` refuses), so nothing there names P.
+ * Every group the person has a member row in (`idx_person_status`), archived ones too, but a
+ * personal group: a placeholder is never in one (`add-member` refuses), so nothing there names P.
  */
 async function groupsOf(db: Db, personId: string): Promise<string[]> {
   const groupIds: string[] = []

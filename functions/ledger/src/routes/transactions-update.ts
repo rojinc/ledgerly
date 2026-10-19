@@ -3,6 +3,7 @@ import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
+import { balanceWrite } from '@ledgerly/server/ledger/balances'
 import {
   activityWrite,
   changedColumns,
@@ -103,8 +104,13 @@ export const updateTransaction = (services: ServicesFor) =>
             receiptFileIds: receiptsColumn(receipts),
             // scheduling.md: an edited occurrence is kept apart from its schedule from now on.
             overridden: existing.scheduleId !== null || existing.overridden,
-            // A new due date gets its own reminder (functions-api.md#ledger).
-            remindedAt: planned.dueOn === existing.dueOn ? existing.remindedAt : null,
+            // A new due date, or a new date for a `scheduled` row, gets its own reminder, and an
+            // auto-post shift moved to a later day can be posted again (functions-api.md#ledger).
+            remindedAt:
+              planned.dueOn === existing.dueOn &&
+              (existing.status !== 'scheduled' || input.date === existing.date)
+                ? existing.remindedAt
+                : null,
           }
           const [oldShares, oldItems] = await Promise.all([
             listShares(db, existing.$id),
@@ -126,6 +132,7 @@ export const updateTransaction = (services: ServicesFor) =>
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
           await attachReceipts(files, existing.groupId, receipts, storedReceipts)
+          const balances = await balanceWrite(db, existing.groupId, oldShares, shareData)
           await tx.write(
             { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
             ...replaceRows(TABLES.shares, oldShares, shareData, permissions),
@@ -140,6 +147,7 @@ export const updateTransaction = (services: ServicesFor) =>
               changes,
               now,
             ),
+            ...balances,
           )
         })
       } catch (error) {

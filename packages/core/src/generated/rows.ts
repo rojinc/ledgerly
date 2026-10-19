@@ -128,6 +128,7 @@ export type Persons = Models.Row & {
     mergedInto: string | null;
     deletedAt: string | null;
     rev: string | null;
+    mergeGroupIds: string[] | null;
 }
 
 export type Identities = Models.Row & {
@@ -224,6 +225,16 @@ export type Items = Models.Row & {
 
 export type Balances = Models.Row & {
     peopleJson: string;
+}
+
+export type ReceiptFiles = Models.Row & {
+    transactionIds: string[] | null;
+    detachedAt: string | null;
+    deletingAt: string | null;
+}
+
+export type Checkpoints = Models.Row & {
+    through: string;
 }
 
 export type Schedules = Models.Row & {

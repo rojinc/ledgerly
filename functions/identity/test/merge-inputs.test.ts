@@ -87,6 +87,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 0,
       putOff: [],
+      cutOff: false,
       done: true,
     })
     expect(input(store, 't1')).toEqual({
@@ -241,7 +242,7 @@ describe('moveInputs (step 3)', () => {
       },
     )
     await moveInputs(store, merge, ['g1'], NOW, FAR)
-    await moveShares(store, 'pP', 'pU', new Set(), FAR)
+    await moveShares(store, 'pP', 'pU', ['g1'], FAR)
     // As weights A 1, U 2, A would get 33.
     const split = JSON.parse(store.rows('items')[0]?.splitJson as string)
     expect(split).toEqual({
@@ -526,7 +527,7 @@ describe('moveInputs (step 3)', () => {
         },
       )
       await moveInputs(store, merge, ['g1'], NOW, FAR)
-      await moveShares(store, 'pP', 'pU', new Set(), FAR)
+      await moveShares(store, 'pP', 'pU', ['g1'], FAR)
 
       // What each split became.
       expect(input(store, 't1').split).toEqual({
@@ -591,6 +592,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 2,
       putOff: [],
+      cutOff: false,
       done: false,
     })
     const stored = Object.fromEntries(store.rows('transactions').map((row) => [row.$id, row]))
@@ -648,6 +650,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 0,
       putOff: ['g1'],
+      cutOff: false,
       done: false,
     })
     expect(input(store, 't1')).toEqual(EXPENSE)
@@ -722,6 +725,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 0,
       putOff: [],
+      cutOff: false,
       done: true,
     })
     expect(store.rows('transactions').map((row) => row.status)).toEqual(['posted', 'posted'])
@@ -739,6 +743,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 0,
       putOff: [],
+      cutOff: false,
       done: true,
     })
     expect(store.rows('transactions')[0]?.inputJson).toBe('{')
@@ -765,6 +770,86 @@ describe('moveInputs (step 3)', () => {
     expect(input(store, 't1')).toMatchObject({
       note: 'Edited meanwhile',
       payers: [{ personId: 'pU', cents: 9000 }],
+    })
+  })
+
+  it('plans a row again with the members as they are when a member change made it run again', async () => {
+    // P paid 90 for U and X, the default way (P had joined later). After step 2, the default
+    // still gives U and X 45 each, so only P would be renamed. But meanwhile X's move-out date
+    // is set to before the row's date, and the row is edited, so the batch runs again: now the
+    // default would give U all 90, so the split is written out.
+    const paidByP = transaction('t1', { payers: [{ personId: 'pP', cents: 9000 }] })
+    const store = seed([paidByP], {
+      members: ['pU', 'pX'].map((personId) => ({
+        $id: `m${personId}`,
+        groupId: 'g1',
+        personId,
+        status: 'active',
+        joinedOn: '2026-01-01',
+        leftOn: null,
+      })),
+      shares: [
+        {
+          $id: 's1',
+          transactionId: 't1',
+          groupId: 'g1',
+          personId: 'pP',
+          givenCents: 9000,
+          receivedCents: 0,
+          date: '2026-10-01',
+          kind: 'expense',
+          category: null,
+        },
+        {
+          $id: 's2',
+          transactionId: 't1',
+          groupId: 'g1',
+          personId: 'pU',
+          givenCents: 0,
+          receivedCents: 4500,
+          date: '2026-10-01',
+          kind: 'expense',
+          category: null,
+        },
+        {
+          $id: 's3',
+          transactionId: 't1',
+          groupId: 'g1',
+          personId: 'pX',
+          givenCents: 0,
+          receivedCents: 4500,
+          date: '2026-10-01',
+          kind: 'expense',
+          category: null,
+        },
+      ],
+    })
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write(
+            { action: 'update', tableId: 'members', rowId: 'mpX', data: { leftOn: '2026-09-15' } },
+            {
+              action: 'update',
+              tableId: 'transactions',
+              rowId: 't1',
+              data: {
+                inputJson: JSON.stringify({
+                  payers: [{ personId: 'pP', cents: 9000 }],
+                  note: 'Shop',
+                }),
+              },
+            },
+          ),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 1 })
+    expect(input(store, 't1')).toEqual({
+      payers: [{ personId: 'pU', cents: 9000 }],
+      note: 'Shop',
+      split: { mode: 'equal', personIds: ['pU', 'pX'] },
     })
   })
 
@@ -858,6 +943,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 0,
       putOff: [],
+      cutOff: true,
       done: false,
     })
     expect(input(store, 't1')).toEqual(EXPENSE)
@@ -899,6 +985,7 @@ describe('moveTemplates (step 3)', () => {
       rewritten: 1,
       skipped: 0,
       putOff: [],
+      cutOff: false,
       done: true,
     })
     expect(template(store, 'sc1').split).toEqual({
@@ -964,6 +1051,7 @@ describe('moveTemplates (step 3)', () => {
       rewritten: 0,
       skipped: 0,
       putOff: ['g1'],
+      cutOff: false,
       done: false,
     })
     expect(template(finalizing, 'sc1')).toEqual(RENT)
@@ -972,6 +1060,7 @@ describe('moveTemplates (step 3)', () => {
       rewritten: 0,
       skipped: 0,
       putOff: [],
+      cutOff: true,
       done: false,
     })
   })
