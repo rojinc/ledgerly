@@ -20,7 +20,7 @@ Keeping authority in one place (`members.role`) means there is one source of tru
 | Table | Row permissions | Set by |
 | --- | --- | --- |
 | `persons` (registered) | `read("user:<userId>")` | `identity`; `account` removes it on deletion |
-| `persons` (placeholder), `identities`, `invites`, `balances`, `receiptFiles`, `migrations` | none | n/a |
+| `persons` (placeholder), `identities`, `invites`, `balances`, `receiptFiles`, `checkpoints` | none | n/a |
 | `profiles` | `read("user:<userId>")` | `identity`; `account` deletes the row |
 | `groups`, `members`, `transactions`, `shares`, `items`, `schedules`, `statements`, `activity` | `read("team:<groupId>")` | the writing function |
 
@@ -85,7 +85,7 @@ Scheduled jobs run with the server key and no caller. They write as the system a
 
   Any failure gives `VALIDATION_FAILED`, naming `receiptFileIds.<index>`, with the same message for every failure. A missing file and another group's file get the same answer, so the reply never shows whether a file ID exists. Only after every file passes does the ledger set each file's permissions to exactly `read("team:<groupId>")`, and it does so **before** the row commits. That removes any wider read and any `update` or `delete` the uploader granted themselves, so a stored ID never points at a file its uploader can still swap or delete behind a locked transaction. A retry passes the check again. Taking a file off a transaction leaves the file and its permissions as they are.
 
-  A file that no transaction lists is deleted by the scheduler's first hourly run after these times ([step 5](scheduling.md#step-5-receipt-clean-up)):
+  A file that no transaction lists is deleted by a later scheduler run, once it's past these times ([step 5](scheduling.md#step-5-receipt-clean-up)):
   - 24 hours after its upload, for a file that was never attached;
   - 24 hours after it was taken off its last transaction.
 

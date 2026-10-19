@@ -62,7 +62,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up (step 5, [#163](https://github.com/rojinc/ledgerly/issues/163)), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
+The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up ([step 5](#step-5-receipt-clean-up), which has its own time limit), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -145,25 +145,31 @@ The email goes only to a verified account email, and a period with no shares and
 
 ### Step 5: receipt clean-up
 
-Deletes the files in the `receipts` bucket that no transaction lists, using the [`receiptFiles`](data-model.md#receiptfiles) rows the ledger keeps ([permissions](permissions.md#storage)). `now` is when the run started. A run deletes at most 200 files; the rest wait for the next run. Until the [backfill](data-model.md#receiptfiles) has run in the environment, step 5 does nothing: it first reads the [`migrations`](data-model.md#migrations) row `receipt-files-backfill`, once per run.
+Deletes the files in the `receipts` bucket that no transaction lists, using the [`receiptFiles`](data-model.md#receiptfiles) rows ([permissions](permissions.md#storage)). Its Storage calls always name the `receipts` bucket, so the scheduler's `files.*` scopes never reach `statements` from here. `now` is when the run started.
 
-1. **Never attached:** files in `receipts` with `$createdAt` after `now − 72 h` and at or before `now − 24 h`, ordered by `$id`, with their `receiptFiles` rows read a page at a time. `listFiles` pages with `Query.cursorAfter` (it doesn't take `greaterThan('$id')`), and a deleted file can't be a cursor. So the cursor is the last file on the page that this pass didn't delete; when it deleted the whole page, the next query starts from the top again, and those files are gone by then. A query that fails ends the pass for this run. A file that has a row is left to pass 2. For each file with no row:
+**The checkpoint.** The step first reads the [`checkpoints`](data-model.md#checkpoints) row `receipt-clean-up`, once per run. Its `through` is the time up to which every upload has been dealt with. Until the [backfill](data-model.md#receiptfiles) has made that row, or when the read fails for any reason, the step does nothing.
+
+**Time.** The step stops 4 minutes after it starts, or at the run's limit if that comes first, so step 6 always gets the rest of the budget. Pass 1 stops after 2 of those minutes, and pass 2 has what's left. There's no count limit. A pass that stops with work left logs `receipt_cleanup_behind` with the step's counts.
+
+1. **Never attached:** files with `$createdAt` after `through` and at or before `now − 24 h`, oldest first (`$createdAt`, then `$id`), with their `receiptFiles` rows read a page at a time. `listFiles` pages with `Query.cursorAfter`, and a deleted file can't be a cursor. So the cursor is the last file on the page that this pass didn't delete; when it deleted the whole page, the next query starts from the top again, and those files are gone by then. A query that fails ends the pass for this run. A file that has a row is left to pass 2. For each file with no row:
    1. One database transaction creates the row with `detachedAt` set to the file's `$createdAt` and `deletingAt = now`. If the row exists by then (409), the ledger attached the file first, and it's skipped.
-   2. Delete the file. One that's already gone is skipped.
+   2. Delete the file (below).
 
-   This pass runs first because it can't wait: a file it doesn't reach within the 72 hours is never deleted (it stays until a transaction lists it and takes it off). Each run looks at 48 hours of uploads, so files are still found after a scheduler outage of up to 48 hours.
+   Then the pass moves `through` on: to `now − 24 h` if it reached the end and made every row it needed; otherwise to 1 ms before the oldest file it didn't finish (one it didn't reach, or whose row it couldn't make). Files go oldest first, so later uploads can't hold an earlier one back, and a file a run doesn't reach waits for the next run instead of being dropped. Overlapping runs can move `through` back, which only means looking at some files again.
 2. **Taken off every transaction, and leftovers:** rows with `detachedAt <= now − 24 h` (`idx_detachedAt`), paged by `$id`. For each row:
    1. If `deletingAt` is empty, one database transaction stages `deletingAt = now`, then checks that the stored row still lists no transaction and has the same `detachedAt`. If not, it rolls back and skips the row: the file was attached again.
-   2. Delete the file. One that's already gone is skipped.
-   3. Delete the row once its `deletingAt` is at least an hour old, which is usually on a later run, and always after the file. One that's already gone is skipped.
+   2. Delete the file (below).
+   3. Delete the row once its `deletingAt` is at least an hour old, which is usually on a later run, and always after the file. One that's already gone counts as done.
 
    A run that stops between these steps leaves `deletingAt` and `detachedAt` set, so a later run finishes the job.
+
+**Deleting a file.** Just before every `deleteFile`, the row as the step last read it must list no transaction. If it lists one, some writer has a bug: the step logs `receipt_row_listed` as an error, with IDs only, and skips the file. A file that's already gone counts as `skipped`, and its row is still deleted an hour after its `deletingAt`.
 
 **Races with an attach:**
 - an attach that commits first makes the step's check or commit fail, and the file stays;
 - an attach that commits later finds `deletingAt` and is refused, even one that read the rows before the step made or marked the row, because it reads them again after staging. The row is kept until its `deletingAt` is at least an hour old, which is far longer than any ledger request (15 s timeout), so no attach can miss both the row and the missing file.
 
-Anything that fails for one file or row is counted and left for the next run, and the step carries on. A Storage error is never taken for a database conflict. The run returns `receipts: { deleted, skipped, failed }` and logs nothing per file.
+Anything that fails for one file or row is counted and left for the next run, and the step carries on. A Storage error is never taken for a database conflict. The run returns `receipts: { deleted, skipped, failed }` and logs nothing per file, apart from `receipt_row_listed`.
 
 ### Step 6: nightly check
 
@@ -200,7 +206,7 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. `startsOn` is at most 31 days before local today (`VALIDATION_FAILED`, "The start date can be at most 31 days ago."): the past occurrences are made at once and wait for the user (step 2 never posts them), so a mistyped year can't make years of them. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
 | `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` set to yesterday (it stays empty for a schedule that never expanded, which starts from `startsOn` like a new one), then expand again from local today, never filling in past dates, even when reopening an ended schedule: changeable occurrences are updated in place, deleted when the new rule no longer has their date (before a later `startsOn`, say) or they are after its end, and created where missing. `created`, `updated` and `removed` count the ones created, updated in place and deleted. A changed `startsOn` has the same 31-day limit as on `POST`. The group and kind can't change (`VALIDATION_FAILED`) |
 | `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended. It sets `nextRunAt` to now, and `generatedThrough` to no earlier than yesterday, so the next cron run deletes any it didn't get to (a timeout, say), or carries on up to a later `endsOn` than before, from today on |
-| `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items. One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
+| `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items, taking their receipts off ([receiptFiles](data-model.md#receiptfiles)). One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
 
 Changes to occurrences themselves (edit, void, post) go through the `ledger` function. Editing an occurrence sets `overridden = true`.

@@ -896,15 +896,15 @@
     ]
   },
   {
-    "$id": "migrations",
+    "$id": "checkpoints",
     "$permissions": [],
     "databaseId": "main",
-    "name": "migrations",
+    "name": "checkpoints",
     "enabled": true,
     "rowSecurity": true,
     "columns": [
       {
-        "key": "doneAt",
+        "key": "through",
         "type": "datetime",
         "required": true,
         "array": false,

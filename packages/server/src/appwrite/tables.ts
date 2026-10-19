@@ -12,7 +12,7 @@ export const TABLES = {
   items: 'items',
   balances: 'balances',
   receiptFiles: 'receiptFiles',
-  migrations: 'migrations',
+  checkpoints: 'checkpoints',
   schedules: 'schedules',
   statements: 'statements',
   activity: 'activity',
