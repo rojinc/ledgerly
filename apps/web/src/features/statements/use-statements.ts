@@ -84,6 +84,8 @@ export function useRefreshStatement(id: string) {
   return useMutation({
     mutationFn: () => statements<Statements>('POST', `/statements/${id}/refresh`),
     onSuccess: (statement) => store(queryClient, statement),
+    // A refresh whose answer was lost, or that clashed with another, may still have changed it.
+    onError: () => queryClient.invalidateQueries({ queryKey: statementKeys.one(id) }),
   })
 }
 
@@ -93,6 +95,8 @@ export function useSendStatement(statement: Statements) {
   return useMutation({
     mutationFn: () => statements<{ sentAt: string }>('POST', `/statements/${statement.$id}/send`),
     onSuccess: ({ sentAt }) => store(queryClient, { ...statement, sentAt }),
+    // The email may have gone although the answer was lost: show Send again if so.
+    onError: () => queryClient.invalidateQueries({ queryKey: statementKeys.one(statement.$id) }),
   })
 }
 
@@ -110,10 +114,10 @@ export function useVoidStatement(id: string) {
 export type FinalizeResult = { statement: Statements; error?: string }
 
 /**
- * `POST /statements/{id}/finalize` as an **async** execution (functions-api.md#statements), then
- * watching both the statement row and the execution until the row is final and the execution has
- * ended, or the execution fails (#32's #88 note: a failed one must never leave the screen
- * spinning). A failure after the row turned final (the email, say) still returns it final.
+ * `POST /statements/{id}/finalize` as an **async** execution (functions-api.md#statements): polls
+ * the execution until it ends, then reads the row (#32's #88 note: a failed one must never leave
+ * the screen spinning). A failure after the row turned final (the email, say) still returns it
+ * final.
  */
 export function useFinalizeStatement(statement: Statements) {
   const queryClient = useQueryClient()

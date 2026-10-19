@@ -334,6 +334,14 @@ describe('StatementPage: a draft', () => {
     expect(screen.getByRole('article', { name: 'Draft invoice' })).toBeTruthy()
   })
 
+  it('reads the draft again when the refresh fails, as it may have changed anyway', async () => {
+    store(statement('s1'))
+    call.mockResolvedValue({ ok: false, error: { code: 'CONFLICT', message: 'Try again.' } })
+    renderAt('/groups/g1/statements/s1')
+    await screen.findByText(/We couldn’t update this draft/)
+    await waitFor(() => expect(getRow).toHaveBeenCalledTimes(2))
+  })
+
   it('doesn’t refresh a draft in an archived group, whose statements can’t change', async () => {
     mockGroup('admin', { archivedAt: '2026-11-01T00:00:00.000Z' })
     store(statement('s1'))
@@ -494,6 +502,17 @@ describe('StatementPage: finalize', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('Please log in again.')
   })
 
+  it('reads the statement again when the watch fails part way, as it may have changed', async () => {
+    getExecution.mockRejectedValue(new Error('offline'))
+    await openFinalize()
+    const reads = getRow.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Finalize and send' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Could not reach the server. Check your connection and try again.',
+    )
+    await waitFor(() => expect(getRow.mock.calls.length).toBeGreaterThan(reads))
+  })
+
   it('gives up waiting after the limit, without spinning forever', async () => {
     finalizeTiming.polls = 3
     getExecution.mockResolvedValue({ status: 'processing' } as never)
@@ -604,6 +623,29 @@ describe('StatementPage: a final invoice', () => {
     expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/s1/send', undefined)
   })
 
+  it('reloads the list of invoices after a send, so it shows the new state', async () => {
+    store(statement('s1', FINAL))
+    call.mockResolvedValue(ok({ sentAt: '2026-11-04T01:00:00.000Z' }))
+    renderAt('/groups/g1/statements/s1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Send' }))
+    const lists = listRows.mock.calls.length
+    expect(await screen.findByText('Sent.')).toBeTruthy()
+    await waitFor(() => expect(listRows.mock.calls.length).toBeGreaterThan(lists))
+  })
+
+  it('reads the invoice again when sending fails, and offers Send again if it went out', async () => {
+    store(statement('s1', FINAL))
+    call.mockImplementation(async () => {
+      // It was sent, but the answer was lost.
+      store(statement('s1', { ...FINAL, sentAt: '2026-11-03T01:00:00.000Z' }))
+      return { ok: false, error: { code: 'INTERNAL', message: 'Something went wrong.' } }
+    })
+    renderAt('/groups/g1/statements/s1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Send' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Something went wrong.')
+    expect(await screen.findByRole('button', { name: 'Send again' })).toBeTruthy()
+  })
+
   it('shows the server’s message when sending fails', async () => {
     store(statement('s1', FINAL))
     call.mockResolvedValue({
@@ -640,6 +682,9 @@ describe('StatementPage: a final invoice', () => {
       reason: 'Wrong rate',
     })
     expect(document.activeElement?.tagName).toBe('H1')
+    // The panel went with the Void… button: it can't be sent again, or cancelled onto nothing.
+    expect(screen.queryByRole('form', { name: 'Void INV-0007?' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Void invoice' })).toBeNull()
   })
 
   it('picks the latest final invoice past a later void one, and moves focus into Void', async () => {

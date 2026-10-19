@@ -18,7 +18,7 @@ const execution = await functions.createExecution({
 ```
 
 - Synchronous executions have a **30-second hard limit**. Every route must finish well within it (target under 2 seconds).
-- `statements … /finalize` is called with `async: true`. Async executions return no body, so the UI polls both the execution (`functions.getExecution`) and the statement row (`getRow`) until the execution ends, then reads the row once more ([#32](https://github.com/rojinc/ledgerly/issues/32#issuecomment-6249669348)). A failed execution, or one that ends with a status of 400 or more, is worded from its status code, so the screen never waits forever.
+- `statements … /finalize` is called with `async: true`. Async executions return no body, so the UI polls the execution (`functions.getExecution`) until it ends, then reads the statement row (`getRow`) ([#32](https://github.com/rojinc/ledgerly/issues/32#issuecomment-6249669348)). A failed execution, or one that ends with a status of 400 or more, is worded from its status code, so the screen never waits forever.
 - The function gets the caller by verifying the JWT in the `x-appwrite-user-jwt` header with Appwrite. It never trusts `x-appwrite-user-id`, which a client can forge ([permissions](permissions.md#function-side-checks)). It talks to the database with the per-execution API key in the `x-appwrite-key` header.
 
 ## Response envelope

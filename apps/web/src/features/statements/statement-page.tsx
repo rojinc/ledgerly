@@ -330,7 +330,8 @@ function FinalActions({
       {downloadError && <Message alert>{downloadError}</Message>}
       {send.isError && <Message alert>{send.error.message}</Message>}
       {send.isSuccess && <Message>Sent.</Message>}
-      {swap.opened && (
+      {/* Gone once it's void, with the Void… button it replaced. */}
+      {admin && latest && swap.opened && (
         <VoidStatement
           statement={statement}
           heading={swap.heading}
