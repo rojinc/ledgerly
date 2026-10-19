@@ -8,8 +8,15 @@ vi.mock('./features/auth/use-log-out', () => ({ useLogOut: () => logOut }))
 vi.mock('./features/auth/verify-email-banner', () => ({ VerifyEmailBanner: () => null }))
 vi.mock('./lib/realtime', () => ({ useRealtimeSync: () => {} }))
 
-// jsdom has no matchMedia: a screen of a given width that can change.
+// jsdom has no matchMedia: a screen of a given width, and browser font size, that can change.
 let width = 1280
+let fontSize = 16
+/** A `(min-width: …)` query's width in px, in `px` or in `rem` (which follows the font size). */
+function minWidth(query: string): number {
+  const match = /min-width: ([\d.]+)(px|rem)/.exec(query)
+  if (!match) return Number.NaN
+  return Number(match[1]) * (match[2] === 'rem' ? fontSize : 1)
+}
 const listeners = new Set<() => void>()
 function resize(to: number) {
   width = to
@@ -19,9 +26,10 @@ function resize(to: number) {
 }
 beforeEach(() => {
   width = 1280
+  fontSize = 16
   logOut.isPending = false
   window.matchMedia = vi.fn((query: string) => ({
-    matches: width >= Number(/min-width: (\d+)px/.exec(query)?.[1]),
+    matches: width >= minWidth(query),
     addEventListener: (_: string, listener: () => void) => listeners.add(listener),
     removeEventListener: (_: string, listener: () => void) => listeners.delete(listener),
   })) as never
@@ -46,7 +54,14 @@ describe('AppLayout, 768 px and wider', () => {
   it('puts the menu down the left side, with Log out last', () => {
     renderAt('/')
     const nav = screen.getByRole('navigation', { name: 'Main' })
-    expect(nav.closest('aside')?.className).toContain('fixed')
+    const side = nav.parentElement as HTMLElement
+    expect(side.className).toContain('fixed')
+    // Scrolls on a short screen, over the page's own background.
+    expect(side.className).toContain('overflow-y-auto')
+    expect(side.className).toContain('bg-background')
+    expect(screen.getByRole('button', { name: 'Log out' }).className).toContain('shrink-0')
+    // No extra "complementary" landmark around the menu.
+    expect(document.querySelector('aside')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Menu' })).toBeNull()
     expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual([
       'Home',
@@ -132,5 +147,49 @@ describe('AppLayout, under 768 px', () => {
     resize(1024)
     expect(screen.queryByRole('button', { name: 'Menu' })).toBeNull()
     expect(screen.getAllByRole('navigation', { name: 'Main' })).toHaveLength(1)
+  })
+
+  it('leaves room for the side menu exactly when it shows, at any font size (#205)', () => {
+    const page = () => document.querySelector('main')?.parentElement as HTMLElement
+    for (const [size, at, wide] of [
+      [16, 800, true],
+      [16, 767, false],
+      [20, 900, false],
+      [20, 960, true],
+      [14, 671, false],
+      [14, 700, true],
+    ] as const) {
+      fontSize = size
+      width = at
+      renderAt('/')
+      expect(Boolean(screen.queryByRole('button', { name: 'Menu' }))).toBe(!wide)
+      expect(page().className.split(' ').includes('pl-56')).toBe(wide)
+      cleanup()
+    }
+  })
+
+  it('closes only on Escape, and only for a key pressed in the menu bar (#205)', () => {
+    renderAt('/')
+    const menu = screen.getByRole('button', { name: 'Menu' })
+    fireEvent.click(menu)
+    fireEvent.keyDown(screen.getByRole('link', { name: 'Calendar' }), { key: 'a' })
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
+    // Escape typed somewhere on the page isn't for the menu.
+    const field = document.createElement('input')
+    document.body.append(field)
+    field.focus()
+    fireEvent.keyDown(field, { key: 'Escape' })
+    expect(menu.getAttribute('aria-expanded')).toBe('true')
+    expect(document.activeElement).toBe(field)
+    field.remove()
+  })
+
+  it('stops listening for Escape once the menu is closed (#205)', () => {
+    const remove = vi.spyOn(document, 'removeEventListener')
+    renderAt('/')
+    const menu = screen.getByRole('button', { name: 'Menu' })
+    fireEvent.click(menu)
+    fireEvent.click(menu)
+    expect(remove).toHaveBeenCalledWith('keydown', expect.any(Function))
   })
 })
