@@ -121,6 +121,9 @@ export type FinalizeResult = {
   status?: number
 }
 
+/** The statement was deleted meanwhile: another admin discarded the draft. */
+export class StatementGone extends Error {}
+
 /**
  * `POST /statements/{id}/finalize` as an **async** execution (functions-api.md#statements): polls
  * the execution until it ends, then reads the row (#32's #88 note: a failed one must never leave
@@ -173,6 +176,9 @@ export function useFinalizeStatement(statement: Statements) {
             'This is taking longer than usual. Reload the page in a minute to see how it went.',
         }
       } catch (error) {
+        if (error instanceof AppwriteException && error.code === 404) {
+          throw new StatementGone('This statement no longer exists.')
+        }
         throw new Error(
           error instanceof AppwriteException && error.code === 401
             ? 'Please log in again.'
@@ -181,8 +187,14 @@ export function useFinalizeStatement(statement: Statements) {
       }
     },
     onSuccess: ({ statement: row }) => store(queryClient, row),
-    // A watch that failed part way may have missed the row changing: read it again.
-    onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.statement(statement.$id) }),
+    onError: (error) => {
+      if (error instanceof StatementGone) {
+        queryClient.removeQueries({ queryKey: queryKeys.statement(statement.$id) })
+        return queryClient.invalidateQueries({ queryKey: queryKeys.statements(statement.groupId) })
+      }
+      // A watch that failed part way may have missed the row changing: read it again.
+      return queryClient.invalidateQueries({ queryKey: queryKeys.statement(statement.$id) })
+    },
   })
 }
 

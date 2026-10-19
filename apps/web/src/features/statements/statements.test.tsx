@@ -883,10 +883,24 @@ describe('StatementPage: a monthly divide (#166)', () => {
 
   async function openFinalize() {
     store(divide('d1'))
-    renderAt('/groups/g1/statements/d1')
+    const view = renderAt('/groups/g1/statements/d1')
     fireEvent.click(await screen.findByRole('button', { name: 'Finalize…' }))
     expect(screen.getByRole('heading', { level: 2, name: 'Finalize this divide?' })).toBeTruthy()
+    return view
   }
+
+  it('goes back to the list when another admin discarded the draft meanwhile', async () => {
+    getExecution.mockImplementation((async () => {
+      stored = []
+      getRow.mockRejectedValue(new AppwriteException('Row not found', 404, 'row_not_found'))
+      return { status: 'failed', responseStatusCode: 404, responseBody: '' }
+    }) as never)
+    const { router } = await openFinalize()
+    fireEvent.click(screen.getByRole('button', { name: 'Finalize only' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements'))
+    expect(await screen.findByText(/^The draft for .+ was discarded\.$/)).toBeTruthy()
+    expect(screen.queryByText(/Could not reach the server/)).toBeNull()
+  })
 
   it.each([
     ['Finalize and email everyone', true, 'Finalized and emailed to everyone.'],
@@ -960,10 +974,10 @@ describe('StatementPage: a monthly divide (#166)', () => {
 
   it('emails everyone with POST /send, then says when it was sent', async () => {
     store(divide('d1', FINAL_DIVIDE))
-    call.mockResolvedValue(ok({ sentAt: '2026-11-02T01:00:00.000Z' }))
+    call.mockResolvedValue(ok({ sentAt: '2026-11-01T14:00:00.000Z' }))
     renderAt('/groups/g1/statements/d1')
     fireEvent.click(await screen.findByRole('button', { name: 'Email everyone' }))
-    // 12:00 on the 2nd in Sydney.
+    // 01:00 on the 2nd in Sydney, still the 1st in UTC.
     expect(await screen.findByText(`Sent ${formatDate('2026-11-02')}.`)).toBeTruthy()
     expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/d1/send', undefined)
     expect(screen.getByRole('button', { name: 'Email everyone again' })).toBeTruthy()
@@ -1106,17 +1120,31 @@ describe('StatementPage: discard a draft (#166)', () => {
   })
 
   it.each([
-    ['CONFLICT', 'It’s being finalized. Finalize it again instead.'],
-    ['VALIDATION_FAILED', 'This draft already has a number, so it can’t be discarded.'],
-  ])('shows the message for %s and stays', async (code, message) => {
-    store(divide('d1'))
-    answer({ ok: false, error: { code: code as never, message } })
-    const { router } = renderAt('/groups/g1/statements/d1')
-    fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }))
-    expect((await screen.findByRole('alert')).textContent).toBe(message)
-    expect(router.state.location.pathname).toBe('/groups/g1/statements/d1')
-  })
+    ['CONFLICT', 'finalizing', 'It’s being finalized. Finalize it again instead.'],
+    ['VALIDATION_FAILED', 'final', 'It’s final now, so it can’t be discarded.'],
+  ] as const)(
+    'shows %s on the page when the row changed meanwhile (%s), and stays',
+    async (code, status, message) => {
+      store(divide('d1'))
+      call.mockImplementation(async (_fn, _method, path) => {
+        if (path.endsWith('/refresh')) return ok(stored[0])
+        // Another admin got there first: reading it again finds it changed.
+        store(divide('d1', status === 'final' ? FINAL_DIVIDE : { status }))
+        return { ok: false, error: { code, message } }
+      })
+      const { router } = renderAt('/groups/g1/statements/d1')
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }))
+      expect((await screen.findByRole('alert')).textContent).toBe(message)
+      // The panel goes with the draft; the message stays, and focus is on the page's heading.
+      await waitFor(() =>
+        expect(screen.queryByRole('heading', { name: /^Discard the draft/ })).toBeNull(),
+      )
+      expect(screen.getByRole('alert').textContent).toBe(message)
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+      expect(router.state.location.pathname).toBe('/groups/g1/statements/d1')
+    },
+  )
 
   it('waits for the refresh on open before discarding', async () => {
     store(divide('d1'))

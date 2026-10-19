@@ -15,6 +15,7 @@ import { STATUS_LABEL } from './statements-page'
 import {
   downloadPdf,
   type FinalizeResult,
+  StatementGone,
   useDiscardStatement,
   useFinalizeStatement,
   useRefreshStatement,
@@ -36,7 +37,7 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 }
 
 /** A statement's dates in words: `1 Oct 2026 – 31 Oct 2026`. */
-export function periodText(statement: Pick<Statements, 'periodStart' | 'periodEnd'>): string {
+function periodText(statement: Pick<Statements, 'periodStart' | 'periodEnd'>): string {
   return `${formatDate(statement.periodStart)} – ${formatDate(statement.periodEnd)}`
 }
 
@@ -86,6 +87,8 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
   const all = useStatements(row.groupId)
   const refresh = useRefreshStatement(row.$id)
   const [done, setDone] = useState('')
+  // A refusal from a panel that may be gone by now (the row changed): it's said here instead.
+  const [refused, setRefused] = useState('')
 
   // statements.md#1: a draft is worked out again each time it's opened, once: React runs effects
   // twice in development, and two refreshes at once clash (CONFLICT). Not in an archived group,
@@ -122,7 +125,12 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
     (statement) => statement.$id === row.$id || statement.periodEnd < row.periodEnd,
   )
   const finish = (message: string) => {
+    setRefused('')
     setDone(message)
+    onDone()
+  }
+  const refuse = (message: string) => {
+    setRefused(message)
     onDone()
   }
 
@@ -136,6 +144,7 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       <p role="status" className="text-sm break-words empty:hidden">
         {done}
       </p>
+      {refused && <Message alert>{refused}</Message>}
       {isDraft && refresh.isPending && <Message>Updating from your latest entries…</Message>}
       {isDraft && refresh.isError && (
         <Message alert>
@@ -163,7 +172,7 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       )}
       {/* An invoice draft with a number can't be discarded (statements.md#5): it's refused. */}
       {open && isDraft && row.number === null && all.data && latest !== undefined && (
-        <Discard statement={row} latest={latest} busy={refresh.isPending} />
+        <Discard statement={row} latest={latest} busy={refresh.isPending} onRefused={refuse} />
       )}
       {(row.status === 'final' || row.status === 'void') && group.data && (
         <FinalActions
@@ -219,6 +228,7 @@ function Finalize({
   onFinish: (message: string) => void
 }) {
   const finalize = useFinalizeStatement(statement)
+  const navigate = useNavigate()
   const swap = useSwap()
   const [error, setError] = useState('')
   const divide = statement.type === 'divide'
@@ -250,7 +260,17 @@ function Finalize({
             : `Finalized as ${row.displayNumber}${send ? ' and sent' : ''}.${failed ? ` ${failed}` : ''}`,
         )
       },
-      onError: (thrown) => setError(thrown.message),
+      onError: (thrown) => {
+        // Another admin discarded it: the list says so.
+        if (thrown instanceof StatementGone) {
+          navigate(`/groups/${statement.groupId}/statements`, {
+            replace: true,
+            state: { discarded: periodText(statement) },
+          })
+          return
+        }
+        setError(thrown.message)
+      },
     })
   }
 
@@ -415,9 +435,10 @@ function FinalActions({
       </div>
       {downloadError && <Message alert>{downloadError}</Message>}
       {send.isError && <Message alert>{send.error.message}</Message>}
-      {send.isSuccess && (
-        <Message>{divide ? `Sent ${sentOn(send.data.sentAt, group)}.` : 'Sent.'}</Message>
-      )}
+      {/* Mounted from the start, so the news is read out. */}
+      <p role="status" className="text-sm break-words text-muted-foreground empty:hidden">
+        {send.isSuccess ? (divide ? `Sent ${sentOn(send.data.sentAt, group)}.` : 'Sent.') : ''}
+      </p>
       {/* Gone once it's void, with the Void… button it replaced. */}
       {admin && latest && swap.opened && (
         <VoidStatement
@@ -507,10 +528,12 @@ function Discard({
   statement,
   latest,
   busy,
+  onRefused,
 }: {
   statement: Statements
   latest: boolean
   busy: boolean
+  onRefused: (message: string) => void
 }) {
   const discard = useDiscardStatement(statement)
   const navigate = useNavigate()
@@ -540,7 +563,6 @@ function Discard({
         It’s deleted. Its transactions don’t change.
         {latest && ` This period, ${period}, will be included in the next statement.`}
       </p>
-      {discard.isError && <Message alert>{discard.error.message}</Message>}
       <div className="flex flex-wrap gap-3">
         <Button
           // Not while the draft is being refreshed: the refresh would find it gone.
@@ -553,6 +575,9 @@ function Discard({
                   replace: true,
                   state: { discarded: period },
                 }),
+              // Refused only in a race (now final, finalizing or numbered): the row is read
+              // again, which can take this panel away, so the page says it.
+              onError: (error) => onRefused(error.message),
             })
           }}
         >
