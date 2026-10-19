@@ -1,7 +1,7 @@
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeTeams } from './fake-teams'
-import { addToTeam, ensureTeam, isInTeam, othersInTeam, removeFromTeam } from './teams'
+import { addToTeam, deleteTeam, ensureTeam, isInTeam, othersInTeam, removeFromTeam } from './teams'
 
 describe('ensureTeam', () => {
   it('creates the team with no roles, and counts one that already exists as done', async () => {
@@ -67,6 +67,22 @@ describe('removeFromTeam', () => {
     await removeFromTeam(teams, 'g1', 'u1')
     deleteMembership.mockRejectedValueOnce(new AppwriteException('Down', 503))
     await expect(removeFromTeam(teams, 'g1', 'u1')).rejects.toMatchObject({ code: 503 })
+  })
+})
+
+describe('deleteTeam', () => {
+  it('deletes the team with its memberships, and counts a team that is already gone as done', async () => {
+    const teams = new FakeTeams({ g1: ['u1', 'u2'], g2: ['u1'] })
+    await deleteTeam(teams, 'g1')
+    await deleteTeam(teams, 'g1')
+    expect(teams.teamIds()).toEqual(['g2'])
+    expect(teams.members('g1')).toBeUndefined()
+  })
+
+  it('rethrows any other error', async () => {
+    const teams = new FakeTeams({ g1: ['u1'] })
+    vi.spyOn(teams, 'delete').mockRejectedValue(new AppwriteException('Down', 503))
+    await expect(deleteTeam(teams, 'g1')).rejects.toMatchObject({ code: 503 })
   })
 })
 

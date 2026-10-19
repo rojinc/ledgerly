@@ -84,7 +84,7 @@ describe('POST / (the users.*.update.password event)', () => {
     expect(notices(log)).toEqual([{ event: 'password_notice', userId: 'u1', outcome }])
   })
 
-  it('sends nothing for a user who is gone, or with no user ID in the name or the body', async () => {
+  it('sends nothing for a user who is gone', async () => {
     const services = changed()
     const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     services.users = {
@@ -93,14 +93,8 @@ describe('POST / (the users.*.update.password event)', () => {
       },
     }
     await fire(services)
-    await fire(services, { $id: '../../etc' }, { 'x-appwrite-event': '' })
-    await fire(services, 'not an object', { 'x-appwrite-event': 'users.*.update.password' })
     expect(services.sendEmail).not.toHaveBeenCalled()
-    expect(notices(log)).toEqual([
-      { event: 'password_notice', userId: 'u1', outcome: 'gone' },
-      { event: 'password_notice', outcome: 'gone' },
-      { event: 'password_notice', outcome: 'gone' },
-    ])
+    expect(notices(log)).toEqual([{ event: 'password_notice', userId: 'u1', outcome: 'gone' }])
   })
 
   it('takes the user ID from the event name over the body, and nothing else from the body', async () => {
@@ -140,11 +134,38 @@ describe('POST / (the users.*.update.password event)', () => {
     },
   )
 
-  it('falls back to the body’s $id when the name has no user ID', async () => {
+  it.each([
+    ['no name', undefined],
+    ['an empty name', ''],
+    ['a wildcard for the user', 'users.*.update.password'],
+    ['no user ID', 'users..update.password'],
+    ['a user ID that isn’t one', 'users.../etc.update.password'],
+    ['another event', 'users.u1.update.name'],
+    ['a recovery being created', 'users.u1.recovery.token1.create'],
+    ['a recovery token ID with a dot', 'users.u1.recovery.token.1.update'],
+    ['the name with something after it', 'users.u1.update.password.x'],
+    ['the name with something before it', 'x.users.u1.update.password'],
+    ['another resource', 'teams.u1.update.password'],
+  ])('refuses an event run with %s, never using the body’s $id', async (_, name) => {
     const services = changed()
     const get = vi.spyOn(services.users, 'get')
-    await fire(services, userBody('u1'), { 'x-appwrite-event': '' })
-    expect(get).toHaveBeenCalledWith({ userId: 'u1' })
+    const result = await call(services, 'POST', '/', userBody('u1'), null, {
+      'x-appwrite-trigger': 'event',
+      ...(name === undefined ? {} : { 'x-appwrite-event': name }),
+    })
+    expect(result.status).toBe(403)
+    expect(result.body).toMatchObject({ ok: false, error: { code: 'FORBIDDEN' } })
+    expect(get).not.toHaveBeenCalled()
+    expect(services.sendEmail).not.toHaveBeenCalled()
+  })
+
+  it('never checks the body’s $id against the name: a reset’s body is a token', async () => {
+    const services = changed()
+    const get = vi.spyOn(services.users, 'get')
+    await fire(services, { $id: 'u2' })
+    await fire(services, undefined)
+    expect(get.mock.calls).toEqual([[{ userId: 'u1' }], [{ userId: 'u1' }]])
+    expect(sent(services)).toHaveLength(2)
   })
 
   it('logs a failed send as an error and fails the run, which Appwrite won’t retry', async () => {
@@ -183,13 +204,14 @@ describe('POST / (the users.*.update.password event)', () => {
     expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
-  it('refuses a run without a JWT that isn’t an event, and a scheduled run', async () => {
+  it('refuses a run without a JWT that isn’t an event; a scheduled run finishes merges instead', async () => {
     const services = changed()
     expect((await call(services, 'POST', '/', userBody(), null)).status).toBe(401)
+    // The hourly run shares `POST /` (identity-and-invites.md#finishing-merges).
     const scheduled = await call(services, 'POST', '/', userBody(), null, {
       'x-appwrite-trigger': 'schedule',
     })
-    expect(scheduled.status).toBe(403)
+    expect(scheduled.body).toMatchObject({ ok: true, data: { unfinished: 0 } })
     expect(services.sendEmail).not.toHaveBeenCalled()
   })
 

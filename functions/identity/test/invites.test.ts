@@ -536,6 +536,32 @@ describe('POST /invites', () => {
       expect(revs(services)).toEqual({ ...UNTOUCHED, pAnn: guarded, pSam: guarded, pKim: guarded })
     })
 
+    it('guards that person when merge step 1 marks the target just before the guards', async () => {
+      const services = fixture({ samUserId: 'u9' })
+      // Just before the target's own guard is staged, whatever is staged before it.
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"pKim"'),
+        () => updateRow(services.db, 'persons', 'pKim', { mergedInto: 'pSam' }),
+      )
+      await sends(services, TO_KIM)
+      const guarded = expect.any(String)
+      expect(revs(services)).toEqual({ ...UNTOUCHED, pAnn: guarded, pSam: guarded, pKim: guarded })
+    })
+
+    it('guards the inviter once when the target is being merged into them', async () => {
+      const services = fixture()
+      await updateRow(services.db, 'persons', 'pKim', { mergedInto: 'pAnn' })
+      const staged = vi.spyOn(services.db, 'createOperations')
+      await sends(services, TO_KIM)
+      const guarded = staged.mock.calls
+        .flatMap(([params]) => (params.operations ?? []) as { tableId: string; rowId: string }[])
+        .filter((operation) => operation.tableId === 'persons')
+        .map((operation) => operation.rowId)
+      expect(guarded).toEqual(['pAnn', 'pKim'])
+      expect(services.sent).toHaveLength(1)
+    })
+
     it('refuses once that person has started deleting their account, as a wrong address', async () => {
       const services = await merging()
       await deleting(services)()

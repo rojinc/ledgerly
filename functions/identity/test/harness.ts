@@ -36,6 +36,7 @@ export function account(overrides: Partial<AccountUser> = {}): AccountUser {
     phoneVerification: false,
     labels: [],
     passwordUpdate: '',
+    $updatedAt: '2026-10-18T19:58:00.000+00:00',
     ...overrides,
   }
 }
@@ -57,6 +58,7 @@ export function fakes(
     }),
     now: NOW,
     appUrl: APP_URL,
+    supportEmail: '',
     account: user,
     sent,
   }
