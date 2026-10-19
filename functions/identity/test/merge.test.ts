@@ -77,6 +77,30 @@ describe('markMerged (step 1)', () => {
     ])
   })
 
+  it('reads U’s rows in P’s groups 100 groups at a time, and records each group’s dates', async () => {
+    const groupIds = Array.from({ length: 150 }, (_, n) => `g${String(n).padStart(3, '0')}`)
+    const store = new FakeDb({
+      persons: [U, P],
+      members: groupIds.flatMap((groupId, n) => [
+        placeholderRow(`mp${n}`, groupId, 'pP', NOW.toISOString()),
+        placeholderRow(`mu${n}`, groupId, 'pU', NOW.toISOString(), { status: 'active' }),
+      ]),
+    } as ConstructorParameters<typeof FakeDb>[0])
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await markMerged(store, 'pP', 'pU', [])).toBe(true)
+    const sizes = reads.mock.calls.flatMap(([params]) =>
+      (params.queries ?? [])
+        .map((query) => JSON.parse(query) as { method: string; values: unknown[] })
+        .filter((query) => query.method === 'equal')
+        .map((query) => query.values.length),
+    )
+    expect(Math.max(...sizes)).toBe(100)
+    const marked = store.rows('persons').find((row) => row.$id === 'pP')
+    const dates = JSON.parse(marked?.mergeMembersJson as string) as Array<{ into: unknown }>
+    expect(dates).toHaveLength(150)
+    expect(dates.every((entry) => entry.into !== null)).toBe(true)
+  })
+
   it('lists P’s rows once P’s row is staged, so a row added before then is on the list', async () => {
     const store = new FakeDb({
       persons: [U, P],

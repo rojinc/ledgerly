@@ -149,8 +149,13 @@ async function verifyKeys(
   if (user.labels.includes('deleted')) return
   for (const { key } of verifiedIdentities(user)) {
     const identity = await findIdentity(db, key)
-    if (identity?.personId === personId) await markVerified(db, now, identity)
+    if (identity?.personId === personId) await markVerified(db, now, identity, deletedMeanwhile)
   }
+}
+
+// A deletion that started after U was read: this U is stopped, and the next run skips it.
+function deletedMeanwhile(): AppError {
+  return new AppError('NOT_FOUND', 'The account is being deleted.')
 }
 
 /** A copy in random order (Fisher–Yates). */

@@ -12,6 +12,9 @@ import { beforeStaging, NOW } from './harness'
 // P (a placeholder) is merged into U; X is someone else.
 const merge = { from: 'pP', into: 'pU' }
 const FAR = Number.MAX_SAFE_INTEGER
+// A few seconds off, for a test with a locked row: a mutant that gets the lock check wrong can
+// raise Raced on every try, so the run is cut off and the test fails rather than hangs.
+const soon = () => Date.now() + 3_000
 const HOUSE = JSON.stringify({ type: 'house', autoFinalize: false, defaultBillSplit: 'days' })
 // P's and U's member rows in g1 as step 1 recorded them: both there all year.
 const ALL_YEAR = { joinedOn: '2026-01-01' as LocalDate, leftOn: null }
@@ -92,7 +95,7 @@ describe('moveInputs (step 3)', () => {
         balances: [{ $id: 'g1', peopleJson: '[]' }],
       },
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, soon(), DATES, [])).toEqual({
       rewritten: 3,
       voided: 0,
       skipped: 0,
@@ -130,7 +133,7 @@ describe('moveInputs (step 3)', () => {
     // A rewritten input changes no share, so the balances row stays.
     expect(store.rows('balances')).toHaveLength(1)
     // Nothing names P any more: a second run writes nothing.
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, soon(), DATES, [])).toMatchObject({
       rewritten: 0,
     })
   })
@@ -784,8 +787,9 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, soon(), DATES, [])).toMatchObject({
       rewritten: 1,
+      done: true,
     })
     const [row] = store.rows('transactions')
     expect(row?.statementId).toBe('st1')
@@ -1339,6 +1343,28 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't149', left: ids(150) }])
   })
 
+  it('writes no resume point when nothing changed since it was stored', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // t001 is still unreadable, and nothing comes after the cursor.
+    const stored = [{ groupId: 'g1', after: 't001', left: ['t001'] }]
+    const broken = { ...transaction('t001', {}), inputJson: '{' }
+    const store = withP([transaction('t000', RENAMED), broken], stored)
+    let writes = 0
+    beforeStaging(
+      store,
+      (operations) => operations.includes('mergeCursorsJson'),
+      async () => {
+        writes += 1
+      },
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      skipped: 1,
+      done: false,
+    })
+    expect(writes).toBe(0)
+    expect(cursors(store)).toEqual(stored)
+  })
+
   it('renames a row it left once it’s fixed, reading it again when an edit races it', async () => {
     const store = withP([transaction('t000', RENAMED), transaction('t001', EXPENSE)], LEFT)
     const edited = { ...EXPENSE, note: 'Edited' }
@@ -1452,6 +1478,60 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
       { groupId: 'g2', after: 'x', left: ['x'] },
       { groupId: 'g1', after: 't000', left: [] },
     ])
+  })
+
+  // AI A's probe on #242: a scan of unlocked rows only would pass t0 for good, and the merge
+  // would finish with t0 naming P once its statement is voided.
+  it('renames a locked row behind the cursor, so voiding its statement later leaves no P', async () => {
+    const store = withP(
+      [
+        transaction('t000', EXPENSE, { statementId: 'st0' }),
+        transaction('t001', EXPENSE),
+        transaction('t002', EXPENSE, { groupId: 'g2' }),
+      ],
+      null,
+      {
+        groups: [
+          { $id: 'g1', type: 'house', name: 'Flat', rev: 'r0', settingsJson: HOUSE },
+          { $id: 'g2', type: 'house', name: 'Work', rev: 'r0', settingsJson: HOUSE },
+        ],
+        statements: [
+          { $id: 'st0', groupId: 'g1', status: 'final', periodStart: '2026-08-01' },
+          { $id: 'st2', groupId: 'g2', status: 'finalizing', periodStart: '2026-09-01' },
+        ],
+      },
+    )
+    const dates = [...DATES, { groupId: 'g2', from: ALL_YEAR, into: ALL_YEAR }]
+    // Claim 1: g1 is scanned to its end, and g2 is put off while it's finalizing.
+    expect(await moveInputs(store, merge, ['g1', 'g2'], NOW, FAR, dates, [])).toMatchObject({
+      putOff: ['g2'],
+      done: false,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't001', left: [] }])
+    // Then st0 is voided, which unlocks t000, and g2's finalize ends.
+    await withTransaction(store, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't000',
+        data: { statementId: null },
+      })
+      await tx.write({
+        action: 'update',
+        tableId: 'statements',
+        rowId: 'st2',
+        data: { status: 'final' },
+      })
+    })
+    // Claim 2 starts after t001 in g1 and finishes the merge: nothing in g1 names P.
+    expect(
+      await moveInputs(store, merge, ['g1', 'g2'], NOW, FAR, dates, cursors(store)),
+    ).toMatchObject({ done: true })
+    for (const id of ['t000', 't001', 't002']) {
+      expect(store.rows('transactions').find((row) => row.$id === id)?.inputJson).not.toMatch(
+        /\bpP\b/,
+      )
+    }
   })
 })
 
