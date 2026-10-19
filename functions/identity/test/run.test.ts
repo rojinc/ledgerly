@@ -308,14 +308,15 @@ describe('POST / (the hourly run)', () => {
     ])
   })
 
-  it('doesn’t count a merge put off with time left as cut off, and waits to verify U’s keys', async () => {
+  it('doesn’t count a merge put off with time left as cut off, and verifies the key a finished one moved', async () => {
     const services = seeded(PUT_OFF)
     expect((await hourly(services)).body).toEqual({
       ok: true,
       data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
     })
-    // Sammy's merge finished and moved the phone, but Sam's other merge is still open.
-    expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: false })
+    // Sammy's merge finished and moved the phone; Sam's other merge is still open, and the
+    // phone is verified all the same, as /claim does (the co-lead on #330).
+    expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
     expect(identity(services, 'iP2')?.personId).toBe('pP2')
   })
 
