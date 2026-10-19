@@ -134,6 +134,17 @@ export function toMemberEditBody(
   }
 }
 
+/**
+ * `PATCH { leftOn: null }`: someone who moved out lives here again (permissions.md#leaving-a-group).
+ * The function keeps their role unless the body names one, so a new role goes with it.
+ */
+export function toMoveBackInBody(
+  role: Members['role'],
+  stored: Members,
+): z.input<typeof updateMemberBodySchema> {
+  return { leftOn: null, ...(role !== stored.role ? { role } : {}) }
+}
+
 export const ROLE_LABEL: Record<Members['role'], string> = {
   admin: 'Admin',
   member: 'Member',
