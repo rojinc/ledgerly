@@ -21,8 +21,9 @@ describe('missingGlyphs and printable', () => {
     ['a lone surrogate', 'a\uD83Db', '\uD83D', 'a�b'],
     // No font has a tab either.
     ['a tab', 'a\tb', '\t', 'a�b'],
-    // Only what fontRuns() prints as �: the selector stays, in Roboto's run.
-    ['VS16 on Thai', 'ร\u{FE0F}', 'ร', '�\u{FE0F}'],
+    // Only what fontRuns() prints as �. Roboto has no selector or joiner, so it leaves them out.
+    ['VS16 on Thai', 'ร\u{FE0F}', 'ร', '�'],
+    ['a joiner after Thai', 'ก\u{200D}x', 'ก', '�x'],
   ])('marks %s', (_, text, missing, printed) => {
     expect(missingGlyphs(text)).toEqual(codePoints(missing))
     expect(printable(text)).toBe(printed)
@@ -123,7 +124,7 @@ describe('the Noto tables', () => {
     expect(holders).toEqual(sequenceMarks.map(() => ['NotoEmoji']))
   })
 
-  // The web app imports this module for printable(), so starting it must not unpack them.
+  // The web app imports this module for missingGlyphs(), so starting it must not unpack them.
   it('unpacks each table on first use, once', async () => {
     vi.resetModules()
     const parse = vi.spyOn(Number, 'parseInt')
@@ -228,23 +229,29 @@ describe('fontRuns', () => {
   // stays with the character before it.
   it.each([
     ['an ideographic variation', '葛\u{E0100}城', runs(['NotoSansCJK', '葛\u{E0100}城'])],
-    ['VS16 on a character no font has', 'ร\u{FE0F}', runs(['Roboto', '�\u{FE0F}'])],
+    // Roboto has neither, and would draw a box, so it leaves them out.
+    ['VS16 on a character no font has', 'ร\u{FE0F}', runs(['Roboto', '�'])],
     // a + U+200D is one cluster, then b.
-    ['a joiner after a letter', 'a\u{200D}b', runs(['Roboto', 'a\u{200D}b'])],
+    ['a joiner after a letter', 'a\u{200D}b', runs(['Roboto', 'ab'])],
   ])('splits %s by character', (_, text, expected) => {
     expect(fontRuns(text)).toEqual(expected)
   })
 
   // The web app's draft page calls missingGlyphs() on every render (statement-page.tsx).
-  it('splits by code point where the browser has no Intl.Segmenter (Firefox before 125)', () => {
+  // A fresh module: this one already built its segmenter in the tests above.
+  it('splits by code point where the browser has no Intl.Segmenter (Firefox before 125)', async () => {
     const segmenter = Intl.Segmenter
     Object.assign(Intl, { Segmenter: undefined })
     onTestFinished(() => {
       Object.assign(Intl, { Segmenter: segmenter })
     })
+    vi.resetModules()
+    const glyphs = await import('./pdf-glyphs')
     const text = 'ร้าน 张三 Thanks 😀 Ṣ'
-    expect(missingGlyphs(text)).toEqual(codePoints('ร้าน'))
-    expect(printable(text)).toBe('���� 张三 Thanks 😀 S\u{323}')
-    expect(fontRuns('张三 Pty Ltd')).toEqual(runs(['NotoSansCJK', '张三'], ['Roboto', ' Pty Ltd']))
+    expect(glyphs.missingGlyphs(text)).toEqual(codePoints('ร้าน'))
+    expect(glyphs.printable(text)).toBe('���� 张三 Thanks 😀 S\u{323}')
+    expect(glyphs.fontRuns('张三 Pty Ltd')).toEqual(
+      runs(['NotoSansCJK', '张三'], ['Roboto', ' Pty Ltd']),
+    )
   })
 })

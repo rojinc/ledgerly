@@ -158,8 +158,8 @@ function unpack(packed: string): Ranges {
     })
 }
 
-// Unpacked on first use: the web app imports this module for printable() and must not pay for
-// them when it starts.
+// Unpacked on first use: the web app imports this module for missingGlyphs() and must not pay
+// for them when it starts.
 let cjk: Ranges | undefined
 let emoji: Ranges | undefined
 
@@ -227,7 +227,8 @@ function joinsPrevious(codePoint: number): boolean {
  * (`♥` + U+FE0F, a keycap, 🏃 + U+200D + `♀`) goes there whole. When no font has a whole
  * cluster, each of its characters goes to the first font that has it, a zero-width joiner
  * (U+200D) or variation selector (U+FE00–U+FE0F, U+E0100–U+E01EF) staying with the character
- * before it, and a character no font has becomes U+FFFD in a Roboto run.
+ * before it (left out after a Roboto one: Roboto has none), and a character no font has becomes
+ * U+FFFD in a Roboto run.
  */
 export function fontRuns(text: string): FontRun[] {
   return split(text).runs
@@ -264,8 +265,12 @@ function split(text: string): { runs: FontRun[]; missing: number[] } {
     for (const char of segment) {
       const codePoint = char.codePointAt(0) as number
       const last = runs.at(-1)
-      const own =
-        last && joinsPrevious(codePoint) ? { font: last.font, text: char } : firstFont(char)
+      if (last && joinsPrevious(codePoint)) {
+        // Roboto has no joiner or selector and would draw a box, so they're left out there.
+        if (last.font !== 'Roboto') add({ font: last.font, text: char })
+        continue
+      }
+      const own = firstFont(char)
       if (!own) missing.push(codePoint)
       add(own ?? { font: 'Roboto', text: '\u{FFFD}' })
     }

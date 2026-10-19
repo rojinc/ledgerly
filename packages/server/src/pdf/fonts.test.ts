@@ -13,7 +13,12 @@ describe('checkFonts', () => {
     const folder = pathToFileURL(`${dir}/`)
     expect(() => checkFonts(folder)).not.toThrow()
     rmSync(join(dir, FONT_FILES.NotoEmoji))
-    expect(() => checkFonts(folder)).toThrow(FONT_FILES.NotoEmoji)
+    expect(() => checkFonts(folder)).toThrow(
+      expect.objectContaining({
+        name: 'FontFileMissing',
+        message: expect.stringContaining(FONT_FILES.NotoEmoji),
+      }),
+    )
   })
 
   // In the bundle that is dist/fonts/, where the build copies them; the source has none.

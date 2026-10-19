@@ -4,7 +4,8 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { basename } from 'node:path'
+import { createRequire } from 'node:module'
+import { basename, relative } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 
@@ -19,14 +20,17 @@ const functions =
 const version = gitVersion()
 // The invoice PDF's Noto fonts (packages/server/src/pdf/fonts.ts), too big to bundle, with the
 // SHA-256 of each pinned file (#270). A file that is missing or has changed fails the build.
+// The emoji package is found as packages/server, whose devDependency it is, would: npm may not
+// put it in the root node_modules.
+const fromServer = createRequire(`${root}/packages/server/package.json`)
 const fonts = {
   statements: [
     [
-      'packages/server/fonts/NotoSansCJKsc-Regular.otf',
+      `${root}/packages/server/fonts/NotoSansCJKsc-Regular.otf`,
       '2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b',
     ],
     [
-      'node_modules/@expo-google-fonts/noto-emoji/400Regular/NotoEmoji_400Regular.ttf',
+      fromServer.resolve('@expo-google-fonts/noto-emoji/400Regular/NotoEmoji_400Regular.ttf'),
       '24aaa2a20c9c06ffe9bf04284bfd1f14376a329d10122f902abe2770817eb504',
     ],
   ],
@@ -77,11 +81,12 @@ function copyFonts(name) {
   // Emptied first, so a font renamed or removed isn't deployed stale.
   rmSync(`${root}/functions/${name}/dist/fonts`, { recursive: true, force: true })
   for (const [source, sha256] of fonts[name] ?? []) {
-    if (!existsSync(`${root}/${source}`)) throw new Error(`functions/${name}: ${source} is missing`)
-    const content = readFileSync(`${root}/${source}`)
+    const path = relative(root, source)
+    if (!existsSync(source)) throw new Error(`functions/${name}: ${path} is missing`)
+    const content = readFileSync(source)
     const hash = createHash('sha256').update(content).digest('hex')
     if (hash !== sha256) {
-      throw new Error(`functions/${name}: ${source} has SHA-256 ${hash}, not ${sha256}`)
+      throw new Error(`functions/${name}: ${path} has SHA-256 ${hash}, not ${sha256}`)
     }
     mkdirSync(`${root}/functions/${name}/dist/fonts`, { recursive: true })
     writeFileSync(`${root}/functions/${name}/dist/fonts/${basename(source)}`, content)

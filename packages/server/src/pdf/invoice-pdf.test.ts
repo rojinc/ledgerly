@@ -8,6 +8,7 @@ import { extractText, getDocumentProxy } from 'unpdf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { useFontReader } from './fonts'
 import { type InvoiceDetails, renderInvoicePdf } from './invoice-pdf'
+import { breakable } from './layout'
 
 type Line = StatementSnapshot['lines'][number]
 
@@ -291,6 +292,30 @@ describe('renderInvoicePdf', () => {
     expect(await pdfText(pdf)).toContain('Total work and charges $165.00')
   })
 
+  // breakable() puts a zero-width space every 20 characters; between the halves of an emoji or
+  // a CJK letter past U+FFFF, both would print as �.
+  it('wraps a long word of emoji or rare CJK without cutting a character', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const description = `Lunch${'🍔🍟🥤'.repeat(4)} ${'x'.repeat(19)}𠮷野家`
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      lines: [
+        line(
+          '2026-10-02',
+          'expense',
+          4000,
+          [share('worker', 4000, 0), share('employer', 0, 4000)],
+          { description },
+        ),
+      ],
+    })
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    // The line may wrap at the break it put in.
+    expect(text.replace(/[\s\u200B]/g, '')).toContain(description.replace(/\s/g, ''))
+    expect(text).not.toContain('�')
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it('prints every line of long notes, with the heading on the page of the first', async () => {
     const notes = Array.from({ length: 80 }, (_, index) => `Line ${index + 1}`).join('\n')
     const snapshot = goldenSnapshot({ ...fullBusiness, invoiceNotes: notes })
@@ -377,6 +402,22 @@ describe('renderInvoicePdf', () => {
     const text = await pdfText(await renderInvoicePdf(snapshot, details))
     expect(text).toContain('Bill to 张三 Pty Ltd')
     expect(reads).toEqual(['NotoSansCJKsc-Regular.otf'])
+  })
+
+  it('reads a font file again after a read fails', async () => {
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      recipient: { personId: 'employer', name: '张三 Pty Ltd', emails: ['accounts@acme.example'] },
+    })
+    useFontReader((file) => {
+      reads.push(file)
+      if (reads.length === 1) throw new Error('EIO')
+      return readFileSync(FONT_PATHS[file] as string | URL)
+    })
+    await expect(renderInvoicePdf(snapshot, details)).rejects.toThrow('EIO')
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    expect(text).toContain('Bill to 张三 Pty Ltd')
+    expect(reads).toEqual(['NotoSansCJKsc-Regular.otf', 'NotoSansCJKsc-Regular.otf'])
   })
 
   // Roboto has no Ṣ, but has S and U+0323 (#269, #297).
@@ -473,5 +514,19 @@ describe('renderInvoicePdf', () => {
   it('refuses a divide', async () => {
     const snapshot = { ...goldenSnapshot(), issuer: undefined }
     await expect(renderInvoicePdf(snapshot, details)).rejects.toThrow('needs an invoice snapshot')
+  })
+})
+
+describe('breakable', () => {
+  // Each is one character to a reader, made of more than one UTF-16 unit or code point.
+  it.each([
+    ['an emoji', '😀'],
+    ['a family', '👨‍👩‍👧'],
+    ['a flag', '🇦🇺'],
+    ['a keycap', '1️⃣'],
+    ['a letter and its mark', 'ṣ'],
+  ])('keeps %s whole as the 20th character', (_, character) => {
+    const word = `${'x'.repeat(19)}${character}`
+    expect(breakable(`${word}y`)).toBe(`${word}​y`)
   })
 })

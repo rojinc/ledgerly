@@ -2,6 +2,7 @@
 // big to bundle, so scripts/build-functions.mjs copies their files, checked by SHA-256, next to the
 // bundle (functions/statements/dist/fonts/), and a file is read only when a text needs its font.
 import { readFileSync, statSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import type { PdfFont } from '@ledgerly/core/pdf/pdf-glyphs'
 import { pdfmake, virtualfs } from './layout'
 
@@ -43,7 +44,17 @@ export function loadFonts(fonts: Iterable<PdfFont>): void {
  * it, so the build's check of each bundle proves the path with dist/fonts/ in place.
  */
 export function checkFonts(folder = FOLDER): void {
-  for (const file of Object.values(FONT_FILES)) statSync(new URL(file, folder))
+  for (const file of Object.values(FONT_FILES)) {
+    const url = new URL(file, folder)
+    try {
+      statSync(url)
+    } catch (cause) {
+      // Named, as the request log line gives only an error's name.
+      const missing = new Error(`No font file at ${fileURLToPath(url)}`, { cause })
+      missing.name = 'FontFileMissing'
+      throw missing
+    }
+  }
 }
 
 /** For tests: read font files with `reader` from now on, as a new instance would. */

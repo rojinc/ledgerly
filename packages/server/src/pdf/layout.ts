@@ -68,10 +68,24 @@ export function footer(label: Content): TDocumentDefinitions['footer'] {
   })
 }
 
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
 // A word pdfmake can't break widens its column until the amounts fall off the page, so long
 // runs without a space (a pasted reference or URL) get a zero-width space every 20 characters.
+// Counted as a reader sees them (grapheme clusters), so it never cuts an emoji, a flag or a
+// letter and its mark apart: half an emoji prints as �.
 export function breakable(text: string): string {
-  return text.replace(/\S{20}(?=\S)/g, '$&\u200B')
+  let word = 0
+  let broken = ''
+  for (const { segment } of graphemes.segment(text)) {
+    if (/\s/.test(segment)) word = 0
+    else if (++word > 20) {
+      broken += '\u200B'
+      word = 1
+    }
+    broken += segment
+  }
+  return broken
 }
 
 export function lineText(line: Line): string {
