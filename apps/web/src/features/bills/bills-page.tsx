@@ -1,14 +1,20 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
-import type { ReactNode } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
+import { Link, useLocation, useNavigate, useSearchParams } from 'react-router'
+import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroup, useMyMember } from '../groups/use-groups'
+import { describeRepeat, fromRrule } from '../schedules/rrule'
+import { hasEnded } from '../schedules/schedules-page'
 import { formatDate } from '../statements/invoice-view'
 import { isOverdue, monthsBefore, storedExtras } from './bill-values'
-import { useDueBills, usePaidBills } from './use-bills'
+import { lastDue, templateCents } from './recurring-values'
+import { useDueBills, usePaidBills, useRecurringBills, useStopRecurringBill } from './use-bills'
 
 export function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
   return (
@@ -36,7 +42,7 @@ export function usePersonalGroup() {
 const BUTTON_LINK =
   'inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
 
-/** `/bills`: the personal group's bills (#75), or with `?groupId=` a house's (#44). */
+/** `/bills`: the personal group's bills, due, paid and recurring (#75), or with `?groupId=` a house's (#44). */
 export function BillsPage() {
   const groupId = useSearchParams()[0].get('groupId')
   return groupId ? <HouseBillsPage groupId={groupId} /> : <PersonalBillsPage />
@@ -44,16 +50,50 @@ export function BillsPage() {
 
 function PersonalBillsPage() {
   const personal = usePersonalGroup()
+  // A stopped bill's panel goes: focus lands here, and the status line reads out what happened.
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [done, setDone] = useState('')
+  // Back from saving a recurring bill: its form, and the button that sent it, are gone.
+  const location = useLocation()
+  const navigate = useNavigate()
+  useEffect(() => {
+    if (!(location.state as { saved?: boolean } | null)?.saved) return
+    heading.current?.focus()
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.state, location.pathname, navigate])
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Bills</h1>
-        <Link to="/bills/new" className={BUTTON_LINK}>
-          New bill
-        </Link>
+        <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+          Bills
+        </h1>
+        <div className="flex flex-wrap gap-2">
+          <Link to="/bills/new" className={BUTTON_LINK}>
+            New bill
+          </Link>
+          <Link
+            to="/bills/recurring/new"
+            className="inline-flex h-10 items-center rounded-md border border-input px-4 text-sm font-medium outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            New recurring bill
+          </Link>
+        </div>
       </div>
+      {/* Mounted from the start, so a change is read out. */}
+      <p role="status" className="text-sm empty:hidden">
+        {done}
+      </p>
       {personal.group ? (
-        <BillLists group={personal.group} />
+        <>
+          <BillLists group={personal.group} />
+          <RecurringBills
+            group={personal.group}
+            onStopped={(message) => {
+              setDone(message)
+              heading.current?.focus()
+            }}
+          />
+        </>
       ) : personal.isError ? (
         <Message alert>We couldn’t load your bills. Reload the page to try again.</Message>
       ) : (
@@ -110,6 +150,7 @@ function HouseBillsPage({ groupId }: { groupId: string }) {
   )
 }
 
+/** A group's due and paid bills. */
 function BillLists({ group }: { group: Groups }) {
   const today = localToday(group.timezone, new Date())
   const due = useDueBills(group.$id)
@@ -166,6 +207,47 @@ function BillLists({ group }: { group: Groups }) {
   )
 }
 
+/** The personal group's recurring bills (#75), told what was stopped. */
+function RecurringBills({
+  group,
+  onStopped,
+}: {
+  group: Groups
+  onStopped: (message: string) => void
+}) {
+  const today = localToday(group.timezone, new Date())
+  const money = (cents: number) => formatMoney(cents, group.currency)
+  const recurring = useRecurringBills(group.$id)
+  return (
+    <section aria-labelledby="recurring-bills" className="flex flex-col gap-2">
+      <h2 id="recurring-bills" className="font-medium">
+        Recurring
+      </h2>
+      {recurring.data ? (
+        recurring.data.length === 0 ? (
+          <p className="text-muted-foreground">None yet.</p>
+        ) : (
+          <ul className="divide-y divide-border rounded-md border border-border">
+            {recurring.data.map((schedule) => (
+              <RecurringBill
+                key={schedule.$id}
+                schedule={schedule}
+                today={today}
+                money={money}
+                onStopped={onStopped}
+              />
+            ))}
+          </ul>
+        )
+      ) : recurring.isError ? (
+        <Message alert>We couldn’t load the recurring bills.</Message>
+      ) : (
+        <Message>Loading…</Message>
+      )}
+    </section>
+  )
+}
+
 /** ` · for 1 Jul 2026 – 30 Sep 2026`, for a bill with a billing period. */
 function periodText(bill: Pick<Transactions, 'inputJson'>): string {
   const { periodStart, periodEnd } = storedExtras(bill.inputJson).period ?? {}
@@ -203,5 +285,112 @@ function BillList({
         </li>
       ))}
     </ul>
+  )
+}
+
+function RecurringBill({
+  schedule,
+  today,
+  money,
+  onStopped,
+}: {
+  schedule: Schedules
+  today: LocalDate
+  money: (cents: number) => string
+  onStopped: (message: string) => void
+}) {
+  const stop = useStopRecurringBill(schedule)
+  const [confirming, setConfirming] = useState(false)
+  const stopButton = useRef<HTMLButtonElement>(null)
+  const cancelButton = useRef<HTMLButtonElement>(null)
+  const repeat = fromRrule(schedule.rrule)
+  const cents = templateCents(schedule)
+  const ended = hasEnded(schedule, today)
+  // The rule's own last date is in its words already; a stop's earlier end date isn't.
+  const last =
+    schedule.endsOn && lastDue(schedule) === schedule.endsOn ? schedule.endsOn : undefined
+  // Not started: Stop removes it, as nothing of it can have been paid.
+  const notStarted = today < schedule.startsOn
+  const details = [
+    repeat ? describeRepeat(repeat, formatDate) : undefined,
+    cents === undefined ? undefined : money(cents),
+    schedule.autoPost ? 'Autopay' : undefined,
+    notStarted ? `Starts ${formatDate(schedule.startsOn)}` : undefined,
+    ended ? 'Ended' : last ? `Last due ${formatDate(last)}` : undefined,
+  ].filter(Boolean)
+  return (
+    <li className="flex flex-col gap-2 px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="min-w-0">
+          <span className="block font-medium break-words">{schedule.description}</span>
+          <span className="block text-sm text-muted-foreground">{details.join(' · ')}</span>
+        </span>
+        {/* Stopping sets its end date, so one already set has nothing to stop. */}
+        {!ended && !schedule.endsOn && !confirming && (
+          <Button
+            ref={stopButton}
+            variant="outline"
+            onClick={() => {
+              // The button goes as the question opens: focus moves to its safe answer, Cancel.
+              flushSync(() => setConfirming(true))
+              cancelButton.current?.focus()
+            }}
+            aria-label={`Stop ${schedule.description}`}
+          >
+            Stop
+          </Button>
+        )}
+      </div>
+      {confirming && (
+        // A fieldset is a group: named by the question, which is read out with Cancel.
+        <fieldset
+          aria-labelledby={`stop-${schedule.$id}`}
+          className="m-0 flex min-w-0 flex-col gap-2 rounded-md border border-border p-3"
+        >
+          <p id={`stop-${schedule.$id}`} className="text-sm">
+            {notStarted
+              ? `Remove ${schedule.description}? It hasn’t started yet, so no bills are kept.`
+              : `Stop ${schedule.description} from today? No more bills are made after today. Bills already made stay, so you can still pay or skip them.`}
+          </p>
+          {stop.isError && <Message alert>{stop.error.message}</Message>}
+          <div className="flex flex-wrap gap-2">
+            <Button
+              aria-disabled={stop.isPending}
+              onClick={() => {
+                if (stop.isPending) return
+                stop.mutate(today, {
+                  // Undefined when it was removed; a schedule when it was ended.
+                  onSuccess: (stopped) => {
+                    setConfirming(false)
+                    onStopped(
+                      stopped
+                        ? `Stopped ${schedule.description}. Bills already made stay.`
+                        : `Removed ${schedule.description}.`,
+                    )
+                  },
+                })
+              }}
+            >
+              {stop.isPending ? 'Stopping…' : notStarted ? 'Remove it' : 'Stop it'}
+            </Button>
+            <Button
+              ref={cancelButton}
+              variant="ghost"
+              aria-disabled={stop.isPending}
+              onClick={() => {
+                if (stop.isPending) return
+                setConfirming(false)
+                // A refusal shown in the question goes with it.
+                stop.reset()
+                // The Stop button comes back: focus goes back to it.
+                requestAnimationFrame(() => stopButton.current?.focus())
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </fieldset>
+      )}
+    </li>
   )
 }
