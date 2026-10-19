@@ -222,7 +222,7 @@ Permissions: `read("team:<groupId>")` (the function sets the group's team when i
 | `groupId` | varchar(36) | |
 | `kind` | enum(shift, bill, expense, income) | |
 | `description` | varchar(200) | |
-| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule) |
+| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule), and without `receiptFileIds` (a receipt belongs to one transaction) |
 | `rrule` | varchar(255) | RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=TH` |
 | `startsOn` | varchar(10) | First possible occurrence (local date) |
 | `endsOn` | varchar(10)? | Last possible occurrence. Empty = until stopped. |
@@ -296,10 +296,10 @@ Permissions: none (server only).
 
 | Bucket | Who uploads | File permissions | Limits |
 | --- | --- | --- | --- |
-| `receipts` | Clients, directly | Client sets `read("team:<groupId>")` at upload. Appwrite only lets a user grant roles they hold. | 10 MB; jpg, jpeg, png, webp, heic, pdf |
+| `receipts` | Clients, directly | Client sets `read("team:<groupId>")` at upload. Appwrite only lets a user grant roles they hold. The ledger resets it to exactly that when the file is attached ([permissions](permissions.md#storage)). | 10 MB; jpg, jpeg, png, webp, heic, pdf |
 | `statements` | `statements` function | `read("team:<groupId>")` | 10 MB; PDFs only |
 
-Bucket-level permission on `receipts`: `create("users")`. File security on for both buckets.
+Bucket-level permission on `receipts`: `create("users/verified")`, so only verified users can upload. File security on for both buckets.
 
 ## Derived and copied data
 
