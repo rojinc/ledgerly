@@ -1,0 +1,85 @@
+name: E2E
+
+# User flows 1–5 in a real browser against ledgerly-dev (#38), after each successful deploy of
+# main. A pull request's code isn't deployed, so this never runs on pull requests.
+on:
+  workflow_run:
+    workflows: [Deploy]
+    types: [completed]
+  workflow_dispatch:
+
+# One run at a time against dev; a new deploy's run waits for the one before it.
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# An explicit bash adds `-o pipefail`, so a failing command before a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  e2e:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The deploy's own secrets name the dev project. The dev-only key (#78) is passed only to the
+    # step that runs the flows, never to npm or the install.
+    env:
+      VITE_APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+      VITE_APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_DEV_PROJECT_ID }}
+    steps:
+      # Until the owner adds the key (#78), a run is skipped with a warning. One with only some
+      # of the secrets fails instead.
+      - name: Check the secrets
+        id: secrets
+        env:
+          E2E_APPWRITE_API_KEY: ${{ secrets.E2E_APPWRITE_API_KEY }}
+        run: |
+          if [ -n "$VITE_APPWRITE_ENDPOINT" ] && [ -n "$VITE_APPWRITE_PROJECT_ID" ] && [ -n "$E2E_APPWRITE_API_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$VITE_APPWRITE_ENDPOINT$VITE_APPWRITE_PROJECT_ID$E2E_APPWRITE_API_KEY" ]; then
+            echo "::warning::E2E skipped: E2E_APPWRITE_API_KEY isn't set yet (#78)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::E2E skipped: the dev project's secrets aren't set yet (#3, #78)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+          # The commit that was deployed, not whatever main is by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - uses: actions/setup-node@v6
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - if: steps.secrets.outputs.ready == 'true'
+        run: npm ci
+
+      - if: steps.secrets.outputs.ready == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: User flows 1–5
+        if: steps.secrets.outputs.ready == 'true'
+        run: npm run test:e2e -w @ledgerly/web
+        env:
+          CI: true
+          E2E_APPWRITE_API_KEY: ${{ secrets.E2E_APPWRITE_API_KEY }}
+
+      - uses: actions/upload-artifact@v7
+        if: failure() && steps.secrets.outputs.ready == 'true'
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 14

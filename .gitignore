@@ -16,6 +16,10 @@ coverage/
 # Python bytecode (scripts/)
 __pycache__/
 
+# Playwright output (npm run test:e2e -w @ledgerly/web)
+test-results/
+playwright-report/
+
 # logs
 *.log
 npm-debug.log*

@@ -1,0 +1,40 @@
+import { existsSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { defineConfig, devices } from '@playwright/test'
+
+const PORT = 5173
+
+// Locally, the same `.env.local` as `npm run dev` (local-setup.md), so global setup sees the key
+// too. Vite gives the browser only the VITE_ ones. In CI the workflow sets them instead.
+const envFile = fileURLToPath(new URL('../../.env.local', import.meta.url))
+if (existsSync(envFile)) process.loadEnvFile(envFile)
+
+/**
+ * User flows 1–5 in a real browser (#38): a local Vite server pointed at the dev project by
+ * VITE_APPWRITE_ENDPOINT and VITE_APPWRITE_PROJECT_ID, with users made through
+ * E2E_APPWRITE_API_KEY (docs/engineering/testing.md#end-to-end).
+ */
+export default defineConfig({
+  testDir: 'e2e',
+  // Each flow's steps build on each other, in order; flows run side by side with their own users.
+  fullyParallel: false,
+  forbidOnly: Boolean(process.env.CI),
+  timeout: 60_000,
+  expect: { timeout: 15_000 },
+  reporter: process.env.CI ? [['list'], ['html', { open: 'never' }]] : 'list',
+  globalSetup: './e2e/global-setup.ts',
+  globalTeardown: './e2e/global-teardown.ts',
+  use: {
+    baseURL: `http://localhost:${PORT}`,
+    // Not the runner's zone, so a date that slips a day shows up.
+    timezoneId: 'Australia/Sydney',
+    locale: 'en-AU',
+    trace: 'retain-on-failure',
+  },
+  projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
+  webServer: {
+    command: `npm run dev -- --port ${PORT} --strictPort`,
+    url: `http://localhost:${PORT}`,
+    reuseExistingServer: !process.env.CI,
+  },
+})
