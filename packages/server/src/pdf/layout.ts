@@ -85,8 +85,8 @@ export function heading(text: string): Content {
 export type Cell = string | ContentText | ContentStack
 
 /**
- * A table of text columns, then numbers from column `numbersFrom` (default 2) on, which are
- * right-aligned.
+ * A table of text columns, then numbers from column `numbersFrom` on (counted from 0; default 2),
+ * which are right-aligned.
  */
 export function table(
   widths: (number | string)[],

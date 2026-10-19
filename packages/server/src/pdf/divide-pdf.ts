@@ -1,12 +1,18 @@
 import { formatMoney } from '@ledgerly/core/money/format'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
-import type { Content, ContentText, TDocumentDefinitions } from 'pdfmake/interfaces'
+import type {
+  Content,
+  ContentText,
+  CustomTableLayout,
+  TDocumentDefinitions,
+} from 'pdfmake/interfaces'
 import {
   breakable,
   field,
   footer,
   formatDate,
   heading,
+  type Line,
   LOCALE,
   lineText,
   MUTED,
@@ -95,6 +101,28 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   return pdfmake.createPdf(doc).getBuffer()
 }
 
+// pdfmake drops the part of a row it may not break that doesn't fit on one page, so rows are
+// kept whole only while every one surely fits: at most this many wrapped lines (about 700 pt of
+// a page), counting a line per 10 characters, which no name or description in Roboto 10 pt beats.
+const MAX_ROW_LINES = 45
+const CHARS_PER_LINE = 10
+
+function wrappedLines(line: Line, nameOf: (personId: string) => string): number {
+  const lines = (text: string) => Math.max(1, Math.ceil(text.length / CHARS_PER_LINE))
+  return line.shares.reduce(
+    (sum, share) => sum + lines(nameOf(share.personId)),
+    lines(lineText(line)),
+  )
+}
+
+// The outer table's padding, so the amounts under a line sit under the Paid and Share headers.
+const NESTED: CustomTableLayout = {
+  hLineWidth: () => 0,
+  vLineWidth: () => 0,
+  paddingLeft: (index) => (index === 0 ? 0 : 8),
+  paddingRight: (index, node) => (index === (node.table.widths?.length ?? 0) - 1 ? 0 : 8),
+}
+
 /**
  * Each transaction is one row, with its people in a table of their own under the description,
  * so a page never breaks inside one (15 people at most, so one always fits a page). The
@@ -106,6 +134,8 @@ function transactions(
   money: (cents: number) => ContentText,
   nameOf: (personId: string) => string,
 ): Content {
+  // A row too tall for a page breaks across pages rather than vanish, heading and all.
+  const whole = snapshot.lines.every((line) => wrappedLines(line, nameOf) <= MAX_ROW_LINES)
   const right = (cell: ContentText): ContentText => ({ ...cell, alignment: 'right' })
   const header = ['Date', 'Description', 'Paid', 'Share', 'Total'].map((text, index) => ({
     text,
@@ -117,8 +147,8 @@ function transactions(
     layout: 'lightHorizontalLines',
     table: {
       headerRows: 2,
-      keepWithHeaderRows: 1,
-      dontBreakRows: true,
+      keepWithHeaderRows: whole ? 1 : 0,
+      dontBreakRows: whole,
       widths: [60, '*', AMOUNT, AMOUNT, AMOUNT],
       body: [
         [{ text: 'Transactions', style: 'heading', colSpan: 5 }, {}, {}, {}, {}],
@@ -127,7 +157,7 @@ function transactions(
           formatDate(line.date),
           {
             colSpan: 3,
-            layout: 'noBorders',
+            layout: NESTED,
             table: {
               widths: ['*', AMOUNT, AMOUNT],
               body: [

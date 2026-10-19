@@ -238,6 +238,35 @@ describe('renderDividePdf', () => {
     }
   })
 
+  it('keeps a line too tall for one page, letting it break, with every other line', async () => {
+    // pdfmake leaves out the rest of a row it may not break once it outgrows the page.
+    const people = Array.from({ length: 15 }, (_, index) => ({
+      personId: `p${String(index).padStart(2, '0')}`,
+      name: `${String.fromCharCode(65 + index)}${'W'.repeat(99)}`,
+    }))
+    const lines = [
+      line(
+        '2026-10-03',
+        'bill',
+        150000,
+        people.map((person, at) => share(person.personId, at === 0 ? 150000 : 0, 10000)),
+        { description: 'W'.repeat(200) },
+      ),
+      line('2026-10-04', 'expense', 1500, [share('p00', 1500, 750), share('p01', 0, 750)], {
+        description: 'Milk',
+      }),
+    ]
+    const pdf = await renderDividePdf(
+      buildStatementSnapshot({ ...goldenInput(lines), people, previousClosing: [] }),
+    )
+    const text = await pdfText(pdf)
+    expect(text).toContain('Transactions Date Description Paid Share Total 3 Oct 2026')
+    // The tall line's total, and the next line whole.
+    expect(text).toMatch(/\$100\.00 \$1,500\.00 .*4 Oct 2026 Milk/)
+    expect(text).toContain('Milk A')
+    expect(await textBeyondPage(pdf)).toEqual([])
+  })
+
   it('renders 500 lines between 15 people, well under the 10 MB bucket limit', async () => {
     const people = Array.from({ length: 15 }, (_, index) => ({
       personId: `p${String(index).padStart(2, '0')}`,
