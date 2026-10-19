@@ -1,13 +1,15 @@
 import { type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
 import type { Schedules, Transactions } from '@ledgerly/core/generated/rows'
+import type {
+  EndedSchedule,
+  ScheduleResult,
+  UpdatedSchedule,
+} from '@ledgerly/core/schemas/scheduler'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import { scheduleEnd } from '../src/occurrences'
-import type { ScheduleResult } from '../src/routes/create-schedule'
-import type { EndedSchedule } from '../src/routes/end-schedule'
 import type { RunResult } from '../src/routes/run'
-import type { UpdatedSchedule } from '../src/routes/update-schedule'
 import {
   beforeCommit,
   beforeStaging,
@@ -17,6 +19,7 @@ import {
   fakes,
   group,
   member,
+  NOW,
   ok,
   person,
 } from './harness'
@@ -266,6 +269,19 @@ describe('POST /schedules', () => {
     ).toEqual({ status: 409, code: 'CONFLICT' })
   })
 
+  it('starts at most 31 days before today in the group’s timezone', async () => {
+    // Today is 19 October in Sydney, still 18 October in UTC.
+    const services = seeded()
+    expect(
+      await failure(services, 'POST', '/schedules', {
+        body: { ...thursdays, startsOn: '2026-09-17' },
+      }),
+    ).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
+    expect(services.db.rows('schedules')).toEqual([])
+    // Thursday 24 September to 10 December.
+    expect((await create(services, { ...thursdays, startsOn: '2026-09-18' })).created).toBe(12)
+  })
+
   it('checks the template against the ledger before writing anything', async () => {
     const services = seeded()
     const stranger = {
@@ -393,6 +409,20 @@ describe('PATCH /schedules/{id}', () => {
     return ok<UpdatedSchedule>(services, 'PATCH', `/schedules/${body.id}`, { body, userId })
   }
 
+  it('moves the start at most 31 days before today in the group’s timezone', async () => {
+    const services = await withThursdays()
+    // Today is 19 October in Sydney, still 18 October in UTC.
+    const body = { ...thursdays, startsOn: '2026-09-17' }
+    expect(await failure(services, 'PATCH', `/schedules/${ID}`, { body })).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+    })
+    expect(services.db.rows('schedules')[0]?.startsOn).toBe('2026-10-01')
+    // 31 days is fine, and so is a start further back that doesn't change ("reopens an ended
+    // schedule", below).
+    await patch(services, { ...thursdays, startsOn: '2026-09-18' })
+  })
+
   it('regenerates only future occurrences that aren’t edited, posted or voided', async () => {
     const services = await withThursdays()
     // Edited, posted and voided occurrences stay as they are.
@@ -401,7 +431,7 @@ describe('PATCH /schedules/{id}', () => {
     await setRow(services, 'transactions', `${ID}_20261105`, { status: 'posted' })
     const result = await patch(services, { ...thursdays, description: 'Late shift' })
     // 12 Nov to 10 Dec: updated in place, so none removed or created.
-    expect(result).toMatchObject({ removed: 0, created: 0 })
+    expect(result).toMatchObject({ created: 0, updated: 5, removed: 0 })
     const byDate = Object.fromEntries(occurrences(services).map((row) => [row.date, row]))
     // Before today: kept with the old description.
     expect(byDate['2026-10-15']?.description).toBe('Thursday shift')
@@ -416,11 +446,11 @@ describe('PATCH /schedules/{id}', () => {
 
   it('moves the dates with a new rule', async () => {
     const services = await withThursdays()
-    const { created, removed } = await patch(services, {
+    const { created, updated, removed } = await patch(services, {
       ...thursdays,
       rrule: 'FREQ=WEEKLY;BYDAY=FR',
     })
-    expect({ created, removed }).toEqual({ created: 8, removed: 8 })
+    expect({ created, updated, removed }).toEqual({ created: 8, updated: 0, removed: 8 })
     const dates = occurrences(services).map((row) => row.date)
     expect(dates.filter((date) => date >= '2026-10-19')).toEqual([
       '2026-10-23',
@@ -670,12 +700,12 @@ describe('races on schedule edits', () => {
       status: 'posted',
       date: '2026-10-18',
     })
-    const { created } = await patch(services, {
+    const { created, updated } = await patch(services, {
       ...rent,
       template: { ...rent.template, totalCents: 95_000 },
     })
     // November's ID is taken, whatever its date; December is updated in place.
-    expect(created).toBe(0)
+    expect([created, updated]).toEqual([0, 1])
     expect(await runCron(services)).toMatchObject({
       expanded: { schedules: 0, created: 0, failed: 0 },
     })
@@ -762,7 +792,10 @@ describe('races on schedule edits', () => {
 
   it('reopens an ended schedule from today, never filling in the past', async () => {
     const services = seeded()
+    // Made on 20 September, within 31 days of its start.
+    services.now = new Date('2026-09-19T20:00:00.000Z')
     await create(services, { ...thursdays, startsOn: '2026-09-03', endsOn: '2026-09-20' })
+    services.now = NOW
     await patch(services, { ...thursdays, startsOn: '2026-09-03' })
     const dates = occurrences(services).map((row) => row.date)
     // 3, 10 and 17 September from before; nothing from 24 September to 15 October.
@@ -1129,7 +1162,10 @@ describe('POST /schedules/{id}/end', () => {
 
   it('carries on from today when an end long past is moved later', async () => {
     const services = seeded()
+    // Made on 20 September, within 31 days of its start.
+    services.now = new Date('2026-09-19T20:00:00.000Z')
     await create(services, { ...thursdays, startsOn: '2026-09-03', endsOn: '2026-09-20' })
+    services.now = NOW
     await end(services, '2026-12-31')
     await runCron(services)
     const dates = occurrences(services).map((row) => row.date)
