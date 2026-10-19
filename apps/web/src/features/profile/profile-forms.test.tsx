@@ -1,7 +1,9 @@
 import type { Profiles } from '@ledgerly/core/generated/rows'
+import { updateProfileBodySchema } from '@ledgerly/core/schemas/identity'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BusinessForm } from './business-form'
+import { HoursCapForm } from './hours-cap-form'
 import { ProfileForm } from './profile-form'
 
 const profile = {
@@ -146,5 +148,139 @@ describe('BusinessForm', () => {
   it('ignores saved details that are not valid JSON', () => {
     render(<BusinessForm profile={{ ...profile, businessJson: '{oops' }} onSave={vi.fn()} />)
     expect((screen.getByLabelText('ABN') as HTMLInputElement).value).toBe('')
+  })
+})
+
+describe('HoursCapForm (#53)', () => {
+  // Sunday 25 October in UTC, already Monday the 26th in Sydney.
+  const NOW = new Date('2026-10-25T13:30:00.000Z')
+  const noCap = { ...profile, hoursCapMinutes: null, hoursCapPeriod: null, hoursCapStartsOn: null }
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+  })
+  // Every body the form sends is one PATCH /profile accepts, as sent.
+  let sent: unknown[] = []
+  afterEach(() => {
+    vi.useRealTimers()
+    for (const body of sent) expect(updateProfileBodySchema.parse(body)).toEqual(body)
+    sent = []
+  })
+
+  function renderForm(stored: Partial<Profiles> = {}) {
+    const onSave = vi.fn(async (body: unknown) => {
+      sent.push(body)
+    })
+    render(<HoursCapForm profile={{ ...noCap, ...stored } as Profiles} onSave={onSave} />)
+    return onSave
+  }
+
+  const save = () => fireEvent.click(screen.getByRole('button', { name: 'Save limit' }))
+
+  it('starts at None, with no hours field', () => {
+    renderForm()
+    expect((screen.getByLabelText('None') as HTMLInputElement).checked).toBe(true)
+    expect(screen.queryByLabelText(/^Hours a/)).toBeNull()
+  })
+
+  it.each([
+    ['40', 2400],
+    ['37.5', 2250],
+    ['37:30', 2250],
+    ['1', 60],
+    ['168', 10080],
+  ])('sends a week of %s hours as %i minutes', async (hours, minutes) => {
+    const onSave = renderForm()
+    fireEvent.click(screen.getByLabelText('Per week'))
+    type('Hours a week', hours)
+    save()
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(onSave).toHaveBeenCalledWith({ hoursCap: { minutes, period: 'week' } })
+    expect(await screen.findByText('Saved.')).toBeTruthy()
+  })
+
+  it('sends a fortnight from this week’s Monday in the profile’s zone by default', async () => {
+    const onSave = renderForm()
+    fireEvent.click(screen.getByLabelText('Per fortnight'))
+    expect((screen.getByLabelText('First Monday of a fortnight') as HTMLInputElement).value).toBe(
+      '2026-10-26',
+    )
+    type('Hours a fortnight', '336')
+    save()
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(onSave).toHaveBeenCalledWith({
+      hoursCap: { minutes: 20160, period: 'fortnight', startsOn: '2026-10-26' },
+    })
+  })
+
+  it('starts from the stored limit, and None sends null', async () => {
+    const onSave = renderForm({
+      hoursCapMinutes: 4500,
+      hoursCapPeriod: 'fortnight',
+      hoursCapStartsOn: '2026-10-19',
+    })
+    expect((screen.getByLabelText('Per fortnight') as HTMLInputElement).checked).toBe(true)
+    expect((screen.getByLabelText('Hours a fortnight') as HTMLInputElement).value).toBe('75')
+    expect((screen.getByLabelText('First Monday of a fortnight') as HTMLInputElement).value).toBe(
+      '2026-10-19',
+    )
+    fireEvent.click(screen.getByLabelText('None'))
+    save()
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({ hoursCap: null }))
+  })
+
+  it.each([
+    ['week', '', 'Required'],
+    ['week', 'forty', 'Enter hours like 40, 37.5 or 37:30'],
+    ['week', '0.5', 'Enter between 1 and 168 hours'],
+    ['week', '168:01', 'Enter between 1 and 168 hours'],
+    ['fortnight', '336:01', 'Enter between 1 and 336 hours'],
+  ])('refuses a %s of "%s" in words, and sends nothing', async (period, hours, message) => {
+    const onSave = renderForm()
+    fireEvent.click(screen.getByLabelText(period === 'week' ? 'Per week' : 'Per fortnight'))
+    const label = period === 'week' ? 'Hours a week' : 'Hours a fortnight'
+    type(label, hours)
+    save()
+    expect(screen.getByText(message)).toBeTruthy()
+    expect(screen.getByLabelText(label).getAttribute('aria-invalid')).toBe('true')
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('clears an error once something changes', () => {
+    renderForm()
+    fireEvent.click(screen.getByLabelText('Per week'))
+    type('Hours a week', '200')
+    save()
+    expect(screen.getByText('Enter between 1 and 168 hours')).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('Per fortnight'))
+    expect(screen.queryByText('Enter between 1 and 168 hours')).toBeNull()
+    expect(screen.getByLabelText('Hours a fortnight').getAttribute('aria-invalid')).toBe('false')
+  })
+
+  it.each([
+    ['2026-10-27', 'Pick a Monday'],
+    ['', 'Enter a date'],
+  ])('refuses a fortnight starting on "%s"', (startsOn, message) => {
+    const onSave = renderForm()
+    fireEvent.click(screen.getByLabelText('Per fortnight'))
+    type('Hours a fortnight', '76')
+    type('First Monday of a fortnight', startsOn)
+    save()
+    expect(screen.getByText(message)).toBeTruthy()
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('shows the function’s error, and Saved. goes once something changes', async () => {
+    const onSave = renderForm()
+    onSave.mockRejectedValueOnce(new Error('Something went wrong'))
+    fireEvent.click(screen.getByLabelText('Per week'))
+    type('Hours a week', '40')
+    save()
+    expect(await screen.findByText('Something went wrong')).toBeTruthy()
+    save()
+    expect(await screen.findByText('Saved.')).toBeTruthy()
+    type('Hours a week', '41')
+    expect(screen.queryByText('Saved.')).toBeNull()
   })
 })

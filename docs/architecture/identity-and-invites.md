@@ -135,10 +135,66 @@ An invite is a convenience: a link that tells someone they've been added and hel
 
 ## Deleting an account (M4)
 
-1. Remove the user from all teams. Delete their profile, identities and personal group (no one else has data there).
-2. Keep the person row so shared history stays correct for everyone else: clear `userId`, set `displayName = "Former member"` and `deletedAt`.
-3. In the groups they joined: set `members.displayName` to "Former member" and `status = left`. Rows they never joined are left exactly as they are. (Accepted risk: deleting their identities means re-adding that email no longer gives `CONFLICT`.)
-4. Delete the Appwrite user.
+`account POST /delete` ([functions API](functions-api.md#account)), from the delete screen ([#50](https://github.com/rojinc/ledgerly/issues/50)). Deletion has its own function, `account`, so `identity` (which runs bootstrap for every new user) never holds `users.write` or file access. **Deleting means anonymising.** Shares, statements and balances point at the person ([I-3](ledger.md#invariants)), so the `persons` row stays: `deletedAt` set, `userId` cleared, `displayName` "Former member", and no permissions. Their identities, profile (business details included), the invites they sent and the Appwrite user are deleted. There is no undo or grace period in v1: typing DELETE is the confirmation.
+
+### Each group they joined
+
+For every group where they have an `active` or `left` member row, its team decides:
+
+- **Purge, if nobody else is in the team.** This is always true of the personal group. It deletes the team and sets `archivedAt` first, so jobs and writes stop. Then the group's files go, then its rows, in batches of at most 90 writes (each transaction with its shares and items, member rows after all shares), then any placeholder left with no member row anywhere (its person and identities). A file is deleted only when its permissions are exactly `read("team:<the purged group>")`, so a file shared with another group's transaction stays. A placeholder is deleted only after a staged write, and only if, re-checked after it, `isPlaceholder()` still says so (a merged person is kept) and it still has no member row.
+- **Keep, otherwise.** In one transaction, with a fresh group `rev`: their member row becomes "Former member", `left` and `viewer`, with `leftOn` set as leaving sets it (today in the group's time zone, or `joinedOn` if that's later) if it's empty, so `days` bills stop counting them; and a `member.left` activity row by them, with `subjectPersonId` = their person and no name, so the row counts as leaving on their own ([leaving](permissions.md#leaving-a-group)). Then, in this order: **the schedules** in the group that they created, or whose template names them, end on the earlier of their stored end and today, as `POST /schedules/{id}/end` does (occurrences after it that can still change are removed, so no new occurrence names a deleted person; Part 3 moves that end logic into `packages/server`); **then the archive**, for a kept `employer` or `pair` group where they were the only joined admin, or a kept house that can't have another admin (below), since ending a schedule in an archived group is refused; **then leaving the team, last**, so a crash before it leaves the group to be finished, never with its schedules still running.
+
+**A rerun never decides again.** What a group's state says decides how a rerun carries on, never the team as it is by then:
+
+- **The group's team is gone:** a purge was started, so it carries on. Their own member row, deleted last, ends it.
+- **Their member row is `left`, with their own `member.left` dated on or after `deletedAt`** (`leftOnTheirOwn()` with `deletedAt` as the earliest date, rather than the member row's `$createdAt`)**:** the keep's transaction is done. If they're still in the team, the schedule, archive and team steps are retried; otherwise the group is done and skipped, even if everyone else has since left the team.
+- Anything else is decided from the team, as above.
+
+**Changes after the checks.** Step 1's checks can be overtaken before a group's turn comes, and a deletion can't be refused after step 2. A kept house left with no other joined admin (say a placeholder joined a house they were alone in, or the other admin left meanwhile) is archived, like an employer or pair group. A group with a statement `finalizing` isn't archived or purged until the finalize ends: the group is left for the next run.
+
+Groups where they're a `placeholder` (never joined) are left exactly as they are: changing them would show the other members they had an account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)).
+
+### Refusals
+
+Checked in this order, and each changes nothing:
+
+1. **The body isn't `{ confirm: 'DELETE' }`:** `VALIDATION_FAILED`.
+2. **The session is old.** The route reads the session ID from the caller's verified JWT and loads that session (`users.listSessions`). If it was created more than 10 minutes ago (`REAUTH_WINDOW_MINUTES`), it answers `FORBIDDEN` with `details: { reason: 'reauth' }`. The app asks them to sign in again (password or email code) and retries. So a stolen session that's been open a while can't delete the account. The check fails closed: a JWT with no session ID, or a session that `users.listSessions` doesn't return, gets the same answer.
+3. **The password changed recently.** If the user's `passwordUpdate` is less than 24 hours old (`RECENT_PASSWORD_CHANGE_HOURS`), the answer is `FORBIDDEN` with `details: { reason: 'recent_password_change' }`. A stolen session on an account without a password could otherwise set a first one (#203 allows that without an old password), sign in fresh and pass step 2. Appwrite also sets `passwordUpdate` when an account without a password changes its email or phone, so those are caught too. Accepted: a new account that set a password today can't delete it until tomorrow.
+4. **A timer is running** in a group that isn't archived: `CONFLICT`. They stop or void it first. A timer left in an archived group can't be stopped, and doesn't block deletion ([timer shifts](scheduling.md#timer-shifts)).
+5. **They're the only joined admin of a house that isn't archived and has another `active` member** who could be made admin: `VALIDATION_FAILED` with `details: { groupIds }` (an exception to `details` holding schema issues). They make someone else admin first: the rule leaving uses ([leaving](permissions.md#leaving-a-group)). A kept house where nobody else could be admin (it's archived, or everyone else in its team has moved out) is archived instead, as an employer or pair group is. A house with nobody else in its team is purged, as above.
+
+Non-zero balances don't block it; the delete screen warns about them.
+
+### Order
+
+1. The refusal checks.
+2. Set `persons.deletedAt` and `displayName` "Former member", with a fresh `rev` (a [guard write](ledger.md#concurrency)). **This is the point of no return:** from here every step runs to the end, and none is undone. A call after this skips the checks (apart from the body) and carries on.
+3. Label the Appwrite user `deleted` (`users.updateLabels`), block them and delete their sessions, so an old JWT fails `account.get()` (`UNAUTHENTICATED`). A 404 counts as done.
+4. The groups, one at a time, as above.
+5. Only once **every** group is done: delete their identities, the invites they sent and their profile.
+6. Clear `persons.userId` and the row's `read("user:<userId>")` permission.
+7. Delete the Appwrite user (a 404 counts as done).
+
+Step 6 comes before step 7 because Appwrite user IDs are chosen by the client at sign-up: once the user is deleted, someone who knows the ID could sign up with it, and must not find a person to bootstrap into. For the same reason, **a person with `deletedAt` is never resolved from a `userId`** (bootstrap, claim and join skip it).
+
+Every step can be repeated: a crash after any of them, then a rerun, leaves the same rows. The route works for up to 20 seconds and returns `{ deletedAt, finished }`. The hourly job (`account POST /`, scheduled only) finishes any person with `deletedAt` set and `userId` still set (`persons.idx_deletedAt`), and deletes any Appwrite user labelled `deleted` whose person no longer names it. It skips deletions started in the last minute, which the route may still be running.
+
+### What is kept, and why
+
+- **Final statements, their snapshots and PDFs in kept groups,** as issued, ABN and bank details included: other members already hold these documents ([D-010](decisions.md#d-010-closed-periods-never-change)). Merges don't rewrite them either.
+- **Receipts on kept transactions, and text other people typed** (descriptions, notes, void reasons).
+- **Groups they left on their own:** their member row is renamed "Former member"; their shares and history stay, like any kept group's. They aren't in `my-records.csv`, since the user can no longer read those groups: export gap, accepted for v1.
+- **Receipts they uploaded but never attached** keep their own permissions until the scheduler's clean-up deletes them ([#163](https://github.com/rojinc/ledgerly/issues/163)).
+- **Activity rows already written,** with the text they were written with. New member and group rows name no one: their summaries and `changesJson` hold no display name, and `subjectPersonId` points at the member's person, so the app shows the current name ("Former member" after deletion) without rewriting rows ([activity](data-model.md#activity)). Activity is deleted only with a purged group.
+
+A purged group's invoices go with it, so the delete screen tells users to export first ([data export](security-and-privacy.md#data-export)). Appwrite's backups keep deleted data for their own retention period ([retention](security-and-privacy.md#retention)).
+
+### After deletion
+
+- **Signing up again** with the same email makes a new person. The old one is never linked back: its identities are gone, `isPlaceholder()` skips persons with `deletedAt`, and no `userId` resolves to it. Claim and join skip a group whose team is gone, and a merge into a deleted person is never continued.
+- **No new record names a deleted person where they had joined.** In a group where their member row isn't `placeholder` (in practice the kept groups), the ledger refuses an input whose people (`everyPersonId()`: payers, the split, items) include them when the stored input didn't already, and the scheduler refuses such a template (`VALIDATION_FAILED`, [functions API](functions-api.md#ledger)). Payments and adjustments that name them stay allowed, so balances with a former member can still be settled. Where they never joined, nothing changes, so the refusal can't show the deletion (D-016). Records that already name them can still be corrected, posted and voided.
+- Accepted risk: with their identities deleted, adding that email to a group again makes a new placeholder instead of answering `CONFLICT`, and an invite to it goes to whoever holds the address now. An invite to their *old* placeholder row (in a group they never joined) with that email gets `VALIDATION_FAILED`, since the row's person is deleted.
 
 ## Privacy rules
 

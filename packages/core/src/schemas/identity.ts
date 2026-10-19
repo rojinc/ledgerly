@@ -119,6 +119,14 @@ export const acceptInviteBodySchema = z.strictObject({ token: z.string().max(128
 
 export type AcceptInviteBody = z.infer<typeof acceptInviteBodySchema>
 
+/**
+ * `account POST /delete` (#50, identity-and-invites.md#deleting-an-account-m4). Typing DELETE is
+ * the confirmation; there is no undo.
+ */
+export const deleteAccountBodySchema = z.strictObject({ confirm: z.literal('DELETE') })
+
+export type DeleteAccountBody = z.infer<typeof deleteAccountBodySchema>
+
 // Responses (functions-api.md#identity), shared by the function and the web app. `PATCH /profile`
 // returns the profile row itself.
 
@@ -148,3 +156,19 @@ export type PendingGroupsResult = { groups: PendingGroup[] }
 
 /** `POST /groups/{id}/join` */
 export type JoinGroupResult = { group: Groups; member: Members }
+
+/**
+ * `account POST /delete`. `deletedAt` is the point of no return; with `finished: false`, the
+ * hourly job deletes the rest.
+ */
+export type DeleteAccountResult = { deletedAt: string; finished: boolean }
+
+/**
+ * `details` of a refused `account POST /delete`, which changes nothing: `FORBIDDEN` with `reauth`
+ * when the session is older than REAUTH_WINDOW_MINUTES, or `recent_password_change` when the
+ * password is newer than RECENT_PASSWORD_CHANGE_HOURS; or `VALIDATION_FAILED` with the houses
+ * (not archived, with another active member) where the caller is the only joined admin.
+ */
+export type DeleteAccountRefusal =
+  | { reason: 'reauth' | 'recent_password_change' }
+  | { groupIds: string[] }

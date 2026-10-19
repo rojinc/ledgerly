@@ -21,8 +21,9 @@ export type StoredShift = NonNullable<TransactionInput['shift']>
 
 const MINUTES_PER_DAY = 24 * 60
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/
-// `7`, `7.5`, `7.25` or `7:30`: minutes always have two digits, so `7:3` isn't 7 h 03 min.
-const HOURS = /^(\d{1,2})(?:(\.)(\d{1,2})|(:)(\d{2}))?$/
+// `7`, `7.5`, `7.25` or `7:30`: minutes always have two digits, so `7:3` isn't 7 h 03 min. Up
+// to 3 digits of hours, for a fortnight's limit (#53).
+const HOURS = /^(\d{1,3})(?:(\.)(\d{1,2})|(:)(\d{2}))?$/
 
 function minutesOfDay(time: string): number | undefined {
   const match = TIME.exec(time)

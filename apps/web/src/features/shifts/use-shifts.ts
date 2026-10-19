@@ -21,6 +21,7 @@ import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { useCurrentUser } from '../auth/use-current-user'
 import { LedgerError, ledger } from '../transactions/use-transactions'
+import type { CapShift } from './hours-cap'
 
 // Appwrite's limit for one page and for the values of one Query.equal.
 const PAGE = 100
@@ -135,7 +136,8 @@ export function useToday(
   })
 }
 
-async function listAll(queries: string[]): Promise<Transactions[]> {
+/** Every `transactions` row `queries` match, a page at a time in date order. */
+export async function listAll(queries: string[]): Promise<Transactions[]> {
   const rows: Transactions[] = []
   let cursor: string | undefined
   for (;;) {
@@ -270,16 +272,55 @@ export function useStartTimer(todayKey: readonly unknown[]) {
   })
 }
 
+/**
+ * The stopped timer's minutes, less the break, in each work-hours limit total (#53) that
+ * counts its group and date, until the refresh reads the posted shift. Returns the totals before.
+ */
+function countStopped(
+  queryClient: QueryClient,
+  timer: Transactions | undefined,
+  breakMinutes: number,
+) {
+  const before = queryClient.getQueriesData<CapShift[]>({ queryKey: ['today', 'hours-cap'] })
+  if (!timer?.startedAt || !timer.date) return before
+  const minutes = Math.max(
+    0,
+    Math.floor((Date.now() - Date.parse(timer.startedAt)) / 60_000) - breakMinutes,
+  )
+  for (const [key, shifts] of before) {
+    // ['today', 'hours-cap', userId, start, end, ...owned group IDs]
+    const [, , , start, end, ...owned] = key as [
+      string,
+      string,
+      string,
+      string,
+      string,
+      ...string[],
+    ]
+    if (!shifts || !owned.includes(timer.groupId) || timer.date < start || timer.date > end)
+      continue
+    queryClient.setQueryData<CapShift[]>(key, [
+      ...shifts,
+      { $id: timer.$id, date: timer.date as LocalDate, minutes },
+    ])
+  }
+  return before
+}
+
 /** `POST /timer/stop`, shown as stopped at once. */
 export function useStopTimer(todayKey: readonly unknown[]) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (body: StopTimerBody) => ledger<TransactionView>('POST', '/timer/stop', body),
-    onMutate: async () => {
+    onMutate: async (body) => {
       await queryClient.cancelQueries({ queryKey: ['today'] })
       const before = queryClient.getQueryData<Today>(todayKey)
       if (before) queryClient.setQueryData<Today>(todayKey, { ...before, running: undefined })
-      return () => queryClient.setQueryData(todayKey, before)
+      const caps = countStopped(queryClient, before?.running, body.breakMinutes ?? 0)
+      return () => {
+        queryClient.setQueryData(todayKey, before)
+        for (const [key, shifts] of caps) queryClient.setQueryData(key, shifts)
+      }
     },
     onError: (_error, _body, rollback) => {
       rollback?.()
