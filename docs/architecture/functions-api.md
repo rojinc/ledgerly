@@ -39,7 +39,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired, or the invite isn't the caller's (used by someone else, or its address is another account's) |
-| `RATE_LIMITED` | 429 | Too many invites or reminders |
+| `RATE_LIMITED` | 429 | Too many invites or reminders, or too many wrong addresses typed for them ([#274](https://github.com/rojinc/ledgerly/issues/274)) |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |
 
@@ -156,6 +156,7 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 - **Newly:** not on the transaction already. On it already are:
   - the people its stored input names (`everyPersonId()`: payers, the split, items);
   - those holding one of its shares;
+  - for a posted shift, its two people, so one of no minutes, with no shares, can still be corrected;
   - for a row not yet posted that was made before their account was deleted (its `$createdAt` earlier than their `deletedAt`), those its stored input splits it to, by its split or the default split, and a shift's two people. That's the stored input as it is, never this request's `date` or `payers`, and a payer the server fills in never counts.
 
   For a create or a timer start, everyone counts as newly named. A row whose create raced the deletion may count as made after it.

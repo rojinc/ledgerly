@@ -1,6 +1,6 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { call, expense, NOW, rows, seed } from './harness'
+import { call, expense, MEMBERS, member, NOW, rows, seed } from './harness'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -10,19 +10,32 @@ afterEach(() => vi.useRealTimers())
 
 type Db = ReturnType<typeof seed>
 
-// Part 3 of #50 sets it when they delete their account.
+// Part 3 of #50 sets it when they delete their account: a minute on, after the rows a test made.
 function deleteAccount(db: Db, personId: string) {
+  vi.setSystemTime(Date.now() + 60_000)
   return withTransaction(db, (tx) =>
     tx.write({
       action: 'update',
       tableId: 'persons',
       rowId: personId,
-      data: { deletedAt: '2026-10-17T00:00:00.000Z' },
+      data: { deletedAt: new Date().toISOString() },
     }),
   )
 }
 
 const refused = { status: 400, code: 'VALIDATION_FAILED' }
+
+// A due bill with no split: everyone in the house on its date, Bob included.
+const powerBill = {
+  id: 'b1',
+  groupId: 'house',
+  kind: 'bill',
+  date: '2026-10-12',
+  description: 'Power',
+  totalCents: 9000,
+  bill: { status: 'due', dueOn: '2026-10-15' },
+}
+const renamed = { ...powerBill, description: 'Electricity' }
 
 function outcome(response: Awaited<ReturnType<typeof call>>) {
   return response.status === 200
@@ -159,9 +172,455 @@ describe('a person who deleted their account, in a group they had joined', () =>
       split: { mode: 'equal', personIds: ['alice', 'bob'] },
     })
     await deleteAccount(db, 'bob')
+    // Unposted, it has no shares: its input names Bob already.
+    const renamed = {
+      ...bill,
+      id: 'b2',
+      description: 'Electricity',
+      split: { mode: 'equal', personIds: ['alice', 'bob'] },
+    }
+    expect(outcome(await call(db, 'PATCH', '/transactions/b2', renamed))).toEqual({ status: 200 })
     const bobPays = { payers: [{ personId: 'bob', cents: 9000 }] }
     expect(outcome(await call(db, 'POST', '/transactions/b1/post', bobPays))).toEqual(refused)
     expect(outcome(await call(db, 'POST', '/transactions/b2/post', {}))).toEqual({ status: 200 })
+  })
+
+  it('can’t get a share from the default split of a new expense', async () => {
+    const db = seed()
+    await deleteAccount(db, 'bob')
+    // No split: everyone in the house on its date, Bob included (ledger.md#default-split).
+    const everyone = expense({ split: undefined })
+    expect(outcome(await call(db, 'POST', '/transactions', everyone))).toEqual(refused)
+    expect(rows.transactions(db)).toEqual([])
+  })
+
+  it('keeps a share the default split gave them, which an edit can name', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', expense({ split: undefined }))
+    await deleteAccount(db, 'bob')
+    const named = expense({ split: { mode: 'equal', personIds: ['alice', 'bob'] } })
+    expect(outcome(await call(db, 'PATCH', '/transactions/t1', named))).toEqual({ status: 200 })
+  })
+
+  it('keeps the share a due bill made before gives them by its default split', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', powerBill)
+    await deleteAccount(db, 'bob')
+    expect(outcome(await call(db, 'PATCH', '/transactions/b1', renamed))).toEqual({ status: 200 })
+    expect(outcome(await call(db, 'POST', '/transactions/b1/post', {}))).toEqual({ status: 200 })
+    expect(rows.shares(db).map((share) => share.personId)).toContain('bob')
+  })
+
+  it.each([
+    ['a refund', -9000],
+    ['a zero amount', 0],
+  ])('keeps the share %s made before gives them by its default split', async (_, totalCents) => {
+    // Its amount gives Bob no positive share, but its split still takes him.
+    const db = seed()
+    await call(db, 'POST', '/transactions', { ...powerBill, totalCents })
+    await deleteAccount(db, 'bob')
+    const edited = { ...renamed, totalCents: 9000 }
+    expect(outcome(await call(db, 'PATCH', '/transactions/b1', edited))).toEqual({ status: 200 })
+    expect(outcome(await call(db, 'POST', '/transactions/b1/post', {}))).toEqual({ status: 200 })
+    expect(rows.shares(db).map((share) => share.personId)).toContain('bob')
+  })
+
+  // AI A's re-check (B2): a days split without personIds takes everyone present in the period.
+  const period = { ...powerBill.bill, periodStart: '2026-10-01', periodEnd: '2026-10-12' }
+  const { totalCents: _, ...untotalled } = powerBill
+  it.each([
+    ['a days split', { ...powerBill, bill: period, split: { mode: 'days' } }],
+    [
+      'an item split by days',
+      {
+        ...untotalled,
+        bill: period,
+        items: [{ name: 'Power', amountCents: 9000, split: { mode: 'days' } }],
+      },
+    ],
+  ])('keeps the share %s made before gives them', async (_, bill) => {
+    // Bob moved out on 10 October: the default split on the 12th leaves him out, his days don't.
+    const db = seed({
+      members: [
+        ...MEMBERS.filter((row) => row.$id !== 'm-bob'),
+        { ...member('m-bob', 'house', 'bob', 'viewer', 'left'), leftOn: '2026-10-10' },
+      ],
+    })
+    expect(outcome(await call(db, 'POST', '/transactions', bill))).toEqual({ status: 200 })
+    await deleteAccount(db, 'bob')
+    const edited = { ...bill, description: 'Electricity' }
+    expect(outcome(await call(db, 'PATCH', '/transactions/b1', edited))).toEqual({ status: 200 })
+    expect(outcome(await call(db, 'POST', '/transactions/b1/post', {}))).toEqual({ status: 200 })
+    expect(rows.shares(db).map((share) => share.personId)).toContain('bob')
+  })
+
+  it('can’t get a first share from an item of a bill made before whose items name people', async () => {
+    // Its items name Alice only, so it keeps no one else, whoever the default split would take.
+    const db = seed()
+    const { totalCents: _, ...items } = {
+      ...powerBill,
+      items: [{ name: 'Power', amountCents: 9000, split: { mode: 'equal', personIds: ['alice'] } }],
+    }
+    expect(outcome(await call(db, 'POST', '/transactions', items))).toEqual({ status: 200 })
+    await deleteAccount(db, 'bob')
+    const shared = {
+      ...items,
+      items: [{ ...items.items[0], split: { mode: 'equal', personIds: ['alice', 'bob'] } }],
+    }
+    expect(outcome(await call(db, 'PATCH', '/transactions/b1', shared))).toEqual(refused)
+  })
+
+  it('keeps the default split’s share of a due bill made before with payers of its own', async () => {
+    // Its payers add up to its own total, not to the nominal one the check plans it at.
+    const db = seed()
+    const paid = { ...powerBill, payers: [{ personId: 'alice', cents: 9000 }] }
+    expect(outcome(await call(db, 'POST', '/transactions', paid))).toEqual({ status: 200 })
+    await deleteAccount(db, 'bob')
+    expect(outcome(await call(db, 'POST', '/transactions/b1/post', {}))).toEqual({ status: 200 })
+    expect(rows.shares(db).map((share) => share.personId)).toContain('bob')
+  })
+
+  it('posts a refund made before with their share', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', { ...powerBill, totalCents: -9000 })
+    await deleteAccount(db, 'bob')
+    expect(outcome(await call(db, 'POST', '/transactions/b1/post', {}))).toEqual({ status: 200 })
+  })
+
+  it('can’t get a share when a due bill made before is paid on a date in their stay', async () => {
+    // Bob moved out on 10 October; the bill is dated after it, so its split leaves him out.
+    const db = seed({
+      members: [
+        ...MEMBERS.filter((row) => row.$id !== 'm-bob'),
+        { ...member('m-bob', 'house', 'bob', 'viewer', 'left'), leftOn: '2026-10-10' },
+      ],
+    })
+    await call(db, 'POST', '/transactions', powerBill)
+    await deleteAccount(db, 'bob')
+    const early = { date: '2026-10-05' }
+    expect(outcome(await call(db, 'POST', '/transactions/b1/post', early))).toEqual(refused)
+  })
+
+  it('counts a row made in the same instant as the deletion as made after it', async () => {
+    // Appwrite writes `+00:00`; the deletion's own time ends in `Z`. Compared as times, not text.
+    const sameInstant = new Date(NOW.getTime() + 60_000).toISOString()
+    const db = seed({
+      transactions: [
+        {
+          $id: 'groceries_20261018',
+          groupId: 'house',
+          kind: 'expense',
+          status: 'scheduled',
+          date: '2026-10-18',
+          description: 'Groceries',
+          totalCents: 9000,
+          inputJson: JSON.stringify({}),
+          scheduleId: 'groceries',
+          overridden: false,
+          statementId: null,
+          createdBy: 'alice',
+          updatedBy: 'alice',
+          $createdAt: sameInstant.replace('Z', '+00:00'),
+        },
+      ],
+    })
+    await deleteAccount(db, 'bob')
+    expect(db.rows('persons').find((person) => person.$id === 'bob')?.deletedAt).toBe(sameInstant)
+    expect(outcome(await call(db, 'POST', '/transactions/groceries_20261018/post', {}))).toEqual(
+      refused,
+    )
+  })
+
+  it('can’t be named in a new loan', async () => {
+    const db = seed()
+    await deleteAccount(db, 'bob')
+    const loan = expense({
+      kind: 'loan',
+      payers: [{ personId: 'alice', cents: 9000 }],
+      split: { mode: 'equal', personIds: ['bob'] },
+    })
+    expect(outcome(await call(db, 'POST', '/transactions', loan))).toEqual(refused)
+  })
+
+  it('can’t get a first share from an edit of a due bill made before', async () => {
+    // Bob moved out on 10 October: a bill dated after it doesn't split to him.
+    const db = seed({
+      members: [
+        ...MEMBERS.filter((row) => row.$id !== 'm-bob'),
+        { ...member('m-bob', 'house', 'bob', 'viewer', 'left'), leftOn: '2026-10-10' },
+      ],
+    })
+    await call(db, 'POST', '/transactions', powerBill)
+    await deleteAccount(db, 'bob')
+    const earlier = { ...powerBill, date: '2026-10-05' }
+    expect(outcome(await call(db, 'PATCH', '/transactions/b1', earlier))).toEqual(refused)
+    expect(rows.transactions(db)[0]?.date).toBe('2026-10-12')
+  })
+
+  it('can’t get a share from the default split of a row made after', async () => {
+    // An occurrence of a schedule the deletion didn't end, made after it.
+    const db = seed({
+      transactions: [
+        {
+          $id: 'groceries_20261018',
+          groupId: 'house',
+          kind: 'expense',
+          status: 'scheduled',
+          date: '2026-10-18',
+          description: 'Groceries',
+          totalCents: 9000,
+          inputJson: JSON.stringify({}),
+          scheduleId: 'groceries',
+          overridden: false,
+          statementId: null,
+          createdBy: 'alice',
+          updatedBy: 'alice',
+          $createdAt: new Date(NOW.getTime() + 120_000).toISOString(),
+        },
+      ],
+    })
+    await deleteAccount(db, 'bob')
+    vi.setSystemTime(NOW.getTime() + 180_000)
+    expect(outcome(await call(db, 'POST', '/transactions/groceries_20261018/post', {}))).toEqual(
+      refused,
+    )
+  })
+
+  it('stays on a row made after that names them already, which can still be changed and posted', async () => {
+    // Made between the deletion's start and the end of the schedule that names them.
+    const db = seed({
+      transactions: [
+        {
+          $id: 'groceries_20261018',
+          groupId: 'house',
+          kind: 'expense',
+          status: 'scheduled',
+          date: '2026-10-18',
+          description: 'Groceries',
+          totalCents: 9000,
+          inputJson: JSON.stringify({ split: { mode: 'equal', personIds: ['alice', 'bob'] } }),
+          scheduleId: 'groceries',
+          overridden: false,
+          statementId: null,
+          createdBy: 'alice',
+          updatedBy: 'alice',
+          $createdAt: new Date(NOW.getTime() + 120_000).toISOString(),
+        },
+      ],
+    })
+    await deleteAccount(db, 'bob')
+    vi.setSystemTime(NOW.getTime() + 180_000)
+    const food = {
+      ...expense({ id: 'groceries_20261018', date: '2026-10-18', totalCents: 9000 }),
+      description: 'Food',
+    }
+    expect(outcome(await call(db, 'PATCH', '/transactions/groceries_20261018', food))).toEqual({
+      status: 200,
+    })
+    expect(outcome(await call(db, 'POST', '/transactions/groceries_20261018/post', {}))).toEqual({
+      status: 200,
+    })
+  })
+
+  it('can’t get a first share from the default split when a posted row is edited', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', expense({ split: undefined }))
+    // Dan joins, back-dated, so the default split on the row's date would now include him.
+    const { $id, ...dan } = member('m-dan', 'house', 'dan', 'member')
+    await withTransaction(db, (tx) =>
+      tx.write({ action: 'create', tableId: 'members', rowId: $id, data: dan }),
+    )
+    await deleteAccount(db, 'dan')
+    const renamed = expense({ split: undefined, description: 'Food' })
+    expect(outcome(await call(db, 'PATCH', '/transactions/t1', renamed))).toEqual(refused)
+  })
+
+  describe('as the employer, who a shift names without listing them', () => {
+    // Acme has joined the employer group.
+    const joined = (transactions: Record<string, unknown>[] = []) =>
+      seed({
+        members: [
+          ...MEMBERS.filter((row) => row.$id !== 'm-acme'),
+          member('m-acme', 'job', 'acme', 'member'),
+        ],
+        transactions,
+      })
+    const shift = {
+      id: 's1',
+      groupId: 'job',
+      kind: 'shift',
+      date: '2026-10-16',
+      description: 'Thursday',
+      shift: { minutes: 300, rateCents: 2500 },
+    }
+
+    it('can’t be named in a new shift, or by a new timer', async () => {
+      const db = joined()
+      await deleteAccount(db, 'acme')
+      expect(outcome(await call(db, 'POST', '/transactions', shift, 'u-sam'))).toEqual(refused)
+      const timer = { id: 'tm1', groupId: 'job' }
+      expect(outcome(await call(db, 'POST', '/timer/start', timer, 'u-sam'))).toEqual(refused)
+      expect(rows.transactions(db)).toEqual([])
+    })
+
+    it('can be named where they never joined (a placeholder), also by a new timer', async () => {
+      const db = seed()
+      await deleteAccount(db, 'acme')
+      expect(outcome(await call(db, 'POST', '/transactions', shift, 'u-sam'))).toEqual({
+        status: 200,
+      })
+      const timer = { id: 'tm1', groupId: 'job' }
+      expect(outcome(await call(db, 'POST', '/timer/start', timer, 'u-sam'))).toEqual({
+        status: 200,
+      })
+    })
+
+    it('stays on a shift made before, which can still be confirmed, but not on one made after', async () => {
+      const scheduledShift = (id: string, createdAt: string) => ({
+        $id: id,
+        groupId: 'job',
+        kind: 'shift',
+        status: 'scheduled',
+        date: '2026-10-16',
+        description: 'Thursday',
+        totalCents: 12500,
+        inputJson: JSON.stringify({ shift: { minutes: 300, rateCents: 2500 } }),
+        scheduleId: 'sch1',
+        overridden: false,
+        statementId: null,
+        createdBy: 'sam',
+        updatedBy: 'sam',
+        $createdAt: createdAt,
+      })
+      const db = joined([
+        scheduledShift('before', NOW.toISOString()),
+        scheduledShift('after', new Date(NOW.getTime() + 120_000).toISOString()),
+      ])
+      await deleteAccount(db, 'acme')
+      vi.setSystemTime(NOW.getTime() + 180_000)
+      const confirm = (id: string) => call(db, 'POST', `/transactions/${id}/post`, {}, 'u-sam')
+      expect(outcome(await confirm('before'))).toEqual({ status: 200 })
+      expect(outcome(await confirm('after'))).toEqual(refused)
+      // Nor can an edit of the one made after: only a posted shift has its two people on it.
+      const corrected = { ...shift, id: 'after', shift: { minutes: 240, rateCents: 2500 } }
+      expect(outcome(await call(db, 'PATCH', '/transactions/after', corrected, 'u-sam'))).toEqual(
+        refused,
+      )
+    })
+
+    it('stays on a shift made before as its worker, which the employer can still confirm', async () => {
+      // Acme joined as an admin, so the group is kept when Sam deletes the account.
+      const db = seed({
+        members: [
+          ...MEMBERS.filter((row) => row.$id !== 'm-acme'),
+          member('m-acme', 'job', 'acme', 'admin'),
+        ],
+        persons: [
+          { $id: 'sam', userId: 'u-sam', displayName: 'Sam' },
+          { $id: 'acme', userId: 'u-acme', displayName: 'Acme' },
+        ],
+        transactions: [
+          {
+            $id: 'sch1_20261016',
+            groupId: 'job',
+            kind: 'shift',
+            status: 'scheduled',
+            date: '2026-10-16',
+            description: 'Thursday',
+            totalCents: 12500,
+            inputJson: JSON.stringify({ shift: { minutes: 300, rateCents: 2500 } }),
+            scheduleId: 'sch1',
+            overridden: false,
+            statementId: null,
+            createdBy: 'sam',
+            updatedBy: 'sam',
+            $createdAt: NOW.toISOString(),
+          },
+        ],
+      })
+      await deleteAccount(db, 'sam')
+      const confirm = await call(db, 'POST', '/transactions/sch1_20261016/post', {}, 'u-acme')
+      expect(outcome(confirm)).toEqual({ status: 200 })
+    })
+
+    it('stays on a shift of no minutes made before, which can still be corrected', async () => {
+      const db = joined([
+        {
+          $id: 'sch1_20261016',
+          groupId: 'job',
+          kind: 'shift',
+          status: 'scheduled',
+          date: '2026-10-16',
+          description: 'Thursday',
+          totalCents: 0,
+          inputJson: JSON.stringify({ shift: { minutes: 0, rateCents: 2500 } }),
+          scheduleId: 'sch1',
+          overridden: false,
+          statementId: null,
+          createdBy: 'sam',
+          updatedBy: 'sam',
+          $createdAt: NOW.toISOString(),
+        },
+      ])
+      await deleteAccount(db, 'acme')
+      const corrected = { ...shift, id: 'sch1_20261016', shift: { minutes: 300, rateCents: 2500 } }
+      expect(
+        outcome(await call(db, 'PATCH', '/transactions/sch1_20261016', corrected, 'u-sam')),
+      ).toEqual({ status: 200 })
+    })
+
+    it('stays on a posted shift of no minutes, whose note and minutes can still be corrected', async () => {
+      // AI A's re-check (S4): no shares, and an input that names no one, but it's theirs.
+      const db = joined([
+        {
+          $id: 's0',
+          groupId: 'job',
+          kind: 'shift',
+          status: 'posted',
+          date: '2026-10-16',
+          description: 'Thursday',
+          totalCents: 0,
+          inputJson: JSON.stringify({ shift: { minutes: 0, rateCents: 2500 } }),
+          scheduleId: null,
+          overridden: false,
+          statementId: null,
+          createdBy: 'sam',
+          updatedBy: 'sam',
+          $createdAt: NOW.toISOString(),
+        },
+      ])
+      await deleteAccount(db, 'acme')
+      const none = { ...shift, id: 's0', shift: { minutes: 0, rateCents: 2500 } }
+      const noted = { ...none, description: 'Thursday, closed early' }
+      expect(outcome(await call(db, 'PATCH', '/transactions/s0', noted, 'u-sam'))).toEqual({
+        status: 200,
+      })
+      const worked = { ...noted, shift: { minutes: 300, rateCents: 2500 } }
+      expect(outcome(await call(db, 'PATCH', '/transactions/s0', worked, 'u-sam'))).toEqual({
+        status: 200,
+      })
+      expect(rows.shares(db).map((share) => share.personId)).toEqual(['acme', 'sam'])
+    })
+
+    it('can’t be named in a new shift of no minutes', async () => {
+      const db = joined()
+      await deleteAccount(db, 'acme')
+      const none = { ...shift, shift: { minutes: 0, rateCents: 2500 } }
+      expect(outcome(await call(db, 'POST', '/transactions', none, 'u-sam'))).toEqual(refused)
+    })
+
+    it('stays on a timer started before, which can still be stopped', async () => {
+      const db = joined()
+      const timer = { id: 'tm1', groupId: 'job', rateCents: 2500 }
+      expect(outcome(await call(db, 'POST', '/timer/start', timer, 'u-sam'))).toEqual({
+        status: 200,
+      })
+      await deleteAccount(db, 'acme')
+      vi.setSystemTime(NOW.getTime() + 60 * 60 * 1000)
+      const stop = { transactionId: 'tm1' }
+      expect(outcome(await call(db, 'POST', '/timer/stop', stop, 'u-sam'))).toEqual({ status: 200 })
+      expect(rows.shares(db).map((share) => share.personId)).toContain('acme')
+    })
   })
 
   it('is checked with a read only, so a transaction’s writes stay within budget', async () => {
