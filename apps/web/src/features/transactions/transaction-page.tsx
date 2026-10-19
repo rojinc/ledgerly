@@ -7,6 +7,7 @@ import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
+import { useGroupName } from '../groups/use-group-name'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { KIND_LABEL, STATUS_LABEL } from './history-page'
 import { useMembers, useShares, useTransaction, useVoidTransaction } from './use-transactions'
@@ -184,12 +185,13 @@ function hoursText(minutes: number): string {
 }
 
 function GroupLink({ group }: { group: Groups }) {
+  const name = useGroupName(group)
   return group.type === 'employer' ? (
     <Link to={`/transactions?groupId=${group.$id}`} className="underline underline-offset-4">
-      {group.name}
+      {name}
     </Link>
   ) : (
-    group.name
+    name
   )
 }
 

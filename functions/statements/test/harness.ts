@@ -3,7 +3,7 @@ import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import type { Email } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
-import { vi } from 'vitest'
+import { expect, vi } from 'vitest'
 import type { Files } from '../src/files'
 import { statementsRoutes } from '../src/main'
 import type { Services } from '../src/services'
@@ -374,6 +374,38 @@ export async function commitNow(db: FakeDb, operations: object[]) {
   const { $id } = await db.createTransaction()
   await db.createOperations({ transactionId: $id, operations })
   await db.updateTransaction({ transactionId: $id, commit: true })
+}
+
+/** Acme joins its group as a viewer, with account `u-acme`: a member who isn't an admin. */
+export function acmeJoins(services: Fakes) {
+  return commitNow(services.db, [
+    op('persons', 'acme', { userId: 'u-acme' }),
+    op('members', 'm-acme', { status: 'active' }),
+  ])
+}
+
+/** Acme's group is archived. */
+export function archiveJob(services: Fakes) {
+  return commitNow(services.db, [
+    op('groups', 'job', { archivedAt: '2026-11-01T00:00:00.000Z', nextCloseAt: null }),
+  ])
+}
+
+/**
+ * Dan, outside the group, gets exactly the answer for a statement that doesn't exist (NOT_FOUND),
+ * so statement IDs can't be probed (#136). Pass statements the route would refuse too, so no
+ * check on the statement can come before the membership one.
+ */
+export async function expectHiddenFromDan(
+  services: Fakes,
+  action: 'refresh' | 'finalize' | 'send' | 'void',
+  statementIds: string[],
+  body?: unknown,
+) {
+  const ask = (id: string) => call(services, 'POST', `/statements/${id}/${action}`, body, 'u-dan')
+  const missing = await ask('nope')
+  expect(missing.status).toBe(404)
+  for (const id of statementIds) expect(await ask(id)).toEqual(missing)
 }
 
 /**

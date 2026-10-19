@@ -2,8 +2,11 @@ import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  acmeJoins,
+  archiveJob,
   beforeStaging,
   commitNow,
+  expectHiddenFromDan,
   failure,
   fakes,
   job,
@@ -266,14 +269,36 @@ describe('POST /statements/{id}/finalize', () => {
     expect(stored(services, 'st2').status).toBe('draft')
   })
 
-  it.each([
-    ['a void statement', { status: 'void' }, 'u-sam', 'VALIDATION_FAILED'],
-    ['someone outside the group', {}, 'u-dan', 'NOT_A_MEMBER'],
-  ])('refuses %s', async (_case, extra, user, code) => {
-    const services = fakes({ statements: [statement('st1', extra)] })
+  it('refuses a void statement', async () => {
+    const services = fakes({ statements: [statement('st1', { status: 'void' })] })
     expect(
-      (await failure(services, 'POST', '/statements/st1/finalize', { send: false }, user)).code,
-    ).toBe(code)
+      (await failure(services, 'POST', '/statements/st1/finalize', { send: false })).code,
+    ).toBe('VALIDATION_FAILED')
+  })
+
+  it('answers someone outside the group as for a missing statement; a viewer gets FORBIDDEN and an admin ARCHIVED', async () => {
+    const services = fakes({
+      statements: [
+        statement('st1'),
+        statement('st-void', {
+          periodStart: '2026-09-01',
+          periodEnd: '2026-09-30',
+          status: 'void',
+        }),
+      ],
+    })
+    const body = { send: false }
+    await expectHiddenFromDan(services, 'finalize', ['st1', 'st-void'], body)
+    await acmeJoins(services)
+    expect((await failure(services, 'POST', '/statements/st1/finalize', body, 'u-acme')).code).toBe(
+      'FORBIDDEN',
+    )
+    await archiveJob(services)
+    await expectHiddenFromDan(services, 'finalize', ['st1'], body)
+    expect((await failure(services, 'POST', '/statements/st1/finalize', body)).code).toBe(
+      'ARCHIVED',
+    )
+    expect(stored(services).status).toBe('draft')
   })
 
   it('refuses a house divide until divides come, and a member who is not an admin', async () => {

@@ -485,6 +485,18 @@ describe('TransactionPage', () => {
     expect(screen.getByText('Void. Reason: Twice').className).toContain('break-words')
   })
 
+  it('names a pair group by its other member, with no link (#149)', async () => {
+    // The other member (MEMBERS' pe, 'Acme') added the viewer, Sam, so the group's own name is
+    // the viewer's.
+    mockGroups({ ...acme, type: 'pair', name: 'Sam' } as Groups)
+    mockRows()
+    getRow.mockResolvedValue(row('t1') as never)
+    renderAt('/transactions/t1')
+    const group = (await screen.findByText('Group')).nextElementSibling as HTMLElement
+    await waitFor(() => expect(group.textContent).toBe('Acme'))
+    expect(within(group).queryByRole('link')).toBeNull()
+  })
+
   it('offers Void to a member on a row they added, and refreshes balances, history and calendar', async () => {
     mockGroups(acme, 'member')
     mockRows([], shares)

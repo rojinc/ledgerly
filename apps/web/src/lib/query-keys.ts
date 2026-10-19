@@ -14,4 +14,7 @@ export const queryKeys = {
   members: (groupId: string) => ['members', groupId] as const,
   history: (groupId: string, filters: Readonly<Record<string, string | undefined>>) =>
     ['history', groupId, filters] as const,
+  today: (userId: string, groupIds: readonly string[]) => ['today', userId, ...groupIds] as const,
+  myRoles: (personId: string, groupIds: readonly string[]) =>
+    ['myRoles', personId, ...groupIds] as const,
 }
