@@ -11,6 +11,7 @@ export const queryKeys = {
     ['calendar', userId, start, end, ...groupIds] as const,
   transaction: (id: string) => ['transaction', id] as const,
   transactionShares: (id: string) => ['transaction', id, 'shares'] as const,
+  transactionItems: (id: string) => ['transaction', id, 'items'] as const,
   members: (groupId: string) => ['members', groupId] as const,
   activity: (groupId: string) => ['activity', groupId] as const,
   history: (groupId: string, filters: Readonly<Record<string, string | undefined>>) =>

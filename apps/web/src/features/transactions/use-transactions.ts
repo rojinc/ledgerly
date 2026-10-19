@@ -1,5 +1,5 @@
 import type { Category } from '@ledgerly/core/constants/categories'
-import type { Groups, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import type {
   TransactionInput,
   TransactionView,
@@ -96,6 +96,22 @@ export function useShares(id: string) {
   })
 }
 
+/** An itemised transaction's items (`items.idx_transaction_position`), in the order entered. */
+export function useItems(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.transactionItems(id),
+    enabled,
+    queryFn: async () => {
+      const { rows } = await tablesDB.listRows<Items>({
+        databaseId: DATABASE_ID,
+        tableId: 'items',
+        queries: [Query.equal('transactionId', id), Query.orderAsc('position'), Query.limit(PAGE)],
+      })
+      return rows
+    },
+  })
+}
+
 export type HistoryFilters = {
   kind?: Transactions['kind']
   category?: Category
@@ -142,6 +158,7 @@ function refresh(queryClient: ReturnType<typeof useQueryClient>, view: Transacti
   const { transaction } = view
   queryClient.setQueryData(queryKeys.transaction(transaction.$id), transaction)
   queryClient.setQueryData(queryKeys.transactionShares(transaction.$id), view.shares)
+  queryClient.setQueryData(queryKeys.transactionItems(transaction.$id), view.items)
   void queryClient.invalidateQueries({ queryKey: queryKeys.balances(transaction.groupId) })
   void queryClient.invalidateQueries({ queryKey: ['history', transaction.groupId] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
