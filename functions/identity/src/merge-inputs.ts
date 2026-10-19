@@ -163,7 +163,7 @@ async function moveGroupInputs(
   // Where an earlier run's scan got to (#242 G). First the rows it left as they are, read again
   // in chunks, so one voided, fixed, locked or deleted since no longer holds the merge open.
   const again = from?.left ?? []
-  let left: string[] = []
+  const left: string[] = []
   for (let start = 0; start < again.length; ) {
     if (Date.now() >= deadline) return 'cutOff'
     const chunk = again.slice(start, start + PAGE)
@@ -174,7 +174,7 @@ async function moveGroupInputs(
     left.push(...outcome)
     start += PAGE
   }
-  let cleared = again.filter((rowId) => !left.includes(rowId))
+  const cleared = again.filter((rowId) => !left.includes(rowId))
   // Then on from the cursor, in `$id` order. By `$id` rather than by a cursor row, which may
   // have been deleted since (scaling.md).
   let after = from?.after
@@ -196,14 +196,14 @@ async function moveGroupInputs(
     const outcome = await rename(page)
     if (outcome === 'putOff') return 'putOff'
     if (outcome === 'raced') continue
-    for (const rowId of outcome.filter((id) => !left.includes(id))) {
+    // A page's rows all come after the cursor, so none of them is in `left` yet.
+    for (const rowId of outcome) {
       console.warn(`merge ${merge.from} into ${merge.into} left transaction ${rowId} as it is`)
     }
-    left = [...new Set([...left, ...outcome])]
+    left.push(...outcome)
     after = page.at(-1)?.$id ?? after
     if (after !== undefined) {
       await saveCursor(db, merge.from, { groupId, after, left }, cleared, deadline)
-      cleared = []
     }
     if (page.length < PAGE) {
       result.skipped += left.length
