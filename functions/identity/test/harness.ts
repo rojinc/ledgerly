@@ -26,6 +26,7 @@ export function account(overrides: Partial<AccountUser> = {}): AccountUser {
     emailVerification: true,
     phone: '',
     phoneVerification: false,
+    passwordUpdate: '',
     ...overrides,
   }
 }
@@ -57,6 +58,7 @@ export async function call(
   path: string,
   body?: unknown,
   userId: string | null = 'u1',
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; body: Envelope; logs: string[] }> {
   const handler = createHandler(
     identityRoutes(() => services),
@@ -69,7 +71,10 @@ export async function call(
     req: {
       method,
       path,
-      headers: userId === null ? {} : { 'x-appwrite-user-jwt': `jwt-${userId}` },
+      headers: {
+        ...(userId === null ? {} : { 'x-appwrite-user-jwt': `jwt-${userId}` }),
+        ...headers,
+      },
       bodyText: body === undefined ? '' : JSON.stringify(body),
     },
     res: {

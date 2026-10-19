@@ -14,6 +14,7 @@ import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
+import { linkHint } from '../groups/link-hint'
 import { formatDate } from '../statements/invoice-view'
 import {
   type HousemateValues,
@@ -163,11 +164,8 @@ export function AddHousemate({
           error={errors.phone}
           {...form.register('phone')}
         />
-        {/* identity-and-invites.md: a sign-up is linked by a verified email or phone. */}
         <p aria-live="polite" className="text-sm text-muted-foreground">
-          {email.trim() === '' && phone.trim() === ''
-            ? 'Without an email or mobile number, they can’t be linked to this house if they sign up later.'
-            : 'Once they join with this email or number, they’ll see the house.'}
+          {linkHint(email, phone, { linked: 'this house', seen: 'the house' })}
         </p>
         {isAdmin && (
           <SelectField id="add-role" label="Role" error={errors.role} {...form.register('role')}>
