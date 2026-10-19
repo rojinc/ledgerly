@@ -1,8 +1,9 @@
 // One-off for #163: receiptFiles rows for files uploaded before the ledger kept them
-// (data-model.md#receiptfiles). Run it once in each environment, after the ledger change is
-// deployed and before scheduler step 5 is:
+// (data-model.md#receiptfiles). The lead runs it once in each environment, from main, after the
+// ledger change is deployed there. Scheduler step 5 does nothing until its last write:
 //   APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/backfill-receipt-files.mjs
-// The key needs rows.read, rows.write and files.read. It prints counts only. Safe to run again.
+// Use a one-off key with rows.read, rows.write and files.read, and delete it afterwards. It
+// prints counts only. Safe to run again.
 import { rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'

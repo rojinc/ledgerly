@@ -65,24 +65,24 @@ describe('backfillReceiptFiles', () => {
     expect(await backfillReceiptFiles(db, files, NOW)).toMatchObject({ unchanged: 1, swept: 0 })
   })
 
-  it('writes the marker that lets step 5 start, last', async () => {
+  it('makes the checkpoint that lets step 5 start, last, from when it started', async () => {
     const db = new FakeDb({ transactions: [tx('t1', ['f1'])] })
-    let markers: unknown[] | undefined
+    let checkpoints: unknown[] | undefined
     const files = async () => {
-      // The bucket is read before the marker is written.
-      markers ??= db.rows('migrations')
+      // The bucket is read before the checkpoint is written.
+      checkpoints ??= db.rows('checkpoints')
       return ['f2']
     }
     await backfillReceiptFiles(db, files, NOW)
-    expect(markers).toEqual([])
-    expect(db.rows('migrations')).toEqual([
-      expect.objectContaining({ $id: 'receipt-files-backfill', doneAt: NOW.toISOString() }),
+    expect(checkpoints).toEqual([])
+    expect(db.rows('checkpoints')).toEqual([
+      expect.objectContaining({ $id: 'receipt-clean-up', through: NOW.toISOString() }),
     ])
-    expect(db.rows('migrations')[0]?.$permissions).toEqual([])
-    // Run again, it moves the marker on.
+    expect(db.rows('checkpoints')[0]?.$permissions).toEqual([])
+    // Run again, it moves the checkpoint to the new start: its sweep covered the files before.
     const later = new Date('2026-10-20T06:00:00.000Z')
     await backfillReceiptFiles(db, files, later)
-    expect(db.rows('migrations')[0]?.doneAt).toBe(later.toISOString())
+    expect(db.rows('checkpoints')[0]?.through).toBe(later.toISOString())
   })
 
   it('reads every page of the bucket', async () => {

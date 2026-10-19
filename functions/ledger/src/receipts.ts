@@ -1,10 +1,9 @@
-import type { ReceiptFiles } from '@ledgerly/core/generated/rows'
 import { clientFromRequest, type Db } from '@ledgerly/server/appwrite/client'
-import { TABLES } from '@ledgerly/server/appwrite/tables'
-import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
+import type { Tx } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { listAll, Raced, teamRead } from '@ledgerly/server/ledger/transactions'
-import { AppwriteException, type Models, Query, Storage } from 'node-appwrite'
+import { receiptRows, writeReceiptRows } from '@ledgerly/server/ledger/receipt-files'
+import { teamRead } from '@ledgerly/server/ledger/transactions'
+import { AppwriteException, type Models, Storage } from 'node-appwrite'
 
 // data-model.md#storage-buckets
 export const RECEIPTS_BUCKET = 'receipts'
@@ -98,7 +97,7 @@ export type ReceiptList = {
 /**
  * permissions.md#storage: checks each file in `fileIds` that isn't in `stored` already, and
  * only once every one passes, limits each to the group's team. Then stages the `receiptFiles`
- * row of each file added or taken off (data-model.md#receiptfiles). Routes call it inside their
+ * row of each file added or taken off, and reads them again as committed (data-model.md#receiptfiles). Routes call it inside their
  * database transaction, just before their own writes, so the reset lands before the commit: a
  * stored ID never points at a file its uploader can still change or delete. A refused list
  * changes no file, and the error names its index only, never anything about the file.
@@ -133,55 +132,17 @@ export async function attachReceipts(
   // Until its reset, an uploader who kept `delete` could swap the file for another under the
   // same ID. Nobody but the server can change it now, so this second look is the one that counts.
   refuse(added.filter((_, at) => !usable(reset[at])))
-  const writes = changed.map((fileId) =>
-    rowWrite(rows.get(fileId), fileId, {
-      transactionId,
-      listed: fileIds.includes(fileId),
-      now,
-    }),
+  await writeReceiptRows(
+    db,
+    tx,
+    rows,
+    changed.map((fileId) =>
+      fileIds.includes(fileId)
+        ? { fileId, add: [transactionId] }
+        : { fileId, remove: [transactionId] },
+    ),
+    now,
   )
-  try {
-    await tx.write(...writes)
-  } catch (error) {
-    // Appwrite refuses to stage an update of a row deleted meanwhile: run the route again.
-    if (error instanceof AppwriteException && error.code === 404) throw new Raced()
-    throw error
-  }
-  // Staged first, then checked, as committed: through the transaction this would read back our
-  // own staged values. A row that changed before the staging shows here, and one that changes
-  // after it fails the commit (ledger.md#concurrency).
-  const current = await receiptRows(db, changed)
-  if (changed.some((fileId) => !sameRow(rows.get(fileId), current.get(fileId)))) throw new Raced()
-}
-
-async function receiptRows(db: Db, fileIds: string[]): Promise<Map<string, ReceiptFiles>> {
-  const rows = await listAll<ReceiptFiles>(db, TABLES.receiptFiles, [Query.equal('$id', fileIds)])
-  return new Map(rows.map((row) => [row.$id, row]))
-}
-
-/** The file's row once this transaction lists it (`listed`) or no longer does. */
-function rowWrite(
-  row: ReceiptFiles | undefined,
-  fileId: string,
-  change: { transactionId: string; listed: boolean; now: Date },
-): Write {
-  const others = (row?.transactionIds ?? []).filter((id) => id !== change.transactionId)
-  const transactionIds = change.listed ? [...others, change.transactionId] : others
-  const data = {
-    transactionIds: transactionIds.length > 0 ? transactionIds : null,
-    detachedAt: transactionIds.length > 0 ? null : change.now.toISOString(),
-  }
-  const target = { tableId: TABLES.receiptFiles, rowId: fileId }
-  return row
-    ? { action: 'update', ...target, data }
-    : // Server only: no permissions (permissions.md).
-      { action: 'create', ...target, data: { ...data, deletingAt: null }, permissions: [] }
-}
-
-function sameRow(a: ReceiptFiles | undefined, b: ReceiptFiles | undefined): boolean {
-  const columns = (row: ReceiptFiles | undefined) =>
-    row && JSON.stringify([row.transactionIds ?? [], row.detachedAt, row.deletingAt])
-  return columns(a) === columns(b)
 }
 
 // One answer for every failure, so the reply never shows whether a file ID exists.

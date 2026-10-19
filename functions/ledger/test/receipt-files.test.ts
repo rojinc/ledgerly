@@ -165,6 +165,19 @@ describe('the receiptFiles rows', () => {
     expect(receiptFiles(db)).toEqual({ f1: listed('t1') })
   })
 
+  it('lists a transaction once when its row already names it', async () => {
+    const db = await withExpense([])
+    // As a revert and the backfill might leave it: the row lists t1, and t1 doesn't list f1.
+    await commitNow(db, {
+      action: 'create',
+      rowId: 'f1',
+      data: listed('t1'),
+      permissions: [],
+    })
+    expect((await setReceipts(db, ['f1'])).body.error).toBeUndefined()
+    expect(receiptFiles(db)).toEqual({ f1: listed('t1') })
+  })
+
   it('makes a detached row for a file taken off that has none (attached before #163)', async () => {
     const db = await withExpense(['f1'])
     // As for a file attached before the ledger kept these rows.

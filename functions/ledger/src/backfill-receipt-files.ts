@@ -1,7 +1,9 @@
-import type { ReceiptFiles, Transactions } from '@ledgerly/core/generated/rows'
+import type { Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { receiptRows, writeReceiptRows } from '@ledgerly/server/ledger/receipt-files'
+import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 
 export type BackfillCounts = {
@@ -16,8 +18,8 @@ export type BackfillCounts = {
 export type ReceiptsListing = (after: string | undefined) => Promise<string[]>
 
 const PAGE = 100
-// data-model.md#migrations: scheduler step 5 waits for this row.
-export const BACKFILL_MARKER = 'receipt-files-backfill'
+// data-model.md#checkpoints: scheduler step 5 waits for this row, then keeps it.
+export const CHECKPOINT = 'receipt-clean-up'
 // Times a file's row is read and written again after another write changed it meanwhile.
 const TRIES = 3
 
@@ -26,7 +28,8 @@ const TRIES = 3
  * scripts/backfill-receipt-files.mjs, once in each environment before scheduler step 5 ships:
  * - adds every transaction that lists a file to the file's row;
  * - gives every other file with no row a row taken off `now`, so step 5 deletes it a day later;
- * - last, writes the `migrations` row that lets step 5 start.
+ * - last, makes the `checkpoints` row that lets step 5 start, `through` = `now`: every file
+ *   created by then is in the bucket's listing.
  *
  * Safe to run again, and while the ledger runs: a row that changes meanwhile is read again. A
  * file taken off a transaction during the run can stay listed, which only keeps it. `deleting`
@@ -60,7 +63,7 @@ export async function backfillReceiptFiles(
     after = rows.at(-1)?.$id
   }
   const counts: BackfillCounts = { updated: 0, unchanged: 0, deleting: 0, swept: 0 }
-  for (const [fileId, ids] of listed) counts[await addListing(db, fileId, [...ids])] += 1
+  for (const [fileId, ids] of listed) counts[await addListing(db, fileId, [...ids], now)] += 1
   for (let after: string | undefined; ; ) {
     const page = await files(after)
     for (const fileId of page) {
@@ -72,9 +75,10 @@ export async function backfillReceiptFiles(
   await withTransaction(db, (tx) =>
     tx.write({
       action: 'upsert',
-      tableId: TABLES.migrations,
-      rowId: BACKFILL_MARKER,
-      data: { doneAt: now.toISOString() },
+      tableId: TABLES.checkpoints,
+      rowId: CHECKPOINT,
+      data: { through: now.toISOString() },
+      // Server only (permissions.md).
       permissions: [],
     }),
   )
@@ -83,7 +87,7 @@ export async function backfillReceiptFiles(
 
 /** A row taken off `now` for a file with none, so step 5 deletes it. False if it has one. */
 async function sweep(db: Db, fileId: string, now: Date): Promise<boolean> {
-  if (await rowOf(db, fileId)) return false
+  if ((await receiptRows(db, [fileId])).has(fileId)) return false
   try {
     await withTransaction(db, (tx) =>
       tx.write({
@@ -106,52 +110,26 @@ async function addListing(
   db: Db,
   fileId: string,
   transactionIds: string[],
+  now: Date,
 ): Promise<keyof BackfillCounts> {
   for (let tries = 1; ; tries++) {
-    const row = await rowOf(db, fileId)
+    const rows = await receiptRows(db, [fileId])
+    const row = rows.get(fileId)
     if (row?.deletingAt) return 'deleting'
     const stored = row?.transactionIds ?? []
     const missing = transactionIds.filter((id) => !stored.includes(id))
     if (row && missing.length === 0 && row.detachedAt === null) return 'unchanged'
-    const data = { transactionIds: [...stored, ...missing], detachedAt: null }
     try {
-      await withTransaction(db, async (tx) => {
-        const target = { tableId: TABLES.receiptFiles, rowId: fileId }
-        await tx.write(
-          row
-            ? { action: 'update', ...target, data }
-            : // Server only (permissions.md).
-              { action: 'create', ...target, data: { ...data, deletingAt: null }, permissions: [] },
-        )
-        // Staged first, then checked as committed (ledger.md#concurrency).
-        if (columns(await rowOf(db, fileId)) !== columns(row)) throw new Changed()
-      })
+      // Staged, then read again as committed: never an upsert (data-model.md#receiptfiles).
+      await withTransaction(db, (tx) =>
+        writeReceiptRows(db, tx, rows, [{ fileId, add: missing }], now),
+      )
       return 'updated'
     } catch (error) {
       const raced =
-        error instanceof Changed ||
+        error instanceof Raced ||
         (error instanceof AppwriteException && (error.code === 409 || error.code === 404))
       if (!raced || tries === TRIES) throw error
     }
   }
-}
-
-async function rowOf(db: Db, fileId: string): Promise<ReceiptFiles | undefined> {
-  try {
-    return await db.getRow<ReceiptFiles>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.receiptFiles,
-      rowId: fileId,
-    })
-  } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404) return undefined
-    throw error
-  }
-}
-
-const columns = (row: ReceiptFiles | undefined) =>
-  row && JSON.stringify([row.transactionIds ?? [], row.detachedAt, row.deletingAt])
-
-class Changed extends Error {
-  override name = 'Changed'
 }
