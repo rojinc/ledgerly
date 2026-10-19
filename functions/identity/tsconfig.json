@@ -1,7 +1,7 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    // ES2023 like core, whose money/format.ts the reminder email imports.
+    // ES2023 like core, whose money/format.ts the email templates import.
     "lib": ["ES2023"],
     "types": ["node"]
   },

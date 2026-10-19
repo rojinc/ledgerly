@@ -378,7 +378,11 @@ describe('HousePage', () => {
       // 22:00 UTC on the 18th is the 19th in Sydney.
       expect(input('Moved in').value).toBe('2026-10-19')
       type('Name', ' Lee ')
+      expect(screen.getByText(/can’t be linked to this house if they sign up later/)).toBeTruthy()
       type('Email (optional)', 'lee@example.com')
+      expect(
+        screen.getByText('Once they join with this email, they’ll see the house.'),
+      ).toBeTruthy()
       fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'admin' } })
       click('Add housemate')
       expect(await screen.findByText('Added Lee.')).toBeTruthy()
