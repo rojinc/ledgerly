@@ -6,6 +6,7 @@ import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { postInTransaction } from '@ledgerly/server/ledger/post'
 import {
   findTransaction,
@@ -14,7 +15,7 @@ import {
   loadGroupLedger,
   Raced,
 } from '@ledgerly/server/ledger/transactions'
-import { AppwriteException, Query } from 'node-appwrite'
+import { Query } from 'node-appwrite'
 import { madeLate } from '../occurrences'
 import { findSchedule } from '../schedule-rows'
 import type { Services } from '../services'
@@ -42,7 +43,7 @@ export async function autoPost(services: Services): Promise<PostCounts> {
     // Never posted, so not read every hour; post() checks it again.
     Query.isNull('remindedAt'),
   ])
-  for await (const { $id } of occurrences) {
+  for await (const { $id, groupId } of occurrences) {
     try {
       if (await post(services, $id)) counts.posted += 1
     } catch (error) {
@@ -50,7 +51,7 @@ export async function autoPost(services: Services): Promise<PostCounts> {
         counts.skipped += 1
       } else {
         counts.failed += 1
-        console.error(`scheduler: auto-post failed for transaction ${$id}: ${describe(error)}`)
+        logProblem('auto_post_failed', { groupId, transactionId: $id, error })
       }
     }
   }
@@ -140,12 +141,4 @@ function isDue(row: Transactions, group: Groups, now: Date): boolean {
   if (row.status !== 'scheduled') return false
   const day = compareDates(row.date as LocalDate, localToday(group.timezone, now))
   return row.kind === 'shift' ? day < 0 : day <= 0
-}
-
-// An error's name and code, never its message, which can quote stored text
-// (security-and-privacy.md).
-export function describe(error: unknown): string {
-  if (error instanceof AppError) return `AppError ${error.code}`
-  if (error instanceof AppwriteException) return `AppwriteException ${error.code} ${error.type}`
-  return error instanceof Error ? error.name : typeof error
 }

@@ -15,6 +15,7 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
+import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { guardGroup, Raced } from '@ledgerly/server/ledger/transactions'
 import {
@@ -243,7 +244,10 @@ function namedIn(schedule: Schedules): string[] {
   try {
     return everyPersonId(JSON.parse(schedule.templateJson) as TransactionTemplate)
   } catch {
-    console.error(`account: schedule ${schedule.$id} has a template that can't be read`)
+    logProblem('schedule_template_unreadable', {
+      groupId: schedule.groupId,
+      scheduleId: schedule.$id,
+    })
     return []
   }
 }
@@ -273,7 +277,7 @@ async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
 async function archive({ db, now }: Services, personId: string, group: Groups): Promise<void> {
   const finalizing = await finalizingStatement(db, group.$id)
   if (finalizing && isStuck(finalizing, now)) {
-    console.error(`account: group ${group.$id} not archived: statement ${finalizing.$id} is stuck`)
+    logProblem('stuck_finalize_not_archived', { groupId: group.$id, statementId: finalizing.$id })
     return
   }
   await withTransaction(db, async (tx) => {

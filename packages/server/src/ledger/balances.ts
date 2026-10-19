@@ -8,6 +8,7 @@ import type { Db } from '../appwrite/client'
 import { DATABASE_ID, TABLES } from '../appwrite/tables'
 import type { Write } from '../appwrite/transaction'
 import { AppError } from '../http/app-error'
+import { logProblem } from '../http/log'
 import { listAll } from './transactions'
 
 const READS = 3
@@ -55,7 +56,7 @@ export async function balanceWrite(
   if (people === undefined) return []
   const next = people && fitted(people, before, after)
   if (!next) {
-    console.error(`balances: the row of group ${groupId} doesn't fit its shares; deleted`)
+    logProblem('balances_row_deleted', { groupId })
     return [{ action: 'delete', tableId: TABLES.balances, rowId: groupId }]
   }
   const peopleJson = JSON.stringify(next)
