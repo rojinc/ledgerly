@@ -177,6 +177,33 @@ export function timerRunningEmail(input: {
   )
 }
 
+/**
+ * To the account's verified email when its password is set or changed
+ * (identity-and-invites.md#password-notice). `changedAt` is the user's `passwordUpdate`, shown on
+ * the wall clock in `timeZone`. No password, token or link that signs anyone in: `url` is the
+ * app's sign-in page.
+ */
+export function passwordChangedEmail(input: {
+  changedAt: string
+  timeZone: string
+  url: string
+}): EmailContent {
+  const changed = new Date(input.changedAt)
+  if (!INSTANT.test(input.changedAt) || Number.isNaN(changed.getTime())) {
+    throw new RangeError('changedAt must be an ISO date and time, e.g. 2026-10-15T21:02:00.000Z')
+  }
+  const when = `${dayLabel(localToday(input.timeZone, changed))}, ${clockTime(changed, input.timeZone)}`
+  return message(
+    'Your Ledgerly password was changed',
+    [
+      `The password for your Ledgerly account was set or changed on ${when} (${input.timeZone} time).`,
+      "If this was you, there's nothing to do.",
+      "If this wasn't you, reset your password now.",
+    ],
+    [{ label: 'Go to Ledgerly', url: input.url }],
+  )
+}
+
 /** What one group owes the person (positive) or they owe it (negative), in its currency. */
 export type SummaryBalance = { groupName: string; currency: string; cents: number }
 

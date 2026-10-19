@@ -40,7 +40,7 @@
     "commands": "",
     "ignore": ["*", "!dist/", "!dist/**", "!package.json"],
     "execute": ["users"],
-    "events": [],
+    "events": ["users.*.update.password"],
     "schedule": "",
     "timeout": 15,
     "enabled": true,

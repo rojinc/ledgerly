@@ -26,6 +26,7 @@ export function account(overrides: Partial<AccountUser> = {}): AccountUser {
     emailVerification: true,
     phone: '',
     phoneVerification: false,
+    passwordUpdate: '',
     ...overrides,
   }
 }
@@ -39,7 +40,9 @@ export function fakes(
     db: new FakeDb(seed),
     teams: new FakeTeams(options.teams),
     users: { get: async () => user },
+    sendEmail: vi.fn(async () => ({ id: 'email-1' })),
     now: NOW,
+    appUrl: 'https://app.example/',
     account: user,
   }
 }
@@ -55,6 +58,7 @@ export async function call(
   path: string,
   body?: unknown,
   userId: string | null = 'u1',
+  headers: Record<string, string> = {},
 ): Promise<{ status: number; body: Envelope; logs: string[] }> {
   const handler = createHandler(
     identityRoutes(() => services),
@@ -67,7 +71,10 @@ export async function call(
     req: {
       method,
       path,
-      headers: userId === null ? {} : { 'x-appwrite-user-jwt': `jwt-${userId}` },
+      headers: {
+        ...(userId === null ? {} : { 'x-appwrite-user-jwt': `jwt-${userId}` }),
+        ...headers,
+      },
       bodyText: body === undefined ? '' : JSON.stringify(body),
     },
     res: {
