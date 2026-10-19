@@ -22,7 +22,7 @@ The biggest single writes, with 15 people and 30 items:
 | `POST /transactions` | **64:** the group guard 1, member guards 15, the transaction 1, shares 15, items 30, the activity row 1, the `balances` row 1 |
 | `PATCH /transactions/{id}` | **65:** the same, plus staging the transaction row before reading it ([concurrency](ledger.md#concurrency)) |
 
-Both stay under the 90 that batch jobs use. A change that adds writes to these routes updates this table.
+The planned `receiptFiles` rows (#163), one for each receipt a write adds or removes, add at most 10 to a create (**74**) and 20 to a `PATCH` that swaps 10 receipts for 10 others (**85**). All of these stay under the 90 that batch jobs use. A change that adds writes to these routes updates this table.
 
 ### The balances cache
 
