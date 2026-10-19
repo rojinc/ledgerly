@@ -58,7 +58,10 @@ async function runMerge(
   // Templates first, so an expansion from now on names U.
   const templates = await moveTemplates(db, merge, groupIds, deadline)
   const inputs = await moveInputs(db, merge, groupIds, now, deadline)
-  const shares = await moveShares(db, fromId, intoId, members.kept, deadline)
+  // Not in a group whose inputs were put off: the Q2 rule needs P's share there to tell which
+  // rows were P's, and a finalize that ends meanwhile would let the shares go first.
+  const notYet = new Set([...members.kept, ...inputs.putOff])
+  const shares = await moveShares(db, fromId, intoId, notYet, deadline)
   const reminders = await moveReminders(db, fromId, intoId, members.kept, deadline)
   const counts = `${members.joined.length} groups joined, ${templates.rewritten + inputs.rewritten} inputs, ${inputs.voided} voided, ${shares.moved} shares, ${reminders.moved} reminders, ${templates.skipped + inputs.skipped} left as they are`
   if (

@@ -403,6 +403,68 @@ describe('POST /claim, merging a placeholder', () => {
     expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
   })
 
+  it('moves no share in a group whose inputs it put off, even once the finalize ends', async () => {
+    // In g2, Alex is in too, and Sam paid 90 split the default way: Sam, Sammy and Alex, 30 each.
+    // After the merge, the default would give Sam and Alex 45 each, so the split must be written
+    // out (Sam counting twice), and only Sammy's share shows that the row was theirs.
+    const services = house({
+      members: [
+        placeholderRow('m6', 'g2', 'pX', BEFORE, { status: 'active', displayName: 'Alex' }),
+      ],
+      transactions: [
+        transaction('t5', 'g2', { payers: [{ personId: 'pSam', cents: 9000 }] }, 9000),
+      ],
+      shares: [
+        share('s5', 't5', 'g2', 'pSam', 9000, 3000),
+        share('s6', 't5', 'g2', 'pP', 0, 3000),
+        share('s7', 't5', 'g2', 'pX', 0, 3000),
+      ],
+      statements: [{ $id: 'st2', groupId: 'g2', status: 'finalizing', periodStart: '2026-10-01' }],
+    })
+    expect(nets(services, 'g2')).toEqual({ pSam: 9000, pP: -6000, pX: -3000 })
+    // The finalize ends after the inputs put g2 off, just as the shares are looked for.
+    const list = services.db.listRows.bind(services.db)
+    let ended = false
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const queries = (params.queries ?? []).join()
+      const byPerson =
+        params.tableId === 'shares' &&
+        queries.includes('"attribute":"personId"') &&
+        !/"method":"equal","attribute":"(groupId|transactionId)"/.test(queries)
+      if (byPerson && !ended) {
+        ended = true
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'statements',
+            rowId: 'st2',
+            data: { status: 'final' },
+          }),
+        )
+      }
+      return list(params)
+    })
+    await claim(services)
+    expect(ended).toBe(true)
+    // g2's shares wait with its inputs: Sammy's is still there for the next claim to see.
+    expect(services.db.rows('shares').find((row) => row.$id === 's6')?.personId).toBe('pP')
+    await claim(services)
+    expect(namingSammy(services).shares).toEqual([])
+    expect(
+      JSON.parse(
+        services.db.rows('transactions').find((row) => row.$id === 't5')?.inputJson as string,
+      ).split,
+    ).toEqual({
+      mode: 'weights',
+      weights: [
+        { personId: 'pSam', weight: 2 },
+        { personId: 'pX', weight: 1 },
+      ],
+    })
+    // Sammy's part is Sam's now, and Alex's is the same.
+    expect(nets(services, 'g2')).toEqual({ pSam: 3000, pX: -3000 })
+  })
+
   it('keeps the merge open while only an unposted input waits on a finalizing group', async () => {
     // g3 has nothing of Sammy's but a scheduled bill naming them, so no share waits there.
     const services = house({
