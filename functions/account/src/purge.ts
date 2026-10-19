@@ -34,14 +34,14 @@ const IDS_PER_QUERY = 100
 
 /**
  * The purge of a group nobody else is in (identity-and-invites.md#each-group-they-joined), once
- * its `archivedAt` is set and its team is gone: its files, then its rows, then each other member
- * row with its placeholder, then the group row with their own member row, which ends it. Each
- * step reads what's left, so a rerun carries on from wherever the last one stopped; lists are
- * paged by $id (pages.ts), since their rows go meanwhile. False when the time budget is used up
- * first.
+ * its `archivedAt` is set and its team is gone: its statements' PDFs, then its rows, each
+ * transaction's receipts just before the batch that deletes it, then each other member row with
+ * its placeholder, then the group row with their own member row, which ends it. Each step reads
+ * what's left, so a rerun carries on from wherever the last one stopped; lists are paged by $id
+ * (pages.ts), since their rows go meanwhile. False when the time budget is used up first.
  */
 export async function purge(services: Services, own: Members): Promise<boolean> {
-  if (!(await deleteFiles(services, own.groupId))) return false
+  if (!(await deletePdfs(services, own.groupId))) return false
   if (!(await deleteRows(services, own.groupId))) return false
   if (!(await deleteMembers(services, own))) return false
   const { db } = services
@@ -61,67 +61,94 @@ export async function purge(services: Services, own: Members): Promise<boolean> 
   return true
 }
 
-// The receipts only its transactions list and its statements' PDFs, before the rows that name
-// them. Only a file readable by exactly the group's team goes. A receipt also needs a
-// `receiptFiles` row that lists no transaction outside the group, so one shared with another
-// group's transaction stays, and so does one with no row: it was attached before the ledger kept
-// them, and may be listed elsewhere (data-model.md#receiptfiles).
-async function deleteFiles(services: Services, groupId: string): Promise<boolean> {
-  const { db, files } = services
-  const transactionIds = new Set<string>()
-  const fileIds = new Set<string>()
-  // idx_group_date
-  for await (const row of pages<Transactions>(services, TABLES.transactions, [
+// Its statements' PDFs, before the rows that name them; a group has one statement a period at
+// most, so every run looks at them all. Only a file readable by exactly the group's team goes.
+async function deletePdfs(services: Services, groupId: string): Promise<boolean> {
+  // idx_group_period
+  for await (const row of pages<Statements>(services, TABLES.statements, [
     Query.equal('groupId', groupId),
   ])) {
-    transactionIds.add(row.$id)
-    for (const fileId of row.receiptFileIds ?? []) fileIds.add(fileId)
-  }
-  // Only to stop on time: with some transactions not read, a row that names one of them counts
-  // as listed elsewhere, so fewer files would go, never more.
-  if (services.outOfTime()) return false
-  const listed = [...fileIds]
-  for (let start = 0; start < listed.length; start += IDS_PER_QUERY) {
-    const chunk = listed.slice(start, start + IDS_PER_QUERY)
-    const rows = await receiptRows(db, chunk)
-    for (const fileId of chunk) {
-      // Each file takes up to two Storage calls. No row has been touched yet, so a rerun is safe.
-      if (services.outOfTime()) return false
-      const row = rows.get(fileId)
-      if (row && (row.transactionIds ?? []).every((id) => transactionIds.has(id))) {
-        await deleteFile(files, RECEIPTS_BUCKET, fileId, groupId)
-      }
-    }
-  }
-  // idx_group_period
-  const statements = pages<Statements>(services, TABLES.statements, [
-    Query.equal('groupId', groupId),
-  ])
-  for await (const row of statements) {
     // Finalize uploads the PDF under the statement's ID before it sets `pdfFileId`, so a
     // finalize stuck in between leaves one there.
-    await deleteFile(files, STATEMENTS_BUCKET, row.pdfFileId ?? row.$id, groupId)
+    await deleteFile(services.files, STATEMENTS_BUCKET, row.pdfFileId ?? row.$id, groupId)
   }
   return !services.outOfTime()
 }
 
-// A file that's already gone counts as done; a missing bucket doesn't.
-async function deleteFile(files: FilesApi, bucketId: string, fileId: string, groupId: string) {
+// The receipts of a transaction about to go, just before the batch that deletes it, so a run
+// that stops keeps what it has done. A crash in between leaves the row naming a gone file, which
+// the next run counts as done. A file goes only when it's readable by exactly the group's team
+// and its `receiptFiles` row lists this transaction and none outside the group
+// (data-model.md#receiptfiles): one shared with another group's transaction stays, and so does
+// one with no row, attached before the ledger kept them, which may be listed elsewhere. `handled`
+// holds the files this run has decided on. False when the time budget is used up before a file:
+// the transaction is left for the next run. Once one of its files is gone, the rest go too, so
+// the batch that deletes it follows in this run and the next run never looks for that file again.
+async function deleteReceipts(
+  services: Services,
+  groupId: string,
+  row: Transactions,
+  handled: Set<string>,
+): Promise<boolean> {
+  const fileIds = (row.receiptFileIds ?? []).filter((fileId) => !handled.has(fileId))
+  if (fileIds.length === 0) return true
+  const { db, files } = services
+  const listings = await receiptRows(db, fileIds)
+  const listedIds = [...listings.values()].flatMap((listing) => listing.transactionIds ?? [])
+  const ofGroup = await groupTransactions(db, groupId, row.$id, listedIds)
+  let deleted = false
+  for (const fileId of fileIds) {
+    if (!deleted && services.outOfTime()) return false
+    const listed = listings.get(fileId)?.transactionIds ?? []
+    if (listed.includes(row.$id) && listed.every((id) => ofGroup.has(id))) {
+      if (await deleteFile(files, RECEIPTS_BUCKET, fileId, groupId)) deleted = true
+    }
+    handled.add(fileId)
+  }
+  return true
+}
+
+// Which of these transactions are the group's: `known`, and those of the others read by ID.
+async function groupTransactions(
+  db: Db,
+  groupId: string,
+  known: string,
+  transactionIds: string[],
+): Promise<Set<string>> {
+  const found = new Set([known])
+  const others = [...new Set(transactionIds)].filter((id) => id !== known)
+  for (let start = 0; start < others.length; start += IDS_PER_QUERY) {
+    const rows = await allRows<Transactions>(db, TABLES.transactions, [
+      Query.equal('$id', others.slice(start, start + IDS_PER_QUERY)),
+    ])
+    for (const row of rows) if (row.groupId === groupId) found.add(row.$id)
+  }
+  return found
+}
+
+// True when it deleted the file: one readable by exactly the group's team. A file that's already
+// gone counts as done; a missing bucket doesn't.
+async function deleteFile(
+  files: FilesApi,
+  bucketId: string,
+  fileId: string,
+  groupId: string,
+): Promise<boolean> {
   try {
     const [only, ...more] = (await files.getFile({ bucketId, fileId })).$permissions
-    if (only === Permission.read(Role.team(groupId)) && more.length === 0) {
-      await files.deleteFile({ bucketId, fileId })
-    }
+    if (only !== Permission.read(Role.team(groupId)) || more.length > 0) return false
+    await files.deleteFile({ bucketId, fileId })
+    return true
   } catch (error) {
-    if (!(error instanceof AppwriteException && error.type === 'storage_file_not_found')) {
-      throw error
-    }
+    if (error instanceof AppwriteException && error.type === 'storage_file_not_found') return false
+    throw error
   }
 }
 
 // Every row of the group but its member rows and the group row, with the invites to its member
 // rows, in transactions of at most 90 writes: each transaction with its shares and items, and its
-// receipts taken off, never split, and the balances row with the first, so the cache never
+// receipts taken off (their files deleted just before, deleteReceipts), never split, and the
+// balances row with the first, so the cache never
 // disagrees with the shares. Each batch also gives the group row a fresh `rev`, as every other
 // writer of shares does (ledger.md#concurrency), so a nightly check reading the group meanwhile
 // sees it change, and its repair fails rather than build the balances row again. The `receiptFiles`
@@ -161,8 +188,14 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
     await add([remove(TABLES.balances, groupId)])
   }
   const ofGroup = [Query.equal('groupId', groupId)]
+  const handled = new Set<string>()
   // idx_group_date, then idx_transactionId and idx_transaction_position
   for await (const row of pages<Transactions>(services, TABLES.transactions, ofGroup)) {
+    if (!(await deleteReceipts(services, groupId, row, handled))) {
+      // Out of time: the batches whose files are gone still go.
+      await flush()
+      return false
+    }
     const ofRow = [Query.equal('transactionId', row.$id)]
     const shares = await allRows<Shares>(db, TABLES.shares, ofRow)
     const items = await allRows<Items>(db, TABLES.items, ofRow)
