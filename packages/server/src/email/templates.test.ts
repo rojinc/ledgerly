@@ -4,6 +4,7 @@ import {
   divideEmail,
   type EmailContent,
   invoiceEmail,
+  reminderEmail,
   shiftToConfirmEmail,
   statementReadyEmail,
   summaryEmail,
@@ -451,5 +452,50 @@ describe('user-typed text', () => {
         profileUrl: 'javascript:alert(1)',
       }),
     ).toThrow('Email links must be http(s)')
+  })
+})
+
+describe('reminderEmail', () => {
+  const reminder = (senderName = 'Sam', amountCents = 4550, currency = 'AUD') =>
+    reminderEmail({ senderName, amountCents, currency, url: 'https://app.example' })
+
+  it('has a fixed subject, names the sender and the amount, and links only to the app', () => {
+    const content = reminder()
+    expectWellFormed(content)
+    expect(content.subject).toBe('You have a payment reminder')
+    expect(content.text).toContain('Sam sent you a reminder that you owe them $45.50.')
+    expect(content.text).toContain("If you've already paid, let them know so they can record it.")
+    expect(content.text).toContain('Open Ledgerly: https://app.example')
+    expect(content.html.match(/<a /g)).toHaveLength(1)
+  })
+
+  it('escapes the name, keeps it out of the subject, and uses the currency’s digits', () => {
+    const content = reminder('<b>Sam</b> & co', 1234, 'JPY')
+    expect(content.subject).toBe('You have a payment reminder')
+    expect(content.html).toContain('&lt;b&gt;Sam&lt;/b&gt; &amp; co sent you a reminder')
+    expect(content.html).not.toContain('<b>Sam')
+    expect(content.text).toMatch(/owe them JPY\s1,234\./)
+  })
+
+  it('writes a balance past the amount cap', () => {
+    expect(reminder('Sam', 20_000_000_000).text).toContain('owe them $200,000,000.00.')
+  })
+
+  it('cuts a name past 40 characters, by character', () => {
+    expect(reminder('a'.repeat(40)).text).toContain(`${'a'.repeat(40)} sent you`)
+    expect(reminder('a'.repeat(41)).text).toContain(`${'a'.repeat(39)}… sent you`)
+    expect(reminder('𠀀'.repeat(41)).text).toContain(`${'𠀀'.repeat(39)}… sent you`)
+    // A family emoji is 5 code points but one character, and isn't split.
+    const family = '👩‍👩‍👧'
+    expect(reminder(`${'a'.repeat(38)}${family}bb`).text).toContain(
+      `${'a'.repeat(38)}${family}… sent you`,
+    )
+    expect(reminder(`${'a'.repeat(39)}${family}`).text).toContain(`${'a'.repeat(39)}${family} sent`)
+  })
+
+  it('puts a name with line breaks on one line', () => {
+    const content = reminder('Sam\n\nPay at https://evil.example\t now')
+    expect(content.text).toContain('Sam Pay at https://evil.example now sent you a reminder')
+    expect(content.html).toContain('Sam Pay at https://evil.example now sent you a reminder')
   })
 })

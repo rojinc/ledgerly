@@ -64,7 +64,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up (step 5, [#163](https://github.com/rojinc/ledgerly/issues/163)), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
+Appwrite runs the function every 60 minutes (`interval: 60`, at a minute it picks; [the plan allows no cron](../engineering/environments-and-deploys.md#function-settings)), **asynchronously** and with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up ([step 5](#step-5-receipt-clean-up), which has its own time limit), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -97,7 +97,7 @@ Occurrences are written in batches of at most 90 operations per database transac
 - it guards the group row and the member row of everyone the template names;
 - after staging, it checks the rows it updates or deletes are still changeable and have no item it didn't read.
 
-An edit, another run, a member removed or an occurrence changed meanwhile makes it run again with things as they are now. A cron run starts no new batch once its 12 minutes are up; the next run carries on from the progress saved. A schedule that still can't be expanded (a template a member change made invalid, say) keeps its `nextRunAt`, is counted as failed in the run's result, and is tried again next run. Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
+An edit, another run, a member removed or an occurrence changed meanwhile makes it run again with things as they are now. A scheduled run starts no new batch once its 12 minutes are up; the next run carries on from the progress saved. A schedule that still can't be expanded (a template a member change made invalid, say) keeps its `nextRunAt`, is counted as failed in the run's result, and is tried again next run. Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
 
 ### Step 2: auto-post
 
@@ -130,7 +130,7 @@ Each reminder goes out once. In one database transaction, `remindedAt` is staged
 
 ### Step 4: summary emails
 
-Profiles where `nextSummaryAt <= now` get the summary of the period that just ended ([ledger reports](ledger.md#reports)). `nextSummaryAt` moves forward in the same database transaction that sends the email, as reminders do, so a summary goes out at most once. Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local:
+Profiles where `nextSummaryAt <= now` get the summary of the period that just ended ([ledger reports](ledger.md#reports)). `nextSummaryAt` moves forward in the same database transaction that sends the email, as reminders do, so a summary goes out at most once. Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local, sent by the first run at or after it:
 
 | Frequency | Sent | Covers |
 | --- | --- | --- |
@@ -152,6 +152,34 @@ For each profile, in this order:
 3. **Send, then commit**, with Resend's idempotency key `summary-<userId>-<periodEnd>`. A failed send rolls the move back, so the next run tries again with the same key, which Resend delivers once within 24 hours; an email Resend will never take (a bad address) moves on and counts as failed. A profile that changes after the email went out fails the commit and still counts as sent.
 
 The email links to `<APP_URL>/`, and to `<APP_URL>/profile`, where summaries can be turned off. The run's result counts summaries `sent`, `skipped` (nothing to send) and `failed`.
+
+### Step 5: receipt clean-up
+
+Deletes the files in the `receipts` bucket that no transaction lists, using the [`receiptFiles`](data-model.md#receiptfiles) rows ([permissions](permissions.md#storage)). Its Storage calls always name the `receipts` bucket, so the scheduler's `files.*` scopes never reach `statements` from here. `now` is when the run started.
+
+**The checkpoint.** The step first reads the [`checkpoints`](data-model.md#checkpoints) row `receipt-clean-up`, once per run. Its `through` is the time up to which every upload has been dealt with. Until the [backfill](data-model.md#receiptfiles) has made that row, or when the read fails for any reason, the step does nothing.
+
+**Time.** The step stops 4 minutes after it starts, or at the run's limit if that comes first, so step 6 always gets the rest of the budget. Pass 1 stops after 2 of those minutes, and pass 2 has what's left. There's no count limit. A pass that stops with work left logs `receipt_cleanup_behind` with the step's counts.
+
+1. **Never attached:** files with `$createdAt` after `through` and at or before `now − 24 h`, oldest first (`$createdAt`, then `$id`), with their `receiptFiles` rows read a page at a time. `listFiles` pages with `Query.cursorAfter`, and a deleted file can't be a cursor. So the cursor is the last file on the page that this pass didn't delete; when it deleted the whole page, the next query keeps the cursor it had (the top of the window on the first page): every file before it is done, and the deleted ones are gone by then, so no kept file is listed twice. A query that fails ends the pass for this run. A file that has a row is left to pass 2. For each file with no row:
+   1. One database transaction creates the row with `detachedAt` set to the file's `$createdAt` and `deletingAt = now`. If the row exists by then (409), the ledger attached the file first, and it's skipped.
+   2. Delete the file (below).
+
+   Then the pass moves `through` forward, never back within a run: to `now − 24 h` if it reached the end and made every row it needed; otherwise to 1 ms before the oldest file it didn't finish (one it didn't reach, whose row it couldn't make, or that the ledger attached as it went, so the next run sees its row). While `through` is later than `now − 24 h`, as in the first day after the backfill, the window is empty and it stays. Files go oldest first, so later uploads can't hold an earlier one back, and a file a run doesn't reach waits for the next run instead of being dropped. Overlapping runs can move `through` back, which only means looking at some files again.
+2. **Taken off every transaction, and leftovers:** rows with `detachedAt <= now − 24 h` (`idx_detachedAt`), paged by `$id`. For each row:
+   1. If `deletingAt` is empty, one database transaction stages `deletingAt = now`, then checks that the stored row still lists no transaction and has the same `detachedAt`. If not, it rolls back and skips the row: the file was attached again.
+   2. Delete the file (below).
+   3. Delete the row once its `deletingAt` is at least an hour old, which is usually on a later run, and always after the file. One that's already gone counts as done.
+
+   A run that stops between these steps leaves `deletingAt` and `detachedAt` set, so a later run finishes the job.
+
+**Deleting a file.** Just before every `deleteFile`, the row as the step last read it must list no transaction. If it lists one, some writer has a bug: the step logs `receipt_row_listed` as an error, with IDs only, and skips the file. A file that's already gone counts as `skipped`, and its row is still deleted an hour after its `deletingAt`.
+
+**Races with an attach:**
+- an attach that commits first makes the step's check or commit fail, and the file stays;
+- an attach that commits later finds `deletingAt` and is refused, even one that read the rows before the step made or marked the row, because it reads them again after staging. The row is kept until its `deletingAt` is at least an hour old, which is far longer than any ledger request (15 s timeout), so no attach can miss both the row and the missing file.
+
+Anything that fails for one file or row is counted and left for the next run, and the step carries on. A Storage error is never taken for a database conflict. The run returns `receipts: { deleted, skipped, failed }` and logs nothing per file, apart from `receipt_row_listed`.
 
 ### Step 6: nightly check
 
@@ -187,15 +215,15 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | --- | --- |
 | `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. `startsOn` is at most 31 days before local today (`VALIDATION_FAILED`, "The start date can be at most 31 days ago."): the past occurrences are made at once and wait for the user (step 2 never posts them), so a mistyped year can't make years of them. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
 | `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` set to yesterday (it stays empty for a schedule that never expanded, which starts from `startsOn` like a new one), then expand again from local today, never filling in past dates, even when reopening an ended schedule: changeable occurrences are updated in place, deleted when the new rule no longer has their date (before a later `startsOn`, say) or they are after its end, and created where missing. `created`, `updated` and `removed` count the ones created, updated in place and deleted. A changed `startsOn` has the same 31-day limit as on `POST`. The group and kind can't change (`VALIDATION_FAILED`) |
-| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended. It sets `nextRunAt` to now, and `generatedThrough` to no earlier than yesterday, so the next cron run deletes any it didn't get to (a timeout, say), or carries on up to a later `endsOn` than before, from today on |
-| `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items. One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
+| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended. It sets `nextRunAt` to now, and `generatedThrough` to no earlier than yesterday, so the next scheduled run deletes any it didn't get to (a timeout, say), or carries on up to a later `endsOn` than before, from today on |
+| `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items, taking their receipts off ([receiptFiles](data-model.md#receiptfiles)). One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
 
 Changes to occurrences themselves (edit, void, post) go through the `ledger` function. Editing an occurrence sets `overridden = true`.
 
 Creating or editing a schedule guards the group row and the member row of everyone its template names, like a ledger write ([ledger.md#concurrency](ledger.md#concurrency)). A template can't commit just after a member's removal was checked, and a removal can't commit just after the template. Every database transaction of these routes that writes occurrences or a schedule's rule guards the group row too, so none lands after an archive. Deleting occurrences stages the deletes, then checks the stored rows. An edit or an end keeps an occurrence edited, posted or voided meanwhile. A delete removes edited and voided ones anyway; one posted meanwhile stops it with `VALIDATION_FAILED`, and the schedule should be ended instead. Schedule templates can't have receipts ([functions-api.md](functions-api.md#scheduler)).
 
-Creating or editing a schedule sets its `nextRunAt` to now in the same transaction that saves it, so if the expansion stops partway (a timeout, or a race lost twice), the next cron run finishes it, with the occurrences from where it stopped brought in line with the new rule. Deleting occurrences also checks their items again after staging, so an item added meanwhile isn't left without its transaction.
+Creating or editing a schedule sets its `nextRunAt` to now in the same transaction that saves it, so if the expansion stops partway (a timeout, or a race lost twice), the next scheduled run finishes it, with the occurrences from where it stopped brought in line with the new rule. Deleting occurrences also checks their items again after staging, so an item added meanwhile isn't left without its transaction.
 
 ## Timer shifts
 

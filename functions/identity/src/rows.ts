@@ -1,7 +1,7 @@
 import type { Identities, Persons } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
-import type { Tx } from '@ledgerly/server/appwrite/transaction'
+import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, type Models, Query } from 'node-appwrite'
@@ -70,6 +70,29 @@ export async function guardPerson(
   })
   const stored = await getRowOrNull<Persons>(db, TABLES.persons, personId)
   if (!stored || stored.deletedAt) throw refusal()
+}
+
+/**
+ * The deletes of a placeholder's identities whose key isn't in `verified`, the claiming user's
+ * verified keys: a claim, by adoption or by merge, moves only those to the user
+ * (identity-and-invites.md#only-verified-keys-move).
+ */
+export async function typedKeyDeletes(
+  db: Db,
+  placeholderId: string,
+  verified: readonly string[],
+): Promise<Write[]> {
+  // One page: a placeholder has only the keys typed when it was added, one since #252 (an email
+  // and a phone before it).
+  const { rows } = await db.listRows<Identities>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.identities,
+    queries: [Query.equal('personId', placeholderId), Query.limit(100)],
+    total: false,
+  })
+  return rows
+    .filter((identity) => !verified.includes(identity.key))
+    .map((identity) => ({ action: 'delete', tableId: TABLES.identities, rowId: identity.$id }))
 }
 
 /** No account, not being merged, not a deleted account: a person a new user may adopt. */

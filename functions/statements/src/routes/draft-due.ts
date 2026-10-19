@@ -28,7 +28,7 @@ const BUDGET_MS = 180_000
 class AlreadyDrafted extends Error {}
 
 /**
- * The statements job (cron `15 * * * *`, statements.md#1-draft): drafts the statement of every
+ * The statements job (every 60 minutes, statements.md#1-draft): drafts the statement of every
  * employer and house group whose `nextCloseAt` has passed: an invoice or a divide. The due
  * groups are listed first, so a group that fails every time never keeps the others waiting.
  */
