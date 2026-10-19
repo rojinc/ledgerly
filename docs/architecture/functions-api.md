@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
@@ -242,7 +242,7 @@ Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP rou
 | `POST /statements/{id}/finalize` | `{ send: boolean }` | `statement` (call **async**) | admin |
 | `POST /statements/{id}/send` | none | `{ sentAt }` | admin; final only |
 | `POST /statements/{id}/void` | `{ reason }` | `statement` | admin; latest final only |
-| `POST /statements/{id}/discard` | none | `{}` | admin; drafts only |
+| `POST /statements/{id}/discard` | none (`emptyBodySchema`) | `{}` | admin; drafts only |
 | `POST /statements/reissue` | `{ groupId, periodStart, periodEnd }` | `statement` (draft) | admin |
 
 On the five `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
