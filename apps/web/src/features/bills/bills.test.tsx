@@ -60,10 +60,21 @@ function bill(id: string, extra: Partial<Transactions> = {}): Transactions {
   } as Transactions
 }
 
-/** listRows answers the due query with `due` and the paid one with `paid`. */
-function mockLists(due: Transactions[], paid: Transactions[] = []) {
-  listRows.mockImplementation((async ({ queries }: { queries: string[] }) => {
-    const rows = queries.includes(Query.equal('status', 'due')) ? due : paid
+/** listRows answers the due query with `due`, the paid one with `paid`, schedules with `recurring`. */
+function mockLists(due: Transactions[], paid: Transactions[] = [], recurring: object[] = []) {
+  listRows.mockImplementation((async ({
+    tableId,
+    queries,
+  }: {
+    tableId: string
+    queries: string[]
+  }) => {
+    const rows =
+      tableId === 'schedules'
+        ? recurring
+        : queries.includes(Query.equal('status', 'due'))
+          ? due
+          : paid
     return { total: rows.length, rows }
   }) as never)
 }
