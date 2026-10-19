@@ -235,8 +235,12 @@ Which transactions list each file in the `receipts` bucket, so the scheduler can
   - **taking a file off:** it drops the transaction ID, and sets `detachedAt` once none is left. A file with no row (attached before these rows existed) gets one, with no transaction listed.
 - **Void** keeps a transaction's `receiptFileIds`, so its files stay listed.
 - **Deleting a transaction row:** code that deletes one that lists receipts must take them off in the same database transaction, for example when deleting an account purges a group ([deleting an account](identity-and-invites.md#each-group-they-joined)). Today nothing deletes one: a non-`overridden` occurrence never has receipts.
-- **The scheduler** sets `deletingAt`, makes the row for a file that was never attached, and deletes the row at least an hour after the file. Until then the row refuses any attach of that ID, including one that read the rows before the scheduler made this one.
-- **Backfill:** `scripts/backfill-receipt-files.mjs` adds every transaction that lists a file to its row, making the row if needed and clearing `detachedAt`. It's for files attached before the ledger wrote these rows, and runs once in each environment before step 5 ships there.
+- **The scheduler** sets `deletingAt`, makes the row for a file that was never attached, deletes the file, and deletes the row once its `deletingAt` is at least an hour old. Until then the row refuses any attach of that ID, including one that read the rows before the scheduler made this one.
+- **Backfill:** `scripts/backfill-receipt-files.mjs` runs once in each environment, after the ledger writes these rows and before step 5 ships there. It's for files uploaded before then:
+  - it adds every transaction that lists a file to its row, making the row if needed and clearing `detachedAt`;
+  - it gives every other file in the bucket that has no row a row with `detachedAt = now`, so step 5 deletes it a day later. These are uploads that were never attached, which step 5's 72-hour window would miss, and files taken off before the rows existed.
+
+  Its key needs `rows.read`, `rows.write` and `files.read`.
 
 Indexes: `idx_detachedAt (detachedAt)`.
 Permissions: none (server only).
