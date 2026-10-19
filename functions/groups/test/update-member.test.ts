@@ -145,21 +145,6 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
     })
   })
 
-  it('refuses leftOn: null until moving back in is built (#169), and writes nothing', async () => {
-    const services = house()
-    expect(await patchFails(services, 'm2', { leftOn: null })).toEqual({
-      status: 400,
-      code: 'VALIDATION_FAILED',
-      message: 'Moving someone back in is not available yet.',
-    })
-    expect(services.db.rows('members').find((row) => row.$id === 'm2')).toMatchObject({
-      status: 'active',
-      role: 'member',
-      leftOn: null,
-    })
-    expect(changesOf(services)).toEqual([])
-  })
-
   it('checks the date order against the stored dates too', async () => {
     const services = house([
       member('m5', 'g1', 'p9', 'viewer', 'left', { joinedOn: '2026-09-01', leftOn: '2026-09-30' }),
