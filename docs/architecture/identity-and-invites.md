@@ -48,11 +48,12 @@ Every email or phone number goes through `normalizeEmail()` or `normalizePhone()
 
 Because of steps 2 and 4, the member row looks the same whether or not the person has an account, so neither the response nor the members list reveals it. That stops people using the form to find out who uses Ledgerly.
 
-Accepted risks, none of which shows whether someone has an account:
+Accepted risks:
 
 - A person has the same ID in every group, so someone who shares a group with them can add a guessed email to another group and see whether the IDs match. `CONFLICT` on adding someone twice tells the same thing within one group.
 - Known and unknown keys take different times to add: an unknown one creates rows, and a known one costs a guard write and a second lookup. Known keys include placeholders others added, and the guard runs the same way for placeholders and registered people, so it shows only that someone has used the key before.
-- An invite to an address that isn't the member's gets `VALIDATION_FAILED` ([invites](#invites), step 2), so an inviter can test guesses at a placeholder's email or phone, within the invite limits. It's the same kind of leak as `CONFLICT` above.
+- An invite to an address that isn't the member's gets `VALIDATION_FAILED` ([invites](#invites), step 2), so an inviter can test guesses at a placeholder's email or phone. A failed check commits nothing, so guesses aren't counted. It's the same kind of leak as `CONFLICT` above.
+- **Until [#274](https://github.com/rojinc/ledgerly/issues/274) is built,** that check can show that someone has an account. A registered person holds every key they verified, and a placeholder only the one it was added with. So when an inviter guesses a member's second address and the check passes, the member has an account. #274 will count a failed address check against the inviter's limits.
 
 ## Claim (linking records to a new account)
 
