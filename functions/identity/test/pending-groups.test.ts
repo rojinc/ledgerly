@@ -284,6 +284,25 @@ describe('POST /groups/{id}/join', () => {
     expect(memberRow(services, 'm5')?.status).toBe('left')
   })
 
+  it('is NOT_A_MEMBER for a group whose team is gone, a group being purged (#322)', async () => {
+    // g5 has no team: an account deletion is purging it, archived first and its rows last.
+    const services = fixture([placeholderRow('m6', 'g5', 'pSam', BEFORE)])
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'groups',
+        rowId: 'g5',
+        data: { archivedAt: '2026-10-02T00:00:00.000Z' },
+      }),
+    )
+    expect(await failure(services, 'POST', '/groups/g5/join')).toMatchObject({
+      status: 403,
+      code: 'NOT_A_MEMBER',
+    })
+    expect(memberRow(services, 'm6')?.status).toBe('placeholder')
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
   it('is safe to send twice', async () => {
     const services = fixture()
     await ok(services, 'POST', '/groups/g1/join')

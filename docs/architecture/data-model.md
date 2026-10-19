@@ -326,7 +326,7 @@ Permissions: `read("team:<groupId>")`.
 
 ## activity
 
-Append-only. Never updated. Deleted only with a group purged when a member deletes their account and nobody else is in its team ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
+Append-only. Never updated, but for one column: a [merge](identity-and-invites.md#merging-two-persons) moves `subjectPersonId` from the placeholder to the person it was merged into (`idx_group_subject`). Deleted only with a group purged when a member deletes their account and nobody else is in its team ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -339,7 +339,7 @@ Append-only. Never updated. Deleted only with a group purged when a member delet
 | `changesJson` | text? | `{ before, after }` of the changed fields; never a display name. Empty when only a name changed, which the summary says. |
 | `at` | datetime | |
 
-Indexes: `idx_group_at (groupId, at)`.
+Indexes: `idx_group_at (groupId, at)`, `idx_group_subject (groupId, subjectPersonId)` (a merge finds the rows about P).
 Permissions: `read("team:<groupId>")`.
 
 ## invites

@@ -1285,6 +1285,12 @@
         "type": "key",
         "columns": ["groupId", "at"],
         "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_group_subject",
+        "type": "key",
+        "columns": ["groupId", "subjectPersonId"],
+        "orders": ["ASC", "ASC"]
       }
     ]
   },
