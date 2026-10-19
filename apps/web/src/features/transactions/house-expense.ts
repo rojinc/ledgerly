@@ -488,8 +488,8 @@ export function toHouseExpenseValues(
     splitBetween: ids,
     parts,
     note: typeof stored.note === 'string' ? stored.note : '',
-    // An itemised row has no Edit (its items are rows of their own), so this one isn't; one
-    // empty item is ready, as on a new expense.
+    // Never itemised: an itemised row has no Edit, and the edit form hides the switch. One empty
+    // item keeps the values the shape a new expense has.
     itemised: false,
     items: [{ ...NEW_ITEM, excluded: [], shares: {} }],
   }

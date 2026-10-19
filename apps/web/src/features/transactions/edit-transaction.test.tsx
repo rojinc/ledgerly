@@ -764,6 +764,8 @@ describe('Edit a house expense (#202)', () => {
     )
     expect((screen.getByLabelText('Alice’s amount (AUD)') as HTMLInputElement).value).toBe('60.00')
     expect((screen.getByLabelText('Note (optional)') as HTMLInputElement).value).toBe('Market')
+    // A change can't itemise it (decision 1).
+    expect(screen.queryByLabelText('Itemise this receipt')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(patched()).toStrictEqual(sameBody(groceries))
@@ -855,6 +857,15 @@ describe('Edit a house expense (#202)', () => {
     ['a locked row', { ...groceries, statementId: 'st1' }, 'admin', {}, false],
     ['a void row', { ...groceries, status: 'void' }, 'admin', {}, false],
     ['an itemised row', groceries, 'admin', { items: [{ $id: 'i1', transactionId: 't1' }] }, false],
+    ['a paid house bill', { ...groceries, kind: 'bill' }, 'admin', {}, false],
+    ['a house payment', { ...groceries, kind: 'payment' }, 'admin', {}, false],
+    [
+      'an archived house',
+      groceries,
+      'admin',
+      { group: { ...flat, archivedAt: '2026-10-01T00:00:00Z' } },
+      false,
+    ],
   ] as const)('%s: Edit shown is %s', async (_, stored, role, extra, shown) => {
     house(stored as Transactions, role, extra)
     const { queryClient } = renderPage()
@@ -862,6 +873,58 @@ describe('Edit a house expense (#202)', () => {
     if (shown) expect(await screen.findByRole('button', { name: 'Edit' })).toBeTruthy()
     else expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
     expect(screen.queryByText(/can’t be changed here/)).toBeNull()
+  })
+
+  it.each([
+    ['LOCKED', 'It’s on a final invoice.', 'It’s on a final invoice.'],
+    [
+      'ARCHIVED',
+      'Archived.',
+      'This group has been archived, so it can’t be changed any more. Reload the page to see it as it is now.',
+    ],
+    ['FORBIDDEN', 'Only an admin can change this.', 'Only an admin can change this.'],
+    ['NOT_FOUND', 'Not found.', 'Not found.'],
+    ['VALIDATION_FAILED', 'The date is too far ahead.', 'The date is too far ahead.'],
+  ] as const)(
+    'shows %s next to the house form, re-reading as #211 does',
+    async (code, message, shown) => {
+      house()
+      call.mockResolvedValue({ ok: false, error: { code, message } })
+      const { queryClient } = renderPage()
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      await openHouseForm()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(alerts().map((alert) => alert.textContent)).toEqual([shown]))
+      expect(screen.getByRole('heading', { name: 'Change this expense' })).toBeTruthy()
+      const reread = ['LOCKED', 'ARCHIVED', 'FORBIDDEN'].includes(code)
+      expect(invalidate).toHaveBeenCalledTimes(reread ? 4 : 0)
+      if (reread) {
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 't1'], exact: true })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g3'] })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member', 'g3'] })
+        expect(invalidate).toHaveBeenCalledWith({ queryKey: ['members', 'g3'] })
+      }
+    },
+  )
+
+  it('keeps a LOCKED refusal, with focus on it, once the re-read hides the house form', async () => {
+    house()
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'LOCKED', message: 'It’s on a final invoice.' },
+    })
+    renderPage()
+    await openHouseForm()
+    getRow.mockResolvedValue({ ...groceries, statementId: 'st1' } as never)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Change this expense' })).toBeNull(),
+    )
+    const [alert, ...more] = alerts()
+    expect(more).toEqual([])
+    expect(alert?.textContent).toBe('It’s on a final invoice.')
+    expect(document.activeElement).toBe(alert)
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
   })
 
   it('says a stored input it can’t show can’t be changed here (decision 4)', async () => {

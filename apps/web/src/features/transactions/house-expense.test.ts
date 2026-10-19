@@ -687,12 +687,16 @@ describe('toHouseExpenseValues (#202)', () => {
     const values = toHouseExpenseValues(row(stored, { totalCents: 4500 }), MEMBERS, 'JPY')
     expect(values?.amount).toBe('4500')
     expect(values?.parts).toEqual({ alice: '1500', bob: '3000' })
-    const body = toHouseExpenseBody(values as HouseExpenseValues, IDS, 'JPY')
-    expect([body.totalCents, body.payers, body.split]).toStrictEqual([
-      4500,
-      stored.payers,
-      stored.split,
-    ])
+    expect(toHouseExpenseBody(values as HouseExpenseValues, IDS, 'JPY')).toStrictEqual({
+      ...IDS,
+      kind: 'expense',
+      date: '2026-10-19',
+      description: 'Groceries',
+      category: 'groceries',
+      totalCents: 4500,
+      payers: stored.payers,
+      split: stored.split,
+    })
   })
 
   it('fills the form as it was typed', () => {
