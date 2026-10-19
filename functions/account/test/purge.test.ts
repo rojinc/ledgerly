@@ -17,6 +17,7 @@ import {
   rowOf,
   schedule,
   setRow,
+  TODAY,
   teamOf,
 } from './harness'
 
@@ -390,6 +391,28 @@ describe('POST /delete: purging a group nobody else is in', () => {
 
     await setRow(services, 'statements', 'st3', { status: 'final' })
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(leftOf(services, PURGED)).toEqual([])
+  })
+
+  it('doesn’t wait for a timer someone else left running: it goes with the group', async () => {
+    const services = world()
+    await insert(services, 'transactions', [
+      {
+        $id: 'tRunning',
+        groupId: 'h2',
+        kind: 'shift',
+        status: 'running',
+        date: TODAY,
+        description: 'Shift',
+        totalCents: 0,
+        inputJson: '{}',
+        startedAt: NOW.toISOString(),
+        createdBy: 'p2',
+        updatedBy: 'p2',
+      },
+    ])
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'transactions', 'tRunning')).toBeUndefined()
     expect(leftOf(services, PURGED)).toEqual([])
   })
 
