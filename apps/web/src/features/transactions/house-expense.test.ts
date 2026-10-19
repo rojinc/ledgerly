@@ -265,6 +265,35 @@ describe('splitProblems', () => {
     ).toBeUndefined()
   })
 
+  it('refuses amounts below zero, and a payer of 0', () => {
+    expect(problems({ severalPaid: true, paid: { alice: '100', bob: '-10' } })).toEqual({
+      paid: { bob: 'Enter an amount above 0, or leave it empty' },
+      parts: {},
+    })
+    expect(problems({ severalPaid: true, paid: { alice: '90', bob: '0' } }).paid).toEqual({
+      bob: 'Enter an amount above 0, or leave it empty',
+    })
+    expect(
+      problems(
+        { splitBetween: ['alice', 'bob'], splitMode: 'exact', parts: { alice: '100', bob: '-10' } },
+        9000,
+      ),
+    ).toEqual({ paid: {}, parts: { bob: 'Enter an amount of 0 or more' } })
+    // A part of 0 is fine.
+    expect(
+      problems(
+        { splitBetween: ['alice', 'bob'], splitMode: 'exact', parts: { alice: '90', bob: '0' } },
+        9000,
+      ),
+    ).toEqual({ paid: {}, parts: {} })
+  })
+
+  it('checks exact parts against the total only once the total reads', () => {
+    expect(
+      problems({ splitBetween: ['alice'], splitMode: 'exact', parts: { alice: '5' } }, Number.NaN),
+    ).toEqual({ paid: {}, parts: {} })
+  })
+
   it('needs each ticked person’s part, in its own format', () => {
     expect(
       problems({ splitBetween: ['alice', 'bob'], splitMode: 'exact', parts: { alice: 'x' } }).parts,

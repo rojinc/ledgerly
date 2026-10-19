@@ -603,8 +603,15 @@ describe('NewTransactionPage, house expense', () => {
         .getByRole('group', { name: 'How much each person paid' })
         .getAttribute('aria-describedby'),
     ).toBe(message.id)
+    // The message is an alert, and focus goes to the first amount.
+    expect(message.getAttribute('role')).toBe('alert')
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText('Alice paid (AUD)')),
+    )
     expect(call).not.toHaveBeenCalled()
     fireEvent.change(screen.getByLabelText('Alice paid (AUD)'), { target: { value: '50' } })
+    // Fixed: the message goes as the amounts change, not at the next Add.
+    await waitFor(() => expect(screen.queryByText(/^The amounts paid add up to/)).toBeNull())
     const preview = await screen.findByRole('region', { name: 'Each person’s part' })
     expect(within(preview).getByText(/^Alice: paid .*50\.00, share .*30\.00$/)).toBeTruthy()
     expect(within(preview).getByText(/^Bob: paid .*40\.00, share .*30\.00$/)).toBeTruthy()
@@ -638,6 +645,7 @@ describe('NewTransactionPage, house expense', () => {
     ).toBeTruthy()
     expect(call).not.toHaveBeenCalled()
     fireEvent.change(screen.getByLabelText('Bob’s amount (AUD)'), { target: { value: '35' } })
+    await waitFor(() => expect(screen.queryByText(/^The amounts add up to/)).toBeNull())
     const preview = await screen.findByRole('region', { name: 'Each person’s part' })
     expect(within(preview).getByText(/^Bob: share .*35\.00$/)).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
@@ -678,6 +686,33 @@ describe('NewTransactionPage, house expense', () => {
         ],
       },
     })
+  })
+
+  it('starts a new split mode with empty parts', async () => {
+    await open()
+    fireEvent.click(screen.getByLabelText('By amounts'))
+    fireEvent.change(screen.getByLabelText('Alice’s amount (AUD)'), { target: { value: '60' } })
+    fireEvent.click(screen.getByLabelText('By percentages'))
+    await waitFor(() =>
+      expect((screen.getByLabelText('Alice’s percentage') as HTMLInputElement).value).toBe(''),
+    )
+  })
+
+  it('counts everyone named against the 15-person limit, in any split mode', async () => {
+    const others = Array.from({ length: 15 }, (_, n) =>
+      housemate(`p${String(n).padStart(2, '0')}`, `Person ${n}`, '2026-01-01'),
+    )
+    await open([housemate('alice', 'Alice', '2026-01-01'), ...others])
+    fireEvent.click(screen.getByLabelText('By shares'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Alice' }))
+    for (const person of others) {
+      fireEvent.change(screen.getByLabelText(`${person.displayName}’s shares`), {
+        target: { value: '1' },
+      })
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('At most 15 people can be in one expense.')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('splits by shares, previewed by core', async () => {

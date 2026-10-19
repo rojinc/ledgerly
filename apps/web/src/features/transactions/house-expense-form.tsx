@@ -190,10 +190,22 @@ export function HouseExpenseForm({
     })
   }, [date, members, form])
   const split = form.register('splitBetween')
-  // A refusal shown above the form goes once the form is changed: it may no longer hold.
+  // A refusal shown above the form goes once the form is changed: it may no longer hold. After
+  // a refused Add, the totals are checked again as the amounts change, so a fixed sum's message
+  // goes too. A new split mode starts with empty parts: 60.00 isn't a percentage.
   useEffect(() => {
-    const watching = form.watch(() => {
+    const watching = form.watch((_values, { name }) => {
       if (form.formState.errors.root) form.clearErrors('root')
+      if (name === 'splitMode') {
+        for (const id of Object.keys(form.getValues('parts'))) form.setValue(`parts.${id}`, '')
+      }
+      if (
+        form.formState.isSubmitted &&
+        name &&
+        /^(amount|paid\.|parts|splitMode|severalPaid)/.test(name)
+      ) {
+        void form.trigger(['paidTotal' as never, 'splitBetween'])
+      }
     })
     return () => watching.unsubscribe()
   }, [form])
@@ -224,20 +236,30 @@ export function HouseExpenseForm({
           event.preventDefault()
           return
         }
-        void form.handleSubmit(async (input) => {
-          try {
-            const view = await create.mutateAsync(input)
-            navigate(`/transactions/${view.transaction.$id}`, { replace: true })
-          } catch (error) {
-            // The same ID again, with different content: an earlier try may have been saved
-            // although its answer was lost. Say so, rather than inviting a duplicate.
-            const message =
-              error instanceof LedgerError && error.code === 'CONFLICT'
-                ? 'This may already have been saved from your last try. Check the calendar before adding it again.'
-                : (error as Error).message
-            form.setError('root', { message })
-          }
-        })(event)
+        void form.handleSubmit(
+          async (input) => {
+            try {
+              const view = await create.mutateAsync(input)
+              navigate(`/transactions/${view.transaction.$id}`, { replace: true })
+            } catch (error) {
+              // The same ID again, with different content: an earlier try may have been saved
+              // although its answer was lost. Say so, rather than inviting a duplicate.
+              const message =
+                error instanceof LedgerError && error.code === 'CONFLICT'
+                  ? 'This may already have been saved from your last try. Check the calendar before adding it again.'
+                  : (error as Error).message
+              form.setError('root', { message })
+            }
+          },
+          (refused) => {
+            // Only the payers' total is wrong: it has no field of its own to focus, so the first
+            // amount gets it (the message is an alert).
+            if (Object.keys(refused).length === 1 && refused['paidTotal' as never]) {
+              const first = sorted[0]
+              if (first) form.setFocus(`paid.${first.personId}`)
+            }
+          },
+        )(event)
       }}
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
@@ -285,6 +307,7 @@ export function HouseExpenseForm({
         <PaidAmountsField
           members={sorted}
           currency={group.currency}
+          // Person IDs have no dots (data-model.md: 20 of a-z0-9), so they're safe in a path.
           field={(id) => form.register(`paid.${id}`)}
           errors={Object.fromEntries(
             sorted.flatMap((member) => {

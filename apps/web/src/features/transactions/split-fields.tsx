@@ -59,8 +59,9 @@ export function SplitModeField({ field }: { field: UseFormRegisterReturn }) {
 
 /** A group-wide error under a fieldset, tied to it by `id`. */
 function GroupError({ id, message }: { id: string; message?: string }) {
+  // An alert: the fieldset's description isn't read when focus moves to a field inside it.
   return message ? (
-    <p id={id} className="text-sm text-destructive">
+    <p id={id} role="alert" className="text-sm text-destructive">
       {message}
     </p>
   ) : null

@@ -23,8 +23,6 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
   )
 }
 
-// Only the parts shown are read: a full template parse fails on stored inputs it doesn't model,
-// such as a bill's.
 // Only the mode, and the head count of an equal split, are read.
 const SPLIT_TEXT: Record<string, string> = {
   exact: 'By amounts',
@@ -42,6 +40,8 @@ function splitParts(split: { mode?: unknown; personIds?: unknown } | undefined) 
   return text ? { splitText: text } : {}
 }
 
+// Only the parts shown are read: a full template parse fails on stored inputs it doesn't model,
+// such as a bill's.
 function storedParts(inputJson: string): {
   note?: string
   shift?: { minutes: number; rateCents: number }

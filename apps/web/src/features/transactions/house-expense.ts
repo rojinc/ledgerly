@@ -153,11 +153,15 @@ export function splitProblems(
     for (const payer of payers) {
       if (Number.isNaN(payer.cents)) {
         problems.paid[payer.personId] = `Enter an amount like ${amountExample(currency)}`
+      } else if (payer.cents <= 0) {
+        problems.paid[payer.personId] = 'Enter an amount above 0, or leave it empty'
       }
     }
     const sum = payers.reduce((total, payer) => total + payer.cents, 0)
     if (payers.length === 0) problems.paidTotal = 'Enter what each person paid.'
-    else if (totalKnown && Number.isInteger(sum) && sum !== totalCents) {
+    else if (Object.keys(problems.paid).length > 0) {
+      // Each amount first.
+    } else if (totalKnown && sum !== totalCents) {
       problems.paidTotal = `The amounts paid add up to ${money(sum)}, but the total is ${money(totalCents)}.`
     }
   }
@@ -179,6 +183,7 @@ export function splitProblems(
   for (const [personId, value] of parts) {
     if ((values.parts[personId] ?? '').trim() === '') problems.parts[personId] = 'Required'
     else if (Number.isNaN(value)) problems.parts[personId] = invalid
+    else if (value < 0) problems.parts[personId] = 'Enter an amount of 0 or more'
   }
   if (Object.keys(problems.parts).length > 0 || parts.length === 0) return problems
   const sum = parts.reduce((total, [, value]) => total + value, 0)
