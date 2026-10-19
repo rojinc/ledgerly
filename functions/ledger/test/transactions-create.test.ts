@@ -168,7 +168,6 @@ describe('POST /transactions', () => {
     ['a date more than a year ahead', expense({ date: '2027-10-20' })],
     ['payers that do not add up', expense({ payers: [{ personId: 'alice', cents: 1 }] })],
     ['someone who is not in the group', expense({ split: { mode: 'equal', personIds: ['dan'] } })],
-    ['a receipt, until receipts are checked', expense({ receiptFileIds: ['f1'] })],
     ['a kind the group does not have', expense({ kind: 'income', split: undefined })],
     // Would stop the scheduler creating that occurrence (scheduling.md).
     ['the id of a schedule occurrence', expense({ id: 'sch1_20261101' })],
