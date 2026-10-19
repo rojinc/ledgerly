@@ -826,6 +826,48 @@ describe('POST /delete: a purged group’s receipts (#248)', () => {
     expect(rowOf(services, 'receiptFiles', 'r7')).toMatchObject(detached)
   })
 
+  it('flushes the batch whose files are gone when the budget runs out at the next transaction', async () => {
+    const services = world()
+    const ids = ['tP0', 'tP1']
+    await insert(
+      services,
+      'transactions',
+      ids.map((id) => posted(id, 'h2', 1000)),
+    )
+    for (const id of ids) {
+      await setRow(services, 'transactions', id, {
+        receiptFileIds: await tenReceipts(services, id),
+      })
+    }
+    let out = false
+    const listRows = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      // The budget runs out while tP1's receipt rows are read, after pages() yielded tP1.
+      if (params.tableId === 'receiptFiles' && JSON.stringify(params.queries).includes('tP1-f0')) {
+        out = true
+      }
+      return listRows(params)
+    })
+    services.outOfTime = () => out
+    const looked: string[] = []
+    const getFile = services.files.getFile.bind(services.files)
+    vi.spyOn(services.files, 'getFile').mockImplementation(async (params) => {
+      looked.push(params.fileId)
+      return getFile(params)
+    })
+    expect((await remove(services)).finished).toBe(false)
+    expect(services.files.ids().filter((id) => id.includes('tP0'))).toEqual([])
+    expect(services.files.ids().filter((id) => id.includes('tP1'))).toHaveLength(10)
+    // tP0's files are gone, so its batch went too.
+    expect(rowOf(services, 'transactions', 'tP0')).toBeUndefined()
+    expect(rowOf(services, 'transactions', 'tP1')).toBeDefined()
+    out = false
+    services.outOfTime = () => false
+    const firstRun = looked.length
+    expect((await remove(services)).finished).toBe(true)
+    expect(looked.slice(firstRun).filter((id) => id.startsWith('tP0'))).toEqual([])
+  })
+
   it('makes progress on every run when its receipts take several, never looking for one twice', async () => {
     const withReceipts = async () => {
       const services = world()

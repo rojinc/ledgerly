@@ -51,7 +51,7 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `mergeMembersJson` | mediumtext? | `MergeMembers`: for each of P's groups, P's member `joinedOn` and `leftOn` there, and U's if U had a row there (else `null`), as P was marked as merged. `mediumtext`, since P's groups have no cap. Written once with `mergeGroupIds` and never changed; step 3 plans a posted row's items with them, and a group whose dates can't be read is left for later ([identity](identity-and-invites.md#merging-two-persons)). `null` for anyone never merged. Written only by `identity`. |
 | `mergeCursorsJson` | mediumtext? | `MergeCursors`: for each of P's groups whose inputs merge step 3 has started scanning, the `$id` of the last transaction scanned there (`after`) and the IDs of the transactions left as they are behind it (`left`), so a later run carries on from there (a lead decision, #242 G). Written by step 3 after each page, never before step 1. `null` until then, and for anyone never merged. Written only by `identity`. |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). Set first, as the point of no return; a person with `deletedAt` and `userId` both set has a deletion still to finish. |
-| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits, for adds that find the person, and for a merge's writes on the person it merges into. |
+| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits, for adds that find the person, for a merge's writes on the person it merges into, and for a purge deleting a placeholder's member rows. |
 
 Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`, `idx_deletedAt (deletedAt)` (the hourly job finds deletions to finish).
 Permissions: placeholders have none (server only). A registered person's row gets `read("user:<userId>")`.
@@ -324,7 +324,7 @@ Permissions: `read("team:<groupId>")`.
 
 ## activity
 
-Append-only. Never updated. Deleted only with a group purged when a member deletes their account and nobody else is in its team ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
+Append-only. Never updated, but for one column: a [merge](identity-and-invites.md#merging-two-persons) moves `subjectPersonId` from the placeholder to the person it was merged into (`idx_group_subject`). Deleted only with a group purged when a member deletes their account and nobody else is in its team ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
 
 | Column | Type | Notes |
 | --- | --- | --- |
@@ -337,7 +337,7 @@ Append-only. Never updated. Deleted only with a group purged when a member delet
 | `changesJson` | text? | `{ before, after }` of the changed fields; never a display name. Empty when only a name changed, which the summary says. |
 | `at` | datetime | |
 
-Indexes: `idx_group_at (groupId, at)`.
+Indexes: `idx_group_at (groupId, at)`, `idx_group_subject (groupId, subjectPersonId)` (a merge finds the rows about P).
 Permissions: `read("team:<groupId>")`.
 
 ## invites
