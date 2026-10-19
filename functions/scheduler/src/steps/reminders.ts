@@ -12,7 +12,7 @@ import {
   timerRunningEmail,
 } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
-import type { Services } from '../services'
+import { appBase, type Services } from '../services'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
 
@@ -113,12 +113,8 @@ function isAwake(group: Groups, now: Date): boolean {
   return now.toISOString() >= localTimeToUtc(today(group, now), FIRST_HOUR, group.timezone)
 }
 
-// Checked before any row, so a missing APP_URL fails the run instead of every row.
 function linkTo(appUrl: string): (row: Transactions) => string {
-  if (!/^https?:\/\//.test(appUrl)) {
-    throw new Error('APP_URL is not set. Add it as an Appwrite project variable.')
-  }
-  const base = appUrl.replace(/\/+$/, '')
+  const base = appBase(appUrl)
   return (row) => `${base}/groups/${row.groupId}/transactions/${row.$id}`
 }
 
@@ -176,7 +172,10 @@ async function remind(
 
 // Resend's errors for an email it will never send as asked: a bad address, or the same key
 // with different content (the group was renamed after a send whose mark failed).
-const NEVER_SENT: ReadonlySet<string> = new Set(['validation_error', 'invalid_idempotent_request'])
+export const NEVER_SENT: ReadonlySet<string> = new Set([
+  'validation_error',
+  'invalid_idempotent_request',
+])
 
 // It still needs the reminder the page read it for.
 function stillDue(seen: Transactions, stored: Transactions | undefined): boolean {

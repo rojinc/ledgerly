@@ -144,7 +144,7 @@ function isDue(row: Transactions, group: Groups, now: Date): boolean {
 
 // An error's name and code, never its message, which can quote stored text
 // (security-and-privacy.md).
-function describe(error: unknown): string {
+export function describe(error: unknown): string {
   if (error instanceof AppError) return `AppError ${error.code}`
   if (error instanceof AppwriteException) return `AppwriteException ${error.code} ${error.type}`
   return error instanceof Error ? error.name : typeof error
