@@ -61,7 +61,7 @@ GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_AP
 
 ### The deploy key's scopes
 
-Each scope is what Appwrite 1.8 checks on a route that CLI 28.7.0 calls during the deploy. A route that names two scopes accepts either one.
+Each scope is what Appwrite (1.8.1 and 1.9.7, checked in their source) checks on a route that CLI 28.7.0 calls during the deploy. A route that names two scopes accepts either one.
 
 | Scope | Why |
 | --- | --- |
@@ -122,9 +122,19 @@ The Appwrite CLI **deletes columns that disappear from the config** when it push
 
 New tables and their columns are created during the plan, as the push would create them.
 
-CLI 28.7.0 ignores a failed request for the list of tables, and then finds no table to delete, so one failed request would hide a table from the plan that the push then deletes. So after the plan, the **table check** lists the server's tables again (`appwrite tablesdb list-tables`) and stops the deploy on any error, or on any table that's only on the server or only in the config.
+CLI 28.7.0 ignores a failed request for the list of tables, and then finds no table to delete, so one failed request would hide a table from the plan that the push then deletes. So after the plan, the **table check** lists the server's tables again (`appwrite tablesdb list-tables`, with `--database-id main` written into the step, which is right while `main` is the only database) and stops the deploy on any error, or on any table that's only on the server or only in the config.
 
-After the real push, a `recreating`, `deleting` or `Deleting …` line in its output fails the deploy too: that reports a change made to the server since the checks. Only the table push is read for these words, since function and site build logs can contain them.
+After the real push, a `recreating`, `deleting`, `(deleted locally)` or `Deleting …` line in its output fails the deploy too: that reports a change made to the server since the checks. Only the table push is read for these words, since function and site build logs can contain them.
+
+A failed read of a table during the plan (the request that carries its columns and indexes) fails the plan, which stops the deploy. Only the list of tables is read without a check, which is why the table check exists.
+
+**Changing the CLI pin needs a re-test first.** The plan and the greps match strings that CLI 28.7.0 prints:
+- the prompts' help line `y Yes • n No`;
+- `recreating`, `deleting` and `(deleted locally)` in the plan;
+- `Skipping push action`;
+- `Deleting …` after the push.
+
+If a new version renames any of them, the gate misses a change that `--force` then applies. So before the pin in `deploy.yml` changes, re-run the plan and the step's script against a stub of the API, as #275 did, with a column type change, a column and a table missing from the config, a changed table setting, and a failed list request. Then update this section.
 
 **When the plan stops a deploy:**
 - **The file is wrong** (a type that differs only in name, as `string` for a plain text column the server reports as `varchar`): fix `tables.json`. `tables.test.ts` checks the text column types.

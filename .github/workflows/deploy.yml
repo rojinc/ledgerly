@@ -103,6 +103,8 @@ jobs:
           VITE_APPWRITE_ENDPOINT: ${{ env.APPWRITE_ENDPOINT }}
           VITE_APPWRITE_PROJECT_ID: ${{ env.PROJECT_ID }}
 
+      # The table plan and the greps below match this version's output. Before changing the pin,
+      # re-test them against a stub (environments-and-deploys.md#schema-changes-that-lose-data).
       - name: Install the Appwrite CLI
         if: steps.latest.outputs.deploy == 'true'
         run: npm install --global appwrite-cli@28.7.0
@@ -152,8 +154,9 @@ jobs:
               ...local.filter((id) => !remote.includes(id)).map((id) => id + " (only in the config)"),
             ]
             if (total !== remote.length || differ.length > 0) {
+              // Past one page, a table on the next page would look like "only in the config".
               console.error("::error::The tables on the server differ from the config: " +
-                (differ.join(", ") || "more than " + remote.length + " tables") +
+                (total !== remote.length ? "more than " + remote.length + " tables" : differ.join(", ")) +
                 ". Nothing destructive was applied. See environments-and-deploys.md#schema-changes-that-lose-data.")
               process.exit(1)
             }
@@ -172,7 +175,7 @@ jobs:
             # A table push that deleted something after all (the server changed since the
             # checks). Only the table push: function and site build logs can say "deleting".
             if [ "$1" = table ] &&
-              grep -qE '\b(recreating|deleting)\b|Deleting (attribute|index|table|database) ' "$log"; then
+              grep -qE '\b(recreating|deleting)\b|\(deleted locally\)|Deleting (attribute|index|table|database) ' "$log"; then
               echo "::error::appwrite push table deleted or recreated something. See environments-and-deploys.md#schema-changes-that-lose-data."
               exit 1
             fi
