@@ -391,7 +391,7 @@ function Change({
 
 const UNMATCHED = 'This entry can’t be changed here. Void it and add it again.'
 
-/** Edit, swapping in the entry's form. Itemised rows (#42) get none yet. */
+/** Edit, swapping in the entry's form. Itemised rows get it in a house only (#225). */
 function EditEntry({
   row,
   group,
@@ -405,13 +405,14 @@ function EditEntry({
   personId: string
   edit: EditState
 }) {
-  // Only an expense can have items (ledger.md#items), and an itemised one gets no Edit yet
-  // (#42). The page reads them too, and says so if it can't.
+  // Only an expense can have items (ledger.md#items). Edit waits for them; the page reads them
+  // too, and says so if it can't. Only the house form has items (#225).
   const items = useItems(row.$id, row.kind === 'expense')
-  if (!members || (row.kind === 'expense' && items.data?.length !== 0)) return null
+  if (!members || (row.kind === 'expense' && items.data === undefined)) return null
+  if (group.type !== 'house' && (items.data?.length ?? 0) > 0) return null
   let form: ReactNode
   if (group.type === 'house') {
-    const values = toHouseExpenseValues(row, members, group.currency)
+    const values = toHouseExpenseValues(row, members, group.currency, items.data)
     if (!values) return <Message>{UNMATCHED}</Message>
     form = (
       <HouseExpenseForm
