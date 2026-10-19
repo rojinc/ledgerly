@@ -39,9 +39,8 @@ const MS_PER_HOUR = 60 * MS_PER_MINUTE
  * `account POST /delete` (identity-and-invites.md#deleting-an-account-m4). The refusals change
  * nothing. After step 2, the point of no return, every step runs to the end and can be repeated:
  * a call once `deletedAt` is set skips the checks (apart from the body) and carries on. Stops
- * between steps and groups once the time budget is used up; `finished: false` leaves the rest to
- * the hourly job. Purging a group nobody else is in comes with #50 PR-2, so until then such a
- * group (every personal group) waits untouched, and so do steps 5–7.
+ * between steps, groups and a purge's batches once the time budget is used up; `finished: false`
+ * leaves the rest to the hourly job.
  */
 export async function deleteAccount(
   services: Services,
@@ -211,9 +210,38 @@ async function finish(services: Services, userId: string, person: Deleting): Pro
   )
   if (outOfTime()) return false
   // Step 7 looks again just before: a bootstrap that committed after step 2 made a person of its
-  // own, which is purged (#50 PR-2) before the user goes, so no person is left naming the ID.
+  // own, which is purged before the user goes, so no person is left naming the ID.
+  for (const stray of await personsOfUser(db, userId)) {
+    if (stray.deletedAt) continue
+    if (!(await purgeStray(services, userId, { ...stray, deletedAt: person.deletedAt }))) {
+      return false
+    }
+  }
   if ((await personsOfUser(db, userId)).some((other) => !other.deletedAt)) return false
   await doneIfGone(() => users.delete({ userId }))
+  return true
+}
+
+// Step 7's stray person. It's new and empty, so its groups go as theirs do (its personal group,
+// which nobody else is in, is purged; `deletedAt` is this deletion's, which its rows are newer
+// than), then its own rows (step 5) and the person itself. Stage, then check: a person a member
+// row still names isn't empty after all, and is left for the next run.
+async function purgeStray(services: Services, userId: string, stray: Deleting): Promise<boolean> {
+  const { db, outOfTime } = services
+  if (!(await leaveGroups(services, userId, stray))) return false
+  if (outOfTime()) return false
+  await deleteOwnRows(db, userId, stray.$id)
+  try {
+    await withTransaction(db, async (tx) => {
+      await tx.write({ action: 'delete', tableId: TABLES.persons, rowId: stray.$id })
+      // idx_person_status
+      const named = await allRows<Members>(db, TABLES.members, [Query.equal('personId', stray.$id)])
+      if (named.length > 0) throw new Raced()
+    })
+  } catch (error) {
+    if (error instanceof Raced || isAppwriteError(error, 409)) return false
+    throw error
+  }
   return true
 }
 
