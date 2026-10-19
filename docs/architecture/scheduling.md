@@ -155,7 +155,7 @@ The email links to `<APP_URL>/`, and to `<APP_URL>/profile`, where summaries can
 
 ### Step 6: nightly check
 
-Runs last, in what's left of the run's budget. It takes groups where `nextCheckAt` is empty or `<= now` (`idx_nextCheckAt`), in pages of 100 by `$id` as step 1 does, until the budget is used. Archived groups are checked too. A group whose team is gone (a [purge](identity-and-invites.md#deleting-an-account-m4) in progress) is skipped. A check reads, apart from the two repairs below and its `nextCheckAt`: it never writes shares, transactions or members, and it doesn't finish merges: `/claim` and identity's hourly job do ([finishing merges](identity-and-invites.md#finishing-merges)).
+Runs last, in what's left of the run's budget. It takes groups where `nextCheckAt` is empty or `<= now` (`idx_nextCheckAt`), in pages of 100 by `$id` as step 1 does, until the budget is used. Archived groups are checked too. A group whose team is gone (a [purge](identity-and-invites.md#deleting-an-account-m4) in progress) is skipped. A check reads, apart from the two repairs below and its `nextCheckAt`: it never writes shares, transactions or members, and it doesn't finish merges: `/claim` and `identity`'s hourly job do ([finishing merges](identity-and-invites.md#finishing-merges)).
 
 **Reading a group whole.** It reads the group's `rev`, then the group's members, posted transactions (`idx_group_status_date`), shares and `balances` row, then `rev` again. Every write of shares changes `rev` ([concurrency](ledger.md#concurrency)), so the same value means nothing changed in between. Otherwise it reads again, up to 3 times, then leaves the group for the next run (counted as `busy`).
 
