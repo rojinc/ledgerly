@@ -51,6 +51,7 @@ const GROUPS = [
   group('g3', 'Joined already'),
   group('g4', 'Someone else'),
   group('g5', 'Flat 2', { type: 'house' }),
+  group('g6', 'Zed Cafe', { type: 'employer' }),
 ]
 
 function fixture(members: Array<ReturnType<typeof placeholderRow>> = defaultMembers()) {
@@ -114,19 +115,37 @@ describe('GET /groups/pending', () => {
     ])
   })
 
-  it('pages through more than one page of placeholder rows', async () => {
+  it('pages through more than one page of placeholder rows, and of their other members', async () => {
     const services = fakes({
       persons: [SAM],
       groups: Array.from({ length: 101 }, (_, i) =>
         group(`g${i}`, `G${String(i).padStart(3, '0')}`),
       ),
-      members: Array.from({ length: 101 }, (_, i) =>
-        placeholderRow(`m${i}`, `g${i}`, 'pSam', BEFORE),
-      ),
+      members: [
+        ...Array.from({ length: 101 }, (_, i) => placeholderRow(`m${i}`, `g${i}`, 'pSam', BEFORE)),
+        // Each pair's creator, so every group needs its other member's name.
+        ...Array.from({ length: 101 }, (_, i) =>
+          placeholderRow(`a${i}`, `g${i}`, `pC${i}`, BEFORE, {
+            displayName: `C${String(i).padStart(3, '0')}`,
+            status: 'active',
+          }),
+        ),
+      ],
     })
     const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups).toHaveLength(101)
-    expect(groups.at(-1)?.id).toBe('g100')
+    // Every one named, past the first batch of 100 and past the default page size.
+    expect(groups.every((g) => g.counterpartName === `C${g.name.slice(1)}`)).toBe(true)
+    expect(groups.at(-1)).toMatchObject({ id: 'g100', counterpartName: 'C100' })
+  })
+
+  it('names no member for an employer group either', async () => {
+    const services = fixture([
+      placeholderRow('m6', 'g6', 'pSam', BEFORE),
+      placeholderRow('a6', 'g6', 'pZed', BEFORE, { displayName: 'Zed Park', status: 'active' }),
+    ])
+    const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
+    expect(groups).toEqual([{ id: 'g6', type: 'employer', name: 'Zed Cafe', archivedAt: null }])
   })
 
   it('is NOT_FOUND before bootstrap, and UNAUTHENTICATED without a JWT', async () => {
