@@ -4,6 +4,7 @@ import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { ledgerRoutes } from '../src/main'
+import type { Files, ReceiptFile } from '../src/receipts'
 
 // "Today" in every test: 2026-10-18 in Sydney.
 export const NOW = new Date('2026-10-18T01:00:00.000Z')
@@ -107,6 +108,50 @@ export function expense(extra: Record<string, unknown> = {}): Record<string, unk
   }
 }
 
+/** Storage's receipts bucket, in memory. */
+export class FakeFiles implements Files {
+  readonly stored = new Map<string, ReceiptFile>()
+
+  /** A file as the web app uploads it: a photo readable by the group's team. */
+  upload(fileId: string, groupId = 'house', file: Partial<ReceiptFile> = {}): void {
+    this.stored.set(fileId, {
+      mimeType: 'image/webp',
+      permissions: [`read("team:${groupId}")`],
+      complete: true,
+      ...file,
+    })
+  }
+
+  permissions(fileId: string): string[] | undefined {
+    return this.stored.get(fileId)?.permissions
+  }
+
+  async getFile(fileId: string): Promise<ReceiptFile | undefined> {
+    const file = this.stored.get(fileId)
+    return file && { ...file, permissions: [...file.permissions] }
+  }
+
+  async updateFile(fileId: string, permissions: string[]): Promise<ReceiptFile | undefined> {
+    const file = this.stored.get(fileId)
+    if (!file) return undefined
+    const updated = { ...file, permissions: [...permissions] }
+    this.stored.set(fileId, updated)
+    return { ...updated, permissions: [...permissions] }
+  }
+}
+
+const fileStores = new WeakMap<FakeDb, FakeFiles>()
+
+/** The receipts bucket that goes with `db`. */
+export function filesOf(db: FakeDb): FakeFiles {
+  let files = fileStores.get(db)
+  if (!files) {
+    files = new FakeFiles()
+    fileStores.set(db, files)
+  }
+  return files
+}
+
 const quitters = new WeakMap<FakeDb, Set<string>>()
 
 /** `userId` left a group on their own: their row stays `left`, but they're out of its team. */
@@ -144,8 +189,9 @@ export async function call<T = TransactionView>(
   user: string | null = 'u-alice',
 ): Promise<Response<T>> {
   const teams = teamsOf(db)
+  const files = filesOf(db)
   const handler = createHandler(
-    ledgerRoutes(() => ({ teams })),
+    ledgerRoutes(() => ({ teams, files })),
     () => db,
     async (jwt) => jwt.slice('jwt-'.length),
   )
