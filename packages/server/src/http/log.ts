@@ -25,6 +25,8 @@ export type LogEvent =
   | 'nightly_check_cut_off'
   | 'password_notice'
   | 'team_membership_removed'
+  | 'schedule_template_unreadable'
+  | 'stuck_finalize_not_archived'
 
 /**
  * How each event is written. Most are problems, written with `console.error`: until alerting
@@ -56,6 +58,7 @@ export type LogFields = {
   reminderId?: string
   userId?: string
   membershipId?: string
+  scheduleId?: string
   problems?: readonly SnapshotProblem[]
   identityType?: 'email' | 'phone'
   rule?: LogRule
@@ -72,14 +75,14 @@ export type LogFields = {
 /**
  * Writes one JSON line for something that happened inside a route: `{ fn, event, groupId?,
  * statementId?, transactionId?, profileId?, personId?, reminderId?, userId?, membershipId?,
- * problems?, identityType?, rule?, outcome?, count?, cause? }`, at the event's level (`LEVELS`).
+ * scheduleId?, problems?, identityType?, rule?, outcome?, count?, cause? }`, at the event's level (`LEVELS`).
  * Only row IDs, fixed names, counts and error names, never text that could quote what someone
  * typed (security-and-privacy.md). A value passed as an ID that isn't shaped like one is written
  * as `invalid`.
  */
 export function logProblem(event: LogEvent, fields: LogFields = {}): void {
   const { groupId, statementId, transactionId, profileId, personId, reminderId, userId } = fields
-  const { membershipId } = fields
+  const { membershipId, scheduleId } = fields
   const { problems, identityType, rule, outcome, count } = fields
   const line = {
     fn: process.env.APPWRITE_FUNCTION_ID ?? 'unknown',
@@ -92,6 +95,7 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
     reminderId: id(reminderId),
     userId: id(userId),
     membershipId: id(membershipId),
+    scheduleId: id(scheduleId),
     problems,
     identityType,
     rule,
@@ -116,7 +120,8 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
 export function describe(error: unknown): string {
   if (error instanceof AppError) return `AppError ${error.code}`
   if (error instanceof AppwriteException) {
-    return `AppwriteException ${error.code} ${name(error.type)}`
+    // node-appwrite's type is '' for a reply that isn't JSON (a 502 from the edge, say).
+    return `AppwriteException ${error.code} ${name(error.type)}`.trim()
   }
   if (error instanceof EmailError) return `EmailError ${error.type} ${error.status ?? ''}`.trim()
   return error instanceof Error ? name(error.name) : typeof error
@@ -124,7 +129,7 @@ export function describe(error: unknown): string {
 
 // An error's name or type is written only when it looks like one (as sendEmail checks
 // EmailError.type), since any code can set it.
-const name = (value: string) => (/^[A-Za-z_]{1,64}$/.test(value) ? value : 'invalid')
+const name = (value: string) => (/^[A-Za-z_]{0,64}$/.test(value) ? value : 'invalid')
 
 const id = (value: string | undefined) =>
   value === undefined || idSchema.safeParse(value).success ? value : 'invalid'

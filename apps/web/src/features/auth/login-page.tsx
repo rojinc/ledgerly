@@ -1,22 +1,56 @@
 import { useMutation } from '@tanstack/react-query'
 import { ID } from 'appwrite'
 import { type FormEvent, useState } from 'react'
-import { Link } from 'react-router'
+import { Link, useSearchParams } from 'react-router'
 import { account } from '../../lib/appwrite'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
-import { AuthCard } from './auth-card'
+import { AuthCard, focusOnMount } from './auth-card'
 import { authErrorMessage } from './auth-error'
+import { signOutOtherSessions } from './sign-out-other-sessions'
 import { useSignedIn } from './use-signed-in'
 
 type Mode = 'password' | 'code'
 
 export function LoginPage() {
   const [mode, setMode] = useState<Mode>('password')
+  const reset = useSearchParams()[0].get('reset') === '1'
+  const signedIn = useSignedIn()
+  // After a password reset (#290), signing in signs out every other session: the reset leaves
+  // them signed in, so this is what locks out anyone else who had one.
+  const others = useMutation({ mutationFn: signOutOtherSessions, onSuccess: signedIn })
+  const onSignedIn = reset ? () => others.mutate() : signedIn
+
+  if (!others.isIdle) {
+    return (
+      <AuthCard title="Log in">
+        {others.isError ? (
+          <>
+            <Alert ref={focusOnMount} tabIndex={-1} className="outline-none" variant="destructive">
+              You’re signed in, but we couldn’t sign out your other devices. Check your connection
+              and try again.
+            </Alert>
+            <Button onClick={() => others.mutate()}>Try again</Button>
+          </>
+        ) : (
+          <p
+            ref={focusOnMount}
+            tabIndex={-1}
+            role="status"
+            className="text-center text-muted-foreground outline-none"
+          >
+            Signing out your other devices…
+          </p>
+        )}
+      </AuthCard>
+    )
+  }
+
   return (
     <AuthCard title="Log in">
+      {reset && <Alert>Password changed. Sign in to finish.</Alert>}
       <fieldset className="grid grid-cols-2 gap-2">
         <legend className="sr-only">How to log in</legend>
         <Button
@@ -34,7 +68,11 @@ export function LoginPage() {
           Email code
         </Button>
       </fieldset>
-      {mode === 'password' ? <PasswordForm /> : <EmailCodeForm />}
+      {mode === 'password' ? (
+        <PasswordForm onSignedIn={onSignedIn} />
+      ) : (
+        <EmailCodeForm onSignedIn={onSignedIn} />
+      )}
       <p className="text-center text-sm text-muted-foreground">
         New here?{' '}
         <Link to="/signup" className="font-medium text-foreground underline underline-offset-4">
@@ -45,12 +83,11 @@ export function LoginPage() {
   )
 }
 
-function PasswordForm() {
-  const signedIn = useSignedIn()
+function PasswordForm({ onSignedIn }: { onSignedIn: () => void }) {
   const login = useMutation({
     mutationFn: (input: { email: string; password: string }) =>
       account.createEmailPasswordSession(input),
-    onSuccess: signedIn,
+    onSuccess: onSignedIn,
   })
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
@@ -75,6 +112,9 @@ function PasswordForm() {
           autoComplete="current-password"
           required
         />
+        <Link to="/recover" className="self-end text-sm underline underline-offset-4">
+          Forgot your password?
+        </Link>
       </div>
       <Button type="submit" disabled={login.isPending}>
         {login.isPending ? 'Logging in…' : 'Log in'}
@@ -83,8 +123,7 @@ function PasswordForm() {
   )
 }
 
-function EmailCodeForm() {
-  const signedIn = useSignedIn()
+function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
   const [email, setEmail] = useState('')
   const sendCode = useMutation({
     mutationFn: (address: string) =>
@@ -92,7 +131,7 @@ function EmailCodeForm() {
   })
   const verifyCode = useMutation({
     mutationFn: (input: { userId: string; secret: string }) => account.createSession(input),
-    onSuccess: signedIn,
+    onSuccess: onSignedIn,
   })
   const userId = sendCode.data?.userId
 

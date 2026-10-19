@@ -15,6 +15,7 @@ import {
   findIdentity,
   findPersonOfUser,
   getRowOrNull,
+  guardPerson,
   isAppwriteError,
   SET_UP_FIRST,
 } from '../rows'
@@ -70,7 +71,9 @@ export async function claim(
   identities: VerifiedIdentity[],
 ): Promise<string[]> {
   const person = await findPersonOfUser(services.db, userId)
-  if (!person) throw new AppError('NOT_FOUND', SET_UP_FIRST)
+  // A person with deletedAt is never resolved from a userId (identity-and-invites.md#order).
+  // Each write below checks again (guardPerson).
+  if (!person || person.deletedAt) throw setUpFirst()
   for (const identity of identities) {
     try {
       await claimIdentity(services, person.$id, identity)
@@ -82,9 +85,15 @@ export async function claim(
   }
   const linked: string[] = []
   for (const member of await rowsToJoin(services.db, person)) {
-    if (await joinGroup(services, userId, person.$id, member)) linked.push(member.groupId)
+    if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
+      linked.push(member.groupId)
+    }
   }
   return linked
+}
+
+function setUpFirst(): AppError {
+  return new AppError('NOT_FOUND', SET_UP_FIRST)
 }
 
 // Step 2, for one verified identity.
@@ -95,27 +104,29 @@ async function claimIdentity(
 ): Promise<void> {
   const identity = await findIdentity(db, key)
   if (!identity) {
-    await withTransaction(db, (tx) =>
-      tx.write({
+    await withTransaction(db, async (tx) => {
+      await tx.write({
         action: 'create',
         tableId: TABLES.identities,
         rowId: ID.unique(),
         data: { key, type, personId, verified: true, verifiedAt: now.toISOString() },
         permissions: [],
-      }),
-    )
+      })
+      await guardPerson(tx, db, personId, setUpFirst)
+    })
     return
   }
   if (identity.personId === personId) {
     if (identity.verified && identity.verifiedAt) return
-    await withTransaction(db, (tx) =>
-      tx.write({
+    await withTransaction(db, async (tx) => {
+      await tx.write({
         action: 'update',
         tableId: TABLES.identities,
         rowId: identity.$id,
         data: { verified: true, verifiedAt: identity.verifiedAt ?? now.toISOString() },
-      }),
-    )
+      })
+      await guardPerson(tx, db, personId, setUpFirst)
+    })
     return
   }
   // Someone else's: a registered person keeps it. A placeholder would have to be merged into

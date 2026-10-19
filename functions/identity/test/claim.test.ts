@@ -311,6 +311,84 @@ describe('POST /claim', () => {
     expect(new Set(linked).size).toBe(101)
   })
 
+  it('is NOT_FOUND for a deleted account, whose person is never resolved from its userId', async () => {
+    const deleted = {
+      $id: 'p1',
+      userId: 'u1',
+      displayName: 'Former member',
+      claimedAt: BEFORE,
+      mergedInto: null,
+      deletedAt: BEFORE,
+    }
+    expect((await failure(fakes({ persons: [deleted] }), 'POST', '/claim')).code).toBe('NOT_FOUND')
+  })
+
+  describe('when the deletion passes its point of no return after the lookup', () => {
+    const setUpFirst = { status: 404, code: 'NOT_FOUND', message: 'Set up your account first.' }
+    const deletion = (services: Fakes) => () =>
+      updateRow(services.db, 'persons', 'pSam', { deletedAt: AFTER })
+
+    function withNewPhone() {
+      const services = claimFixture([])
+      services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
+      return services
+    }
+
+    it('creates no identity row, before it is staged', async () => {
+      const services = withNewPhone()
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('phone:+61412345678'),
+        deletion(services),
+      )
+      expect(await failure(services, 'POST', '/claim')).toEqual(setUpFirst)
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iEmail'])
+    })
+
+    it('creates no identity row, after it is staged', async () => {
+      const services = withNewPhone()
+      beforeCommit(services.db, deletion(services))
+      expect(await failure(services, 'POST', '/claim')).toEqual(setUpFirst)
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iEmail'])
+    })
+
+    it('leaves an identity row unverified', async () => {
+      const services = claimFixture([], {
+        identities: [
+          {
+            $id: 'iPhone',
+            key: 'phone:+61412345678',
+            type: 'phone',
+            personId: 'pSam',
+            verified: false,
+            verifiedAt: null,
+          },
+        ],
+      })
+      services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"iPhone"'),
+        deletion(services),
+      )
+      expect(await failure(services, 'POST', '/claim')).toEqual(setUpFirst)
+      expect(services.db.rows('identities')[1]).toMatchObject({ verified: false, verifiedAt: null })
+    })
+
+    it('joins nothing, and takes back the team membership', async () => {
+      const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"tableId":"members"'),
+        deletion(services),
+      )
+      expect(await failure(services, 'POST', '/claim')).toEqual(setUpFirst)
+      expect(statusOf(services, 'm1')).toBe('placeholder')
+      expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+      expect(services.db.rows('activity')).toEqual([])
+    })
+  })
+
   it('is NOT_FOUND before bootstrap', async () => {
     expect(await failure(fakes(), 'POST', '/claim')).toEqual({
       status: 404,

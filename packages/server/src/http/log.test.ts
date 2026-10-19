@@ -81,6 +81,7 @@ group('logProblem', () => {
       reminderId: '+61412345678',
       userId: 'sam@example.com',
       membershipId: 'Sam Smith',
+      scheduleId: 'sam@example.com',
     })
     expect(lines()).toEqual([
       {
@@ -94,6 +95,7 @@ group('logProblem', () => {
         reminderId: 'invalid',
         userId: 'invalid',
         membershipId: 'invalid',
+        scheduleId: 'invalid',
       },
     ])
   })
@@ -176,6 +178,8 @@ group('describe', () => {
     expect(describe(new AppwriteException('x', 400, 'Sam Smith'))).toBe(
       'AppwriteException 400 invalid',
     )
+    // A reply that isn't JSON has no type.
+    expect(describe(new AppwriteException('Bad gateway', 502, ''))).toBe('AppwriteException 502')
     expect(describe(42)).toBe('number')
   })
 })

@@ -2,6 +2,7 @@ import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/loca
 import { localTimeToUtc, localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Members, Persons, Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
+import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
@@ -12,7 +13,6 @@ import {
 } from '@ledgerly/server/email/templates'
 import { logProblem } from '@ledgerly/server/http/log'
 import { AppwriteException, Query } from 'node-appwrite'
-import { pages } from '../pages'
 import { findSchedule } from '../schedule-rows'
 import { appBase, type Services } from '../services'
 
