@@ -18,6 +18,18 @@ const row = (fileId: string, extra: Partial<ReceiptFiles> = {}) => ({
   ...extra,
 })
 
+const NOW = new Date('2026-10-19T06:00:00.000Z')
+const noFiles = async () => []
+
+/** The bucket's file IDs, a page of 100 at a time by ID, as the script lists them. */
+const bucket =
+  (...fileIds: string[]) =>
+  async (after: string | undefined) =>
+    [...fileIds]
+      .sort()
+      .filter((fileId) => after === undefined || fileId > after)
+      .slice(0, 100)
+
 const receiptFiles = (db: FakeDb) =>
   Object.fromEntries(
     (db.rows('receiptFiles') as unknown as ReceiptFiles[]).map((stored) => [
@@ -31,17 +43,83 @@ const receiptFiles = (db: FakeDb) =>
   )
 
 describe('backfillReceiptFiles', () => {
+  it('gives every file no transaction lists, and with no row, a row taken off now', async () => {
+    const db = new FakeDb({
+      transactions: [tx('t1', ['listed'])],
+      // Taken off after the ledger change: the ledger made its row.
+      receiptFiles: [row('detached', { detachedAt: '2026-10-19T05:00:00.000Z' })],
+    })
+    const files = bucket('listed', 'detached', 'old-upload', 'removed-before')
+    expect(await backfillReceiptFiles(db, files, NOW)).toEqual({
+      updated: 1,
+      unchanged: 0,
+      deleting: 0,
+      swept: 2,
+    })
+    expect(receiptFiles(db)).toEqual({
+      listed: { transactionIds: ['t1'], detachedAt: null, deletingAt: null },
+      detached: { transactionIds: null, detachedAt: '2026-10-19T05:00:00.000Z', deletingAt: null },
+      'old-upload': { transactionIds: null, detachedAt: NOW.toISOString(), deletingAt: null },
+      'removed-before': { transactionIds: null, detachedAt: NOW.toISOString(), deletingAt: null },
+    })
+    expect(await backfillReceiptFiles(db, files, NOW)).toMatchObject({ unchanged: 1, swept: 0 })
+  })
+
+  it('reads every page of the bucket', async () => {
+    const db = new FakeDb()
+    const fileIds = Array.from({ length: 250 }, (_, index) => `f${String(index).padStart(3, '0')}`)
+    expect(await backfillReceiptFiles(db, bucket(...fileIds), NOW)).toMatchObject({ swept: 250 })
+  })
+
+  it('leaves a file the ledger attaches before the sweep commits', async () => {
+    const db = new FakeDb()
+    const update = db.updateTransaction.bind(db)
+    let done = false
+    vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
+      if (params.commit && !done) {
+        done = true
+        const other = await db.createTransaction()
+        await db.createOperations({
+          transactionId: other.$id,
+          operations: [
+            {
+              action: 'create',
+              databaseId: 'main',
+              tableId: 'receiptFiles',
+              rowId: 'f1',
+              data: { transactionIds: ['t1'], detachedAt: null, deletingAt: null },
+            },
+          ],
+        })
+        await update({ transactionId: other.$id, commit: true })
+      }
+      return update(params)
+    })
+    expect(await backfillReceiptFiles(db, bucket('f1'), NOW)).toMatchObject({ swept: 0 })
+    expect(receiptFiles(db).f1?.transactionIds).toEqual(['t1'])
+  })
+
   it('lists every transaction on each file, and changes nothing when run again', async () => {
     const db = new FakeDb({
       transactions: [tx('t1', ['f1', 'f2']), tx('t2', ['f1']), tx('t3', null)],
     })
-    expect(await backfillReceiptFiles(db)).toEqual({ updated: 2, unchanged: 0, deleting: 0 })
+    expect(await backfillReceiptFiles(db, noFiles, NOW)).toEqual({
+      updated: 2,
+      unchanged: 0,
+      deleting: 0,
+      swept: 0,
+    })
     expect(receiptFiles(db)).toEqual({
       f1: { transactionIds: ['t1', 't2'], detachedAt: null, deletingAt: null },
       f2: { transactionIds: ['t1'], detachedAt: null, deletingAt: null },
     })
     expect(db.rows('receiptFiles').map((stored) => stored.$permissions)).toEqual([[], []])
-    expect(await backfillReceiptFiles(db)).toEqual({ updated: 0, unchanged: 2, deleting: 0 })
+    expect(await backfillReceiptFiles(db, noFiles, NOW)).toEqual({
+      updated: 0,
+      unchanged: 2,
+      deleting: 0,
+      swept: 0,
+    })
   })
 
   it('adds to the rows the new ledger made, and undoes a detach it made without the others', async () => {
@@ -53,7 +131,12 @@ describe('backfillReceiptFiles', () => {
         row('f2', { detachedAt: '2026-10-19T00:00:00.000Z' }),
       ],
     })
-    expect(await backfillReceiptFiles(db)).toEqual({ updated: 2, unchanged: 0, deleting: 0 })
+    expect(await backfillReceiptFiles(db, noFiles, NOW)).toEqual({
+      updated: 2,
+      unchanged: 0,
+      deleting: 0,
+      swept: 0,
+    })
     expect(receiptFiles(db)).toEqual({
       f1: { transactionIds: ['t2', 't1'], detachedAt: null, deletingAt: null },
       f2: { transactionIds: ['t1'], detachedAt: null, deletingAt: null },
@@ -66,7 +149,12 @@ describe('backfillReceiptFiles', () => {
       deletingAt: '2026-10-18T00:00:00.000Z',
     })
     const db = new FakeDb({ transactions: [tx('t1', ['f1'])], receiptFiles: [deleting] })
-    expect(await backfillReceiptFiles(db)).toEqual({ updated: 0, unchanged: 0, deleting: 1 })
+    expect(await backfillReceiptFiles(db, noFiles, NOW)).toEqual({
+      updated: 0,
+      unchanged: 0,
+      deleting: 1,
+      swept: 0,
+    })
     expect(receiptFiles(db).f1).toMatchObject({ deletingAt: '2026-10-18T00:00:00.000Z' })
   })
 
@@ -75,7 +163,7 @@ describe('backfillReceiptFiles', () => {
       tx(`t${String(index).padStart(3, '0')}`, ['f1']),
     )
     const db = new FakeDb({ transactions })
-    await backfillReceiptFiles(db)
+    await backfillReceiptFiles(db, noFiles, NOW)
     expect(receiptFiles(db).f1?.transactionIds).toHaveLength(250)
   })
 
@@ -107,7 +195,12 @@ describe('backfillReceiptFiles', () => {
       }
       return stage(params)
     })
-    expect(await backfillReceiptFiles(db)).toEqual({ updated: 0, unchanged: 1, deleting: 0 })
+    expect(await backfillReceiptFiles(db, noFiles, NOW)).toEqual({
+      updated: 0,
+      unchanged: 1,
+      deleting: 0,
+      swept: 0,
+    })
     expect(receiptFiles(db).f1?.transactionIds).toEqual(['t1', 't2'])
   })
 })

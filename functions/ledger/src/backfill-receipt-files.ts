@@ -4,21 +4,36 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException, Query } from 'node-appwrite'
 
-export type BackfillCounts = { updated: number; unchanged: number; deleting: number }
+export type BackfillCounts = {
+  updated: number
+  unchanged: number
+  deleting: number
+  /** Files no transaction lists, given a row taken off now. */
+  swept: number
+}
+
+/** The receipts bucket's file IDs, a page at a time by ID. The script passes Storage. */
+export type ReceiptsListing = (after: string | undefined) => Promise<string[]>
 
 const PAGE = 100
 // Times a file's row is read and written again after another write changed it meanwhile.
 const TRIES = 3
 
 /**
- * data-model.md#receiptfiles: adds every transaction that lists a file to the file's row, for
- * files attached before the ledger kept these rows. Run by scripts/backfill-receipt-files.mjs,
- * once in each environment before scheduler step 5 ships there. Safe to run again, and while the
- * ledger runs: a row that changes meanwhile is read again. A file taken off a transaction during
- * the run can stay listed, which only keeps it. `deleting` counts rows step 5 had already marked:
- * they're left alone, and none should exist before step 5 ships.
+ * data-model.md#receiptfiles, for files uploaded before the ledger kept these rows. Run by
+ * scripts/backfill-receipt-files.mjs, once in each environment before scheduler step 5 ships:
+ * - adds every transaction that lists a file to the file's row;
+ * - gives every other file with no row a row taken off `now`, so step 5 deletes it a day later.
+ *
+ * Safe to run again, and while the ledger runs: a row that changes meanwhile is read again. A
+ * file taken off a transaction during the run can stay listed, which only keeps it. `deleting`
+ * counts rows step 5 had already marked: they're left alone, and none should exist yet.
  */
-export async function backfillReceiptFiles(db: Db): Promise<BackfillCounts> {
+export async function backfillReceiptFiles(
+  db: Db,
+  files: ReceiptsListing,
+  now: Date,
+): Promise<BackfillCounts> {
   const listed = new Map<string, Set<string>>()
   for (let after: string | undefined; ; ) {
     const { rows } = await db.listRows<Transactions>({
@@ -41,9 +56,38 @@ export async function backfillReceiptFiles(db: Db): Promise<BackfillCounts> {
     if (rows.length < PAGE) break
     after = rows.at(-1)?.$id
   }
-  const counts: BackfillCounts = { updated: 0, unchanged: 0, deleting: 0 }
+  const counts: BackfillCounts = { updated: 0, unchanged: 0, deleting: 0, swept: 0 }
   for (const [fileId, ids] of listed) counts[await addListing(db, fileId, [...ids])] += 1
+  for (let after: string | undefined; ; ) {
+    const page = await files(after)
+    for (const fileId of page) {
+      if (!listed.has(fileId) && (await sweep(db, fileId, now))) counts.swept += 1
+    }
+    if (page.length < PAGE) break
+    after = page.at(-1)
+  }
   return counts
+}
+
+/** A row taken off `now` for a file with none, so step 5 deletes it. False if it has one. */
+async function sweep(db: Db, fileId: string, now: Date): Promise<boolean> {
+  if (await rowOf(db, fileId)) return false
+  try {
+    await withTransaction(db, (tx) =>
+      tx.write({
+        action: 'create',
+        tableId: TABLES.receiptFiles,
+        rowId: fileId,
+        data: { transactionIds: null, detachedAt: now.toISOString(), deletingAt: null },
+        permissions: [],
+      }),
+    )
+    return true
+  } catch (error) {
+    // The ledger attached it meanwhile, and made the row.
+    if (error instanceof AppwriteException && error.code === 409) return false
+    throw error
+  }
 }
 
 async function addListing(

@@ -65,11 +65,11 @@ async function commitNow(db: Db, ...operations: Record<string, unknown>[]) {
   await db.updateTransaction({ transactionId: tx.$id, commit: true })
 }
 
-// Scheduler step 5, pass 1: it starts deleting a file taken off every transaction.
+// Scheduler step 5, pass 2: it starts deleting a file taken off every transaction.
 const startDeleting = (db: Db, fileId: string) =>
   commitNow(db, { action: 'update', rowId: fileId, data: { deletingAt: LATER } })
 
-// Pass 2: it starts deleting a file it found no row for.
+// Pass 1: it starts deleting a file it found no row for.
 const startDeletingNew = (db: Db, fileId: string) =>
   commitNow(db, {
     action: 'create',
@@ -254,7 +254,7 @@ describe('a file the scheduler is deleting', () => {
     const update = files.updateFile.bind(files)
     vi.spyOn(files, 'updateFile').mockImplementationOnce(async (fileId, permissions) => {
       const file = await update(fileId, permissions)
-      // The whole of pass 1, after the reset and before this request stages.
+      // The whole of pass 2, after the reset and before this request stages.
       await startDeleting(db, 'f1')
       files.stored.delete('f1')
       await commitNow(db, { action: 'delete', rowId: 'f1' })
@@ -267,7 +267,7 @@ describe('a file the scheduler is deleting', () => {
   })
 
   it('stores the list when the scheduler gave up on the file first', async () => {
-    // Pass 1 found it attached again and skipped it: deletingAt never got set.
+    // Pass 2 found it attached again and skipped it: deletingAt never got set.
     const db = await withExpense(['f1'])
     await setReceipts(db, [])
     beforeCommit(db, () =>
@@ -291,6 +291,19 @@ describe('two writes to one file at once', () => {
     })
     expect((await setReceipts(db, ['f1'], 't2')).status).toBe(200)
     expect(receiptFiles(db)).toEqual({ f1: listed('t1', 't3', 't2') })
+  })
+
+  it('keeps a transaction the backfill adds between the read and the staging', async () => {
+    // The backfill has no group guard, so only the second read of the rows catches it.
+    const db = await withExpense(['f1'])
+    await call(db, 'POST', '/transactions', expense({ id: 't2' }))
+    const getFile = filesOf(db).getFile.bind(filesOf(db))
+    vi.spyOn(filesOf(db), 'getFile').mockImplementationOnce(async (fileId) => {
+      await commitNow(db, { action: 'update', rowId: 'f1', data: { transactionIds: ['t1', 't0'] } })
+      return getFile(fileId)
+    })
+    expect((await setReceipts(db, ['f1'], 't2')).status).toBe(200)
+    expect(receiptFiles(db)).toEqual({ f1: listed('t1', 't0', 't2') })
   })
 })
 

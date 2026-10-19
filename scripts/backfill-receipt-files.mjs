@@ -1,13 +1,13 @@
-// One-off for #163: adds every transaction that lists a receipt to its receiptFiles row, for files
-// attached before the ledger kept these rows (data-model.md#receiptfiles). Run it once in each
-// environment, after the ledger change is deployed and before scheduler step 5 is:
+// One-off for #163: receiptFiles rows for files uploaded before the ledger kept them
+// (data-model.md#receiptfiles). Run it once in each environment, after the ledger change is
+// deployed and before scheduler step 5 is:
 //   APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/backfill-receipt-files.mjs
-// The key needs rows.read and rows.write. It prints counts only. Safe to run again.
+// The key needs rows.read, rows.write and files.read. It prints counts only. Safe to run again.
 import { rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
-import { Client, TablesDB } from 'node-appwrite'
+import { Client, Query, Storage, TablesDB } from 'node-appwrite'
 
 const { APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_API_KEY } = process.env
 if (!APPWRITE_ENDPOINT || !APPWRITE_PROJECT_ID || !APPWRITE_API_KEY) {
@@ -36,7 +36,21 @@ try {
     .setEndpoint(APPWRITE_ENDPOINT)
     .setProject(APPWRITE_PROJECT_ID)
     .setKey(APPWRITE_API_KEY)
-  console.log(await backfillReceiptFiles(new TablesDB(client)))
+  const storage = new Storage(client)
+  // A page of file IDs by ID, not by cursor (scaling.md).
+  const files = async (after) => {
+    const { files: page } = await storage.listFiles({
+      bucketId: 'receipts',
+      queries: [
+        ...(after === undefined ? [] : [Query.greaterThan('$id', after)]),
+        Query.orderAsc('$id'),
+        Query.limit(100),
+      ],
+      total: false,
+    })
+    return page.map((file) => file.$id)
+  }
+  console.log(await backfillReceiptFiles(new TablesDB(client), files, new Date()))
 } finally {
   rmSync(bundle, { force: true })
 }
