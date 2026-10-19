@@ -13,6 +13,7 @@ export const queryKeys = {
   transactionShares: (id: string) => ['transaction', id, 'shares'] as const,
   transactionItems: (id: string) => ['transaction', id, 'items'] as const,
   members: (groupId: string) => ['members', groupId] as const,
+  activity: (groupId: string) => ['activity', groupId] as const,
   history: (groupId: string, filters: Readonly<Record<string, string | undefined>>) =>
     ['history', groupId, filters] as const,
   // `dates` is each group's local date today, so the key moves on at local midnight.

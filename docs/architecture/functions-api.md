@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
@@ -139,7 +139,7 @@ What every write does, in **one TablesDB transaction**:
 3. Write the transaction row, replace its items and shares, and append an `activity` row.
 4. Commit. On conflict, retry once from step 1.
 
-On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use.
+On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use. The scheduler's `PATCH /schedules/{id}`, `/end` and `DELETE` do the same for a schedule's group.
 
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
@@ -175,7 +175,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 When `POST /groups` leaves them out, `currency`, `timezone` and `region` come from the creator's profile, and `settings` takes its defaults ([data model](data-model.md#groups)). In a house, a member who isn't an admin can add people only with the default role.
 
-Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseAt`, so no more statements are drafted. A `personal` group can't be archived (`VALIDATION_FAILED`). Nor can a group with a timer running in it (`CONFLICT`): stop or void the timer first, since one in an archived group can't be stopped.
+Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseAt`, so no more statements are drafted. A `personal` group can't be archived (`VALIDATION_FAILED`). Nor can a group with a timer running in it (`CONFLICT`): stop or void the timer first, since one in an archived group can't be stopped. Nor can a group with a statement being finalized (`CONFLICT`): finalize it again first, since a finalize can't finish in an archived group.
 
 ## identity
 
@@ -242,9 +242,12 @@ Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP rou
 | `POST /statements/{id}/finalize` | `{ send: boolean }` | `statement` (call **async**) | admin |
 | `POST /statements/{id}/send` | none | `{ sentAt }` | admin; final only |
 | `POST /statements/{id}/void` | `{ reason }` | `statement` | admin; latest final only |
+| `POST /statements/{id}/discard` | none (`emptyBodySchema`) | `{}` | admin; drafts only |
 | `POST /statements/reissue` | `{ groupId, periodStart, periodEnd }` | `statement` (draft) | admin |
 
-On the four `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
+On the five `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
+
+`/discard` deletes the draft ([§5](statements.md#5-discard-post-statementsiddiscard)), so calling it again gets `NOT_FOUND`. The app treats that as done.
 
 Details: [Statements and invoices](statements.md).
 

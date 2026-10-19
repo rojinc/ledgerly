@@ -1482,6 +1482,30 @@ describe('TransactionPage', () => {
     expect((screen.getByLabelText('Reason for voiding') as HTMLInputElement).value).toBe('Twice')
   })
 
+  it('offers receipts only on a row that can still change (#162)', async () => {
+    const archived = { ...acme, archivedAt: '2026-10-01T00:00:00.000Z' }
+    const cases: [Partial<Transactions>, boolean, Groups, Members['role']][] = [
+      [{}, true, acme, 'admin'],
+      [{ statementId: 'st1' }, false, acme, 'admin'],
+      [{ status: 'void' }, false, acme, 'admin'],
+      [{ status: 'running', kind: 'shift' }, false, acme, 'admin'],
+      [{}, false, archived, 'admin'],
+      [{}, false, acme, 'viewer'],
+      [{ createdBy: 'pe' }, false, acme, 'member'],
+    ]
+    for (const [extra, offered, group, role] of cases) {
+      mockGroups(group, role)
+      mockRows([], shares)
+      getRow.mockResolvedValue(row('t1', extra) as never)
+      renderAt('/transactions/t1')
+      expect(await screen.findByRole('heading', { name: 'Supplies' })).toBeTruthy()
+      await screen.findByText('Group')
+      // This test's user isn't verified, so an offer is the prompt to verify.
+      expect(Boolean(screen.queryByText('Verify your email to add receipts.'))).toBe(offered)
+      cleanup()
+    }
+  })
+
   it('has no Void in an archived group, on a final invoice, for a viewer, or for another member’s row', async () => {
     const cases: [Groups, Members['role'], Partial<Transactions>, string | null][] = [
       [

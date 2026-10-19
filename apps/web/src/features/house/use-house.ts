@@ -105,7 +105,7 @@ export function useMemberWrites(groupId: string) {
  * `NOT_A_MEMBER`, which counts as done (functions-api.md#groups).
  */
 export function useLeaveHouse(groupId: string) {
-  const userId = useCurrentUser().data?.$id ?? ''
+  const { userId, personId } = useCaller()
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async () => {
@@ -115,6 +115,18 @@ export function useLeaveHouse(groupId: string) {
         if (!(error instanceof GroupsError && error.code === 'NOT_A_MEMBER')) throw error
       }
     },
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) }),
+    onSuccess: async () => {
+      // The caller can't read the house any more: drop what's cached, so Back doesn't show it
+      // as it was, with buttons that would all get NOT_A_MEMBER. Removing a query doesn't tell
+      // its observers, so the page still open doesn't fetch it again before it goes.
+      for (const queryKey of [
+        queryKeys.group(groupId),
+        queryKeys.members(groupId),
+        queryKeys.myMember(groupId, personId),
+      ]) {
+        queryClient.removeQueries({ queryKey, exact: true })
+      }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
+    },
   })
 }

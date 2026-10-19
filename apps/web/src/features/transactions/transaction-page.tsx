@@ -9,6 +9,7 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useGroupName } from '../groups/use-group-name'
 import { useGroup, useMyMember } from '../groups/use-groups'
+import { ReceiptsSection } from '../receipts/receipts-section'
 import { KIND_LABEL, STATUS_LABEL } from './history-page'
 import {
   useItems,
@@ -220,6 +221,11 @@ function Details({ row }: { row: Transactions }) {
           </ul>
         </section>
       )}
+      <ReceiptsSection
+        row={row}
+        group={group.data}
+        mayChange={mayChange && !locked && !archived && !['void', 'running'].includes(row.status)}
+      />
       {mayChange && !locked && !archived && row.status !== 'void' && (
         <VoidForm voidRow={voidRow} reason={reason} onReason={setReason} />
       )}

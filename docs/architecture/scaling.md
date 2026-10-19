@@ -24,7 +24,7 @@ Production runs on the **Pro** plan. Development may use Free, which is why we k
 | Duplicate writes from retries or bad mobile networks | Client-generated IDs; deterministic occurrence IDs | Nothing more needed. |
 | Receipt storage cost | Client resizes images to at most 1600 px and WebP before upload; 10 MB cap | Clean up unattached files (M4). Add lifecycle rules if storage costs matter. |
 | Data grows forever | Closed periods never change; reports read statements for old periods | Archive shares and transactions older than N years to cold storage. Not before 2028. |
-| Realtime fan-out | One subscription per signed-in app for the tables it reads. Appwrite sends only rows the user can read, and only queries on screen refetch. | Nothing more needed for groups of under 20 people. |
+| Realtime fan-out | One subscription per signed-in app for the tables it reads. The activity feed has no channel of its own: every activity row is written with a row of one of those tables, whose event refreshes it. Appwrite sends only rows the user can read, and only queries on screen refetch. | Nothing more needed for groups of under 20 people. |
 | Email volume | Resend | Separate transactional and summary sending streams. |
 | Very large data (hundreds of millions of shares) | Every money write already goes through one function | Move the ledger tables to a dedicated Postgres behind the same function API. Clients don't change. |
 

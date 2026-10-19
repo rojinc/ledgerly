@@ -160,13 +160,7 @@ export async function createGroup(
           })
         }
         writes.push(
-          activityWrite(
-            input.id,
-            creator.$id,
-            'group.created',
-            `${creator.displayName} created ${input.name}`,
-            now,
-          ),
+          activityWrite(input.id, creator.$id, 'group.created', `Created ${input.name}`, now),
         )
         if (counterpartInput) {
           // identity-and-invites.md#adding-someone-to-a-group, step 5: the counterpart is added too.
