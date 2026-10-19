@@ -219,6 +219,17 @@ describe('GroupsPage', () => {
     ).toBe(false)
   })
 
+  it('shows a balance past the amount cap', async () => {
+    listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g2' }] } as never)
+    listRows.mockResolvedValue({ total: 1, rows: [group('g2', 'employer', 'Acme')] } as never)
+    call.mockResolvedValue({
+      ok: true as const,
+      data: { people: [{ personId: 'p1', netCents: 20_000_000_000 }], transfers: [] },
+    })
+    renderPage()
+    expect(await screen.findByText(/^Owed .*200,000,000\.00$/)).toBeTruthy()
+  })
+
   it('shows a dash when the balance is not available', async () => {
     listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g2' }] } as never)
     listRows.mockResolvedValue({ total: 1, rows: [group('g2', 'employer', 'Acme')] } as never)

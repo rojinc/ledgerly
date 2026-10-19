@@ -379,7 +379,12 @@ describe('POST /delete: purging a group nobody else is in', () => {
 
   it('waits while a statement is being finalized, changing nothing, then purges on a later run', async () => {
     const services = world()
-    await insert(services, 'statements', [statement('st3', 'h2', 'finalizing')])
+    // A finalize that started after step 1 checked (which refuses one they could finish).
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"deletedAt"'),
+      () => insert(services, 'statements', [statement('st3', 'h2', 'finalizing')]),
+    )
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
     expect(rowOf(services, 'groups', 'h2')).toMatchObject({ archivedAt: null })
     expect(teamOf(services, 'h2')).toEqual(['u1'])
@@ -390,6 +395,38 @@ describe('POST /delete: purging a group nobody else is in', () => {
     expect(services.users.account('u1')).toBeDefined()
 
     await setRow(services, 'statements', 'st3', { status: 'final' })
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(leftOf(services, PURGED)).toEqual([])
+  })
+
+  it('deletes the group’s reminders with its rows, and keeps another group’s', async () => {
+    const services = world()
+    const reminder = (id: string, groupId: string) => ({
+      $id: id,
+      groupId,
+      sentBy: 'p2',
+      toPersonId: 'p3',
+      channel: 'email',
+      sentAt: DELETED_AT,
+    })
+    await insert(services, 'reminders', [reminder('rH2', 'h2'), reminder('rH1', 'h1')])
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(services.db.rows('reminders').map((row) => row.$id)).toEqual(['rH1'])
+  })
+
+  it('purges a group whose statement has been stuck finalizing for over an hour', async () => {
+    const services = world()
+    // A finalize that started after step 1 checked, and whose last write was 61 minutes ago.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"deletedAt"'),
+      async () => {
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(NOW.getTime() - 61 * 60 * 1000)
+        await insert(services, 'statements', [statement('st3', 'h2', 'finalizing')])
+        vi.useRealTimers()
+      },
+    )
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
     expect(leftOf(services, PURGED)).toEqual([])
   })

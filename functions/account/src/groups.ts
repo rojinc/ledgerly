@@ -244,12 +244,18 @@ async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
 // still running (it couldn't be stopped once archived) throws `Raced`: the group is left for the
 // next run, which finds it archived, or waits until the finalize ends or the timer stops. A
 // purge doesn't wait for a timer: nobody else is in the team, and it goes with the group's rows.
+// Nor for a finalize stuck for an hour (see `isStuck`), which a kept group isn't archived over.
 async function archive(
   { db, now }: Services,
   personId: string,
   group: Groups,
   purging = false,
 ): Promise<void> {
+  const finalizing = await finalizingStatement(db, group.$id)
+  if (finalizing && isStuck(finalizing, now) && !purging) {
+    console.error(`account: group ${group.$id} not archived: statement ${finalizing.$id} is stuck`)
+    return
+  }
   await withTransaction(db, async (tx) => {
     await tx.write({
       action: 'update',
@@ -261,9 +267,10 @@ async function archive(
     // Stage, then check: finalize step 1 stages the group row in the transaction that sets
     // `finalizing` (statements.md#2-finalize-post-statementsidfinalize).
     const current = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
+    const stillFinalizing = await finalizingStatement(db, group.$id)
     if (
       current?.archivedAt ||
-      (await isFinalizing(db, group.$id)) ||
+      (stillFinalizing && !(purging && isStuck(stillFinalizing, now))) ||
       (!purging && (await othersTimerRunning(db, group.$id, personId)))
     ) {
       throw new Raced()
@@ -284,16 +291,28 @@ async function archive(
   })
 }
 
-// Whether any statement of the group is `finalizing` (`idx_group_period`).
-async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
+/** A statement of the group that is `finalizing` (`idx_group_period`), or null. */
+export async function finalizingStatement(db: Db, groupId: string): Promise<Statements | null> {
   const { rows } = await db.listRows<Statements>({
     databaseId: DATABASE_ID,
     tableId: TABLES.statements,
     queries: [Query.equal('groupId', groupId), Query.equal('status', 'finalizing'), Query.limit(1)],
     total: false,
   })
-  return rows.length > 0
+  return rows[0] ?? null
 }
+
+// A finalize that hasn't written its statement for an hour has stopped (a crash), and only an
+// admin can resume it. Step 1 refuses while they're the only joined admin of a group with a
+// finalizing statement, so a stuck one here began after it, and nobody left can finish it. The
+// group stays unarchived (archiving would refuse the resume for good), with its ID logged, and
+// the deletion carries on: the statements cron starts nothing new for a group with a
+// finalizing statement, so not archiving it costs nothing.
+function isStuck(statement: Statements, now: Date): boolean {
+  return now.getTime() - Date.parse(statement.$updatedAt) > STUCK_FINALIZE_MS
+}
+
+const STUCK_FINALIZE_MS = 60 * 60 * 1000
 
 // Whether a timer that someone else started is running in the group (`idx_group_status_date`).
 // A timer start guards the group row, so one that commits after this read fails the archive's

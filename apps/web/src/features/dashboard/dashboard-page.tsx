@@ -1,7 +1,7 @@
 import { endOfMonth, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatNet } from '@ledgerly/core/money/format'
 import {
   type MonthReport,
   type PersonalReport,
@@ -84,7 +84,7 @@ export function DashboardPage() {
 }
 
 function balanceText(net: number, currency: string): string {
-  const amount = formatMoney(Math.abs(net), currency)
+  const amount = formatNet(Math.abs(net), currency)
   return net > 0 ? `Owed ${amount}` : net < 0 ? `You owe ${amount}` : 'Settled'
 }
 
@@ -150,8 +150,8 @@ function BalancesSection({ groups }: { groups: Groups[] }) {
               <div key={currency} className="flex flex-wrap gap-x-2">
                 <dt className="font-medium">Total in {currency}:</dt>
                 <dd>
-                  owed to you {formatMoney(total.owed, currency)} · you owe{' '}
-                  {formatMoney(total.owe, currency)}
+                  owed to you {formatNet(total.owed, currency)} · you owe{' '}
+                  {formatNet(total.owe, currency)}
                 </dd>
               </div>
             ))}
@@ -312,19 +312,19 @@ function MonthReportView({ report }: { report: PersonalReport }) {
       </h3>
       <dl className="grid grid-cols-[1fr_auto] gap-x-4 gap-y-1">
         <dt>Spending</dt>
-        <dd className="text-right font-medium">{formatMoney(report.spendingCents, currency)}</dd>
+        <dd className="text-right font-medium">{formatNet(report.spendingCents, currency)}</dd>
         <dt>Income</dt>
-        <dd className="text-right font-medium">{formatMoney(report.incomeCents, currency)}</dd>
+        <dd className="text-right font-medium">{formatNet(report.incomeCents, currency)}</dd>
         <dt className="pl-4 text-sm text-muted-foreground">From employers</dt>
         <dd className="text-right text-sm text-muted-foreground">
-          {formatMoney(report.incomeCents - report.personalIncomeCents, currency)}
+          {formatNet(report.incomeCents - report.personalIncomeCents, currency)}
         </dd>
         <dt className="pl-4 text-sm text-muted-foreground">Personal income</dt>
         <dd className="text-right text-sm text-muted-foreground">
-          {formatMoney(report.personalIncomeCents, currency)}
+          {formatNet(report.personalIncomeCents, currency)}
         </dd>
         <dt>Earnings from shifts</dt>
-        <dd className="text-right font-medium">{formatMoney(report.earningsCents, currency)}</dd>
+        <dd className="text-right font-medium">{formatNet(report.earningsCents, currency)}</dd>
       </dl>
       {categories.length > 0 && (
         <div className="flex flex-col gap-2">
@@ -334,7 +334,7 @@ function MonthReportView({ report }: { report: PersonalReport }) {
               <li key={category} className="flex flex-col gap-1">
                 <div className="flex justify-between gap-3 text-sm">
                   <span className="min-w-0 break-words">{categoryLabel(category)}</span>
-                  <span className="shrink-0">{formatMoney(cents, currency)}</span>
+                  <span className="shrink-0">{formatNet(cents, currency)}</span>
                 </div>
                 {/* Decoration only: the amount is written out above. */}
                 <div aria-hidden="true" className="h-2 rounded-sm bg-muted">
@@ -391,8 +391,8 @@ function HistorySection({
                   >
                     <span>{formatMonth(month, 'short')}</span>
                     <span>
-                      Spent {formatMoney(report?.spendingCents ?? 0, currency)} · Income{' '}
-                      {formatMoney(report?.incomeCents ?? 0, currency)}
+                      Spent {formatNet(report?.spendingCents ?? 0, currency)} · Income{' '}
+                      {formatNet(report?.incomeCents ?? 0, currency)}
                     </span>
                   </button>
                 </li>

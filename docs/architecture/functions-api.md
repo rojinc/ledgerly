@@ -39,7 +39,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
-| `RATE_LIMITED` | 429 | Too many invites |
+| `RATE_LIMITED` | 429 | Too many invites or reminders |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |
 
@@ -47,6 +47,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 
 - Creating something takes a **client-generated `id`** (`ID.unique()`). If a row with that ID exists **with the same content**, the function returns it with 200. If the content differs, it returns `CONFLICT`. So the app can safely retry after a timeout or a lost connection.
 - Updates are naturally idempotent: the same body twice gives the same result.
+- **Exception:** `identity POST /reminders` answers any body with a used `id`, from the same sender in the same group, with the stored `{ sentAt }`. It sends the email again under the same key only while that key is live (under 23 hours) and the address and balance checks pass again ([reminders](identity-and-invites.md#reminders), step 3).
 
 ## Shared types
 
@@ -188,6 +189,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
+| `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
@@ -221,6 +223,7 @@ Cron: `35 * * * *`, sent as `POST /` with the `schedule` trigger: it finishes ac
 | `FORBIDDEN`, `details: { reason: 'reauth' }` | The caller's session (from the JWT's session ID, loaded with `users.listSessions`) was created more than `REAUTH_WINDOW_MINUTES` (10) ago, or can't be found. The app asks them to sign in again and retries. |
 | `FORBIDDEN`, `details: { reason: 'recent_password_change' }` | The user's `passwordUpdate` is less than `RECENT_PASSWORD_CHANGE_HOURS` (24) old. The app says when they can try again. |
 | `CONFLICT` | They have a timer running in a group that isn't archived |
+| `CONFLICT` | A statement is being finalized in a group where they're the only joined admin: "A statement is being finalized. Finish it first." |
 | `VALIDATION_FAILED`, `details: { groupIds }` | They're the only joined admin of a house that isn't archived and has another `active` member. Here `details` names the houses, not schema issues. |
 | `CONFLICT` | Another write to their person landed while step 2 set `deletedAt` (an invite's guard write, say): "Something else changed this at the same time. Try again." |
 

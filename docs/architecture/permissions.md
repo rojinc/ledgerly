@@ -20,7 +20,7 @@ Keeping authority in one place (`members.role`) means there is one source of tru
 | Table | Row permissions | Set by |
 | --- | --- | --- |
 | `persons` (registered) | `read("user:<userId>")` | `identity`; `account` removes it on deletion |
-| `persons` (placeholder), `identities`, `invites`, `balances` | none | n/a |
+| `persons` (placeholder), `identities`, `invites`, `reminders`, `balances` | none | n/a |
 | `profiles` | `read("user:<userId>")` | `identity`; `account` deletes the row |
 | `groups`, `members`, `transactions`, `shares`, `items`, `schedules`, `statements`, `activity` | `read("team:<groupId>")` | the writing function |
 
@@ -42,7 +42,7 @@ Table-level permissions: **none** on every table. Row security is on everywhere.
 
 Nobody can edit or void a **locked** transaction, admins included ([I-7](ledger.md#invariants)).
 
-Members who haven't joined (`placeholder`) keep their role but have no access, and get no notifications or reminders until they join.
+Members who haven't joined (`placeholder`) keep their role but have no access, and get no automatic notifications or reminders until they join. A reminder, invite or invoice someone sends them on purpose is different ([joining a group](identity-and-invites.md#joining-a-group)).
 
 ### Default roles by group type
 
