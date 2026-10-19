@@ -4,7 +4,6 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import type {
   Activity,
   Groups,
-  Identities,
   Items,
   Members,
   Persons,
@@ -175,9 +174,10 @@ export async function requireNotFinalizing(
 /**
  * CONFLICT, with `merging`, when the row names a person whose merge is still open in its group
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): its shares, stored input or item
- * splits name a P with `mergedInto` set who still has an identity, lists the group in
- * `mergeGroupIds`, and has no member row there. Planning the row again with today's members
- * would count P's part as someone else's before the merge writes it out. Routes call it after
+ * splits name a P with `mergedInto` set who lists the group in `mergeGroupIds` and has no member
+ * row there, while U (P's `mergedInto`) has one. Per group, so it holds whether or not the merge
+ * finishes elsewhere. Planning the row again with today's members would count P's part as
+ * someone else's before the merge writes it out. Routes call it before planning, and again after
  * staging the group row, so a merge's step 2 that lands meanwhile fails their commit.
  */
 export async function requireNoOpenMerge(
@@ -204,25 +204,19 @@ export async function requireNoOpenMerge(
   })
   for (const person of merged) {
     if (!person.mergeGroupIds?.includes(row.groupId)) continue
-    const [member, identity] = await Promise.all([
-      db.listRows<Members>({
-        databaseId: DATABASE_ID,
-        tableId: TABLES.members,
-        queries: [
-          Query.equal('groupId', row.groupId),
-          Query.equal('personId', person.$id),
-          Query.limit(1),
-        ],
-        total: false,
-      }),
-      db.listRows<Identities>({
-        databaseId: DATABASE_ID,
-        tableId: TABLES.identities,
-        queries: [Query.equal('personId', person.$id), Query.limit(1)],
-        total: false,
-      }),
-    ])
-    if (member.rows.length > 0 || identity.rows.length === 0) continue
+    // P's and U's member rows here: one read, as the group has at most one of each.
+    const { rows: members } = await db.listRows<Members>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.members,
+      queries: [
+        Query.equal('groupId', row.groupId),
+        Query.equal('personId', [person.$id, person.mergedInto as string]),
+        Query.limit(2),
+      ],
+      total: false,
+    })
+    const holds = (personId: string) => members.some((member) => member.personId === personId)
+    if (holds(person.$id) || !holds(person.mergedInto as string)) continue
     const details: MergingRefusal = { reason: 'merging' }
     throw new AppError(
       'CONFLICT',

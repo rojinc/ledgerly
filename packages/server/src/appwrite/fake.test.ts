@@ -122,9 +122,10 @@ describe('FakeDb reads', () => {
 
   it('refuses an `equal` with no values, as Appwrite does', async () => {
     const db = transactions()
-    await expect(
-      db.listRows({ ...DB, queries: [Query.equal('$id', [])] }),
-    ).rejects.toMatchObject({ code: 400, type: 'general_query_invalid' })
+    await expect(db.listRows({ ...DB, queries: [Query.equal('$id', [])] })).rejects.toMatchObject({
+      code: 400,
+      type: 'general_query_invalid',
+    })
   })
 })
 

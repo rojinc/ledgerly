@@ -41,12 +41,12 @@ const byDays = {
 
 const withPat = { mode: 'equal', personIds: ['alice', 'pat'] }
 
-/** Pat's merge into Bob, marked: Pat lists `groupIds` and keeps the identity. */
-const marked = (groupIds = ['house']): Write => ({
+/** Pat's merge into Bob (or `into`), marked: Pat lists `groupIds` and keeps the identity. */
+const marked = (groupIds = ['house'], into = 'bob'): Write => ({
   action: 'update',
   tableId: 'persons',
   rowId: 'pat',
-  data: { mergedInto: 'bob', mergeGroupIds: groupIds },
+  data: { mergedInto: into, mergeGroupIds: groupIds },
 })
 
 /**
@@ -155,6 +155,16 @@ describe('while a merge is open in the row’s group', () => {
     expect(rows.transactions(db)[0]?.status).toBe('due')
   })
 
+  it('holds the row whether or not the merge has finished elsewhere: no identity is needed', async () => {
+    // A merge into a U deleted midway: deletion took Pat's identities, and Pat's shares stay.
+    const db = await written(byDays, marked(), ...stepTwo, {
+      action: 'delete',
+      tableId: 'identities',
+      rowId: 'id-pat',
+    })
+    expectMerging(await call(db, 'PATCH', '/transactions/b1', { ...byDays, description: 'Power' }))
+  })
+
   it('/void goes ahead: it plans nothing again', async () => {
     const db = await written(byDays, marked(), ...stepTwo)
     const response = await call(db, 'POST', '/transactions/b1/void', { reason: 'Duplicate' })
@@ -227,12 +237,9 @@ describe('while a merge is open in the row’s group', () => {
 describe('a merge that isn’t open in the row’s group', () => {
   const edit = { ...byDays, description: 'Power' }
 
-  it('a finished one (no identity left) doesn’t hold the row', async () => {
-    const db = await written(byDays, marked(), ...stepTwo, {
-      action: 'delete',
-      tableId: 'identities',
-      rowId: 'id-pat',
-    })
+  it('one where U has no row in the group (Pat’s was removed before step 2) doesn’t hold it', async () => {
+    // Pat's merge into Dan, who isn't in the house: nothing gave Pat's place to anyone.
+    const db = await written(byDays, marked(['house'], 'dan'), ...stepTwo)
     expect((await call(db, 'PATCH', '/transactions/b1', edit)).status).toBe(200)
   })
 
