@@ -125,9 +125,9 @@ const NESTED: CustomTableLayout = {
 
 /**
  * Each transaction is one row, with its people in a table of their own under the description,
- * so a page never breaks inside one (15 people at most, so one always fits a page). The
- * heading is the table's first header row, so it's never left alone at the foot of a page;
- * it repeats on each page the table runs onto.
+ * so a page never breaks inside one, unless a line is too tall for any page. The heading is the
+ * table's first header row, so it's never left alone at the foot of a page; it repeats on each
+ * page the table runs onto.
  */
 function transactions(
   snapshot: StatementSnapshot,
