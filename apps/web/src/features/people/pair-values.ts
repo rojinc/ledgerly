@@ -1,5 +1,5 @@
 import type { Transactions } from '@ledgerly/core/generated/rows'
-import { formatMoney, parseMoney } from '@ledgerly/core/money/format'
+import { formatNet, parseMoney } from '@ledgerly/core/money/format'
 import type { createGroupBodySchema } from '@ledgerly/core/schemas/groups'
 import type { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
@@ -140,7 +140,7 @@ export function toPairValues(
  * the other person owes them.
  */
 export function balanceText(net: number, name: string, currency: string): string {
-  const amount = formatMoney(Math.abs(net), currency)
+  const amount = formatNet(Math.abs(net), currency)
   return net > 0
     ? `${name} owes you ${amount}`
     : net < 0

@@ -155,6 +155,7 @@ describe('POST / (cron run)', () => {
         expanded: { schedules: 0, created: 0, failed: 0 },
         posted: { posted: 0, skipped: 0, failed: 0 },
         reminders: { sent: 1, skipped: 0, failed: 0 },
+        summaries: { sent: 0, skipped: 0, failed: 0 },
       },
     })
     expect(logs.join('\n')).not.toContain('sam@example.com')
@@ -278,10 +279,14 @@ describe('step 3: shift to confirm', () => {
     expect(get).toHaveBeenCalledTimes(1)
   })
 
-  it('marks it reminded without sending when the owner has no verified email', async () => {
-    const services = seeded([transaction('t1')], {
-      accounts: { u1: { email: 'sam@example.com', emailVerification: false } },
-    })
+  it.each([
+    ['has no verified email', { email: 'sam@example.com', emailVerification: false }],
+    [
+      'is blocked, as one being deleted is',
+      { email: 'sam@example.com', emailVerification: true, status: false },
+    ],
+  ])('marks it reminded without sending when the owner’s account %s', async (_case, account) => {
+    const services = seeded([transaction('t1')], { accounts: { u1: account } })
     expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 1, failed: 0 })
     expect(services.sendEmail).not.toHaveBeenCalled()
     expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
