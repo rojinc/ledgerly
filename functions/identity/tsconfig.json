@@ -1,6 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
+    // ES2023 like core, whose money/format.ts the merge imports through the ledger helpers.
+    "lib": ["ES2023"],
     "types": ["node"]
   },
   "include": ["src", "test"]

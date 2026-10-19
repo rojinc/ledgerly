@@ -244,7 +244,7 @@ export async function moveIdentities(db: Db, fromId: string, intoId: string): Pr
 }
 
 /** Thrown inside a batch when a row it staged had changed. */
-class Changed extends Error {}
+export class Changed extends Error {}
 
 /** Shares moved per transaction: each may take two writes (combine), plus the group's guard. */
 const SHARES_PER_BATCH = Math.floor((MERGE_BATCH - 1) / 2)
@@ -298,7 +298,7 @@ export async function moveShares(
 }
 
 /** Thrown inside a batch when the group has a statement being finalized. */
-class Finalizing extends Error {}
+export class Finalizing extends Error {}
 
 /** One batch of P's shares in one group: the number moved, or `putOff` while it's finalizing. */
 async function moveShareBatch(
@@ -379,7 +379,8 @@ async function moveShareBatch(
   }
 }
 
-async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
+/** Whether a statement of the group is `finalizing` (statements.md#2-finalize). */
+export async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
   const { rows } = await db.listRows<Statements>({
     databaseId: DATABASE_ID,
     tableId: TABLES.statements,
