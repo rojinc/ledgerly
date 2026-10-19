@@ -95,6 +95,6 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 - Receipt scanning (photo → line items) with an AI vision model.
 - Mobile apps (Expo / React Native).
 - Employer portal, where an employer logs in to see statements.
-- Subscription billing for the SaaS. Free at launch; one paid plan when the owner decides to charge, as designed in [billing](../architecture/billing.md) ([D-018](../architecture/decisions.md#d-018-free-at-launch-one-paid-plan-later-pulled-from-stripe), proposed).
+- Subscription billing for the SaaS. Free at launch; one paid plan when the owner decides to charge, as designed in [billing](../architecture/billing.md) ([D-019](../architecture/decisions.md#d-019-free-at-launch-one-paid-plan-later-pulled-from-stripe), proposed).
 - More currencies and countries.
 - Per-friend totals across all groups.
