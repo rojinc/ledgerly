@@ -1,6 +1,7 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { AppwriteException } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
@@ -69,6 +70,21 @@ function refused(code: string, message: string, details?: unknown): Result<unkno
   return { ok: false, error: { code, message, ...(details ? { details } : {}) } } as Result<unknown>
 }
 
+/** `useCurrentUser` read from the cache, as the app's is, so setting it to null re-renders. */
+function cachedUser(user: object = { $id: 'u1' }) {
+  vi.mocked(useCurrentUser).mockImplementation(
+    () =>
+      useQuery({
+        queryKey: queryKeys.currentUser,
+        queryFn: async () => user,
+        initialData: user,
+        staleTime: Number.POSITIVE_INFINITY,
+      }) as never,
+  )
+}
+
+const signedOut = () => new AppwriteException('No session', 401)
+
 const confirm = (text = 'DELETE') =>
   fireEvent.change(screen.getByLabelText('Type DELETE to confirm'), { target: { value: text } })
 
@@ -86,6 +102,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  localStorage.clear()
   vi.resetAllMocks()
 })
 
@@ -220,6 +237,9 @@ describe('DeleteAccountPage', () => {
     expect(queryClient.getQueryData(['kept'])).toBeUndefined()
     expect(queryClient.getQueryData(queryKeys.currentUser)).toBeNull()
     expect(deleteSession).toHaveBeenCalledWith({ sessionId: 'current' })
+    expect(localStorage.getItem('ledgerly:onboarding-hidden:u1')).toBeNull()
+    expect(localStorage.getItem('cookieFallback')).toBeNull()
+    expect(screen.getByText(/signed out on every device/)).toBeTruthy()
     // The user is null in the cache now, and the page has re-rendered with it: the message stays.
     expect(renders).toBeGreaterThan(1)
     expect(screen.getByRole('heading', { name: 'Your account was deleted' })).toBeTruthy()
@@ -259,6 +279,16 @@ describe('DeleteAccountPage', () => {
     submit()
     const alert = await screen.findByRole('alert')
     expect(alert.textContent).toMatch(/sign in again, then delete your account within 10 minutes/)
+    // Signing out fails for another reason: a session left behind would block the next sign-in.
+    deleteSession.mockRejectedValueOnce(new Error('offline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }))
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toMatch(/couldn’t sign you out/),
+    )
+    expect(router.state.location.pathname).toBe('/account/delete')
+    expect(queryClient.getQueryData(['kept'])).toBeDefined()
+    // Already signed out (401): on to sign in.
+    deleteSession.mockRejectedValueOnce(signedOut())
     fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
     expect(router.state.location.state).toEqual({ from: '/account/delete' })
@@ -266,21 +296,53 @@ describe('DeleteAccountPage', () => {
     expect(queryClient.getQueryData(['kept'])).toBeUndefined()
   })
 
-  it('still goes to sign in when signing out fails', async () => {
-    deleteSession.mockRejectedValue(new Error('no session'))
+  it('treats an UNAUTHENTICATED answer as maybe deleted, and keeps saying so', async () => {
+    cachedUser()
+    localStorage.setItem('ledgerly:onboarding-hidden:u1', '1')
+    localStorage.setItem('cookieFallback', '{"a_session":"secret"}')
     call.mockResolvedValue(refused('UNAUTHENTICATED', 'No signed-in user'))
     const { router, queryClient } = renderPage()
-    queryClient.setQueryData(queryKeys.currentUser, { $id: 'u1' })
     confirm()
     submit()
-    expect((await screen.findByRole('alert')).textContent).toMatch(
-      /We couldn’t confirm the deletion/,
-    )
-    // Maybe deleted: the account's cached rows go at once; the user stays so this screen stays.
+    const heading = await screen.findByRole('heading', { name: 'We couldn’t confirm the deletion' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    // Nothing of the account's stays in the browser.
     expect(queryClient.getQueryData(['kept'])).toBeUndefined()
-    expect(queryClient.getQueryData(queryKeys.currentUser)).toEqual({ $id: 'u1' })
+    expect(queryClient.getQueryData(queryKeys.currentUser)).toBeNull()
+    expect(localStorage.getItem('ledgerly:onboarding-hidden:u1')).toBeNull()
+    expect(localStorage.getItem('cookieFallback')).toBeNull()
+    expect(router.state.location.pathname).toBe('/account/delete')
+    deleteSession.mockRejectedValueOnce(new Error('offline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }))
+    expect((await screen.findByRole('alert')).textContent).toMatch(/couldn’t sign you out/)
+    expect(router.state.location.pathname).toBe('/account/delete')
+    deleteSession.mockRejectedValueOnce(signedOut())
     fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
+    expect(router.state.location.state).toEqual({ from: '/account/delete' })
+  })
+
+  it('sends no bootstrap after an UNAUTHENTICATED answer, with the real useBootstrap', async () => {
+    const real =
+      await vi.importActual<typeof import('../auth/use-bootstrap')>('../auth/use-bootstrap')
+    vi.mocked(useBootstrap).mockImplementation(real.useBootstrap)
+    cachedUser()
+    call.mockImplementation((async (_fn: string, _method: string, path: string) =>
+      path === '/bootstrap'
+        ? { ok: true, data: { personId: 'p1' } }
+        : refused('UNAUTHENTICATED', 'No signed-in user')) as never)
+    const { router } = renderPage()
+    confirm()
+    await waitFor(() =>
+      expect(
+        screen.getByRole('button', { name: 'Delete my account' }).getAttribute('aria-disabled'),
+      ).toBe('false'),
+    )
+    submit()
+    await screen.findByRole('heading', { name: 'We couldn’t confirm the deletion' })
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 20)))
+    expect(call.mock.calls.map((args) => args[2])).toEqual(['/bootstrap', '/delete'])
+    expect(router.state.location.pathname).toBe('/account/delete')
   })
 
   it('says when the password changed too recently, and when to try again', async () => {
@@ -297,29 +359,41 @@ describe('DeleteAccountPage', () => {
       timeStyle: 'short',
     }).format(Date.parse('2026-10-20T08:00:00.000Z'))
     expect((await screen.findByRole('alert')).textContent).toBe(
-      `Your password was set or changed in the last 24 hours. For your safety, you can delete your account from ${at}.`,
+      `A sign-in detail (your password, email or phone) changed in the last 24 hours. For your safety, you can delete your account from ${at}.`,
     )
     expect(screen.queryByRole('button', { name: 'Sign in again' })).toBeNull()
   })
 
-  it('says a day after the change when the change time isn’t known', async () => {
+  it.each([
+    ['isn’t known', undefined],
+    ['would already be past', '2026-01-01T00:00:00.000Z'],
+  ])('says 24 hours after the change when the time %s', async (_case, passwordUpdate) => {
+    vi.mocked(useCurrentUser).mockReturnValue({
+      data: { $id: 'u1', passwordUpdate },
+      isPending: false,
+    } as never)
     call.mockResolvedValue(refused('FORBIDDEN', 'Too soon', { reason: 'recent_password_change' }))
     renderPage()
     confirm()
     submit()
-    expect((await screen.findByRole('alert')).textContent).toMatch(/a day after that change\.$/)
+    expect((await screen.findByRole('alert')).textContent).toMatch(
+      /delete your account 24 hours after that change\.$/,
+    )
   })
 
   it('shows a FORBIDDEN with another reason, or none, as the function words it', async () => {
     call
       .mockResolvedValueOnce(refused('FORBIDDEN', 'Not allowed', { reason: 'other' }))
       .mockResolvedValueOnce(refused('FORBIDDEN', 'Not allowed either'))
+      .mockResolvedValueOnce(refused('FORBIDDEN', 'Not an object', 'reauth'))
     renderPage()
     confirm()
     submit()
     expect((await screen.findByRole('alert')).textContent).toBe('Not allowed')
     submit()
     await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Not allowed either'))
+    submit()
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Not an object'))
     expect(screen.queryByRole('button', { name: 'Sign in again' })).toBeNull()
   })
 

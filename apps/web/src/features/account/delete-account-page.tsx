@@ -1,7 +1,11 @@
-import { RECENT_PASSWORD_CHANGE_HOURS } from '@ledgerly/core/constants/limits'
+import {
+  REAUTH_WINDOW_MINUTES,
+  RECENT_PASSWORD_CHANGE_HOURS,
+} from '@ledgerly/core/constants/limits'
 import type { Groups } from '@ledgerly/core/generated/rows'
 import type { DeleteAccountRefusal, DeleteAccountResult } from '@ledgerly/core/schemas/identity'
-import { useQueryClient } from '@tanstack/react-query'
+import { type QueryClient, useQueryClient } from '@tanstack/react-query'
+import { AppwriteException } from 'appwrite'
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react'
 import { Link, Navigate, useBlocker, useNavigate } from 'react-router'
 import { callFunction, type Err } from '../../lib/api'
@@ -21,26 +25,35 @@ const PATH = '/account/delete'
 /** What the screen says to a refusal: plain words, and whether signing in again is the way on. */
 type Refusal = { message: string; groupIds?: string[]; signIn?: boolean; timer?: boolean }
 
-/** When a password set or changed at `passwordUpdate` is old enough to delete, in words. */
+/**
+ * When a sign-in detail changed at `passwordUpdate` is old enough to delete, in words. A time not
+ * in the future (a change made on another device since) gets the general wording.
+ */
 function tryAgainAt(passwordUpdate: string | undefined): string {
   const changed = passwordUpdate ? Date.parse(passwordUpdate) : Number.NaN
-  if (Number.isNaN(changed)) return 'a day after that change'
-  const at = new Date(changed + RECENT_PASSWORD_CHANGE_HOURS * 60 * 60 * 1000)
+  const at = changed + RECENT_PASSWORD_CHANGE_HOURS * 60 * 60 * 1000
+  if (Number.isNaN(changed) || at <= Date.now()) {
+    return `${RECENT_PASSWORD_CHANGE_HOURS} hours after that change`
+  }
   return `from ${new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(at)}`
 }
 
 export function refusalOf(error: Err['error'], passwordUpdate?: string): Refusal {
-  const details = (error.details ?? {}) as Partial<DeleteAccountRefusal & { groupIds: string[] }>
+  const raw = error.details
+  const details = (typeof raw === 'object' && raw !== null ? raw : {}) as Partial<
+    DeleteAccountRefusal & { groupIds: string[] }
+  >
   const reason = 'reason' in details ? details.reason : undefined
   if (error.code === 'FORBIDDEN' && reason === 'reauth') {
     return {
-      message: 'For your safety, sign in again, then delete your account within 10 minutes.',
+      message: `For your safety, sign in again, then delete your account within ${REAUTH_WINDOW_MINUTES} minutes.`,
       signIn: true,
     }
   }
   if (error.code === 'FORBIDDEN' && reason === 'recent_password_change') {
+    // Appwrite moves `passwordUpdate` when an account without a password changes its email or phone.
     return {
-      message: `Your password was set or changed in the last 24 hours. For your safety, you can delete your account ${tryAgainAt(passwordUpdate)}.`,
+      message: `A sign-in detail (your password, email or phone) changed in the last ${RECENT_PASSWORD_CHANGE_HOURS} hours. For your safety, you can delete your account ${tryAgainAt(passwordUpdate)}.`,
     }
   }
   if (error.code === 'VALIDATION_FAILED' && Array.isArray(details.groupIds)) {
@@ -53,15 +66,32 @@ export function refusalOf(error: Err['error'], passwordUpdate?: string): Refusal
   if (error.code === 'CONFLICT') {
     return { message: 'You have a timer running. Stop or void it first.', timer: true }
   }
-  if (error.code === 'UNAUTHENTICATED') {
-    // After the point of no return the sessions go, so a retry can't tell whether it finished.
-    return {
-      message:
-        'We couldn’t confirm the deletion. Sign in again: if your account is gone, signing in won’t work.',
-      signIn: true,
-    }
-  }
   return { message: error.message }
+}
+
+/** Ends this device's session: false when that failed for any reason but its being gone already. */
+async function endSession(): Promise<boolean> {
+  try {
+    await account.deleteSession({ sessionId: 'current' })
+    return true
+  } catch (error) {
+    return error instanceof AppwriteException && error.code === 401
+  }
+}
+
+/**
+ * Drops all of a maybe-deleted account from this browser: the cache, its onboarding flag, and the
+ * SDK's copy of the session, which `deleteSession` can't remove once the server has.
+ */
+function forget(queryClient: QueryClient, userId: string) {
+  queryClient.clear()
+  queryClient.setQueryData(queryKeys.currentUser, null)
+  try {
+    localStorage.removeItem(`ledgerly:onboarding-hidden:${userId}`)
+    localStorage.removeItem('cookieFallback')
+  } catch {
+    // Storage blocked: nothing was kept there.
+  }
 }
 
 /**
@@ -72,7 +102,10 @@ export function refusalOf(error: Err['error'], passwordUpdate?: string): Refusal
 export function DeleteAccountPage() {
   const user = useCurrentUser()
   const [deleted, setDeleted] = useState<DeleteAccountResult>()
+  // The answer was UNAUTHENTICATED: maybe deleted, so nothing of the account's stays mounted.
+  const [unconfirmed, setUnconfirmed] = useState(false)
   if (deleted) return <Deleted result={deleted} />
+  if (unconfirmed) return <Unconfirmed />
   if (user.isPending) {
     return (
       <Page>
@@ -99,6 +132,7 @@ export function DeleteAccountPage() {
       userId={user.data.$id}
       passwordUpdate={user.data.passwordUpdate}
       onDeleted={setDeleted}
+      onUnconfirmed={() => setUnconfirmed(true)}
     />
   )
 }
@@ -111,10 +145,12 @@ function DeleteAccount({
   userId,
   passwordUpdate,
   onDeleted,
+  onUnconfirmed,
 }: {
   userId: string
   passwordUpdate: string | undefined
   onDeleted: (result: DeleteAccountResult) => void
+  onUnconfirmed: () => void
 }) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -135,10 +171,13 @@ function DeleteAccount({
 
   /** Signs out on this device, then back to this screen through the sign-in page. */
   const signInAgain = async () => {
-    try {
-      await account.deleteSession({ sessionId: 'current' })
-    } catch {
-      // Already gone, as after a deletion that went through.
+    // A session left behind would make the next sign-in fail.
+    if (!(await endSession())) {
+      setRefusal({
+        message: 'We couldn’t sign you out. Check your connection and try again.',
+        signIn: true,
+      })
+      return
     }
     queryClient.clear()
     queryClient.setQueryData(queryKeys.currentUser, null)
@@ -153,23 +192,18 @@ function DeleteAccount({
     const result = await callFunction<DeleteAccountResult>('account', 'POST', '/delete', {
       confirm: 'DELETE',
     })
-    if (!result.ok) {
+    if (!result.ok && result.error.code !== 'UNAUTHENTICATED') {
       setBusy(false)
-      if (result.error.code === 'UNAUTHENTICATED') {
-        // Maybe deleted: nothing of this account's is shown from the cache any more. The user
-        // stays, so this screen stays up to say so.
-        queryClient.removeQueries({
-          predicate: (query) => query.queryKey[0] !== queryKeys.currentUser[0],
-        })
-      }
       setRefusal(refusalOf(result.error, passwordUpdate))
       return
     }
-    // Nothing of this user's may stay in the cache; their sessions are gone already.
-    onDeleted(result.data)
-    queryClient.clear()
-    queryClient.setQueryData(queryKeys.currentUser, null)
-    void account.deleteSession({ sessionId: 'current' }).catch(() => {})
+    // Deleted, or maybe: past the point of no return the sessions go, so an UNAUTHENTICATED can't
+    // tell. This form unmounts first, so no query of the account's runs again (a bootstrap now
+    // could make a new person), then nothing of the account's stays in the browser.
+    if (result.ok) onDeleted(result.data)
+    else onUnconfirmed()
+    forget(queryClient, userId)
+    if (result.ok) void endSession()
   }
 
   return (
@@ -189,10 +223,13 @@ function DeleteAccount({
         </h2>
         <ul className="list-disc pl-5 text-sm">
           <li>Your login, and the email and phone on your account.</li>
-          <li>Your profile and business details.</li>
           <li>
-            Your own records, and every group nobody else is in, with its receipts, statements and
-            invoices.
+            Your profile and business details. Statements already issued keep the details printed on
+            them.
+          </li>
+          <li>
+            Your personal records, and every group nobody else is in, with its receipts, statements
+            and invoices.
           </li>
           <li>Invites you sent.</li>
         </ul>
@@ -204,7 +241,7 @@ function DeleteAccount({
         <ul className="list-disc pl-5 text-sm">
           <li>Your history, under the name “Former member”, so everyone’s balances stay right.</li>
           <li>Statements and invoices already issued, as they were issued.</li>
-          <li>Receipts on its transactions, whoever added them, and notes others wrote.</li>
+          <li>Receipts on their transactions, whoever added them, and notes others wrote.</li>
           <li>The activity already recorded.</li>
         </ul>
         <p className="text-sm">
@@ -350,6 +387,37 @@ function RefusalNotice({
   )
 }
 
+function Unconfirmed() {
+  const navigate = useNavigate()
+  const heading = useRef<HTMLHeadingElement>(null)
+  useEffect(() => heading.current?.focus(), [])
+  const [failed, setFailed] = useState(false)
+  const signIn = async () => {
+    // A session left behind would make the next sign-in fail.
+    if (!(await endSession())) {
+      setFailed(true)
+      return
+    }
+    navigate('/login', { replace: true, state: { from: PATH } })
+  }
+  return (
+    <Page>
+      <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+        We couldn’t confirm the deletion
+      </h1>
+      <p>Sign in again: if your account is gone, signing in won’t work.</p>
+      {failed && (
+        <Alert variant="destructive">
+          We couldn’t sign you out. Check your connection and try again.
+        </Alert>
+      )}
+      <Button type="button" className="self-start" onClick={() => void signIn()}>
+        Sign in again
+      </Button>
+    </Page>
+  )
+}
+
 function Deleted({ result }: { result: DeleteAccountResult }) {
   // The form and its button are gone: focus goes to the news.
   const heading = useRef<HTMLHeadingElement>(null)
@@ -363,7 +431,7 @@ function Deleted({ result }: { result: DeleteAccountResult }) {
         {result.finished
           ? 'Everything listed is gone.'
           : 'The rest of what’s listed is removed within the hour.'}{' '}
-        You’ve been signed out on this device.
+        You’ve been signed out on every device.
       </p>
       <Link to="/signup" className="self-start underline underline-offset-4">
         Create a new account
