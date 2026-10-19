@@ -193,11 +193,18 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
+| `POST /` | the Appwrite user, as the event sends it; none for a scheduled run | `{}`; a scheduled run returns `{ unfinished, finished, skipped, cutOff }` | only `identity`'s own runs, below; a signed-in call gets `FORBIDDEN` |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
-Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`. A person calling `POST /` gets `FORBIDDEN`.
+**`POST /` is one route for two kinds of run**, and it dispatches on the kind:
+- a [scheduled run](permissions.md#function-side-checks) (`ctx.scheduled`), every 60 minutes (`interval: 60`), carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`;
+- an [event run](permissions.md#function-side-checks) (`ctx.event`) of `users.*.update.password` or `users.*.recovery.*.update` sends the [password notice](identity-and-invites.md#password-notice).
+
+A person calling `POST /` gets `FORBIDDEN`, and any other call without a JWT `UNAUTHENTICATED`.
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
+
+`POST /` reads only the user ID, from the event's name in `x-appwrite-event` or else the body's `$id`. It never logs or stores the body (Appwrite's user model can carry the password hash), and answers `{}` to an event run whether it sent an email or not (a failed send fails the run).
 
 `linkedGroupIds` (`/bootstrap`, `/claim`) lists only the groups joined in that call, so after a retry it leaves out groups an earlier, interrupted call already joined.
 
