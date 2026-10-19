@@ -98,7 +98,7 @@ describe('applyShares', () => {
   })
 
   it('leaves its input alone', () => {
-    const people = structuredClone(row)
+    const people = row.map((person) => ({ ...person }))
     applyShares(people, payment, [])
     expect(people).toEqual(row)
   })

@@ -1,5 +1,6 @@
 import type { Activity, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import type { ScheduleResult } from '@ledgerly/core/schemas/scheduler'
+import { balancesFromShares } from '@ledgerly/core/settle/balances'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -208,6 +209,24 @@ describe('step 2: auto-post', () => {
         { personId: 'pAlex', cents: 6_000 },
       ])
     }
+  })
+
+  it('keeps the group’s balances row as it posts (ledger.md#balances)', async () => {
+    const services = seeded()
+    await withTransaction(services.db, (tx) =>
+      tx.write({ action: 'create', tableId: 'balances', rowId: 'elm', data: { peopleJson: '[]' } }),
+    )
+    await create(services, groceries, 'u2')
+    expect((await runCron(services)).posted.posted).toBe(2)
+    const shares = (services.db.rows('shares') as unknown as Shares[]).filter(
+      (share) => share.groupId === 'elm',
+    )
+    const stored = JSON.parse(String(services.db.rows('balances')[0]?.peopleJson))
+    expect(stored).toEqual(balancesFromShares(shares))
+    expect(stored).toEqual([
+      { personId: 'pAlex', netCents: 6_000, shares: 2 },
+      { personId: 'pSam', netCents: -6_000, shares: 2 },
+    ])
   })
 
   it('posts an expense made on its own day, on that day', async () => {

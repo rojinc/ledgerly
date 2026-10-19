@@ -70,6 +70,29 @@ describe('the balances row', () => {
     expect(stored(db)).toEqual([])
   })
 
+  it('follows a post', async () => {
+    const db = seed({ balances: EMPTY })
+    const bill = {
+      id: 'b1',
+      groupId: 'house',
+      kind: 'bill',
+      date: '2026-10-17',
+      description: 'Electricity',
+      totalCents: 9000,
+      bill: { status: 'due', dueOn: '2026-10-17' },
+      split: { mode: 'equal', personIds: ['alice', 'bob'] },
+    }
+    await call(db, 'POST', '/transactions', bill)
+    // A due bill has no shares yet.
+    expect(stored(db)).toEqual([])
+    expect((await call(db, 'POST', '/transactions/b1/post', {})).status).toBe(200)
+    expect(stored(db)).toEqual(fresh(db))
+    expect(stored(db)).toEqual([
+      { personId: 'alice', netCents: 4500, shares: 1 },
+      { personId: 'bob', netCents: -4500, shares: 1 },
+    ])
+  })
+
   it('follows a timer stop', async () => {
     const db = seed({ balances: [{ $id: 'job', peopleJson: '[]' }] })
     await call(db, 'POST', '/timer/start', { id: 'sh1', groupId: 'job' }, 'u-sam')
