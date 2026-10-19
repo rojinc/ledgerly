@@ -37,3 +37,16 @@ export async function* pages<R extends Models.Row>(
     after = rows[rows.length - 1]?.$id
   }
 }
+
+/** Every matching row, however far the run has got, paged as `pages` does. */
+export async function allRows<R extends Models.Row>(
+  db: Services['db'],
+  tableId: TableId,
+  queries: string[],
+): Promise<R[]> {
+  const rows: R[] = []
+  for await (const row of pages<R>({ db, outOfTime: () => false }, tableId, queries)) {
+    rows.push(row)
+  }
+  return rows
+}

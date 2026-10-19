@@ -1,4 +1,5 @@
 import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
+import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Schedules } from '@ledgerly/core/generated/rows'
 import { endScheduleBodySchema } from '@ledgerly/core/schemas/scheduler'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
@@ -13,7 +14,7 @@ export type EndedSchedule = { schedule: Schedules; removed: number }
 
 /**
  * `scheduler POST /schedules/{id}/end` (scheduling.md#schedule-routes): sets `endsOn` and
- * deletes the occurrences after it that are still `scheduled` or `due` and not edited. It
+ * deletes the future occurrences after it that are still `scheduled` or `due` and not edited. It
  * never plans the template, so a schedule can always be ended. A later `endsOn` than before
  * lets the next cron run carry on up to it.
  */
@@ -41,7 +42,11 @@ export async function endSchedule(
       // An archive that lands meanwhile makes this run again and get ARCHIVED.
       await guardGroup(tx, db, membership.group)
     })
-    const removed = await removeOccurrences(db, membership.group, scheduleId, addDays(endsOn, 1))
+    // Only future ones: a past occurrence that wasn't posted waits for the user.
+    const today = localToday(membership.group.timezone, now)
+    const after = addDays(endsOn, 1)
+    const from = compareDates(after, today) > 0 ? after : today
+    const removed = await removeOccurrences(db, membership.group, scheduleId, from)
     return { schedule: await getSchedule(db, scheduleId), removed }
   })
 }

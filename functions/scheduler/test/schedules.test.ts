@@ -1,8 +1,11 @@
+import { type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
 import type { Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import type { ScheduleResult } from '../src/routes/create-schedule'
 import type { EndedSchedule } from '../src/routes/end-schedule'
+import type { RunResult } from '../src/routes/run'
 import type { UpdatedSchedule } from '../src/routes/update-schedule'
 import {
   beforeCommit,
@@ -111,18 +114,25 @@ function scheduleRow(services: Fakes, id = ID): Schedules | undefined {
 }
 
 function runCron(services: Fakes) {
-  return ok(services, 'POST', '/', { userId: null, scheduled: true })
+  return ok<RunResult>(services, 'POST', '/', { userId: null, scheduled: true })
 }
 
-// Fails the `count`th commit, as a timeout would.
-function failCommit(services: Fakes, count: number) {
+// Fails the commits counted in `which` (from 1), as a timeout would, or as `error` says.
+function failCommit(
+  services: Fakes,
+  which: number | number[],
+  error = () => new Error('Timed out'),
+) {
   const commit = services.db.updateTransaction.bind(services.db)
   let commits = 0
   return vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
-    if (params.commit && ++commits === count) throw new Error('Timed out')
+    if (params.commit && [which].flat().includes(++commits)) throw error()
     return commit(params)
   })
 }
+
+// Appwrite's answer to a commit that lost a race.
+const lostRace = () => new AppwriteException('Conflict', 409, 'transaction_conflict')
 
 function create(services: Fakes, body: object, userId = 'u1') {
   return ok<ScheduleResult>(services, 'POST', '/schedules', { body, userId })
@@ -548,6 +558,78 @@ describe('races on schedule edits', () => {
     expect(rows.every((row) => row.description === 'Food')).toBe(true)
   })
 
+  it('keeps an occurrence moved to another day, and doesn’t make it again', async () => {
+    // Rent for November was paid early, on 18 October.
+    const services = seeded()
+    await create(services, rent)
+    await setRow(services, 'transactions', `${rent.id}_20261101`, {
+      status: 'posted',
+      date: '2026-10-18',
+    })
+    const { created } = await patch(services, {
+      ...rent,
+      template: { ...rent.template, totalCents: 95_000 },
+    })
+    // Only December: November's ID is taken, whatever its date.
+    expect(created).toBe(1)
+    expect(await runCron(services)).toMatchObject({
+      expanded: { schedules: 0, created: 0, failed: 0 },
+    })
+    expect(occurrences(services, rent.id).map((row) => [row.date, row.totalCents])).toEqual([
+      ['2026-10-18', 90_000],
+      ['2026-12-01', 95_000],
+    ])
+  })
+
+  it('carries on past an occurrence moved earlier, when an end is moved later', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await setRow(services, 'transactions', `${ID}_20261203`, {
+      overridden: true,
+      date: '2026-11-10',
+    })
+    await ok(services, 'POST', `/schedules/${ID}/end`, { body: { endsOn: '2026-11-12' } })
+    await ok(services, 'POST', `/schedules/${ID}/end`, { body: { endsOn: '2026-12-31' } })
+    // 19 and 26 November and 10 December; 3 December's ID is taken by the moved one.
+    expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 3, failed: 0 })
+  })
+
+  it('leaves the old rule whole when an edit loses its races', async () => {
+    // Thursdays to Fridays; the deletes lose a race on both tries.
+    const services = seeded()
+    await create(services, thursdays)
+    failCommit(services, [2, 4], lostRace)
+    expect(
+      await failure(services, 'PATCH', `/schedules/${ID}`, {
+        body: { ...thursdays, rrule: 'FREQ=WEEKLY;BYDAY=FR' },
+      }),
+    ).toEqual({ status: 409, code: 'CONFLICT' })
+    vi.restoreAllMocks()
+    expect(scheduleRow(services)?.rrule).toBe('FREQ=WEEKLY;BYDAY=TH')
+    await runCron(services)
+    const days = new Set(occurrences(services).map((row) => weekdayOf(row.date as LocalDate)))
+    expect(days).toEqual(new Set([4]))
+    expect(occurrences(services)).toHaveLength(11)
+  })
+
+  it('makes again the old occurrences an edit deleted before it stopped', async () => {
+    const services = seeded()
+    await create(services, groceries)
+    // The reset, one batch of deletes, then a timeout.
+    const timeout = failCommit(services, 3)
+    expect(
+      await failure(services, 'PATCH', `/schedules/${groceries.id}`, {
+        body: { ...groceries, description: 'Food' },
+      }),
+    ).toMatchObject({ status: 500 })
+    timeout.mockRestore()
+    expect(occurrences(services, groceries.id).length).toBeLessThan(121)
+    await runCron(services)
+    const rows = occurrences(services, groceries.id)
+    expect(rows).toHaveLength(121)
+    expect(rows.every((row) => row.description === 'Groceries')).toBe(true)
+  })
+
   it('can’t name someone in an edit whose member row is deleted while it commits', async () => {
     const services = seeded()
     await create(services, {
@@ -692,6 +774,18 @@ describe('POST /schedules/{id}/end', () => {
     expect(occurrences(services)).toHaveLength(11)
   })
 
+  it('leaves past occurrences that weren’t posted', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // Today is 19 October: 8 and 15 October wait for the user.
+    expect((await end(services, '2026-10-05')).removed).toBe(8)
+    expect(occurrences(services).map((row) => row.date)).toEqual([
+      '2026-10-01',
+      '2026-10-08',
+      '2026-10-15',
+    ])
+  })
+
   it('works even when the template no longer fits the ledger', async () => {
     const services = seeded()
     await create(services, rent)
@@ -775,6 +869,68 @@ describe('DELETE /schedules/{id}', () => {
       expect(scheduleRow(services)).toBeDefined()
       expect(occurrences(services)).toHaveLength(index === 0 ? 11 : 0)
     }
+  })
+
+  it('deletes voided occurrences last, so a delete that stops keeps them', async () => {
+    const services = seeded()
+    await create(services, groceries)
+    // The first by ID, so it would go in the first batch.
+    await setRow(services, 'transactions', `${groceries.id}_20261019`, { status: 'void' })
+    // The first batch of deletes, then a timeout.
+    failCommit(services, 2)
+    expect(await failure(services, 'DELETE', `/schedules/${groceries.id}`)).toMatchObject({
+      status: 500,
+    })
+    expect(
+      services.db.rows('transactions').find((row) => row.$id === `${groceries.id}_20261019`),
+    ).toMatchObject({ status: 'void' })
+  })
+
+  it('deletes an item added before its deletes are staged too', async () => {
+    const services = seeded()
+    await create(services, {
+      ...rent,
+      template: {
+        bill: { status: 'due' },
+        items: [
+          { name: 'Rent', amountCents: 90_000, split: { mode: 'equal', personIds: ['pSam'] } },
+        ],
+      },
+    })
+    // Someone edits November's rent and adds water, just before the delete's batch.
+    beforeStaging(
+      services.db,
+      (operations) =>
+        operations.includes('"action":"delete"') && operations.includes('"tableId":"items"'),
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write(
+            {
+              action: 'update',
+              tableId: 'transactions',
+              rowId: `${rent.id}_20261101`,
+              data: { overridden: true, totalCents: 90_500 },
+            },
+            {
+              action: 'create',
+              tableId: 'items',
+              rowId: 'waterItem00000000001',
+              data: {
+                transactionId: `${rent.id}_20261101`,
+                position: 1,
+                name: 'Water',
+                quantity: 1,
+                amountCents: 500,
+                category: null,
+                splitJson: '{"mode":"equal","personIds":["pSam"]}',
+              },
+            },
+          ),
+        ),
+    )
+    expect(await ok(services, 'DELETE', `/schedules/${rent.id}`)).toEqual({})
+    expect(services.db.rows('transactions')).toEqual([])
+    expect(services.db.rows('items')).toEqual([])
   })
 
   it('deletes an occurrence a cron run creates meanwhile too', async () => {

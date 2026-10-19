@@ -4,7 +4,12 @@ import type { Schedules } from '@ledgerly/core/generated/rows'
 import { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { guardGroupAndMembers, ledgerRoute, loadLedger } from '@ledgerly/server/ledger/transactions'
+import {
+  guardGroup,
+  guardGroupAndMembers,
+  ledgerRoute,
+  loadLedger,
+} from '@ledgerly/server/ledger/transactions'
 import { generateOccurrences, guardSchedule, removeOccurrences } from '../occurrences'
 import { parseBody } from '../parse-body'
 import {
@@ -18,10 +23,10 @@ import type { Services } from '../services'
 export type UpdatedSchedule = { schedule: Schedules; created: number; removed: number }
 
 /**
- * `scheduler PATCH /schedules/{id}` (scheduling.md#schedule-routes): replaces the schedule,
- * deletes its occurrences from today on that are still `scheduled` or `due` and not edited,
- * then expands it again. Earlier occurrences, and edited or posted ones, stay as they are. Its
- * group and kind never change.
+ * `scheduler PATCH /schedules/{id}` (scheduling.md#schedule-routes): deletes the schedule's
+ * occurrences from today on that are still `scheduled` or `due` and not edited, then saves the
+ * new rule and template and expands it again. Earlier occurrences, and edited or posted ones,
+ * stay as they are. Its group and kind never change.
  */
 export async function updateSchedule(
   services: Services,
@@ -45,21 +50,30 @@ export async function updateSchedule(
     const today = localToday(membership.group.timezone, now)
     const yesterday = addDays(today, -1)
     const generated = schedule.generatedThrough as LocalDate | null
-    const changes = {
-      ...scheduleColumns(input),
-      // Expand again from today; dates before it that were never expanded still will be.
+    // Expand again from today; dates before it that were never expanded still will be. Due at
+    // once, so a cron run finishes the expansion if this request can't.
+    const reset = {
       generatedThrough: generated && compareDates(generated, yesterday) > 0 ? yesterday : generated,
-      // Due at once, so a cron run finishes the expansion if this request can't.
       nextRunAt: now.toISOString(),
     }
+    const changes = { ...scheduleColumns(input), ...reset }
     const ledger = await loadLedger(db, membership)
     const people = checkTemplate({ ...schedule, ...changes }, ledger)
+    // The old rule's future occurrences go first, and only then is the new rule saved. An edit
+    // that stops before then leaves the old rule as it was, and the next cron run makes again
+    // any of its occurrences that were deleted.
     await withTransaction(db, async (tx) => {
-      await guardSchedule(tx, db, schedule, changes)
+      await guardSchedule(tx, db, schedule, reset)
+      await guardGroup(tx, db, membership.group)
+    })
+    // As stored: the guard compares with this, and Appwrite returns datetimes in its own form.
+    const reverted = await getSchedule(db, scheduleId)
+    const removed = await removeOccurrences(db, membership.group, scheduleId, today)
+    await withTransaction(db, async (tx) => {
+      await guardSchedule(tx, db, reverted, changes)
       // The people the new template names stay members while it exists (ledger.md#concurrency).
       await guardGroupAndMembers(tx, db, membership.group, ledger, people)
     })
-    const removed = await removeOccurrences(db, membership.group, scheduleId, today)
     const updated = await getSchedule(db, scheduleId)
     const created = await generateOccurrences(
       db,

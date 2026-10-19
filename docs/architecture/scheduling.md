@@ -56,7 +56,7 @@ Skip a date when:
 
 The scheduler may run twice, overlap with itself or crash halfway. None of that may create duplicates.
 
-- **Deterministic occurrence IDs:** `<scheduleId>_<YYYYMMDD>`, e.g. `66f1c2…_20261029`. Schedule IDs are 20-character `ID.unique()` values, so this is 29 characters, inside Appwrite's 36 limit. Creating a row that already exists fails with a conflict (409), which the scheduler ignores.
+- **Deterministic occurrence IDs:** `<scheduleId>_<YYYYMMDD>`, e.g. `66f1c2…_20261029`. Schedule IDs are 20-character `ID.unique()` values, so this is 29 characters, inside Appwrite's 36 limit. Creating a row that already exists fails with a conflict (409), which the scheduler ignores. Expansion looks rows up by these IDs, not by date: an occurrence a person moved to another day (posted early, say) still holds its ID, so it isn't made again.
 - **Voided occurrences stay**, so they block re-creation. "I didn't go this Thursday" means void, never delete.
 - **Overridden occurrences** (`overridden = true`) are never deleted or changed by schedule edits.
 
@@ -137,16 +137,16 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | Route | What it does |
 | --- | --- |
 | `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
-| `PATCH /schedules/{id}` | Update. Delete future occurrences that are still `scheduled`/`due` and not `overridden` (date ≥ local today), move `generatedThrough` back to yesterday if it is later, expand again. The group and kind can't change (`VALIDATION_FAILED`) |
-| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it. It never checks the template, so a schedule can always be ended; a later `endsOn` than before carries on at the next run |
-| `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included, with their items |
+| `PATCH /schedules/{id}` | Update. Move `generatedThrough` back to yesterday if it is later, delete future occurrences that are still `scheduled`/`due` and not `overridden` (date ≥ local today), and only then save the new rule and template and expand again. The group and kind can't change (`VALIDATION_FAILED`) |
+| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended; a later `endsOn` than before carries on at the next run |
+| `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items. One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
 
 Changes to occurrences themselves (edit, void, post) go through the `ledger` function. Editing an occurrence sets `overridden = true`.
 
 Creating or editing a schedule guards the group row and the member row of everyone its template names, like a ledger write ([ledger.md#concurrency](ledger.md#concurrency)). A template can't commit just after a member's removal was checked, and a removal can't commit just after the template. Every database transaction of these routes that writes occurrences or a schedule's rule guards the group row too, so none lands after an archive. Deleting occurrences stages the deletes, then checks the stored rows. An edit or an end keeps an occurrence edited, posted or voided meanwhile. A delete removes edited and voided ones anyway; one posted meanwhile stops it with `VALIDATION_FAILED`, and the schedule should be ended instead. Schedule templates can't have receipts yet, like `POST /transactions`.
 
-Creating or editing a schedule sets its `nextRunAt` to now before expanding, so if the expansion stops partway (a timeout, say), the next cron run finishes it. Sending the same request again does too. An edit that stops before its old occurrences are all deleted needs that: until then, those keep their old values (on a date the new rule also has, the old occurrence stands in for the new one).
+Creating or editing a schedule sets its `nextRunAt` to now before expanding, so if the expansion stops partway (a timeout, say), the next cron run finishes it. An edit deletes the old rule's future occurrences before it saves the new rule, so one that stops before then (a timeout, or a race lost twice) leaves the old rule in place, and the next cron run makes again whatever it had deleted; sending it again applies it. Deleting occurrences also checks their items again after staging, so an item added meanwhile isn't left without its transaction.
 
 ## Timer shifts
 

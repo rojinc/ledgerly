@@ -1,6 +1,8 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Transactions } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
+import { nextRunAt } from '../src/occurrences'
 import type { RunResult } from '../src/routes/run'
 import { type Fakes, fakes, group, member, ok, person } from './harness'
 
@@ -196,5 +198,17 @@ describe('step 1: expand due schedules', () => {
     })
     expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 0, failed: 0 })
     expect(services.db.rows('transactions')).toEqual([])
+  })
+})
+
+describe('nextRunAt', () => {
+  it.each([
+    // Sydney's clocks go forward on 4 October, Los Angeles' back on 1 November.
+    ['2026-10-03', 'Australia/Sydney', '2026-10-03T14:05:00.000Z'],
+    ['2026-10-04', 'Australia/Sydney', '2026-10-04T13:05:00.000Z'],
+    ['2026-10-31', 'America/Los_Angeles', '2026-11-01T07:05:00.000Z'],
+    ['2026-11-01', 'America/Los_Angeles', '2026-11-02T08:05:00.000Z'],
+  ])('after %s in %s is 00:05 the next day there', (today, timeZone, expected) => {
+    expect(nextRunAt(today as LocalDate, timeZone)).toBe(expected)
   })
 })
