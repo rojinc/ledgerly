@@ -124,6 +124,8 @@ Every split ends with `allocate(totalCents, weights)`:
 
 The result always sums to exactly `totalCents`. Example: `allocate(1000, [1, 1, 1])` → `[334, 333, 333]`.
 
+The amount cap (`MAX_AMOUNT_CENTS`) applies to stored amounts. Figures worked out from them, such as nets and balances, can go past it, but they stay exact integers of cents.
+
 Limits (constants in `packages/core`): every amount is at most `MAX_AMOUNT_CENTS` = 10,000,000,000 ($100M) in size, and each weight is an integer from 0 to 10,000 (a `weights` split needs at least 1). So `total × weight` stays far below `Number.MAX_SAFE_INTEGER` and step 1 is exact. The zod schemas reject anything larger.
 
 Other rounding rules:

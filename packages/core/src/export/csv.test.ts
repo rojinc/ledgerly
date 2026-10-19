@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { MAX_AMOUNT_CENTS } from '../constants/limits'
 import { groupCsv, myRecordsCsv, profileCsv, toCsv } from './csv'
 
 const BOM = '﻿'
@@ -127,6 +128,24 @@ describe('groupCsv', () => {
     expect(lines(csv)[1]).toBe(
       '2026-10-05,posted,expense,"Groceries, Coles",groceries,AUD,45.05,,45.05,45.05,0.00',
     )
+  })
+
+  it('writes a net past the amount cap, as an adjustment can give one', () => {
+    const adjustment = { ...transaction, kind: 'adjustment' as const, totalCents: 0 }
+    const csv = groupCsv(
+      'AUD',
+      [adjustment],
+      [
+        {
+          transactionId: 't1',
+          personId: 'p1',
+          givenCents: MAX_AMOUNT_CENTS,
+          receivedCents: -MAX_AMOUNT_CENTS,
+        },
+      ],
+      names,
+    )
+    expect(lines(csv)[1]?.split(',').at(-1)).toBe('200000000.00')
   })
 })
 
