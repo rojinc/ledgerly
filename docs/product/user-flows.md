@@ -32,6 +32,8 @@ Step-by-step journeys through the product. Each step names the function route it
 | Bought something personal on their card | Expense → *Personal, on their card* | They owe you less |
 | They paid you $500 | Payment received | They owe you $500 less |
 
+To fix a posted entry, the worker opens it and taps **Edit**, which shows the same choices → `ledger PATCH /transactions/{id}`. An expense can switch to another expense choice, and a payment stays a payment. An entry that matches none of the choices says so and has no Edit: void it and add it again. An entry with items has no Edit yet.
+
 ## 5. Month-end invoice
 
 1. Just after the period ends (06:00 local time on 1 Nov), the statements job creates a **draft** invoice for October.
@@ -61,7 +63,7 @@ Step-by-step journeys through the product. Each step names the function route it
 ## 9. Lend to a friend who isn't registered
 
 1. **People → New lend & borrow**, enter "Sam" and Sam's mobile number → `groups POST /groups` with `type: pair` and a counterpart.
-2. Record "Lent $50" → `ledger POST /transactions` with `kind: loan`.
+2. Record "Lent $50" → `ledger POST /transactions` with `kind: loan`. To fix it later, open it and tap **Edit** → `ledger PATCH /transactions/{id}`. A loan can switch between lent and borrowed, and a repayment can change who paid back.
 3. Months later Sam signs up with that number and verifies it. `identity POST /claim` links Sam's account to the placeholder. Sam sees the pair group and the $50.
 4. If Sam already had an account when added, the pair group shows in Sam's app as pending, and Sam joins it there. Until Sam joins, the lender can't tell which case it is.
 

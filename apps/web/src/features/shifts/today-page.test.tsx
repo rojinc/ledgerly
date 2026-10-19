@@ -8,6 +8,7 @@ import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { useGroups } from '../groups/use-groups'
+import { useProfile } from '../profile/use-profile'
 import { TodayPage } from './today-page'
 
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
@@ -17,6 +18,8 @@ vi.mock('../../lib/appwrite', () => ({
 }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
 vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'p1' } }) }))
+// No work-hours limit: hours-cap.test.tsx has the lines (#53).
+vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn() }))
 vi.mock('../groups/use-groups', () => ({ useGroups: vi.fn() }))
 
 const call = vi.mocked(callFunction)
@@ -145,6 +148,14 @@ beforeEach(() => {
   vi.setSystemTime(NOW)
   mockGroups([acme, bistro])
   roles = { g1: 'admin', g2: 'admin' }
+  vi.mocked(useProfile).mockReturnValue({
+    data: {
+      personId: 'p1',
+      timezone: 'Australia/Sydney',
+      hoursCapMinutes: null,
+      hoursCapPeriod: null,
+    },
+  } as never)
 })
 
 afterEach(() => {
@@ -154,6 +165,65 @@ afterEach(() => {
 })
 
 describe('TodayPage', () => {
+  it('shows this week against the work-hours limit, with the running timer (#53)', async () => {
+    vi.mocked(useProfile).mockReturnValue({
+      data: {
+        personId: 'p1',
+        timezone: 'Australia/Sydney',
+        hoursCapMinutes: 2400,
+        hoursCapPeriod: 'week',
+        hoursCapStartsOn: null,
+      },
+    } as never)
+    // 39 h 59 min stored this week, and a timer running for a minute and 5 seconds.
+    mockRows(
+      [shift('s1', { inputJson: JSON.stringify({ shift: { minutes: 2399 } }) } as never)],
+      [running],
+    )
+    renderPage()
+    const reached = 'This week: 40 h of your 40 h. You’ve reached your limit.'
+    expect((await screen.findByText(/^This week:/)).textContent).toBe(reached)
+    // Stopping: the timer's minute counts as a stored shift until the refresh, so the total
+    // doesn't dip. A failed stop puts the timer back, counted once.
+    const pending = deferred<Result<unknown>>()
+    call.mockReturnValue(pending.promise)
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy()
+    expect(screen.getByText(/^This week:/).textContent).toBe(reached)
+    // The reload after the error never answers: what shows is the rollback's.
+    listRows.mockReturnValue(new Promise(() => {}))
+    await act(async () => pending.resolve(failure('The shift is locked.')))
+    await settle()
+    expect(screen.getByRole('heading', { name: 'Timer running · Acme Cafe' })).toBeTruthy()
+    expect(screen.getByText(/^This week:/).textContent).toBe(reached)
+  })
+
+  it('counts a stopping timer less its break (#53)', async () => {
+    vi.mocked(useProfile).mockReturnValue({
+      data: {
+        personId: 'p1',
+        timezone: 'Australia/Sydney',
+        hoursCapMinutes: 2400,
+        hoursCapPeriod: 'week',
+        hoursCapStartsOn: null,
+      },
+    } as never)
+    // 38 h stored, and a timer running for 2 hours.
+    mockRows(
+      [shift('s1', { inputJson: JSON.stringify({ shift: { minutes: 2280 } }) } as never)],
+      [{ ...running, startedAt: '2026-10-18T20:00:00.000Z' }],
+    )
+    call.mockReturnValue(deferred<Result<unknown>>().promise)
+    renderPage()
+    expect((await screen.findByText(/^This week:/)).textContent).toBe(
+      'This week: 40 h of your 40 h. You’ve reached your limit.',
+    )
+    fireEvent.change(screen.getByLabelText('Break (minutes)'), { target: { value: '30' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Stop' }))
+    expect(await screen.findByRole('button', { name: 'Start' })).toBeTruthy()
+    expect(screen.getByText(/^This week:/).textContent).toBe('This week: 39 h 30 min of your 40 h.')
+  })
+
   it('lists today’s shifts by each group’s own date, with status and amount', async () => {
     mockRows([
       shift('s1', { groupId: 'g1', date: '2026-10-19', description: 'Café', totalCents: 20400 }),

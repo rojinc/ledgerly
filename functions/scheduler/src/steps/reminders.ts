@@ -17,6 +17,7 @@ import {
   timerRunningEmail,
 } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
+import { madeLate } from '../occurrences'
 import { pages } from '../pages'
 import type { Services } from '../services'
 
@@ -65,9 +66,9 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       if (!isAwake(group, now) || compareDates(shift.date as LocalDate, today(group, now)) >= 0) {
         return
       }
-      // Step 2 posts the shifts of schedules that auto-post.
+      // Step 2 posts the shifts of schedules that auto-post, except one made after its day.
       const schedule = shift.scheduleId ? await schedules(shift.scheduleId) : undefined
-      if (schedule?.autoPost) return
+      if (schedule?.autoPost && !madeLate(shift, group.timezone)) return
       const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
       const content = shiftToConfirmEmail({
         groupName: group.name,

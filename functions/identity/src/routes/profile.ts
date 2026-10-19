@@ -15,11 +15,24 @@ export async function updateProfile(
   userId: string,
   body: unknown,
 ): Promise<Profiles> {
-  const { displayName, business, ...columns } = parseBody(updateProfileBodySchema, body)
+  const { displayName, business, hoursCap, ...columns } = parseBody(updateProfileBodySchema, body)
   const profile = await getRowOrNull<Profiles>(db, TABLES.profiles, userId)
   if (!profile) throw new AppError('NOT_FOUND', SET_UP_FIRST)
   const data: Record<string, unknown> = { ...columns }
   if (business !== undefined) data.businessJson = JSON.stringify(business)
+  // F-82 (#53): the three columns are set together, or all emptied by `null`. The stored limit
+  // sent again writes nothing.
+  if (hoursCap !== undefined) {
+    const cap = {
+      hoursCapMinutes: hoursCap?.minutes ?? null,
+      hoursCapPeriod: hoursCap?.period ?? null,
+      hoursCapStartsOn: hoursCap?.startsOn ?? null,
+    }
+    const stored: Record<string, unknown> = profile
+    if (Object.entries(cap).some(([column, value]) => (stored[column] ?? null) !== value)) {
+      Object.assign(data, cap)
+    }
+  }
   // scheduling.md#step-4-summary-emails: a different frequency or timezone restarts the
   // summary schedule; `none` clears it.
   const frequency = columns.summaryFrequency ?? profile.summaryFrequency
