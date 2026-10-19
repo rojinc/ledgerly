@@ -170,7 +170,7 @@ U didn't call it, but U started the merge by verifying the key, so finishing it 
 
 ## Invites
 
-An invite is a convenience: a link that tells someone they've been added and helps them sign up. Claiming works without one, as long as the person verifies the key that was stored for them: the email, or the phone if no email was given ([adding someone](#adding-someone-to-a-group)).
+An invite is a convenience: a link that tells someone they've been added and helps them sign up. Claiming works without one, as long as the person verifies the key that was stored for them: the email, or the phone if no email was given ([adding someone](#adding-someone-to-a-group)). An invite's row, which holds the address it went to, is deleted 30 days after it's accepted or expires ([scheduler step 5b](scheduling.md#step-5b-invite-clean-up)); an old link then gets `INVITE_INVALID`, as an unknown one does.
 
 `identity POST /invites` with `{ groupId, memberId, email?, phone? }` (exactly one of email or phone):
 
@@ -339,7 +339,7 @@ Non-zero balances don't block it; the delete screen warns about them.
 2. Set `persons.deletedAt` and `displayName` "Former member", with a fresh `rev` (a [guard write](ledger.md#concurrency)). **This is the point of no return:** from here every step runs to the end, and none is undone. A call after this skips the checks (apart from the body) and carries on.
 3. Label the Appwrite user `deleted` (`users.updateLabels`), block them and delete their sessions, so an old JWT fails `account.get()` (`UNAUTHENTICATED`). A 404 counts as done.
 4. The groups, one at a time, as above.
-5. Only once **every** group is done: delete their identities, the identities of any person still being merged into them (`mergedInto` = theirs, `idx_mergedInto`: a merge moves identities last, so an unfinished one leaves their verified key there), the invites they sent, the invites sent to their member rows in groups they joined (each holds the address it went to; one to a group where they're a placeholder stays, as the group does), the reminders they sent or were sent, a person still being merged into them included (`idx_sentBy_sentAt`, `idx_toPerson_sentAt`), and their profile. Their `active` and `left` member rows are listed once more first: a row that a join or a new group committed after step 4 listed them waits for the next run.
+5. Only once **every** group is done: delete their identities, the identities of any person still being merged into them (`mergedInto` = theirs, `idx_mergedInto`: a merge moves identities last, so an unfinished one leaves their verified key there), the invites they sent, the invites sent to their member rows in groups they joined (each holds the address it went to; one to a group where they're a placeholder stays, as the group does, until [scheduler step 5b](scheduling.md#step-5b-invite-clean-up) deletes it), the reminders they sent or were sent, a person still being merged into them included (`idx_sentBy_sentAt`, `idx_toPerson_sentAt`), and their profile. Their `active` and `left` member rows are listed once more first: a row that a join or a new group committed after step 4 listed them waits for the next run.
 6. Clear `persons.userId` and the row's `read("user:<userId>")` permission.
 7. Delete the Appwrite user (a 404 counts as done).
 
