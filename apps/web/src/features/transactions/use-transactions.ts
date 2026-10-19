@@ -1,5 +1,5 @@
 import type { Category } from '@ledgerly/core/constants/categories'
-import type { Groups, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import type {
   TransactionInput,
   TransactionView,
@@ -90,6 +90,22 @@ export function useShares(id: string) {
         databaseId: DATABASE_ID,
         tableId: 'shares',
         queries: [Query.equal('transactionId', id), Query.limit(PAGE)],
+      })
+      return rows
+    },
+  })
+}
+
+/** An itemised transaction's items (`items.idx_transaction_position`), in the order entered. */
+export function useItems(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: queryKeys.transactionItems(id),
+    enabled,
+    queryFn: async () => {
+      const { rows } = await tablesDB.listRows<Items>({
+        databaseId: DATABASE_ID,
+        tableId: 'items',
+        queries: [Query.equal('transactionId', id), Query.orderAsc('position'), Query.limit(PAGE)],
       })
       return rows
     },

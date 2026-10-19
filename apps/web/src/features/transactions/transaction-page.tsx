@@ -1,4 +1,4 @@
-import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import { type ReactNode, useState } from 'react'
 import { Link, useParams } from 'react-router'
@@ -10,7 +10,13 @@ import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useGroupName } from '../groups/use-group-name'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { KIND_LABEL, STATUS_LABEL } from './history-page'
-import { useMembers, useShares, useTransaction, useVoidTransaction } from './use-transactions'
+import {
+  useItems,
+  useMembers,
+  useShares,
+  useTransaction,
+  useVoidTransaction,
+} from './use-transactions'
 
 function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
   return (
@@ -47,12 +53,15 @@ function storedParts(inputJson: string): {
   shift?: { minutes: number; rateCents: number }
   /** How a house expense was split, in words (#180, #181). */
   splitText?: string
+  /** Itemised (#42): how many items it has. */
+  itemCount?: number
 } {
   try {
     const stored = JSON.parse(inputJson) as {
       note?: unknown
       shift?: { minutes?: unknown; rateCents?: unknown }
       split?: { mode?: unknown; personIds?: unknown }
+      items?: unknown
     } | null
     const note = typeof stored?.note === 'string' && stored.note !== '' ? stored.note : undefined
     const minutes = stored?.shift?.minutes
@@ -61,10 +70,13 @@ function storedParts(inputJson: string): {
       Number.isInteger(minutes) && Number.isInteger(rateCents)
         ? { minutes: minutes as number, rateCents: rateCents as number }
         : undefined
+    const itemCount = Array.isArray(stored?.items) ? stored.items.length : 0
     return {
       ...(note ? { note } : {}),
       ...(shift ? { shift } : {}),
-      ...splitParts(stored?.split),
+      ...(itemCount > 0
+        ? { itemCount, splitText: `Itemised (${itemCount} ${itemCount === 1 ? 'item' : 'items'})` }
+        : splitParts(stored?.split)),
     }
   } catch {
     return {}
@@ -99,6 +111,8 @@ function Details({ row }: { row: Transactions }) {
   const member = useMyMember(row.groupId, personId)
   const members = useMembers(row.groupId)
   const shares = useShares(row.$id)
+  const { note, shift, splitText, itemCount } = storedParts(row.inputJson)
+  const items = useItems(row.$id, itemCount !== undefined)
   // Here, not in the void form: an optimistic void hides the form, and after a rollback the
   // error and the typed reason must still be there.
   const voidRow = useVoidTransaction(row.$id)
@@ -117,7 +131,6 @@ function Details({ row }: { row: Transactions }) {
   const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
   const locked = row.statementId !== null
   const archived = group.data.archivedAt !== null
-  const { note, shift, splitText } = storedParts(row.inputJson)
 
   return (
     <>
@@ -175,6 +188,14 @@ function Details({ row }: { row: Transactions }) {
           </>
         )}
       </dl>
+      {itemCount !== undefined && (
+        <ItemList
+          items={items.data}
+          failed={items.isError}
+          names={names}
+          currency={group.data.currency}
+        />
+      )}
       {shares.data && shares.data.length > 0 && (
         <section aria-labelledby="shares-heading" className="flex flex-col gap-2">
           <h2 id="shares-heading" className="font-medium">
@@ -203,6 +224,74 @@ function Details({ row }: { row: Transactions }) {
         <VoidForm voidRow={voidRow} reason={reason} onReason={setReason} />
       )}
     </>
+  )
+}
+
+/** `Alice, Bob and Cara`. */
+function namesText(names: string[]): string {
+  return names.length < 2
+    ? (names[0] ?? '')
+    : `${names.slice(0, -1).join(', ')} and ${names.at(-1)}`
+}
+
+/** Who an item is for, in words, from its stored split; equal or by shares (#42). */
+function itemPeopleText(splitJson: string, names: Map<string, string>): string | undefined {
+  try {
+    const split = JSON.parse(splitJson) as {
+      mode?: unknown
+      personIds?: unknown
+      weights?: unknown
+    } | null
+    const name = (id: unknown) => names.get(String(id)) ?? 'Someone'
+    if (split?.mode === 'equal' && Array.isArray(split.personIds)) {
+      return `for ${namesText(split.personIds.map(name))}`
+    }
+    if (split?.mode === 'weights' && Array.isArray(split.weights)) {
+      const people = split.weights.map((entry: { personId?: unknown }) => name(entry?.personId))
+      return `by shares, for ${namesText(people)}`
+    }
+  } catch {
+    // Shown without who it's for.
+  }
+  return undefined
+}
+
+/** An itemised transaction's items, in the order entered (#42). */
+function ItemList({
+  items,
+  failed,
+  names,
+  currency,
+}: {
+  items: Items[] | undefined
+  failed: boolean
+  names: Map<string, string>
+  currency: string
+}) {
+  return (
+    <section aria-labelledby="items-heading" className="flex flex-col gap-2">
+      <h2 id="items-heading" className="font-medium">
+        Items
+      </h2>
+      {items ? (
+        <ul className="flex flex-col gap-1 text-sm">
+          {items.map((item) => {
+            const people = itemPeopleText(item.splitJson, names)
+            return (
+              <li key={item.$id} className="break-words">
+                {item.name}:{' '}
+                <span className="tabular-nums">{formatMoney(item.amountCents, currency)}</span>
+                {people && `, ${people}`}
+              </li>
+            )
+          })}
+        </ul>
+      ) : failed ? (
+        <Message alert>We couldn’t load the items. Reload the page to try again.</Message>
+      ) : (
+        <Message>Loading items…</Message>
+      )}
+    </section>
   )
 }
 
