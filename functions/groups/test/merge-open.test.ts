@@ -116,6 +116,20 @@ describe('while a merge into the member is open in the group', () => {
     expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
   })
 
+  it('goes ahead removing a U who never joined: a placeholder row isn’t P’s place (D-016)', async () => {
+    const services = open()
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'members',
+        rowId: 'm2',
+        data: { status: 'placeholder' },
+      }),
+    )
+    expect(await ok(services, 'DELETE', '/groups/g1/members/m2')).toEqual({})
+    expect(services.db.rows('members').map((row) => row.$id)).toEqual(['m1'])
+  })
+
   it('goes ahead where P keeps its own row (a kept group, or one step 2 hasn’t reached)', async () => {
     const services = open({ members: [member('mP', 'g1', 'pP', 'member', 'placeholder')] })
     expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})

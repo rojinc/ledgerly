@@ -246,9 +246,9 @@ export async function hasShares(db: Db, groupId: string, personId: string): Prom
 /**
  * Refuses, with CONFLICT and `merging`, while a merge into the person is open in the group
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): a P merged into them
- * (`idx_mergedInto`) lists the group in `mergeGroupIds`, has no member row here any more (step 2
- * gave P's place to them), and is still `named` here, which a leave or a removal would count as
- * someone else's. Per group, so a merge stuck elsewhere doesn't hold this one.
+ * (`idx_mergedInto`) lists the group in `mergeGroupIds`, has no member row here any more while
+ * theirs is joined (step 2 gave P's place to them), and is still `named` here, which a leave or a
+ * removal would count as someone else's. Per group, so a merge stuck elsewhere doesn't hold this one.
  *
  * Inside the transaction (`tx`), call it after staging the member row and before reading the
  * balance or shares: when such a P exists it stages a guard write on the group's row first, which
@@ -270,6 +270,12 @@ export async function requireNoOpenMerge(
   })
   const listing = merged.filter((placeholder) => placeholder.mergeGroupIds?.includes(groupId))
   if (listing.length === 0) return
+  // Step 2 always leaves their row joined: a placeholder row of theirs isn't P's place (D-016).
+  const own = await findFirst<Members>(db, TABLES.members, [
+    Query.equal('groupId', groupId),
+    Query.equal('personId', personId),
+  ])
+  if (!own || own.status === 'placeholder') return
   await tx?.write({
     action: 'update',
     tableId: TABLES.groups,
