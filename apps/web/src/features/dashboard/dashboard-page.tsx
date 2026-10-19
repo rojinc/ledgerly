@@ -7,6 +7,7 @@ import {
   type PersonalReport,
   reportByMonth,
 } from '@ledgerly/core/reports/personal-report'
+import type { ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -127,7 +128,10 @@ function BalancesSection({ groups }: { groups: Groups[] }) {
               ) : balances[index]?.isError ? (
                 <span className="text-muted-foreground">Balance not available yet</span>
               ) : (
-                <span className="text-muted-foreground">…</span>
+                <span className="text-muted-foreground">
+                  <span aria-hidden="true">…</span>
+                  <span className="sr-only">Loading balance</span>
+                </span>
               )}
             </span>
           </li>
@@ -180,7 +184,9 @@ function MonthSections({ groups, refetchGroups }: { groups: Groups[]; refetchGro
     (profile.isError ? Intl.DateTimeFormat().resolvedOptions().timeZone : undefined)
   const [params, setParams] = useSearchParams()
   const current = timeZone ? monthOf(localToday(timeZone, new Date())) : undefined
-  const month = parseMonth(params.get('month')) ?? current
+  // Years before 100 are left out: Date.UTC would read them as 19xx.
+  const asked = parseMonth(params.get('month'))
+  const month = (asked && asked >= '0100' ? asked : undefined) ?? current
   const months = month && current ? monthsShown(month, current) : []
   const first = months[0]
   const last = months.at(-1)
@@ -189,38 +195,61 @@ function MonthSections({ groups, refetchGroups }: { groups: Groups[]; refetchGro
   const end = last ? endOfMonth(`${last}-01` as LocalDate) : start
   const shares = useMyShares(first ? personId : '', start, end)
 
-  if (!month || !current || !shares.data) {
-    return shares.isError ? (
-      <LoadError onRetry={() => shares.refetch()} />
-    ) : (
+  if (!month || !current) {
+    return (
       <p role="status" className="text-muted-foreground">
         Loading…
       </p>
     )
   }
 
-  let reports: MonthReport[]
-  try {
-    reports = reportByMonth(
-      personId,
-      shares.data,
-      groups.map((group) => ({ id: group.$id, type: group.type, currency: group.currency })),
+  const select = (next: Month) => setParams({ month: next })
+  // The header and its buttons stay mounted while a new 6 months load, so focus stays on them.
+  let body: ReactNode
+  let history: ReactNode = null
+  if (!shares.data) {
+    body = shares.isError ? (
+      <LoadError onRetry={() => shares.refetch()} />
+    ) : (
+      <p role="status" className="text-muted-foreground">
+        Loading…
+      </p>
     )
-  } catch (error) {
-    // A share in a group the list doesn't have yet: the list is out of date. Anything else is a bug.
-    if (!(error instanceof RangeError)) throw error
-    return (
-      <LoadError
-        onRetry={() => {
-          refetchGroups()
-          void shares.refetch()
-        }}
-      />
-    )
+  } else {
+    let reports: MonthReport[] | undefined
+    try {
+      reports = reportByMonth(
+        personId,
+        shares.data,
+        groups.map((group) => ({ id: group.$id, type: group.type, currency: group.currency })),
+      )
+    } catch (error) {
+      // A share in a group the list doesn't have yet: the list is out of date. Anything else is a bug.
+      if (!(error instanceof RangeError)) throw error
+    }
+    if (!reports) {
+      body = (
+        <LoadError
+          onRetry={() => {
+            refetchGroups()
+            void shares.refetch()
+          }}
+        />
+      )
+    } else {
+      const chosen = reports.find((report) => report.month === month)?.reports ?? []
+      body =
+        chosen.length === 0 ? (
+          <p className="text-muted-foreground">Nothing recorded in {formatMonth(month, 'long')}.</p>
+        ) : (
+          chosen.map((report) => <MonthReportView key={report.currency} report={report} />)
+        )
+      history = (
+        <HistorySection months={months} reports={reports} selected={month} onSelect={select} />
+      )
+    }
   }
 
-  const select = (next: Month) => setParams({ month: next })
-  const chosen = reports.find((report) => report.month === month)?.reports ?? []
   return (
     <>
       <section aria-labelledby="month-heading" className="flex flex-col gap-4">
@@ -237,20 +266,14 @@ function MonthSections({ groups, refetchGroups }: { groups: Groups[]; refetchGro
               <span aria-hidden="true">›</span>
               <span className="sr-only">Next month</span>
             </Button>
-            {month !== current && (
-              <Button variant="ghost" size="sm" onClick={() => select(current)}>
-                This month
-              </Button>
-            )}
+            <Button variant="ghost" size="sm" onClick={() => select(current)}>
+              This month
+            </Button>
           </div>
         </div>
-        {chosen.length === 0 ? (
-          <p className="text-muted-foreground">Nothing recorded in {formatMonth(month, 'long')}.</p>
-        ) : (
-          chosen.map((report) => <MonthReportView key={report.currency} report={report} />)
-        )}
+        {body}
       </section>
-      <HistorySection months={months} reports={reports} selected={month} onSelect={select} />
+      {history}
     </>
   )
 }

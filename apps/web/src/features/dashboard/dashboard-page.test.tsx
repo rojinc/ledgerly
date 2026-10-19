@@ -1,6 +1,6 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Query } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -102,6 +102,14 @@ function shareRanges(): string[][] {
   )
 }
 
+function deferred() {
+  let resolve!: (value: unknown) => void
+  const promise = new Promise((r) => {
+    resolve = r
+  })
+  return { promise, resolve }
+}
+
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   // Still Saturday 17 October in Sydney, Los Angeles and UTC.
@@ -129,6 +137,8 @@ describe('DashboardPage: owed to me / I owe', () => {
     renderPage()
     const section = screen.getByRole('region', { name: 'Owed to me / I owe' })
     const rows = within(section).getAllByRole('listitem')
+    // While loading, the dots are hidden and a screen reader hears what's coming.
+    expect(within(section).getAllByText('Loading balance')).toHaveLength(4)
     expect(rows.map((row) => within(row).getAllByText(/./)[0]?.textContent)).toEqual([
       'Acme Cafe',
       'Flat',
@@ -317,6 +327,32 @@ describe('DashboardPage: last 6 months', () => {
     ])
     fireEvent.click(screen.getByRole('button', { name: 'Previous month' }))
     expect(router.state.location.search).toBe('?month=2026-10')
+  })
+
+  it.each([
+    ['Next month', '/', 'November 2026'],
+    ['Previous month', '/?month=2026-05', 'April 2026'],
+    ['This month', '/?month=2026-03', 'October 2026'],
+  ])('keeps focus on %s while a new 6 months load', async (name, path, heading) => {
+    renderPage(path)
+    const button = (await screen.findByRole('button', { name })) as HTMLButtonElement
+    await screen.findByRole('region', { name: /^Last 6 months$/ })
+    // The next read waits, so the page is loading when focus is checked.
+    const pending = deferred()
+    listRows.mockReturnValueOnce(pending.promise as never)
+    button.focus()
+    fireEvent.click(button)
+    expect(await screen.findByRole('heading', { level: 2, name: heading })).toBeTruthy()
+    expect(screen.getByText('Loading…')).toBeTruthy()
+    expect(document.activeElement).toBe(button)
+    await act(async () => pending.resolve({ total: SHARES.length, rows: SHARES }))
+    expect(await screen.findByRole('region', { name: /^Last 6 months$/ })).toBeTruthy()
+    expect(document.activeElement).toBe(button)
+  })
+
+  it('ignores a month before the year 100 in the link', async () => {
+    renderPage('/?month=0050-01')
+    expect(await screen.findByRole('heading', { level: 2, name: 'October 2026' })).toBeTruthy()
   })
 
   it('moves the 6 months to end at a chosen month outside them', async () => {
