@@ -169,6 +169,8 @@ function MemberRow({
   onRemoved: () => void
 }) {
   const [chosen, setMode] = useState<Mode>('view')
+  // Every row has the same three buttons: each one is described by its housemate's name.
+  const nameId = useId()
   // An open form closes when the caller stops being an admin, or the house is archived.
   const mode = isAdmin ? chosen : 'view'
   const buttons = {
@@ -186,7 +188,7 @@ function MemberRow({
   return (
     <li className="flex flex-col gap-2 px-4 py-3">
       <div className="min-w-0">
-        <p className="font-medium break-words">
+        <p id={nameId} className="font-medium break-words">
           {member.displayName}
           {isMe && ' (you)'}
         </p>
@@ -196,17 +198,32 @@ function MemberRow({
       </div>
       {isAdmin && mode === 'view' && (
         <div className="flex flex-wrap gap-2">
-          <Button ref={buttons.edit} variant="outline" onClick={() => setMode('edit')}>
+          <Button
+            ref={buttons.edit}
+            variant="outline"
+            aria-describedby={nameId}
+            onClick={() => setMode('edit')}
+          >
             Change
           </Button>
           {!member.leftOn && (
-            <Button ref={buttons.moveOut} variant="outline" onClick={() => setMode('moveOut')}>
+            <Button
+              ref={buttons.moveOut}
+              variant="outline"
+              aria-describedby={nameId}
+              onClick={() => setMode('moveOut')}
+            >
               Moved out
             </Button>
           )}
           {/* Your own way out is Leave this house, which checks your balance. */}
           {!isMe && (
-            <Button ref={buttons.remove} variant="outline" onClick={() => setMode('remove')}>
+            <Button
+              ref={buttons.remove}
+              variant="outline"
+              aria-describedby={nameId}
+              onClick={() => setMode('remove')}
+            >
               Remove
             </Button>
           )}
@@ -335,7 +352,7 @@ function Confirm({
 function LeaveHouse({ group }: { group: Groups }) {
   const headingId = useId()
   const navigate = useNavigate()
-  const leave = useLeaveHouse(group.$id)
+  const leave = useLeaveHouse(group.$id, () => navigate('/groups'))
   const [open, setOpen] = useState(false)
   const trigger = useRef<HTMLButtonElement>(null)
 
@@ -359,7 +376,7 @@ function LeaveHouse({ group }: { group: Groups }) {
           pendingAction="Leaving…"
           pending={leave.isPending}
           error={leave.error?.message ?? ''}
-          onConfirm={() => leave.mutate(undefined, { onSuccess: () => navigate('/groups') })}
+          onConfirm={() => leave.mutate()}
           onCancel={() => {
             flushSync(() => setOpen(false))
             leave.reset()
@@ -396,7 +413,7 @@ function HouseSettings({ group }: { group: Groups }) {
         Settings
       </h2>
       {values ? (
-        <HouseForm mode="settings" defaultValues={values} onSave={save} />
+        <HouseForm mode="settings" defaultValues={values} stored={values} onSave={save} />
       ) : (
         // A form with defaults would overwrite what's stored.
         <Message alert>
