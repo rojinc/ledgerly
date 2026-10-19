@@ -182,7 +182,7 @@ An invite is a convenience: a link that tells someone they've been added and hel
 4. Create a random 32-byte token (base64url). Store only its SHA-256 hash, with `expiresAt` 14 days ahead. Commit the invite row before sending, so a failed send still counts toward the limits (it returns `INTERNAL`).
 5. Send `https://<app>/invite#<token>` by email (Resend) or SMS (M3). The token goes in the URL fragment, which browsers never send to servers or in `Referer` headers, so it stays out of logs. The message names the inviter and the group, nothing else. It is sent the same way, with the same response, whether or not the person has an account.
    - **Subject:** "You've been invited to a group on Ledgerly", fixed: both names are free text, so they stay out of it.
-   - **Body:** "{inviter} added you to the group “{group}” on Ledgerly and invited you to join.", then "If you weren't expecting this, you can ignore this email." and the link. `{inviter}` is the inviter's `members.displayName` in that group and `{group}` the group's name. Each is put on one line and cut to 40 characters as people see them (with "…"), as a reminder's `{sender}` is ([reminders](#reminders), step 9), and HTML-escaped.
+   - **Body:** "{inviter} added you to the group “{group}” on Ledgerly and invited you to join.", then "If you weren't expecting this, you can ignore this email." and the link. `{inviter}` is the inviter's `members.displayName` in that group and `{group}` the group's name. Each is put on one line, without bidi control characters, and cut to 40 characters as people see them (with "…"), as a reminder's `{sender}` is ([reminders](#reminders), step 9), and HTML-escaped.
 
 `identity POST /invites/accept` with `{ token }`:
 
@@ -211,7 +211,7 @@ Someone owed money in a lend & borrow group can email the other person a reminde
 9. **The email:**
    - **Subject:** "You have a payment reminder", fixed: the sender's name is free text they chose, so it stays out of the subject.
    - **Body:** "{sender} sent you a reminder that you owe them {amount}." and "If you've already paid, let them know so they can record it.", and one link to the app (`APP_URL`).
-   - `{sender}` is the sender's `members.displayName` in that group, put on one line (each run of spaces and line breaks becomes one space), cut to 40 characters as people see them, so an emoji isn't split (with "…"), and HTML-escaped. `{amount}` is the whole balance in the group's currency.
+   - `{sender}` is the sender's `members.displayName` in that group, put on one line (each run of spaces and line breaks becomes one space), with its bidi control characters removed (U+202A–U+202E, U+2066–U+2069, U+200E and U+200F, which could make the text around it read in another order; the zero-width joiner stays, since emoji need it), cut to 40 characters as people see them, so an emoji isn't split (with "…"), and HTML-escaped. `{amount}` is the whole balance in the group's currency.
    - **Nothing else:** no recipient or group name (both are what the sender calls them), no transactions, no note (a phishing risk) and no `replyTo` (it would show the sender's account email).
 
 The response and the email are the same whether the recipient is a placeholder without an account, one with an account, or a joined member. The address typed and the amount are stored nowhere, and logs hold IDs, error codes and Resend's email ID only.

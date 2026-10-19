@@ -339,6 +339,15 @@ describe('inviteEmail', () => {
     expect(invite(whole, whole).text).toContain(`${whole} added you to the group “${whole}” on`)
   })
 
+  it('removes bidi controls from both names, as a reminder does from its sender', () => {
+    const [override, pop, isolate, popIsolate, mark] = [0x202e, 0x202c, 0x2067, 0x2069, 0x200f].map(
+      (code) => String.fromCodePoint(code),
+    )
+    expect(invite(`${override}Ann${pop}`, `${isolate}Flat 2${popIsolate}${mark}`).text).toContain(
+      'Ann added you to the group “Flat 2” on',
+    )
+  })
+
   it('refuses a link that is not http(s), such as one without APP_URL', () => {
     expect(() =>
       inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: '/invite#token' }),
@@ -586,5 +595,29 @@ describe('reminderEmail', () => {
     const content = reminder('Sam\n\nPay at https://evil.example\t now')
     expect(content.text).toContain('Sam Pay at https://evil.example now sent you a reminder')
     expect(content.html).toContain('Sam Pay at https://evil.example now sent you a reminder')
+  })
+
+  // Embeddings and overrides (U+202A–U+202E), isolates (U+2066–U+2069) and the two marks.
+  const BIDI = [
+    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f,
+  ]
+  it.each(BIDI.map((code) => [code.toString(16).toUpperCase(), code]))(
+    'removes the bidi control U+%s from a name, before cutting it',
+    (_hex, code) => {
+      const control = String.fromCodePoint(code)
+      const content = reminder(`${control}Sam${control} Lee`)
+      expect(content.text).toContain('Sam Lee sent you')
+      expect(content.html).toContain('Sam Lee sent you')
+      // 40 characters once it's gone, so nothing is cut.
+      const forty = `${'a'.repeat(20)}${control}${'b'.repeat(20)}`
+      expect(reminder(forty).text).toContain(`${'a'.repeat(20)}${'b'.repeat(20)} sent you`)
+    },
+  )
+
+  it('keeps the zero-width joiners that hold an emoji sequence together', () => {
+    const family = '👩‍👩‍👧'
+    expect(family).toContain(String.fromCodePoint(0x200d))
+    const [override, pop] = [0x202e, 0x202c].map((code) => String.fromCodePoint(code))
+    expect(reminder(`${override}Sam ${family}${pop}`).text).toContain(`Sam ${family} sent you`)
   })
 })

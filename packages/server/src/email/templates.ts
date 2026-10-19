@@ -255,16 +255,19 @@ export function reminderEmail(input: {
 // The most of someone's own text a reminder or an invite shows, per name.
 const SHORT_LINE_LENGTH = 40
 const GRAPHEMES = new Intl.Segmenter(LOCALE, { granularity: 'grapheme' })
+// Bidi controls: embeddings and overrides, isolates, and the two marks. They can make text
+// around the name read in another order. The zero-width joiner (U+200D) stays: emoji need it.
+const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069\u200E\u200F]/g
 
 /**
  * Free text someone chose, for an email body: one line, as the subject is, so a line break
- * can't start a paragraph of its own, and at most 40 characters as people see them, so an emoji
- * sequence isn't split; a longer one ends in "…". Cut before `message()` escapes it, so an
- * escape is never cut in half.
+ * can't start a paragraph of its own, with no bidi controls, and at most 40 characters as people
+ * see them, so an emoji sequence isn't split; a longer one ends in "…". Cut before `message()`
+ * escapes it, so an escape is never cut in half.
  */
 function shortLine(text: string): string {
   const characters = Array.from(
-    GRAPHEMES.segment(text.replace(/\s+/g, ' ').trim()),
+    GRAPHEMES.segment(text.replace(BIDI_CONTROLS, '').replace(/\s+/g, ' ').trim()),
     (part) => part.segment,
   )
   return characters.length > SHORT_LINE_LENGTH
