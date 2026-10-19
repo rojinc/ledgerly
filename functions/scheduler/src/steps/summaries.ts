@@ -9,10 +9,10 @@ import { isInTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { type EmailContent, summaryEmail } from '@ledgerly/server/email/templates'
+import { logProblem } from '@ledgerly/server/http/log'
 import { AppwriteException, Query } from 'node-appwrite'
 import { allRows, pages } from '../pages'
 import { appBase, type Services } from '../services'
-import { describe } from './auto-post'
 import { NEVER_SENT } from './reminders'
 
 export type SummaryCounts = { sent: number; skipped: number; failed: number }
@@ -37,8 +37,8 @@ export async function sendSummaries(services: Services): Promise<SummaryCounts> 
       const outcome = await summarise(services, profile, links)
       if (outcome) counts[outcome] += 1
     } catch (error) {
-      // The next run tries it again: nextSummaryAt hasn't moved. IDs and codes only.
-      console.error(`scheduler: summary failed for profile ${profile.$id}: ${describe(error)}`)
+      // The next run tries it again: nextSummaryAt hasn't moved.
+      logProblem('summary_failed', { profileId: profile.$id, error })
       counts.failed += 1
     }
   }
@@ -65,7 +65,7 @@ async function summarise(
     // limit, an outage, a key missing a scope or a table missing, so a config error fixed later
     // loses no period.
     if (!lasting(error)) throw error
-    console.error(`scheduler: summary failed for profile ${seen.$id}: ${describe(error)}`)
+    logProblem('summary_failed', { profileId: seen.$id, error })
     return (await moveOn(services, seen)) ? 'failed' : undefined
   }
   return moveOn(services, seen, email)

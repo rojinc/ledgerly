@@ -13,11 +13,14 @@ export type LogEvent =
   | 'claim_identity_unusable'
   | 'claim_needs_merge'
   | 'reminder_failed'
+  | 'auto_post_failed'
+  | 'summary_failed'
 
 export type LogFields = {
   groupId?: string
   statementId?: string
   transactionId?: string
+  profileId?: string
   problems?: readonly SnapshotProblem[]
   identityType?: 'email' | 'phone'
   /** The error behind it. Only its name is written (`describe`). */
@@ -26,18 +29,19 @@ export type LogFields = {
 
 /**
  * Writes one JSON line for something that went wrong inside a route: `{ fn, event, groupId?,
- * statementId?, transactionId?, problems?, identityType?, cause? }`. Only IDs, fixed names and
+ * statementId?, transactionId?, profileId?, problems?, identityType?, cause? }`. Only IDs, fixed names and
  * error names, never text that could quote what someone typed (security-and-privacy.md). A value
  * passed as an ID that isn't one is written as `invalid`.
  */
 export function logProblem(event: LogEvent, fields: LogFields = {}): void {
-  const { groupId, statementId, transactionId, problems, identityType } = fields
+  const { groupId, statementId, transactionId, profileId, problems, identityType } = fields
   const line = {
     fn: process.env.APPWRITE_FUNCTION_ID ?? 'unknown',
     event,
     groupId: id(groupId),
     statementId: id(statementId),
     transactionId: id(transactionId),
+    profileId: id(profileId),
     problems,
     identityType,
     cause: 'error' in fields ? describe(fields.error) : undefined,

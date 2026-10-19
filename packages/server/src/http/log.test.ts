@@ -25,6 +25,7 @@ group('logProblem', () => {
       transactionId: 't1',
       error: new TypeError('x'),
     })
+    logProblem('summary_failed', { profileId: 'u1' })
     expect(lines()).toEqual([
       {
         fn: 'statements',
@@ -40,6 +41,7 @@ group('logProblem', () => {
         transactionId: 't1',
         cause: 'TypeError',
       },
+      { fn: 'statements', event: 'summary_failed', profileId: 'u1' },
     ])
   })
 
@@ -53,6 +55,7 @@ group('logProblem', () => {
       groupId: 'sam@example.com',
       statementId: 'Sam Smith',
       transactionId: '+61412345678',
+      profileId: 'sam@example.com',
     })
     expect(lines()).toEqual([
       {
@@ -61,6 +64,7 @@ group('logProblem', () => {
         groupId: 'invalid',
         statementId: 'invalid',
         transactionId: 'invalid',
+        profileId: 'invalid',
       },
     ])
   })
