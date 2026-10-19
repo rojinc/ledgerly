@@ -27,6 +27,7 @@ export function ItemFields({
   currency,
   total,
   message,
+  nested = false,
 }: {
   form: UseFormReturn<HouseExpenseValues, unknown, TransactionInput>
   /** Everyone sharing the receipt, in the order shown. */
@@ -34,17 +35,21 @@ export function ItemFields({
   currency: string
   total: number
   message: (path: string) => string | undefined
+  /** In a change (#225), under the page's own Items: a level down, with an id of its own. */
+  nested?: boolean
 }) {
   const { fields, append, remove } = useFieldArray({ control: form.control, name: 'items' })
   const addButton = useRef<HTMLButtonElement>(null)
   const full = fields.length >= MAX_ITEMS_PER_TRANSACTION
   const totalError = message('itemsTotal')
+  const Heading = nested ? 'h3' : 'h2'
+  const headingId = nested ? 'edit-items-heading' : 'items-heading'
 
   return (
-    <section aria-labelledby="items-heading" className="flex flex-col gap-4">
-      <h2 id="items-heading" className="text-sm font-medium">
+    <section aria-labelledby={headingId} className="flex flex-col gap-4">
+      <Heading id={headingId} className="text-sm font-medium">
         Items
-      </h2>
+      </Heading>
       {fields.map((field, index) => (
         <Item
           key={field.id}

@@ -155,7 +155,7 @@ Someone owed money in a lend & borrow group can email the other person a reminde
 9. **The email:**
    - **Subject:** "You have a payment reminder", fixed: the sender's name is free text they chose, so it stays out of the subject.
    - **Body:** "{sender} sent you a reminder that you owe them {amount}." and "If you've already paid, let them know so they can record it.", and one link to the app (`APP_URL`).
-   - `{sender}` is the sender's `members.displayName` in that group, cut to 40 characters (with "…") and HTML-escaped. `{amount}` is the whole balance in the group's currency.
+   - `{sender}` is the sender's `members.displayName` in that group, put on one line (each run of spaces and line breaks becomes one space), cut to 40 characters as people see them, so an emoji isn't split (with "…"), and HTML-escaped. `{amount}` is the whole balance in the group's currency.
    - **Nothing else:** no recipient or group name (both are what the sender calls them), no transactions, no note (a phishing risk) and no `replyTo` (it would show the sender's account email).
 
 The response and the email are the same whether the recipient is a placeholder without an account, one with an account, or a joined member. The address typed and the amount are stored nowhere, and logs hold IDs, error codes and Resend's email ID only.

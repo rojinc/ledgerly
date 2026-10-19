@@ -258,7 +258,7 @@ async function recipientOf(
   return other
 }
 
-/** The person `personId` resolves to, following `mergedInto` to the end (`resolvePerson()`). */
+/** The person `personId` ends at, following `mergedInto` through every merge. */
 async function finalPerson(db: Db, personId: string): Promise<string | undefined> {
   let id = personId
   for (let hop = 0; hop < MAX_MERGES; hop++) {

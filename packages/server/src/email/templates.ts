@@ -180,7 +180,7 @@ export function timerRunningEmail(input: {
 /**
  * A reminder that someone owes the sender money (F-63, identity-and-invites.md#reminders), to
  * the address the sender typed. `senderName` is the sender's name in that group, free text they
- * chose, so it stays out of the subject and is cut to 40 characters; `amountCents` is the whole
+ * chose, so it stays out of the subject, is one line, and is cut to 40 characters; `amountCents` is the whole
  * balance owed. Nothing else: no recipient or group name (both are what the sender calls them),
  * no transactions, no note, and only a link to the app.
  */
@@ -190,7 +190,12 @@ export function reminderEmail(input: {
   currency: string
   url: string
 }): EmailContent {
-  const characters = Array.from(input.senderName.trim())
+  // One line, as the subject is, so a line break can't start a paragraph of its own. Cut by
+  // whole character as people see them, so an emoji sequence isn't split.
+  const characters = Array.from(
+    GRAPHEMES.segment(input.senderName.replace(/\s+/g, ' ').trim()),
+    (part) => part.segment,
+  )
   const sender =
     characters.length > SENDER_LENGTH
       ? `${characters
@@ -212,6 +217,7 @@ export function reminderEmail(input: {
 
 // The most of a sender's own name a reminder shows.
 const SENDER_LENGTH = 40
+const GRAPHEMES = new Intl.Segmenter(LOCALE, { granularity: 'grapheme' })
 
 /** What one group owes the person (positive) or they owe it (negative), in its currency. */
 export type SummaryBalance = { groupName: string; currency: string; cents: number }
