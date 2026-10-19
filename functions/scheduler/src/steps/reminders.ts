@@ -208,7 +208,8 @@ async function verifiedEmail(
   if (!person?.userId) return undefined
   try {
     const user = await users.get({ userId: person.userId })
-    return user.emailVerification && user.email ? user.email : undefined
+    // Not once the account is blocked: deleting it blocks it first (identity-and-invites.md#order).
+    return user.status && user.emailVerification && user.email ? user.email : undefined
   } catch (error) {
     // The account was deleted.
     if (error instanceof AppwriteException && error.code === 404) return undefined
