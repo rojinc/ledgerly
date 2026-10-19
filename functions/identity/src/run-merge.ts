@@ -3,7 +3,15 @@ import { type MergeMembers, mergeMembersSchema } from '@ledgerly/core/schemas/id
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
-import { memberOf, moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
+import {
+  IntoDeleted,
+  intoDeleted,
+  memberOf,
+  moveIdentities,
+  moveMembers,
+  moveReminders,
+  moveShares,
+} from './merge'
 import { cursorsOf, moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
 
@@ -36,9 +44,17 @@ export async function finishMerges(
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
     if (placeholder.userId || placeholder.deletedAt) continue
     if (!(await hasIdentity(services.db, placeholder.$id))) continue
-    const { joined, finished } = await runMerge(services, userId, placeholder, intoId, deadline)
-    result.joined.push(...joined)
-    if (finished) result.finished += 1
+    try {
+      // A deletion ends every merge into U (step 2), one with only unguarded writes left too.
+      if (await intoDeleted(services.db, intoId)) throw new IntoDeleted()
+      const { joined, finished } = await runSteps(services, userId, placeholder, intoId, deadline)
+      result.joined.push(...joined)
+      if (finished) result.finished += 1
+    } catch (error) {
+      if (!(error instanceof IntoDeleted)) throw error
+      console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
+      break
+    }
   }
   return result
 }
@@ -50,7 +66,7 @@ export async function finishMerges(
  * starts after its member row moved waits part done, and a later claim finishes it first. Then
  * reminders, and P's identities once nothing else names P (step 4).
  */
-async function runMerge(
+async function runSteps(
   services: Services,
   userId: string,
   placeholder: Persons,
