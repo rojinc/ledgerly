@@ -1,20 +1,24 @@
 import type { TransactionKind } from '@ledgerly/core/constants/domain'
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Members, Persons } from '@ledgerly/core/generated/rows'
-import { everyPersonId, type TransactionTemplate } from '@ledgerly/core/schemas/ledger'
+import type { TransactionTemplate } from '@ledgerly/core/schemas/ledger'
+import { Query } from 'node-appwrite'
 import type { Db } from '../appwrite/client'
 import { DATABASE_ID, TABLES } from '../appwrite/tables'
 import type { Tx } from '../appwrite/transaction'
 import { randomId } from '../identity/random-id'
-import { invalid, type Ledger } from './transactions'
+import { invalid, type Ledger, plan } from './transactions'
 
 // Balances with a former member can still be settled.
 const EXEMPT: readonly TransactionKind[] = ['payment', 'adjustment']
 
 /**
- * functions-api.md#ledger ("Deleted people"): VALIDATION_FAILED when `input` names a person
- * who deleted their account, in a group where they had joined, and `before` (the stored input)
- * didn't name them already. Payments and adjustments are exempt, and a placeholder is never
- * refused, so the answer can't show the deletion (D-016). Call it after `guardGroupAndMembers`.
+ * functions-api.md#ledger ("Deleted people"): VALIDATION_FAILED when `people` (everyone the write
+ * names, as `plan()` lists them: shares included) has a person who deleted their account, in a
+ * group where they had joined, and `before` (the people the stored input names and its shares
+ * hold) doesn't. An `unposted` row made before the deletion also keeps those its stored input
+ * splits it to. Payments and adjustments are exempt, and a placeholder is never refused, so the
+ * answer can't show the deletion (D-016). Call it after `guardGroupAndMembers`.
  *
  * With `guard`, each such person's row gets a fresh `rev` before `deletedAt` is read, so a
  * deletion racing the write fails one of the two commits. A schedule needs it: the deletion ends
@@ -27,29 +31,35 @@ export async function refuseDeletedPeople(
   ledger: Ledger,
   {
     kind,
-    input,
-    before,
+    people,
+    before = [],
+    unposted,
     guard = false,
   }: {
     kind: TransactionKind
-    input: TransactionTemplate
-    before?: TransactionTemplate
+    people: readonly string[]
+    before?: readonly string[]
+    // A stored row not yet posted: when it was made, and its input as stored.
+    unposted?: { madeAt: string; input: StoredInput }
     guard?: boolean
   },
 ): Promise<void> {
   if (EXEMPT.includes(kind)) return
-  const named = new Set(before ? everyPersonId(before) : [])
-  const added = [...new Set(everyPersonId(input))].filter((personId) => !named.has(personId))
-  const members = await Promise.all(
-    added.map((personId) =>
-      db.getRow<Members>({
-        databaseId: DATABASE_ID,
-        transactionId: tx.id,
-        tableId: TABLES.members,
-        rowId: ledger.memberRows.get(personId) as string,
-      }),
-    ),
-  )
+  const named = new Set(before)
+  const added = [...new Set(people)].filter((personId) => !named.has(personId))
+  if (added.length === 0) return
+  const { rows: members } = await db.listRows<Members>({
+    databaseId: DATABASE_ID,
+    transactionId: tx.id,
+    tableId: TABLES.members,
+    queries: [
+      Query.equal(
+        '$id',
+        added.map((personId) => ledger.memberRows.get(personId) as string),
+      ),
+      Query.limit(added.length),
+    ],
+  })
   const joined = members
     .filter((member) => member.status !== 'placeholder')
     .map((member) => member.personId)
@@ -64,17 +74,50 @@ export async function refuseDeletedPeople(
       })),
     )
   }
-  const persons = await Promise.all(
-    joined.map((personId) =>
-      db.getRow<Persons>({
-        databaseId: DATABASE_ID,
-        transactionId: tx.id,
-        tableId: TABLES.persons,
-        rowId: personId,
-      }),
-    ),
-  )
-  if (persons.some((person) => person.deletedAt)) {
-    invalid('This names someone who has deleted their account.')
+  const { rows: deleted } = await db.listRows<Persons>({
+    databaseId: DATABASE_ID,
+    transactionId: tx.id,
+    tableId: TABLES.persons,
+    queries: [Query.equal('$id', joined), Query.isNotNull('deletedAt'), Query.limit(joined.length)],
+  })
+  if (deleted.length === 0) return
+  const kept = unposted ? splitTo(unposted.input, ledger) : []
+  const madeBefore = (person: Persons) =>
+    unposted !== undefined &&
+    Date.parse(unposted.madeAt) < Date.parse(person.deletedAt as string) &&
+    kept.includes(person.$id)
+  if (!deleted.every(madeBefore)) invalid('This names someone who has deleted their account.')
+}
+
+type StoredInput = TransactionTemplate & { kind: TransactionKind; date: LocalDate }
+
+// Who an unposted row's stored input splits it to: the people who'd owe a share, by its split or
+// the default split, and a shift's two people. Never a payer the server fills in.
+function splitTo(input: StoredInput, ledger: Ledger): string[] {
+  const shares = plan(input, 'posted', ledger).shares
+  const owing = input.kind === 'shift' ? shares : shares.filter((share) => share.receivedCents > 0)
+  return owing.map((share) => share.personId)
+}
+
+/**
+ * functions-api.md#ledger: VALIDATION_FAILED while a schedule's creator has `deletedAt`, so an
+ * edit can't reopen a schedule the deletion ended. Their row gets a fresh `rev` first: a deletion
+ * that skips the schedule as already ended still fails one of the two commits.
+ */
+export async function refuseDeletedCreator(tx: Tx, db: Db, creator: string): Promise<void> {
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: creator,
+    data: { rev: randomId() },
+  })
+  const person = await db.getRow<Persons>({
+    databaseId: DATABASE_ID,
+    transactionId: tx.id,
+    tableId: TABLES.persons,
+    rowId: creator,
+  })
+  if (person.deletedAt) {
+    invalid('Someone who has deleted their account made this schedule. End it, or add a new one.')
   }
 }

@@ -9,6 +9,7 @@ import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import { refuseDeletedPeople } from '@ledgerly/server/ledger/deleted-people'
 import {
   activityWrite,
   findTransaction,
@@ -96,6 +97,9 @@ export const startTimer = (services: ServicesFor) =>
       const personal = await findPersonalGroup(db, person)
       await withTransaction(db, async (tx) => {
         await guardGroupAndMembers(tx, db, group, ledger, planned.people)
+        // Its shift names the group's two members, the employer included, though a running timer
+        // has no shares yet. Stopping it isn't checked again (functions-api.md#ledger).
+        await refuseDeletedPeople(tx, db, ledger, { kind: 'shift', people: ledger.memberIds })
         // Every start by this person, in any group, also writes their personal group's row. So of
         // two starts at once one commit fails, and its rerun finds the other's timer below
         // (ledger.md#concurrency).

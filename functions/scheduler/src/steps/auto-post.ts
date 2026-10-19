@@ -1,6 +1,6 @@
 import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Persons, Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -108,8 +108,8 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
 }
 
 // The creator pays an expense or bill whose input names no payers (build-shares.ts), but not
-// once they're no longer an active member of the group: it waits for someone to confirm it
-// (scheduling.md#step-2-auto-post).
+// once they're no longer an active member of the group, or have deleted their account (before the
+// deletion reaches this group): it waits for someone to confirm it (scheduling.md#step-2-auto-post).
 async function creatorWouldPayAfterLeaving(
   db: Db,
   row: Transactions,
@@ -126,7 +126,13 @@ async function creatorWouldPayAfterLeaving(
         rowId: memberRow,
       })
     : undefined
-  return member?.status !== 'active'
+  if (member?.status !== 'active') return true
+  const person = await db.getRow<Persons>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.persons,
+    rowId: creator,
+  })
+  return Boolean(person.deletedAt)
 }
 
 // Left for the user (scheduling.md#step-2-auto-post): made after its own day, or already
