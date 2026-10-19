@@ -40,7 +40,7 @@ export function fakes(
       get: async ({ userId }) => {
         const account = accounts[userId]
         if (!account) throw new AppwriteException('User not found', 404, 'user_not_found')
-        return { $id: userId, email: '', emailVerification: false, ...account }
+        return { $id: userId, email: '', emailVerification: false, status: true, ...account }
       },
     },
     sendEmail: vi.fn(async (_email: Email) => ({ id: 'email1' })),
