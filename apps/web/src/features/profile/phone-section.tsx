@@ -149,7 +149,8 @@ function EditPhone({
   if (!user.passwordUpdate) {
     return (
       <p>
-        To add a phone number, your account needs a password first.{' '}
+        Set a password first: changing the phone on your account needs it, and yours doesn’t have
+        one yet.{' '}
         <Button variant="link" className="h-auto px-0" onClick={onCancel}>
           Back
         </Button>

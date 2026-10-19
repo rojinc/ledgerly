@@ -162,7 +162,7 @@ describe('PhoneSection', () => {
     mockUser = { ...mockUser, passwordUpdate: '' }
     renderSection()
     fireEvent.click(screen.getByRole('button', { name: 'Add a phone number' }))
-    expect(screen.getByText(/needs a password first/)).toBeTruthy()
+    expect(screen.getByText(/^Set a password first/)).toBeTruthy()
     expect(screen.queryByLabelText('Mobile number')).toBeNull()
   })
 })
