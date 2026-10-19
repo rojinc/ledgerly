@@ -265,6 +265,86 @@ describe('moveMembers (step 2)', () => {
     expect(members(services).map(([id]) => id)).toEqual(['m1', 'm2'])
   })
 
+  describe('a leave of U’s own, after U moved out, is final', () => {
+    // U moved out of g1 and is still in its team; P has a row there too.
+    function movedOut() {
+      return fakes(
+        {
+          persons: [U, P],
+          members: [
+            placeholderRow('m1', 'g1', 'pP', CREATED),
+            ownRow('m2', 'g1', { status: 'left', role: 'viewer', leftOn: '2026-10-10', rev: 'r0' }),
+          ],
+        },
+        { teams: { g1: ['u1'] } },
+      )
+    }
+
+    /** U leaves on their own, as `groups POST /leave` does: the row's guard, then the team. */
+    async function leave(services: ReturnType<typeof fakes>) {
+      await withTransaction(services.db, (tx) =>
+        tx.write(
+          { action: 'update', tableId: 'members', rowId: 'm2', data: { rev: 'r1' } },
+          {
+            action: 'create',
+            tableId: 'activity',
+            rowId: 'aLeft',
+            data: {
+              groupId: 'g1',
+              actorPersonId: 'pU',
+              action: 'member.left',
+              summary: 'Sam Lee left',
+              at: new Date().toISOString(),
+            },
+          },
+        ),
+      )
+      await removeFromTeam(services.teams, 'g1', 'u1')
+    }
+
+    it('runs again when the leave lands after the check, and takes the team back', async () => {
+      const services = movedOut()
+      // Only the row's rev changes: the comparison must see it.
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"members"'),
+        () => leave(services),
+      )
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', FAR)).rejects.toThrow(TRY_AGAIN)
+      expect(services.teams.members('g1')).toEqual([])
+      // The next claim sees the leave: g1 is kept, and U stays out.
+      expect((await moveMembers(services, 'u1', 'pP', 'pU', FAR)).kept).toEqual(new Set(['g1']))
+      expect(services.teams.members('g1')).toEqual([])
+    })
+
+    it('takes the team back when the leave lands before the merge adds U to it', async () => {
+      const services = movedOut()
+      const add = services.teams.createMembership.bind(services.teams)
+      vi.spyOn(services.teams, 'createMembership').mockImplementationOnce(async (params) => {
+        await leave(services)
+        return add(params)
+      })
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', FAR)).rejects.toThrow(TRY_AGAIN)
+      expect(services.teams.members('g1')).toEqual([])
+    })
+
+    it('takes the team back when the leave lands just after the merge commits', async () => {
+      const services = movedOut()
+      const commit = services.db.updateTransaction.bind(services.db)
+      let done = false
+      vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+        const result = await commit(params)
+        if (!done && params.commit) {
+          done = true
+          await leave(services)
+        }
+        return result
+      })
+      await moveMembers(services, 'u1', 'pP', 'pU', FAR)
+      expect(services.teams.members('g1')).toEqual([])
+    })
+  })
+
   it('starts no row once the deadline has passed', async () => {
     const services = setUp({
       persons: [U, P],

@@ -185,9 +185,11 @@ async function moveMember(
       })
     })
   } catch (error) {
-    // Take back the team membership, unless U has a joined row there.
-    const ours = await memberOf(db, theirs.groupId, intoId)
-    if (!ours || ours.status === 'placeholder') await removeFromTeam(teams, theirs.groupId, userId)
+    // Take back the team membership, unless U has a joined row there that they didn't leave on
+    // their own (a leave of U's that landed meanwhile is final).
+    if (!(await joinedHere(db, theirs.groupId, intoId))) {
+      await removeFromTeam(teams, theirs.groupId, userId)
+    }
     const current = await getRowOrNull<Members>(db, TABLES.members, theirs.$id)
     if (current?.personId === theirs.personId) {
       throw error instanceof Raced || isAppwriteError(error, 409) ? tryAgain() : error
@@ -196,9 +198,20 @@ async function moveMember(
     return false
   }
   // As in joinGroup: a parallel failure may have taken back the membership just before this
-  // commit, and the row is joined now.
+  // commit, and the row is joined now. Read it again after: a leave of U's own that landed since
+  // takes the membership away for good.
   await addToTeam(teams, theirs.groupId, userId)
+  if (!(await joinedHere(db, theirs.groupId, intoId))) {
+    await removeFromTeam(teams, theirs.groupId, userId)
+  }
   return true
+}
+
+/** Whether the person has a joined row in the group (`active` or `left`) they didn't leave on their own. */
+async function joinedHere(db: Db, groupId: string, personId: string): Promise<boolean> {
+  const row = await memberOf(db, groupId, personId)
+  if (!row || row.status === 'placeholder') return false
+  return !(await leftOnTheirOwn(db, groupId, personId, row.$createdAt))
 }
 
 // `left` if they moved out, so a former housemate can still see and settle up (as in joining).
@@ -206,9 +219,14 @@ function statusOf(member: Members): 'active' | 'left' {
   return member.leftOn ? 'left' : 'active'
 }
 
-/** True when the stored row still says what was read: same person, status, role and dates. */
+/**
+ * True when the stored row still says what was read: same person, status, role, dates and `rev`.
+ * The `rev` catches a leave of U's own after U had moved out, which changes nothing else on the
+ * row but makes leaving final.
+ */
 function sameMember(stored: Members | null, read: Members): boolean {
   return (
+    stored?.rev === read.rev &&
     stored?.personId === read.personId &&
     stored.status === read.status &&
     stored.role === read.role &&
