@@ -173,6 +173,9 @@ group('logProblem', () => {
     logProblem('merge_run', { counts: { unfinished: 1, stopped: 1 } })
     logProblem('merge_run_failed', { intoPersonId: 'pU', error: new Error('x') })
     logProblem('merge_walk_cut_off', { count: 100 })
+    // Receipt clean-up (#163): behind warns, a listed row is an error.
+    logProblem('receipt_cleanup_behind', { counts: { deleted: 1, skipped: 0, failed: 0 } })
+    logProblem('receipt_row_listed', { rowId: 'f1' })
     expect(levels()).toEqual([
       'error',
       'error',
@@ -208,6 +211,8 @@ group('logProblem', () => {
       'log',
       'error',
       'warn',
+      'warn',
+      'error',
     ])
     expect(lines()[1]).toEqual({
       fn: 'unknown',

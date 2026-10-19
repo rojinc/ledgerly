@@ -7,6 +7,7 @@ import { AppwriteException } from 'node-appwrite'
 import { vi } from 'vitest'
 import { schedulerRoutes } from '../src/main'
 import type { AccountUser, Services } from '../src/services'
+import type { BucketFile, ReceiptsBucket } from '../src/steps/receipts'
 
 // 07:00 on Monday 19 October in Sydney, still Sunday 18 October in UTC.
 export const NOW = new Date('2026-10-18T20:00:00.000Z')
@@ -18,6 +19,7 @@ type SeedRow<R> = Partial<R> & { $id: string }
 export type Fakes = Services & {
   db: FakeDb
   teams: FakeTeams
+  files: FakeBucket
   sendEmail: ReturnType<typeof vi.fn<(email: Email) => Promise<unknown>>>
 }
 
@@ -45,9 +47,39 @@ export function fakes(
       },
     },
     sendEmail: vi.fn(async (_email: Email) => ({ id: 'email1' })),
+    files: new FakeBucket(),
     now: options.now ?? NOW,
     appUrl: APP_URL,
     outOfTime: () => false,
+  }
+}
+
+/** Storage's receipts bucket, in memory: file IDs and when they were uploaded. */
+export class FakeBucket implements ReceiptsBucket {
+  readonly stored = new Map<string, string>()
+
+  upload(fileId: string, createdAt: string): void {
+    this.stored.set(fileId, createdAt)
+  }
+
+  async listFiles(page: { from: string; to: string; after?: string }): Promise<BucketFile[]> {
+    // As on Appwrite, a cursor must be a file that still exists.
+    if (page.after !== undefined && !this.stored.has(page.after)) {
+      throw new AppwriteException('Cursor not found', 400, 'general_cursor_not_found')
+    }
+    // Oldest first, then by ID, as step 5 asks for.
+    const key = ({ $id, $createdAt }: BucketFile) => `${$createdAt}|${$id}`
+    const cursor = page.after === undefined ? undefined : this.stored.get(page.after)
+    return [...this.stored]
+      .map(([$id, $createdAt]) => ({ $id, $createdAt }))
+      .filter(({ $createdAt }) => $createdAt > page.from && $createdAt <= page.to)
+      .filter((file) => cursor === undefined || key(file) > `${cursor}|${page.after}`)
+      .sort((a, b) => (key(a) < key(b) ? -1 : 1))
+      .slice(0, 100)
+  }
+
+  async deleteFile(fileId: string): Promise<boolean> {
+    return this.stored.delete(fileId)
   }
 }
 
