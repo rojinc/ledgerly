@@ -23,6 +23,7 @@ export type LogEvent =
   | 'nightly_check_finding'
   | 'nightly_check_cut_off'
   | 'password_notice'
+  | 'change_notice'
   | 'team_membership_removed'
   | 'schedule_template_unreadable'
   | 'stuck_finalize_not_archived'
@@ -45,8 +46,8 @@ export type LogEvent =
 /**
  * How each event is written. Most are problems, written with `console.error`: until alerting
  * exists, the error lines are the alert (scheduling.md#step-6-nightly-check). These aren't: `log`
- * for what went as it should, `warn` for something to look at that isn't a failure. A password
- * notice is an error only when its send failed.
+ * for what went as it should, `warn` for something to look at that isn't a failure. A password or
+ * change notice is an error only when a send failed, and a change notice's `mismatch` a warning.
  */
 const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   typed_keys_deleted: 'log',
@@ -69,6 +70,18 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
 
 /** What the password notice did (identity-and-invites.md#password-notice). */
 export type NoticeOutcome = 'sent' | 'stale' | 'unverified' | 'gone' | 'failed'
+
+/**
+ * What the email or phone change notice did, for one email or for the run
+ * (identity-and-invites.md#email-and-phone-change-notice).
+ */
+export type ChangeNoticeOutcome =
+  | 'sent'
+  | 'gone'
+  | 'no_old_address'
+  | 'unverified'
+  | 'mismatch'
+  | 'failed'
 
 /**
  * What a merge moved or left (identity-and-invites.md#merging-two-persons), and what the hourly
@@ -117,7 +130,7 @@ export type LogFields = {
   problems?: readonly SnapshotProblem[]
   identityType?: 'email' | 'phone'
   rule?: LogRule
-  outcome?: NoticeOutcome
+  outcome?: NoticeOutcome | ChangeNoticeOutcome
   /**
    * How many things, such as the keys an adoption deleted; never an amount of money. Anything
    * but a whole number is `invalid`.
@@ -127,6 +140,11 @@ export type LogFields = {
   counts?: Partial<Record<LogCount, number>>
   /** The error behind it. Only its name is written (`describe`). */
   error?: unknown
+  /**
+   * A fixed cause, for a failure with no error behind it: `budget`, a change notice's addresses
+   * left when its time ran out. `error` wins over it.
+   */
+  cause?: 'budget'
 }
 
 /**
@@ -170,13 +188,17 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
           whole(counts[name]),
         ]),
       ),
-    cause: 'error' in fields ? describe(fields.error) : undefined,
+    // Pinned at run time too, as a cast could pass any text.
+    cause:
+      'error' in fields ? describe(fields.error) : fields.cause === 'budget' ? 'budget' : undefined,
   }
   const level =
-    event === 'password_notice'
+    event === 'password_notice' || event === 'change_notice'
       ? outcome === 'failed'
         ? 'error'
-        : 'log'
+        : outcome === 'mismatch'
+          ? 'warn'
+          : 'log'
       : (LEVELS[event] ?? 'error')
   // biome-ignore lint/suspicious/noConsole: the one place a function logs from inside a route.
   console[level](JSON.stringify(line))

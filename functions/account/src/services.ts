@@ -1,7 +1,7 @@
 import { clientFromRequest, type Db } from '@ledgerly/server/appwrite/client'
 import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import type { RouteContext } from '@ledgerly/server/http/create-handler'
-import { type Models, Teams, Users } from 'node-appwrite'
+import { type Models, Storage, Teams, Users } from 'node-appwrite'
 
 // `POST /delete` stops starting new work after this, inside the 30 s synchronous limit; the
 // hourly job deletes the rest (functions-api.md#account).
@@ -22,11 +22,18 @@ export interface UsersApi {
   delete(params: { userId: string }): Promise<unknown>
 }
 
+/** The parts of Storage that account uses, for a purged group's files; the real `Storage` fits. */
+export interface FilesApi {
+  getFile(params: { bucketId: string; fileId: string }): Promise<Pick<Models.File, '$permissions'>>
+  deleteFile(params: { bucketId: string; fileId: string }): Promise<unknown>
+}
+
 /** What the routes work with, so tests can pass FakeDb, fakes and a fixed clock. */
 export type Services = {
   db: Db
   teams: TeamsApi
   users: UsersApi
+  files: FilesApi
   now: Date
   /** True once this request's time budget is used up. */
   outOfTime: () => boolean
@@ -40,6 +47,7 @@ export function servicesFromRequest(ctx: Pick<RouteContext, 'db' | 'headers'>): 
     db: ctx.db,
     teams: new Teams(client),
     users: new Users(client),
+    files: new Storage(client),
     now: new Date(),
     outOfTime: () => performance.now() >= stopAt,
   }
