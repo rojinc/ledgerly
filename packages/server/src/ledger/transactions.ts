@@ -366,11 +366,12 @@ export async function guardGroup(
   group: Groups,
   also: readonly Write[] = [],
 ): Promise<void> {
+  // A row deleted before this stages fails it with 409 (withTransaction), which reruns too.
+  await tx.write(
+    { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { rev: randomId() } },
+    ...also,
+  )
   await rerunIfGone(async () => {
-    await tx.write(
-      { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { rev: randomId() } },
-      ...also,
-    )
     const staged = await db.getRow<Groups>({
       databaseId: DATABASE_ID,
       transactionId: tx.id,
@@ -385,7 +386,8 @@ export async function guardGroup(
   })
 }
 
-// A row deleted before the guard staged: run the route again with the group as it is now.
+// A guarded row deleted after it was staged, so reading it finds nothing: run the route again
+// with things as they are now.
 async function rerunIfGone<T>(guard: () => Promise<T>): Promise<T> {
   try {
     return await guard()
@@ -672,16 +674,17 @@ export async function guardTransaction(
   statuses: readonly TransactionStatus[],
 ): Promise<Transactions> {
   // A row deleted meanwhile (a schedule edit removes its future occurrences): the rerun finds
-  // it gone and answers NOT_FOUND.
-  const staged = await rerunIfGone(async () => {
-    await tx.write({ action: 'update', tableId: TABLES.transactions, rowId, data: { updatedBy } })
-    return db.getRow<Transactions>({
+  // it gone and answers NOT_FOUND. One deleted before this stages fails it with 409
+  // (withTransaction), which reruns too.
+  await tx.write({ action: 'update', tableId: TABLES.transactions, rowId, data: { updatedBy } })
+  const staged = await rerunIfGone(() =>
+    db.getRow<Transactions>({
       databaseId: DATABASE_ID,
       tableId: TABLES.transactions,
       rowId,
       transactionId: tx.id,
-    })
-  })
+    }),
+  )
   requireUnlocked(staged)
   if (!statuses.includes(staged.status)) throw new Raced()
   return staged

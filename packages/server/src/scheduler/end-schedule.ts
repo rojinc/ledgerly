@@ -157,17 +157,15 @@ export async function removeOccurrences(
         await guardGroup(tx, db, group)
         const fileIds = batch.flatMap(({ row }) => row.receiptFileIds ?? [])
         const receipts = await receiptRows(db, [...new Set(fileIds)])
-        await goneIsRaced(
-          tx.write(
-            ...batch.flatMap(({ row, itemIds }) => [
-              { action: 'delete' as const, tableId: TABLES.transactions, rowId: row.$id },
-              ...itemIds.map((itemId) => ({
-                action: 'delete' as const,
-                tableId: TABLES.items,
-                rowId: itemId,
-              })),
-            ]),
-          ),
+        await tx.write(
+          ...batch.flatMap(({ row, itemIds }) => [
+            { action: 'delete' as const, tableId: TABLES.transactions, rowId: row.$id },
+            ...itemIds.map((itemId) => ({
+              action: 'delete' as const,
+              tableId: TABLES.items,
+              rowId: itemId,
+            })),
+          ]),
         )
         await writeReceiptRows(
           db,
@@ -218,16 +216,6 @@ export async function itemsOf(db: Db, transactionIds: readonly string[]): Promis
   return items
 }
 
-/** A write to a row deleted meanwhile is a race: the caller runs again with things as they are. */
-export async function goneIsRaced(write: Promise<void>): Promise<void> {
-  try {
-    await write
-  } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404) throw new Raced()
-    throw error
-  }
-}
-
 /**
  * Stages `data` on the schedule row, then checks the stored row still has what `seen` has:
  * another expansion, edit or end that got there first makes this one run again.
@@ -238,9 +226,8 @@ export async function guardSchedule(
   seen: Schedules,
   data: Partial<Schedules>,
 ): Promise<void> {
-  await goneIsRaced(
-    tx.write({ action: 'update', tableId: TABLES.schedules, rowId: seen.$id, data }),
-  )
+  // A schedule deleted before this stages fails it with 409; one deleted after, the read below.
+  await tx.write({ action: 'update', tableId: TABLES.schedules, rowId: seen.$id, data })
   let stored: Schedules
   try {
     stored = await db.getRow<Schedules>({
