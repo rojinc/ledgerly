@@ -12,6 +12,7 @@ export interface TeamsApi {
     queries?: string[]
   }): Promise<{ memberships: Array<Pick<Models.Membership, '$id' | 'userId'>> }>
   deleteMembership(params: { teamId: string; membershipId: string }): Promise<unknown>
+  delete(params: { teamId: string }): Promise<unknown>
 }
 
 // Memberships never get a team role, `owner` least of all: an owner could manage the team from
@@ -45,6 +46,15 @@ export async function removeFromTeam(
     for (const membership of memberships.filter((found) => found.userId === userId)) {
       await teams.deleteMembership({ teamId, membershipId: membership.$id })
     }
+  } catch (error) {
+    if (!(error instanceof AppwriteException && error.code === 404)) throw error
+  }
+}
+
+/** Deletes the team, and with it every membership. A team that's already gone counts as done. */
+export async function deleteTeam(teams: Pick<TeamsApi, 'delete'>, teamId: string): Promise<void> {
+  try {
+    await teams.delete({ teamId })
   } catch (error) {
     if (!(error instanceof AppwriteException && error.code === 404)) throw error
   }

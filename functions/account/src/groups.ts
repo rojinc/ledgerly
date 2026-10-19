@@ -5,13 +5,14 @@ import { everyPersonId, type TransactionTemplate } from '@ledgerly/core/schemas/
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { isInTeam, othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
+import { deleteTeam, isInTeam, othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { guardGroup, Raced } from '@ledgerly/server/ledger/transactions'
 import { endScheduleOn, laterOf } from '@ledgerly/server/scheduler/end-schedule'
 import { ID, Permission, Query, Role } from 'node-appwrite'
+import { purge } from './purge'
 import { FORMER_MEMBER, getRowOrNull, isAppwriteError } from './rows'
 import type { Services } from './services'
 
@@ -41,9 +42,9 @@ export async function leaveGroups(
   return finished
 }
 
-// One group. False when it's left for the next run: it needs a purge, a statement in it is being
-// finalized, or something changed it meanwhile. A rerun never decides again: the group's state
-// says how it carries on, never the team as it is by then.
+// One group. False when it's left for the next run: a statement in it is being finalized,
+// something changed it meanwhile, or a purge ran out of time. A rerun never decides again: the
+// group's state says how it carries on, never the team as it is by then.
 async function leaveGroup(
   services: Services,
   userId: string,
@@ -53,8 +54,9 @@ async function leaveGroup(
   const { db, teams } = services
   try {
     const others = await othersInTeam(teams, member.groupId, userId)
-    // The team is gone: a purge was started, and carries on. Purges are #50 PR-2.
-    if (others === null) return false
+    // The team is gone: a purge was started, and carries on. Their own member row, deleted
+    // last, ends it.
+    if (others === null) return await purge(services, member)
     const group = await getRowOrNull<Groups>(db, TABLES.groups, member.groupId)
     if (!group) return false
     // Their own member.left since deletedAt: the keep's transaction is done.
@@ -63,10 +65,15 @@ async function leaveGroup(
       (await leftOnTheirOwn(db, group.$id, person.$id, person.deletedAt))
     ) {
       if (!(await isInTeam(teams, group.$id, userId))) return true
+    } else if (!others) {
+      // Nobody else is in the team, as in their personal group: it's purged. `archivedAt`
+      // first, as the keep's archive sets it (so no statement is being finalized, and none can
+      // start), then the team, so jobs and writes stop. A crash between the two leaves the
+      // team, so a rerun decides from it again.
+      if (!group.archivedAt) await archive(services, person.$id, group)
+      await deleteTeam(teams, group.$id)
+      return await purge(services, member)
     } else {
-      // Nobody else is in the team, as in their personal group: it's purged (#50 PR-2), so
-      // until then it waits, untouched.
-      if (!others) return false
       await keep(services, person, member, group)
     }
     // Then, in this order: their schedules, the archive (ending a schedule in an archived group
@@ -175,8 +182,9 @@ async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
 }
 
 // Archives the group, with a group.archived row by them, as an admin's archive writes, so the
-// others see why. One archived meanwhile, or with a statement being finalized, throws `Raced`:
-// the group is left for the next run, which finds it archived, or waits until the finalize ends.
+// others see why (a purge's goes with the group's rows). One archived meanwhile, or with a
+// statement being finalized, throws `Raced`: the group is left for the next run, which finds it
+// archived, or waits until the finalize ends.
 async function archive({ db, now }: Services, personId: string, group: Groups): Promise<void> {
   await withTransaction(db, async (tx) => {
     await tx.write({

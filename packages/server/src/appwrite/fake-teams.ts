@@ -89,6 +89,12 @@ export class FakeTeams implements TeamsApi {
     return {}
   }
 
+  async delete(params: { teamId: string }): Promise<object> {
+    this.team(params.teamId)
+    this.teams.delete(params.teamId)
+    return {}
+  }
+
   private team(teamId: string) {
     const team = this.teams.get(teamId)
     if (!team) throw new AppwriteException('Team not found', 404, 'team_not_found')

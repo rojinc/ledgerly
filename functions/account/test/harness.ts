@@ -7,11 +7,13 @@ import type {
 } from '@ledgerly/core/generated/rows'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
+import type { TableId } from '@ledgerly/server/appwrite/tables'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
 import { vi } from 'vitest'
 import { accountRoutes } from '../src/main'
-import type { AccountUser, Services, UsersApi } from '../src/services'
+import type { AccountUser, FilesApi, Services, UsersApi } from '../src/services'
 
 // 07:00 on Monday 19 October in Sydney, still Sunday 18 October in UTC. Earlier than the real
 // clock, which FakeDb stamps `$createdAt` with, as Appwrite's is by the time a deletion runs.
@@ -89,10 +91,43 @@ export class FakeUsers implements UsersApi {
   }
 }
 
+/** In-memory Storage, with Appwrite's 404 for a file that doesn't exist (or no longer does). */
+export class FakeFiles implements FilesApi {
+  private files = new Map<string, string[]>()
+
+  /** A file in the bucket with these permissions. */
+  upload(bucketId: string, fileId: string, permissions: string[]): void {
+    this.files.set(`${bucketId}/${fileId}`, [...permissions])
+  }
+
+  /** Every file as `bucketId/fileId`, for assertions. */
+  ids(): string[] {
+    return [...this.files.keys()]
+  }
+
+  async getFile({ bucketId, fileId }: { bucketId: string; fileId: string }) {
+    return { $permissions: [...this.find(bucketId, fileId)] }
+  }
+
+  async deleteFile({ bucketId, fileId }: { bucketId: string; fileId: string }): Promise<object> {
+    this.find(bucketId, fileId)
+    this.files.delete(`${bucketId}/${fileId}`)
+    return {}
+  }
+
+  private find(bucketId: string, fileId: string): string[] {
+    const permissions = this.files.get(`${bucketId}/${fileId}`)
+    if (!permissions) {
+      throw new AppwriteException('File not found', 404, 'storage_file_not_found')
+    }
+    return permissions
+  }
+}
+
 type Seed = ConstructorParameters<typeof FakeDb>[0]
 type SeedRow<R> = Partial<R> & { $id: string }
 
-export type Fakes = Services & { db: FakeDb; teams: FakeTeams; users: FakeUsers }
+export type Fakes = Services & { db: FakeDb; teams: FakeTeams; users: FakeUsers; files: FakeFiles }
 
 export function fakes(
   seed: Seed = {},
@@ -102,6 +137,7 @@ export function fakes(
     db: new FakeDb(seed),
     teams: new FakeTeams(options.teams),
     users: new FakeUsers(options.accounts ?? [account()]),
+    files: new FakeFiles(),
     now: NOW,
     outOfTime: () => false,
   }
@@ -311,4 +347,61 @@ export function beforeCommit(db: FakeDb, change: () => Promise<unknown>) {
     }
     return commit(params)
   })
+}
+
+export function setRow(services: Fakes, tableId: TableId, rowId: string, data: object) {
+  return withTransaction(services.db, (tx) =>
+    tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
+  )
+}
+
+export function insert(
+  services: Fakes,
+  tableId: TableId,
+  rows: Array<Record<string, unknown> & { $id: string }>,
+) {
+  return withTransaction(services.db, (tx) =>
+    tx.write(
+      ...rows.map(({ $id, ...data }) => ({ action: 'create' as const, tableId, rowId: $id, data })),
+    ),
+  )
+}
+
+export function rowOf(services: Fakes, tableId: TableId, rowId: string) {
+  return services.db.rows(tableId).find((row) => row.$id === rowId)
+}
+
+export function teamOf(services: Fakes, teamId: string) {
+  return services.teams.members(teamId)?.map((membership) => membership.userId)
+}
+
+/** Throws once, at the `nth` listing of a table `when` picks, as a crash would. */
+export function crashOnList(
+  services: Fakes,
+  when: (tableId: string, queries: string) => boolean,
+  nth = 1,
+) {
+  const list = services.db.listRows.bind(services.db)
+  let seen = 0
+  vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+    if (when(params.tableId, JSON.stringify(params.queries ?? [])) && ++seen === nth) {
+      throw new Error('Crashed')
+    }
+    return list(params)
+  })
+}
+
+/** Throws once, at the `nth` call of `method` whose first argument `when` picks. */
+export function crashOnCall<T extends object>(
+  target: T,
+  method: keyof T & string,
+  when: (params: Record<string, unknown>) => boolean = () => true,
+  nth = 1,
+) {
+  const original = (target[method] as (params: unknown) => Promise<unknown>).bind(target)
+  let seen = 0
+  vi.spyOn(target, method as never).mockImplementation((async (params: Record<string, unknown>) => {
+    if (when(params) && ++seen === nth) throw new Error('Crashed')
+    return original(params)
+  }) as never)
 }
