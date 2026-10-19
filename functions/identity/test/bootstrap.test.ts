@@ -45,20 +45,32 @@ function addedBeforeSignUp(typed: ReturnType<typeof identity>[] = []) {
   )
 }
 
-let warn: ReturnType<typeof vi.spyOn>
-let log: ReturnType<typeof vi.spyOn>
+// Every line written, with its level: an adoption logs, a claim warns (log.ts LEVELS).
+let logged: Array<{ level: string; line: string }>
 beforeEach(() => {
-  warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-  log = vi.spyOn(console, 'log').mockImplementation(() => {})
+  logged = []
+  for (const level of ['log', 'warn', 'error'] as const) {
+    vi.spyOn(console, level).mockImplementation((line: unknown) => {
+      logged.push({ level, line: String(line) })
+    })
+  }
 })
 afterEach(() => {
   // No personal data in logs: no email, phone number or name.
-  for (const args of warn.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}|Sam/)
-  // An adoption logs IDs and counts only, never a key.
-  for (const args of log.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}/)
-  warn.mockRestore()
-  log.mockRestore()
+  for (const { line } of logged) expect(line).not.toMatch(/@|\+?\d{6,}|\bSam\b/)
+  vi.restoreAllMocks()
 })
+
+// The logProblem lines written, without `fn`.
+const events = () =>
+  logged.map(({ line }) => {
+    const { fn: _fn, ...event } = JSON.parse(line) as Record<string, unknown>
+    return event
+  })
+// Lines worth a look: warnings and errors.
+const warnings = () => logged.filter(({ level }) => level !== 'log')
+// The adoption's line (#252): IDs and counts only, never a key.
+const adoptions = () => events().filter(({ event }) => event === 'typed_keys_deleted')
 
 describe('POST /bootstrap', () => {
   it('sets up the person, profile, personal group, its team and an admin membership', async () => {
@@ -193,13 +205,14 @@ describe('POST /bootstrap', () => {
       // Another placeholder's typed key is nothing to do with this adoption.
       const services = addedBeforeSignUp([
         typedPhone(),
+        identity('iTyped2', 'phone:+61400000001', 'pSam'),
         identity('iOther', 'phone:+61400000999', 'pOther'),
       ])
       expect((await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)).personId).toBe(
         'pSam',
       )
       expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iOther'])
-      expect(log).toHaveBeenCalledWith('bootstrap adopted pSam; typed keys deleted: 1')
+      expect(adoptions()).toEqual([{ event: 'typed_keys_deleted', personId: 'pSam', count: 2 }])
     })
 
     it('keeps a key the user verified too, and logs nothing', async () => {
@@ -210,7 +223,7 @@ describe('POST /bootstrap', () => {
         expect.objectContaining({ $id: 'iSam', personId: 'pSam', verified: true }),
         expect.objectContaining({ $id: 'iTyped', personId: 'pSam', verified: true }),
       ])
-      expect(log).not.toHaveBeenCalled()
+      expect(adoptions()).toEqual([])
     })
 
     it("drops the victim's typed email when someone adopts by their own phone (#247)", async () => {
@@ -277,7 +290,7 @@ describe('POST /bootstrap', () => {
       userId: null,
       mergedInto: 'pEmail',
     })
-    expect(warn).not.toHaveBeenCalled()
+    expect(warnings()).toEqual([])
   })
 
   it('names a new person "Me" when the account has no name, and keeps the name an adopted one had', async () => {
@@ -307,9 +320,9 @@ describe('POST /bootstrap', () => {
     const result = await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)
     expect(result.personId).toMatch(ID)
     expect(services.db.rows('identities')).toEqual([])
-    expect(warn.mock.calls).toEqual([
-      ['skipped an unusable verified email'],
-      ['skipped an unusable verified phone'],
+    expect(events()).toEqual([
+      { event: 'claim_identity_unusable', identityType: 'email' },
+      { event: 'claim_identity_unusable', identityType: 'phone' },
     ])
   })
 
@@ -385,7 +398,7 @@ describe('POST /bootstrap', () => {
       // Its typed-key delete went with the rest: the placeholder is the other user's to claim.
       expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iTyped'])
       // And nothing claims it was adopted.
-      expect(log).not.toHaveBeenCalled()
+      expect(adoptions()).toEqual([])
     },
   )
 

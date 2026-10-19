@@ -2,11 +2,12 @@ import type { Identities, Persons } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { Query } from 'node-appwrite'
 import { findIdentity, getRowOrNull, isAppwriteError } from '../rows'
 import { finishMerges, MERGE_BUDGET_MS } from '../run-merge'
 import type { Services } from '../services'
-import { errorName, markVerified, verifiedIdentities } from './claim'
+import { markVerified, verifiedIdentities } from './claim'
 
 // identity-and-invites.md#finishing-merges: the hourly run carries on the merges a claim left
 // unfinished, so one finishes within about an hour even if U never calls /claim again. Logs and
@@ -52,7 +53,7 @@ export async function run(scheduled: boolean, services: () => Services): Promise
       await verifyKeys(built, into.userId, intoId)
     } catch (error) {
       // One U's trouble doesn't stop the others; the next run tries again.
-      console.warn(`identity: merges into ${intoId} stopped: ${errorName(error)}`)
+      logProblem('merge_stopped', { intoPersonId: intoId, error })
     }
   }
   // How many merged persons the walk read, to see its cost (scaling.md).
