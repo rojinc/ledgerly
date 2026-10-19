@@ -475,7 +475,8 @@ describe('POST /claim, merging a placeholder', () => {
       statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' }],
     })
     await claim(services)
-    // g2 is done. g1 waits whole, Sammy's member row included, and so does the phone.
+    // g2 is done. g1 waits, Sammy's member row included (the reminder moves, as it's found by
+    // person), and so does the phone.
     expect(namingSammy(services)).toEqual({
       identities: ['iPhone'],
       members: ['m1'],

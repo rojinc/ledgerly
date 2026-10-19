@@ -799,6 +799,7 @@ describe('moveMembers (step 2)', () => {
     it('keeps P’s row there, and U out of its team, while the other groups go on', async () => {
       const services = withP([FINALIZING])
       const adds = vi.spyOn(services.teams, 'createMembership')
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
         kept: new Set(),
         joined: ['g2'],
@@ -812,6 +813,8 @@ describe('moveMembers (step 2)', () => {
       // Never added, so never taken out again.
       expect(adds.mock.calls.map(([params]) => params.teamId)).toEqual(['g2', 'g2'])
       expect(services.teams.members('g1')).toEqual([])
+      // A finalize isn't a gone team: no merge_put_off_team_gone line.
+      expect(warn).not.toHaveBeenCalled()
     })
 
     it('puts it off when the finalize starts after the first check, and takes back the team', async () => {
