@@ -1248,6 +1248,22 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't150', left: ['t001'] }])
   })
 
+  it('counts a row once when another run stored it past this run’s cursor', async () => {
+    // Two runs at once: the slower one's earlier `after` was written last, with the other's
+    // left row t001 kept, so the scan reads t001 again on its page.
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const stored = [{ groupId: 'g1', after: 't000', left: ['t001'] }]
+    const broken = { ...transaction('t001', {}), inputJson: '{' }
+    const store = withP([transaction('t000', RENAMED), broken], stored)
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      skipped: 1,
+      done: false,
+    })
+    // Logged when a run first left it, not again.
+    expect(warns).not.toHaveBeenCalled()
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't001', left: ['t001'] }])
+  })
+
   it('clears a row it left that has been locked or deleted since: a locked one is renamed', async () => {
     const stored = [{ groupId: 'g1', after: 't002', left: ['t001', 't002'] }]
     const locked = transaction('t001', EXPENSE, { statementId: 'st1' })
@@ -1260,6 +1276,47 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: [] }])
     // Renamed by the locked rule (#263): as a posted row, never voided.
     expect(JSON.stringify(input(store, 't001'))).not.toMatch(/\bpP\b/)
+  })
+
+  it('drops a row it left that has been locked since and can’t be read, without holding the merge open', async () => {
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const locked = { ...transaction('t001', {}, { statementId: 'st1' }), inputJson: '{' }
+    const store = withP([transaction('t000', RENAMED), locked], LEFT)
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, LEFT)).toMatchObject({
+      skipped: 0,
+      done: true,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't001', left: [] }])
+    expect(warns).toHaveBeenCalledWith('merge pP into pU left locked transaction t001 as it is')
+  })
+
+  it('leaves a row whose item split can’t be read: an unlocked one holds the merge open, a locked one doesn’t', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const item = (id: string, transactionId: string) => ({
+      $id: id,
+      transactionId,
+      position: 0,
+      name: 'Milk',
+      quantity: 1,
+      amountCents: 500,
+      category: null,
+      splitJson: '{',
+    })
+    const unlocked = seed([transaction('t1', EXPENSE)], { items: [item('i1', 't1')] })
+    expect(await moveInputs(unlocked, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 0,
+      skipped: 1,
+      done: false,
+    })
+    const locked = seed([transaction('t1', EXPENSE, { statementId: 'st1' })], {
+      items: [item('i1', 't1')],
+    })
+    expect(await moveInputs(locked, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 0,
+      skipped: 0,
+      done: true,
+    })
+    expect(input(locked, 't1')).toEqual(EXPENSE)
   })
 
   it('reads the rows it left again 100 at a time: no filter holds more values', async () => {
