@@ -141,15 +141,32 @@ describe('POST /groups/{id}/leave', () => {
   })
 
   it('finishes an interrupted leave: already left, still in the team', async () => {
-    // The row is left already, so only the team step remains.
+    // Their own leave committed (its member.left row), so only the team step remains.
+    const left = {
+      $id: 'a1',
+      $createdAt: '2026-10-10T00:00:00.000Z',
+      at: '2026-10-10T00:00:00.000Z',
+      groupId: 'g1',
+      actorPersonId: 'p2',
+      action: 'member.left',
+      transactionId: null,
+      summary: 'Member m2 left',
+      changesJson: null,
+    }
     const services = houseFixture({
-      m2: { status: 'left', role: 'viewer', leftOn: '2026-10-10' },
-      shares: [share('s1', 'g1', 'p2', 200, 200)],
+      m2: {
+        status: 'left',
+        role: 'viewer',
+        leftOn: '2026-10-10',
+        $createdAt: '2026-09-01T00:00:00.000Z',
+      },
+      shares: [share('s1', 'g1', 'p2', 200, 0)],
+      activity: [left],
     })
     expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
     expect(teamUsers(services, 'g1')).toEqual(['u1'])
     expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', leftOn: '2026-10-10' })
-    expect(services.db.rows('activity')).toEqual([])
+    expect(services.db.rows('activity')).toMatchObject([left])
     // Once out of the team they're no longer a member (#117), so a later call can't read the
     // group: the app treats this answer to a leave as done.
     expect(await leave(services, 'u2')).toMatchObject({ status: 403, code: 'NOT_A_MEMBER' })
@@ -242,6 +259,23 @@ describe('POST /groups/{id}/leave', () => {
     expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', role: 'viewer' })
     expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
     expect(teamUsers(services, 'g1')).toEqual(['u1'])
+  })
+
+  it('records the leave of someone who moved out, so it is final for that row', async () => {
+    const services = houseFixture({
+      m2: { status: 'left', role: 'viewer', leftOn: '2026-10-10' },
+      shares: [share('s1', 'g1', 'p2', 200, 200)],
+    })
+    expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+    expect(teamUsers(services, 'g1')).toEqual(['u1'])
+    expect(memberRow(services, 'm2')).toMatchObject({ status: 'left', leftOn: '2026-10-10' })
+    expect(memberRow(services, 'm2')?.rev).toEqual(expect.any(String))
+    expect(services.db.rows('activity')).toMatchObject([
+      { action: 'member.left', actorPersonId: 'p2', summary: 'Member m2 left' },
+    ])
+    expect(
+      await failure(services, 'PATCH', '/groups/g1/members/m2', { leftOn: null }, 'u1'),
+    ).toMatchObject({ code: 'VALIDATION_FAILED' })
   })
 
   it('still needs a balance of 0 from someone who moved out', async () => {

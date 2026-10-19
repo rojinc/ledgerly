@@ -1,5 +1,9 @@
 import type { Category } from '@ledgerly/core/constants/categories'
-import { MAX_WEIGHT } from '@ledgerly/core/constants/limits'
+import {
+  MAX_AMOUNT_CENTS,
+  MAX_ITEMS_PER_TRANSACTION,
+  MAX_WEIGHT,
+} from '@ledgerly/core/constants/limits'
 import { isLocalDate, type LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { buildShares, type Share } from '@ledgerly/core/ledger/build-shares'
@@ -29,6 +33,34 @@ export type HouseExpenseValues = {
   /** For a split that isn't equal: each person's amount, percentage or shares, as typed. */
   parts: Record<string, string>
   note: string
+  /** Itemised (#42): the items replace the amount and the split; `splitBetween` is who's sharing. */
+  itemised: boolean
+  items: ItemValues[]
+}
+
+/** One receipt item, as typed (#42). */
+export type ItemValues = {
+  name: string
+  amount: string
+  /** Stores the amount as negative: a discount. */
+  discount: boolean
+  category: Category | ''
+  /** Equally between its people, or by shares. */
+  mode: 'equal' | 'weights'
+  /** Who's sharing the receipt but not this item: new sharers are in every item by default. */
+  excluded: string[]
+  /** By shares: each person's shares, as typed. */
+  shares: Record<string, string>
+}
+
+export const NEW_ITEM: ItemValues = {
+  name: '',
+  amount: '',
+  discount: false,
+  category: '',
+  mode: 'equal',
+  excluded: [],
+  shares: {},
 }
 
 /** A percentage with at most 2 decimals, in basis points (`33.33` → 3333), or NaN. No floats. */
@@ -104,8 +136,48 @@ export function toSplit(values: HouseExpenseValues, currency: string) {
   }
 }
 
+/** An item's amount in cents: negative for a discount, NaN when it isn't one. */
+export function itemCents(item: ItemValues, currency: string): number {
+  const amount = cents(item.amount, currency)
+  return item.discount ? -Math.abs(amount) : amount
+}
+
+/** Who an item is for: everyone sharing the receipt but the ones unticked, in `personId` order. */
+export function itemPeople(item: ItemValues, sharing: readonly string[]): string[] {
+  return sortedIds(sharing.filter((id) => !item.excluded.includes(id)))
+}
+
+/** The receipt's total: the sum of its items, or NaN until every amount reads. */
+export function itemsTotal(values: HouseExpenseValues, currency: string): number {
+  return values.items.reduce((total, item) => total + itemCents(item, currency), 0)
+}
+
+/** `items` for the ledger, in the order shown, each with its own split. */
+export function toItems(values: HouseExpenseValues, currency: string) {
+  return values.items.map((item) => {
+    const people = itemPeople(item, values.splitBetween)
+    return {
+      name: item.name.trim(),
+      amountCents: itemCents(item, currency),
+      ...(item.category === '' ? {} : { category: item.category }),
+      split:
+        item.mode === 'equal'
+          ? { mode: 'equal' as const, personIds: people }
+          : {
+              mode: 'weights' as const,
+              weights: people.map((id) => ({
+                personId: id,
+                weight: parseShares(item.shares[id] ?? ''),
+              })),
+            },
+    }
+  })
+}
+
 /**
  * `POST /transactions` for a house expense, always with its payers and split (#180 decision 4).
+ * Itemised (#42), it has `items` instead of a total and a split; a refund (items summing below
+ * 0) has one person refunded the whole (negative) total.
  * People go in `personId` order, as the default split does, so leftover cents land the same
  * way. NaN makes the schema refuse an amount, percentage or share count that isn't one.
  */
@@ -114,15 +186,27 @@ export function toHouseExpenseBody(
   ids: { id: string; groupId: string },
   currency: string,
 ): z.input<typeof transactionInputSchema> {
-  const totalCents = cents(values.amount, currency)
-  return {
+  const common = {
     ...ids,
-    kind: 'expense',
+    kind: 'expense' as const,
     date: values.date,
     description: values.description.trim(),
     ...(values.category === '' ? {} : { category: values.category }),
-    totalCents,
     ...(values.note.trim() === '' ? {} : { note: values.note.trim() }),
+  }
+  if (values.itemised) {
+    const total = itemsTotal(values, currency)
+    const refund = total < 0
+    return {
+      ...common,
+      payers: toPayers({ ...values, severalPaid: values.severalPaid && !refund }, currency, total),
+      items: toItems(values, currency),
+    }
+  }
+  const totalCents = cents(values.amount, currency)
+  return {
+    ...common,
+    totalCents,
     payers: toPayers(values, currency, totalCents),
     split: toSplit(values, currency),
   }
@@ -195,6 +279,61 @@ export function splitProblems(
   return problems
 }
 
+/** An item's name, as the schema allows it (functions-api.md#transactioninput). */
+const MAX_ITEM_NAME = 120
+
+/** What's wrong with each item, by its position, and with the items together (#42). */
+export type ItemProblems = {
+  items: Record<
+    number,
+    { name?: string; amount?: string; people?: string; shares: Record<string, string> }
+  >
+  total?: string
+}
+
+/** Every item checked before sending: its name, amount, people and shares; then the total. */
+export function itemProblems(values: HouseExpenseValues, currency: string): ItemProblems {
+  const problems: ItemProblems = { items: {} }
+  if (values.items.length === 0) problems.total = 'Add at least one item.'
+  else if (values.items.length > MAX_ITEMS_PER_TRANSACTION) {
+    problems.total = `A receipt can have at most ${MAX_ITEMS_PER_TRANSACTION} items.`
+  }
+  values.items.forEach((item, index) => {
+    const found: ItemProblems['items'][number] = { shares: {} }
+    if (item.name.trim() === '') found.name = 'Required'
+    else if (item.name.trim().length > MAX_ITEM_NAME) {
+      found.name = `At most ${MAX_ITEM_NAME} characters`
+    }
+    const amount = itemCents(item, currency)
+    if (item.amount.trim() === '') found.amount = 'Required'
+    else if (Number.isNaN(amount)) found.amount = `Enter an amount like ${amountExample(currency)}`
+    else if (amount === 0) found.amount = 'Enter an amount other than 0'
+    const people = itemPeople(item, values.splitBetween)
+    if (people.length === 0) found.people = 'Tick at least one person for this item.'
+    if (item.mode === 'weights') {
+      for (const id of people) {
+        const text = item.shares[id] ?? ''
+        if (text.trim() === '') found.shares[id] = 'Required'
+        else if (Number.isNaN(parseShares(text))) {
+          found.shares[id] = `Enter a whole number from 1 to ${MAX_WEIGHT}`
+        }
+      }
+    }
+    if (found.name || found.amount || found.people || Object.keys(found.shares).length > 0) {
+      problems.items[index] = found
+    }
+  })
+  const total = itemsTotal(values, currency)
+  if (!problems.total && Object.keys(problems.items).length === 0) {
+    if (total === 0) problems.total = 'The items add up to 0.'
+    // Each item may be up to the limit; their sum may not.
+    else if (Math.abs(total) > MAX_AMOUNT_CENTS) {
+      problems.total = `The items add up to more than ${formatMoney(MAX_AMOUNT_CENTS, currency)}.`
+    }
+  }
+  return problems
+}
+
 /**
  * Each person's part, worked out by core exactly as the ledger function will (the client never
  * divides money), or the ledger's refusal in its own words.
@@ -220,6 +359,7 @@ export function previewShares(
         totalCents: body.totalCents,
         payers: body.payers,
         split: body.split,
+        items: body.items,
       },
       {
         groupType: 'house',
@@ -230,7 +370,20 @@ export function previewShares(
     )
     return { shares }
   } catch (error) {
-    if (error instanceof LedgerError) return { error: error.message }
+    if (error instanceof LedgerError) {
+      // I-4, worded for what causes it on a receipt. Core has no code for it, so its message
+      // ('Amounts can’t mix signs: …', packages/core/src/ledger/build-shares.ts) is matched.
+      if (body.items && /mix signs/.test(error.message)) {
+        const total = body.items.reduce((sum, item) => sum + item.amountCents, 0)
+        return {
+          error:
+            total < 0
+              ? 'On a refund, an item can’t make anyone’s part go above zero.'
+              : 'A discount can’t make anyone’s part go below zero.',
+        }
+      }
+      return { error: error.message }
+    }
     throw error
   }
 }

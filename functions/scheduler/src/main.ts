@@ -4,8 +4,12 @@ import {
   type RouteContext,
   route,
 } from '@ledgerly/server/http/create-handler'
+import { createSchedule } from './routes/create-schedule'
+import { deleteSchedule } from './routes/delete-schedule'
+import { endSchedule } from './routes/end-schedule'
 import { previewSchedule } from './routes/preview-schedule'
 import { run } from './routes/run'
+import { updateSchedule } from './routes/update-schedule'
 import { type Services, servicesFromRequest } from './services'
 
 // The commit this bundle was built from (scripts/build-functions.mjs).
@@ -18,6 +22,16 @@ export function schedulerRoutes(
   return [
     route('GET', '/health', async () => ({ fn: 'scheduler', version }), { public: true }),
     route('POST', '/', async (ctx) => run(ctx.scheduled, () => services(ctx))),
+    route('POST', '/schedules', async (ctx) => createSchedule(services(ctx), ctx.userId, ctx.body)),
+    route('PATCH', '/schedules/:id', async (ctx) =>
+      updateSchedule(services(ctx), ctx.userId, ctx.params.id, ctx.body),
+    ),
+    route('POST', '/schedules/:id/end', async (ctx) =>
+      endSchedule(services(ctx), ctx.userId, ctx.params.id, ctx.body),
+    ),
+    route('DELETE', '/schedules/:id', async (ctx) =>
+      deleteSchedule(services(ctx), ctx.userId, ctx.params.id),
+    ),
     route('POST', '/schedules/preview', async (ctx) =>
       previewSchedule(services(ctx), ctx.userId, ctx.body),
     ),

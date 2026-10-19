@@ -209,6 +209,32 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "hoursCapMinutes",
+        "type": "integer",
+        "required": false,
+        "array": false,
+        "min": 60,
+        "max": 20160,
+        "default": null
+      },
+      {
+        "key": "hoursCapPeriod",
+        "type": "string",
+        "format": "enum",
+        "elements": ["week", "fortnight"],
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "hoursCapStartsOn",
+        "type": "string",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
