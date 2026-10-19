@@ -14,6 +14,7 @@ import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { centsToText } from '../groups/employer-form'
 import { useGroups, useMyMember } from '../groups/use-groups'
+import { HouseExpenseForm } from './house-expense-form'
 import { type EmployerPeople, ENTRY_TYPES, type EntryValues, toEntryBody } from './presets'
 import { employerPeople, LedgerError, useCreateTransaction, useMembers } from './use-transactions'
 
@@ -76,14 +77,19 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
   )
 }
 
-/** `/transactions/new?groupId=`: an employer expense preset or a payment received (#31). */
+/**
+ * `/transactions/new?groupId=`: an employer expense preset or a payment received (#31), or a
+ * house expense (#180).
+ */
 export function NewTransactionPage() {
   const userId = useCurrentUser().data?.$id ?? ''
   const bootstrap = useBootstrap(userId)
   const personId = bootstrap.data?.personId ?? ''
   const groups = useGroups()
   const [params] = useSearchParams()
-  const group = groups.data?.find((g) => g.$id === params.get('groupId') && g.type === 'employer')
+  const group = groups.data?.find(
+    (g) => g.$id === params.get('groupId') && (g.type === 'employer' || g.type === 'house'),
+  )
   const member = useMyMember(group?.$id ?? '', personId)
   const members = useMembers(group?.$id ?? '')
 
@@ -110,11 +116,19 @@ export function NewTransactionPage() {
   } else if (
     // The presets are worded from the worker's side ("I paid for them"), so only the group's
     // owner, the worker it pays, adds here (as only they start the timer).
+    group.type === 'employer' &&
     group.ownerPersonId !== personId
   ) {
     content = <Message>Only the person this group pays adds expenses and payments here.</Message>
   } else if (member.data?.role !== 'admin' && member.data?.role !== 'member') {
-    content = <Message>You can see this group’s history but no longer add to it.</Message>
+    content = (
+      <Message>
+        You can see this {group.type === 'house' ? 'house' : 'group'}’s history but no longer add to
+        it.
+      </Message>
+    )
+  } else if (group.type === 'house') {
+    content = <HouseExpenseForm group={group} members={members.data ?? []} personId={personId} />
   } else {
     const people = employerPeople(group, members.data)
     content = people ? (
@@ -128,7 +142,9 @@ export function NewTransactionPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold">Add expense or payment</h1>
+      <h1 className="text-2xl font-semibold">
+        {group?.type === 'house' ? 'Add expense' : 'Add expense or payment'}
+      </h1>
       {content}
     </div>
   )
