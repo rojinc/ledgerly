@@ -102,7 +102,7 @@ const DEFAULT_SPLIT_KINDS: readonly TransactionKind[] = ['expense', 'bill', 'loa
 /**
  * A posted transaction, for `mergeInput` to check that an edit after the merge keeps every net:
  * its date and total, its shares (P's still on P), its group as step 2 left it, and who pays
- * where the input names no payers (whoever posted it, as an edit has it).
+ * where the input names no payers (its creator, `createdBy`, as an edit has it).
  */
 export type Posted = {
   date: LocalDate
@@ -265,8 +265,8 @@ function writeOut(input: Named, kind: TransactionKind, merge: Merge, posted: Pos
  * A payment or loan from U to U, which moves no money between two people any more. Only the
  * people an input names count, so a loan counts only with its split stated (with no split,
  * everyone but the lender borrows, ledger.md#default-split) and a lender known: its payers, or,
- * with none, `lender`, whoever posted it. An unposted loan without payers is lent by whoever
- * posts it, so it never counts.
+ * with none, `lender`, its creator. An unposted loan without payers is lent by whoever posts
+ * it, so it never counts.
  */
 function fromItselfToItself(
   input: Named,
