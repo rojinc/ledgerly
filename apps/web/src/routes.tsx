@@ -8,6 +8,7 @@ import { billRoutes } from './features/bills/routes'
 import { CalendarPage } from './features/calendar/calendar-page'
 import { DashboardPage } from './features/dashboard/dashboard-page'
 import { groupRoutes } from './features/groups/routes'
+import { InvitePage } from './features/invites/invite-page'
 import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
 import { shiftRoutes } from './features/shifts/routes'
@@ -23,6 +24,7 @@ export const routes: RouteObject[] = [
     ],
   },
   { path: 'verify-email', element: <VerifyEmailPage /> },
+  { path: 'invite', element: <InvitePage /> },
   {
     element: <RequireAuth />,
     children: [
