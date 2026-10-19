@@ -24,6 +24,7 @@ import {
   joinedAdmins,
   keepAnotherAdmin,
   parseBody,
+  personsOfMember,
   tryAgain,
 } from '../shared'
 
@@ -53,9 +54,11 @@ export async function deleteMember(
   if (group.type === 'employer' || group.type === 'pair') throw invalid(TWO_MEMBERS)
   if (group.type === 'personal') throw invalid('A personal group always keeps its only member.')
   const member = await getMemberOf(db, groupId, memberId)
+  // With anyone merged into them whose shares or inputs haven't moved yet (#245).
+  const persons = await personsOfMember(db, groupId, member.personId)
   // Checked early so a refusal leaves the team alone; checked again in the transaction.
-  if (await hasShares(db, groupId, member.personId)) throw invalid(HAS_SHARES)
-  if (await isNamed(db, groupId, member.personId)) throw invalid(IS_NAMED)
+  if (await hasShares(db, groupId, persons)) throw invalid(HAS_SHARES)
+  if (await isNamed(db, groupId, persons)) throw invalid(IS_NAMED)
   const joinedAdmin = member.role === 'admin' && member.status === 'active'
   if (joinedAdmin && !(await joinedAdmins(db, groupId)).some((a) => a.$id !== member.$id)) {
     throw invalid(NEEDS_ADMIN)
@@ -71,8 +74,8 @@ export async function deleteMember(
         await tx.write({ action: 'delete', tableId: TABLES.members, rowId: memberId })
         // Stage, then check (conventions.md): from here on, any change to the row fails the
         // commit. Read the stored row, not this transaction's view, where it is gone.
-        if (await hasShares(db, groupId, member.personId)) throw invalid(HAS_SHARES)
-        if (await isNamed(db, groupId, member.personId)) throw invalid(IS_NAMED)
+        if (await hasShares(db, groupId, persons)) throw invalid(HAS_SHARES)
+        if (await isNamed(db, groupId, persons)) throw invalid(IS_NAMED)
         // A placeholder who joined after the first read gets CONFLICT; the retry sees them
         // active and takes them out of the team.
         const current = await getRowOrNull<Members>(db, TABLES.members, memberId)
@@ -100,10 +103,11 @@ export async function deleteMember(
  * and its auto-posts (scheduling.md), so removing them would break the schedule for good. Only
  * houses get here, and their schedules are all expenses or bills, which have payers.
  */
-async function isNamed(db: Db, groupId: string, personId: string): Promise<boolean> {
-  const names = (template: TransactionTemplate) => everyPersonId(template).includes(personId)
+async function isNamed(db: Db, groupId: string, personIds: readonly string[]): Promise<boolean> {
+  const names = (template: TransactionTemplate) =>
+    everyPersonId(template).some((personId) => personIds.includes(personId))
   const paysFor = (schedule: Schedules, template: TransactionTemplate) =>
-    schedule.createdBy === personId && template.payers === undefined
+    personIds.includes(schedule.createdBy) && template.payers === undefined
   const inSchedule = await anyPage<Schedules>(
     db,
     TABLES.schedules,

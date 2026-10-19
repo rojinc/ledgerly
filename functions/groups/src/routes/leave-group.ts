@@ -17,6 +17,7 @@ import {
   invalid,
   keepAnotherAdmin,
   parseBody,
+  personsOfMember,
   today,
   tryAgain,
 } from '../shared'
@@ -117,7 +118,9 @@ export async function leaveGroup(
 }
 
 async function requireSettled(db: Db, groupId: string, personId: string): Promise<void> {
-  if ((await balanceOf(db, groupId, personId)) !== 0) {
+  // With anyone merged into them whose shares haven't moved here yet (#245).
+  const persons = await personsOfMember(db, groupId, personId)
+  if ((await balanceOf(db, groupId, persons)) !== 0) {
     throw invalid("Settle up first: your balance in this group isn't 0.")
   }
 }

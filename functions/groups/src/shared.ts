@@ -1,7 +1,7 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
 import { closeAtFor, localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Shares } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
@@ -174,10 +174,54 @@ export function aRole(role: Members['role']): string {
 }
 
 /**
- * The caller's balance in the group: Σ (given − received) over their shares (ledger.md#balances),
- * read in pages of 100 (scaling.md).
+ * The member's person, then everyone merged into them (`idx_mergedInto`, following the chain) who
+ * has no member row of their own in the group. A merge cut off between its steps 2 and 3 leaves
+ * their shares and inputs there, and they count as the member's, as in statements (rule 2). A
+ * kept group's placeholder has its own row, so it stays apart (#245).
  */
-export async function balanceOf(db: Db, groupId: string, personId: string): Promise<number> {
+export async function personsOfMember(
+  db: Db,
+  groupId: string,
+  personId: string,
+): Promise<string[]> {
+  const found = [personId]
+  for (let i = 0; i < found.length; i++) {
+    let cursor: string | undefined
+    for (;;) {
+      const { rows } = await db.listRows<Persons>({
+        databaseId: DATABASE_ID,
+        tableId: TABLES.persons,
+        queries: [
+          Query.equal('mergedInto', found[i] as string),
+          Query.orderAsc('$id'),
+          Query.limit(100),
+          ...(cursor ? [Query.cursorAfter(cursor)] : []),
+        ],
+        total: false,
+      })
+      for (const merged of rows) {
+        const own = await findFirst(db, TABLES.members, [
+          Query.equal('groupId', groupId),
+          Query.equal('personId', merged.$id),
+        ])
+        if (!own && !found.includes(merged.$id)) found.push(merged.$id)
+      }
+      if (rows.length < 100) break
+      cursor = rows[rows.length - 1]?.$id
+    }
+  }
+  return found
+}
+
+/**
+ * The balance of these persons in the group: Σ (given − received) over their shares
+ * (ledger.md#balances), read in pages of 100 (scaling.md).
+ */
+export async function balanceOf(
+  db: Db,
+  groupId: string,
+  personIds: readonly string[],
+): Promise<number> {
   let total = 0
   let cursor: string | undefined
   for (;;) {
@@ -186,7 +230,7 @@ export async function balanceOf(db: Db, groupId: string, personId: string): Prom
       tableId: TABLES.shares,
       queries: [
         Query.equal('groupId', groupId),
-        Query.equal('personId', personId),
+        Query.equal('personId', [...personIds]),
         Query.orderAsc('$id'),
         Query.limit(100),
         ...(cursor ? [Query.cursorAfter(cursor)] : []),
@@ -199,11 +243,15 @@ export async function balanceOf(db: Db, groupId: string, personId: string): Prom
   }
 }
 
-/** Whether the person has any shares in the group (DELETE member needs none). */
-export async function hasShares(db: Db, groupId: string, personId: string): Promise<boolean> {
+/** Whether any of these persons has a share in the group (DELETE member needs none). */
+export async function hasShares(
+  db: Db,
+  groupId: string,
+  personIds: readonly string[],
+): Promise<boolean> {
   const share = await findFirst(db, TABLES.shares, [
     Query.equal('groupId', groupId),
-    Query.equal('personId', personId),
+    Query.equal('personId', [...personIds]),
   ])
   return share !== undefined
 }

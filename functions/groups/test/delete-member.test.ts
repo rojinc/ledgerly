@@ -27,6 +27,7 @@ function house(
     transactions?: Row[]
     items?: Row[]
     schedules?: Row[]
+    persons?: Row[]
   } = {},
 ) {
   return fakes(
@@ -35,7 +36,7 @@ function house(
       items: extra.items ?? [],
       schedules: extra.schedules ?? [],
       groups: [group('g1', 'house'), group('g2', 'house')],
-      persons: [person(1), person(2), person(9), placeholder('pX')],
+      persons: [person(1), person(2), person(9), placeholder('pX'), ...(extra.persons ?? [])],
       members: [
         member('m1', 'g1', 'p1', 'admin', 'active'),
         member('m2', 'g1', 'p2', 'member', 'active'),
@@ -499,5 +500,69 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     })
     expect(memberIds(services)).toContain('m2')
     expect(teamUsers(services)).toEqual(['u1', 'u2'])
+  })
+})
+
+// A merge cut off between its steps 2 and 3 (#245): U (p2) has P's member row, but P still has
+// shares or inputs here.
+describe('DELETE /groups/{id}/members/{memberId}, with a merge unfinished', () => {
+  const merged = (id: string, into: string) => ({ ...placeholder(id), mergedInto: into })
+
+  it('refuses while a placeholder merged into them still has a share here', async () => {
+    const services = house({
+      persons: [merged('pP', 'p2')],
+      shares: [share('s1', 'g1', 'pP', 0, 100)],
+    })
+    expect(await removeFails(services, 'm2')).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      message: "Members with transactions can't be removed. Set leftOn instead.",
+    })
+  })
+
+  it('refuses while a transaction not yet posted still names that placeholder', async () => {
+    const services = house({
+      persons: [merged('pP', 'p2')],
+      transactions: [bill('t1', 'due', ['p1', 'pP'])],
+    })
+    expect(await removeFails(services, 'm2')).toMatchObject({ message: IS_NAMED })
+  })
+
+  it('refuses when the placeholder’s share was committed after the first read', async () => {
+    const services = house({ persons: [merged('pP', 'p2')] })
+    beforeStaging(services.db, 1, () =>
+      createRow(services.db, 'shares', share('s1', 'g1', 'pP', 0, 100)),
+    )
+    expect(await removeFails(services, 'm2')).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(memberIds(services)).toContain('m2')
+  })
+
+  it('follows the chain: P merged into Q, merged into them', async () => {
+    const services = house({
+      persons: [merged('pP', 'pQ'), merged('pQ', 'p2')],
+      shares: [share('s1', 'g1', 'pP', 0, 100)],
+    })
+    expect(await removeFails(services, 'm2')).toMatchObject({ code: 'VALIDATION_FAILED' })
+  })
+
+  it('leaves apart a placeholder with its own row here, as in a kept group, and one elsewhere', async () => {
+    const services = house({
+      persons: [merged('pK', 'p2'), merged('pO', 'p2')],
+      members: [member('m4', 'g1', 'pK', 'member', 'placeholder')],
+      shares: [share('s1', 'g1', 'pK', 0, 100), share('s2', 'g2', 'pO', 0, 100)],
+    })
+    await remove(services, 'm2')
+    expect(memberIds(services)).not.toContain('m2')
+  })
+
+  it('costs one more query where nobody was merged into them', async () => {
+    const services = house()
+    const reads = vi.spyOn(services.db, 'listRows')
+    await remove(services, 'm2')
+    expect(
+      reads.mock.calls.filter(
+        ([params]) =>
+          params.tableId === 'persons' && JSON.stringify(params.queries).includes('mergedInto'),
+      ),
+    ).toHaveLength(1)
   })
 })

@@ -22,11 +22,11 @@ type Row = Record<string, unknown> & { $id: string }
 
 // u1 is the admin, u2 a member who wants to leave, pX a placeholder with an account (u4).
 function houseFixture(
-  extra: { m2?: object; members?: Row[]; shares?: Row[]; activity?: Row[] } = {},
+  extra: { m2?: object; members?: Row[]; shares?: Row[]; activity?: Row[]; persons?: Row[] } = {},
 ) {
   return fakes(
     {
-      persons: [person(1), person(2), person(4, { $id: 'pX' })],
+      persons: [person(1), person(2), person(4, { $id: 'pX' }), ...(extra.persons ?? [])],
       groups: [group('g1', 'house')],
       members: [
         member('m1', 'g1', 'p1', 'admin', 'active'),
@@ -411,5 +411,43 @@ describe('POST /groups/{id}/leave', () => {
     expect(await leave(services, 'u2')).toMatchObject({ code: 'CONFLICT', message: TRY_AGAIN })
     expect(services.db.rows('activity')).toEqual([])
     expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+})
+
+// A merge cut off between its steps 2 and 3 (#245): u2's person has P's member row, but P's shares
+// haven't moved yet.
+describe('POST /groups/{id}/leave, with a merge unfinished', () => {
+  const merged = (id: string, into: string) => ({
+    $id: id,
+    userId: null,
+    displayName: 'Placeholder',
+    claimedAt: null,
+    mergedInto: into,
+    deletedAt: null,
+  })
+
+  it('counts the balance of a placeholder merged into them, along the chain', async () => {
+    // P owes 1.00 there, and Q's 1.00 back cancels it.
+    const owes = houseFixture({
+      persons: [merged('pP', 'pQ'), merged('pQ', 'p2')],
+      shares: [share('s1', 'g1', 'pP', 0, 100)],
+    })
+    expect(await leave(owes, 'u2')).toMatchObject({ code: 'VALIDATION_FAILED' })
+    const settled = houseFixture({
+      persons: [merged('pP', 'pQ'), merged('pQ', 'p2')],
+      shares: [share('s1', 'g1', 'pP', 0, 100), share('s2', 'g1', 'pQ', 100, 0)],
+    })
+    await ok(settled, 'POST', '/groups/g1/leave', undefined, 'u2')
+    expect(memberRow(settled, 'm2')?.status).toBe('left')
+  })
+
+  it('leaves apart a placeholder with its own row here, as in a kept group', async () => {
+    const services = houseFixture({
+      persons: [merged('pK', 'p2')],
+      members: [member('mK', 'g1', 'pK', 'member', 'placeholder')],
+      shares: [share('s1', 'g1', 'pK', 0, 100)],
+    })
+    await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')
+    expect(memberRow(services, 'm2')?.status).toBe('left')
   })
 })
