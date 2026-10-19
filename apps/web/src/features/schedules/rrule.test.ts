@@ -73,16 +73,30 @@ describe('fromRrule', () => {
 })
 
 describe('describeRepeat', () => {
+  const words = (date: string) => `[${date}]`
+
   it('says it in words', () => {
-    expect(describeRepeat(WEEKLY)).toBe('Every Thursday')
-    expect(describeRepeat({ ...WEEKLY, days: ['WE', 'MO'], interval: 2 })).toBe(
+    expect(describeRepeat(WEEKLY, words)).toBe('Every Thursday')
+    expect(describeRepeat({ ...WEEKLY, days: ['WE', 'MO'], interval: 2 }, words)).toBe(
       'Every 2 weeks on Mon, Wed',
     )
-    expect(describeRepeat({ ...WEEKLY, pattern: 'monthly', monthDay: -1 })).toBe(
+    expect(describeRepeat({ ...WEEKLY, pattern: 'monthly', monthDay: -1 }, words)).toBe(
       'Last day of each month',
     )
-    expect(describeRepeat({ ...WEEKLY, pattern: 'monthly', monthDay: 15 })).toBe(
+    expect(describeRepeat({ ...WEEKLY, pattern: 'monthly', monthDay: 15 }, words)).toBe(
       'On day 15 of each month',
+    )
+  })
+
+  it('says the rule’s own end: a number of shifts or a last date', () => {
+    expect(describeRepeat({ ...WEEKLY, end: 'count', count: '10' }, words)).toBe(
+      'Every Thursday, 10 shifts',
+    )
+    expect(describeRepeat({ ...WEEKLY, end: 'count', count: '1' }, words)).toBe(
+      'Every Thursday, 1 shift',
+    )
+    expect(describeRepeat({ ...WEEKLY, end: 'until', until: '2026-12-24' }, words)).toBe(
+      'Every Thursday, until [2026-12-24]',
     )
   })
 })

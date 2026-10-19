@@ -83,10 +83,25 @@ function mockGroups(group: Groups, role: Members['role'] = 'admin', net = 0) {
   } as never)
 }
 
-/** listRows answers members with `members`, shares with `shares`, transactions with `history`. */
-function mockRows(history: Transactions[] = [], shares: object[] = [], members = MEMBERS) {
+/**
+ * listRows answers members with `members`, shares with `shares`, items with `items` and
+ * transactions with `history`.
+ */
+function mockRows(
+  history: Transactions[] = [],
+  shares: object[] = [],
+  members = MEMBERS,
+  items: object[] = [],
+) {
   listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
-    const rows = tableId === 'members' ? members : tableId === 'shares' ? shares : history
+    const rows =
+      tableId === 'members'
+        ? members
+        : tableId === 'shares'
+          ? shares
+          : tableId === 'items'
+            ? items
+            : history
     return { total: rows.length, rows }
   }) as never)
 }
@@ -773,6 +788,275 @@ describe('NewTransactionPage, house expense', () => {
   })
 })
 
+describe('NewTransactionPage, itemised receipt (#42)', () => {
+  beforeEach(() => {
+    mockPersonId = 'alice'
+    vi.setSystemTime(HOUSE_NOW)
+  })
+
+  /** Opens the house form, names the receipt and switches it to items. */
+  async function itemise() {
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES)
+    const view = renderAt('/transactions/new?groupId=house1')
+    fireEvent.change(await screen.findByLabelText('Amount (AUD)'), { target: { value: '90' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Groceries' } })
+    fireEvent.click(screen.getByLabelText('Itemise this receipt'))
+    return view
+  }
+
+  /** Fills item `number` (from 1), adding it first unless it's the first. */
+  function fillItem(number: number, name: string, amount: string) {
+    if (number > 1) fireEvent.click(screen.getByRole('button', { name: 'Add item' }))
+    fireEvent.change(screen.getByLabelText(`Item ${number} name`), { target: { value: name } })
+    fireEvent.change(screen.getByLabelText(`Item ${number} amount (AUD)`), {
+      target: { value: amount },
+    })
+  }
+
+  const whoFor = (number: number) =>
+    screen.getByRole('group', { name: `Who item ${number} is for` })
+
+  it('sends user flow 7’s receipt item by item, with core’s preview', async () => {
+    const stored = [{ $id: 'i0', position: 0 }]
+    call.mockResolvedValue(
+      ok({ transaction: row('x9', { groupId: 'house1' }), shares: [], items: stored }),
+    )
+    const { router, queryClient } = await itemise()
+    expect(screen.queryByLabelText('Amount (AUD)')).toBeNull()
+    expect(screen.queryByRole('group', { name: 'How to split it' })).toBeNull()
+    expect(screen.getByRole('group', { name: 'Who’s sharing this receipt' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'groceries' } })
+    fireEvent.change(screen.getByLabelText('Paid by'), { target: { value: 'bob' } })
+    fillItem(1, 'Milk', '4.00')
+    fillItem(2, 'Bread', '5.00')
+    fillItem(3, 'Beer', '20.00')
+    fireEvent.click(within(whoFor(3)).getByLabelText('Alice'))
+    fireEvent.click(within(whoFor(3)).getByLabelText('Cara'))
+    fillItem(4, 'Discount', '2.00')
+    fireEvent.click(screen.getByLabelText('Item 4 is a discount'))
+    expect(screen.getByText(/^Total: .*27\.00$/)).toBeTruthy()
+    expect(screen.getByLabelText('Item 4 amount (AUD)').getAttribute('aria-describedby')).toBe(
+      'item-3-amount-hint',
+    )
+    expect(
+      screen.getByText('For example 40.50. A minus sign makes it a discount.', {
+        selector: '#item-3-amount-hint',
+      }),
+    ).toBeTruthy()
+    const preview = screen.getByRole('region', { name: 'Each person’s part' })
+    expect(within(preview).getByText(/^Alice: share .*2\.34$/)).toBeTruthy()
+    expect(within(preview).getByText(/^Bob: paid .*27\.00, share .*22\.33$/)).toBeTruthy()
+    expect(within(preview).getByText(/^Cara: share .*2\.33$/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const everyone = ['alice', 'bob', 'cara']
+    expect(call.mock.calls[0]?.[3]).toEqual({
+      id: expect.any(String),
+      groupId: 'house1',
+      kind: 'expense',
+      date: '2026-10-19',
+      description: 'Groceries',
+      category: 'groceries',
+      payers: [{ personId: 'bob', cents: 2700 }],
+      items: [
+        { name: 'Milk', amountCents: 400, split: { mode: 'equal', personIds: everyone } },
+        { name: 'Bread', amountCents: 500, split: { mode: 'equal', personIds: everyone } },
+        { name: 'Beer', amountCents: 2000, split: { mode: 'equal', personIds: ['bob'] } },
+        { name: 'Discount', amountCents: -200, split: { mode: 'equal', personIds: everyone } },
+      ],
+    })
+    // The answer's items are kept: the expense opens without reading them again.
+    await waitFor(() => expect(router.state.location.pathname).toBe('/transactions/x9'))
+    expect(queryClient.getQueryData(['transaction', 'x9', 'items'])).toBe(stored)
+  })
+
+  it('splits an item by shares, with its own category', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await itemise()
+    fillItem(1, 'Wine', '30')
+    fireEvent.change(screen.getByLabelText('Item 1 category'), { target: { value: 'household' } })
+    fireEvent.click(screen.getByRole('radio', { name: 'By shares' }))
+    fireEvent.click(within(whoFor(1)).getByLabelText('Cara'))
+    fireEvent.change(screen.getByLabelText('Alice’s shares of item 1'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('Bob’s shares of item 1'), { target: { value: '1' } })
+    expect(screen.queryByLabelText('Cara’s shares of item 1')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const body = call.mock.calls[0]?.[3] as { items: unknown } | undefined
+    expect(body?.items).toEqual([
+      {
+        name: 'Wine',
+        amountCents: 3000,
+        category: 'household',
+        split: {
+          mode: 'weights',
+          weights: [
+            { personId: 'alice', weight: 2 },
+            { personId: 'bob', weight: 1 },
+          ],
+        },
+      },
+    ])
+  })
+
+  it('refunds one person when the items add up below zero', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await itemise()
+    fireEvent.click(screen.getByLabelText('Several people paid'))
+    fillItem(1, 'Returned kettle', '-30')
+    expect(screen.getByLabelText('Refunded to')).toBeTruthy()
+    expect(screen.queryByLabelText('Paid by')).toBeNull()
+    expect(screen.queryByLabelText('Several people paid')).toBeNull()
+    expect(screen.getByText(/^Total: -.*30\.00$/)).toBeTruthy()
+    const preview = screen.getByRole('region', { name: 'Each person’s part' })
+    expect(within(preview).getByText(/^Alice: paid -.*30\.00, share -.*10\.00$/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      payers: [{ personId: 'alice', cents: -3000 }],
+      items: [{ name: 'Returned kettle', amountCents: -3000 }],
+    })
+  })
+
+  it('refuses a discount that takes someone below zero (I-4), sending nothing', async () => {
+    await itemise()
+    fillItem(1, 'Beer', '20')
+    fireEvent.click(within(whoFor(1)).getByLabelText('Alice'))
+    fireEvent.click(within(whoFor(1)).getByLabelText('Cara'))
+    fillItem(2, 'Big coupon', '15')
+    fireEvent.click(screen.getByLabelText('Item 2 is a discount'))
+    const message = 'A discount can’t make anyone’s part go below zero.'
+    expect(screen.getByRole('status', { name: '' }).textContent).toBe(message)
+    const focused = document.activeElement
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(message)
+    // The refusal is an alert above the form; focus isn't sent to the items.
+    expect(document.activeElement).toBe(focused)
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('refuses an item without a name, amount or people, next to the item', async () => {
+    await itemise()
+    fillItem(1, 'Milk', '4')
+    fillItem(2, '', 'lots')
+    for (const name of ['Alice', 'Bob', 'Cara']) {
+      fireEvent.click(within(whoFor(2)).getByLabelText(name))
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    const name = screen.getByLabelText('Item 2 name')
+    await waitFor(() => expect(document.activeElement).toBe(name))
+    expect(name.getAttribute('aria-invalid')).toBe('true')
+    expect(screen.getByText('Required')).toBeTruthy()
+    expect(screen.getByText('Enter an amount like 40.50')).toBeTruthy()
+    const people = screen.getByText('Tick at least one person for this item.')
+    expect(whoFor(2).getAttribute('aria-describedby')).toBe(people.id)
+    expect(screen.getByLabelText('Item 1 name').getAttribute('aria-invalid')).toBe('false')
+    // Fixed, the item's errors go as it's changed.
+    fireEvent.click(within(whoFor(2)).getByLabelText('Bob'))
+    await waitFor(() =>
+      expect(screen.queryByText('Tick at least one person for this item.')).toBeNull(),
+    )
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('refuses items that add up to zero, focusing Add item', async () => {
+    await itemise()
+    fillItem(1, 'Milk', '4')
+    fillItem(2, 'Milk back', '-4')
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('The items add up to 0.')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add item' }))
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('refuses items that add up to more than the limit, without breaking the page', async () => {
+    await itemise()
+    fillItem(1, 'Car', '99999999')
+    fillItem(2, 'Boat', '99999999')
+    expect(screen.getByText('Total: –')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(
+      await screen.findByText(/^The items add up to more than .*100,000,000\.00\.$/),
+    ).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('focuses the item’s first person when only its people are wrong', async () => {
+    await itemise()
+    fillItem(1, 'Milk', '4')
+    fillItem(2, 'Bread', '5')
+    for (const name of ['Alice', 'Bob', 'Cara']) {
+      fireEvent.click(within(whoFor(2)).getByLabelText(name))
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('Tick at least one person for this item.')).toBeTruthy()
+    expect(document.activeElement).toBe(within(whoFor(2)).getByLabelText('Alice'))
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('counts everyone across the items: at most 15 people', async () => {
+    const many = Array.from({ length: 15 }, (_, n) =>
+      housemate(`p${String(n).padStart(2, '0')}`, `Person ${n}`, '2026-01-01'),
+    )
+    mockGroups(house)
+    mockRows([], [], [housemate('alice', 'Alice', '2026-01-01'), ...many])
+    renderAt('/transactions/new?groupId=house1')
+    fireEvent.change(await screen.findByLabelText('Description'), { target: { value: 'Shop' } })
+    fireEvent.click(screen.getByLabelText('Itemise this receipt'))
+    fillItem(1, 'Cake', '16')
+    fireEvent.click(within(whoFor(1)).getByLabelText('Person 0'))
+    fillItem(2, 'Candles', '2')
+    fireEvent.click(within(whoFor(2)).getByLabelText('Alice'))
+    // Alice paid and has the cake; Person 0 has the candles: 16 people.
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('At most 15 people can be in one expense.')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('keeps the amount and the items when switched off and on', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await itemise()
+    fillItem(1, 'Milk', '4')
+    fireEvent.click(screen.getByLabelText('Itemise this receipt'))
+    expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('90')
+    expect(screen.queryByLabelText('Item 1 name')).toBeNull()
+    fireEvent.click(screen.getByLabelText('Itemise this receipt'))
+    expect((screen.getByLabelText('Item 1 name') as HTMLInputElement).value).toBe('Milk')
+    fireEvent.click(screen.getByLabelText('Itemise this receipt'))
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const body = call.mock.calls[0]?.[3] as Record<string, unknown>
+    expect(body).toMatchObject({ totalCents: 9000 })
+    expect(body).not.toHaveProperty('items')
+  })
+
+  it('moves focus to a new item’s name, and to Add item after a remove', async () => {
+    await itemise()
+    fireEvent.click(screen.getByRole('button', { name: 'Add item' }))
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByLabelText('Item 2 name')))
+    fireEvent.change(screen.getByLabelText('Item 2 name'), { target: { value: 'Bread' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Remove item 1' }))
+    const add = screen.getByRole('button', { name: 'Add item' })
+    expect(document.activeElement).toBe(add)
+    expect((screen.getByLabelText('Item 1 name') as HTMLInputElement).value).toBe('Bread')
+    expect(screen.queryByLabelText('Item 2 name')).toBeNull()
+  })
+
+  it('stops at 30 items', async () => {
+    await itemise()
+    const add = screen.getByRole('button', { name: 'Add item' })
+    for (let n = 1; n < 30; n++) fireEvent.click(add)
+    // By id: label queries over 30 items are slow.
+    expect(document.getElementById('item-29-name')).not.toBeNull()
+    expect(add.getAttribute('aria-disabled')).toBe('true')
+    const full = document.getElementById(add.getAttribute('aria-describedby') ?? '')
+    expect(full?.textContent).toBe('A receipt can have at most 30 items.')
+    fireEvent.click(add)
+    expect(document.getElementById('item-30-name')).toBeNull()
+  })
+})
+
 describe('HistoryPage', () => {
   it.each([
     [71500, /^Acme owes you .*715\.00$/],
@@ -1245,5 +1529,123 @@ describe('TransactionPage', () => {
       expect(screen.queryByRole('button', { name: 'Void' })).toBeNull()
       cleanup()
     }
+  })
+
+  it('lists an itemised expense’s items in order, and says so in the Split row', async () => {
+    mockPersonId = 'alice'
+    mockGroups(house)
+    const everyone = ['alice', 'bob', 'cara']
+    const stored = [
+      { name: 'Milk', amountCents: 400, split: { mode: 'equal', personIds: everyone } },
+      { name: 'Beer', amountCents: 2000, split: { mode: 'equal', personIds: ['bob'] } },
+      {
+        name: 'Wine',
+        amountCents: 3000,
+        split: {
+          mode: 'weights',
+          weights: [
+            { personId: 'alice', weight: 2 },
+            { personId: 'bob', weight: 1 },
+          ],
+        },
+      },
+      { name: 'Discount', amountCents: -200, split: { mode: 'equal', personIds: everyone } },
+    ]
+    mockRows(
+      [],
+      [],
+      HOUSEMATES,
+      stored.map((item, position) => ({
+        $id: `i${position}`,
+        position,
+        name: item.name,
+        amountCents: item.amountCents,
+        splitJson: JSON.stringify(item.split),
+      })),
+    )
+    getRow.mockResolvedValue(
+      row('t9', {
+        groupId: 'house1',
+        description: 'Groceries',
+        totalCents: 5200,
+        // As the ledger stores it: items are rows of their own, never in inputJson.
+        inputJson: JSON.stringify({ payers: [{ personId: 'bob', cents: 5200 }] }),
+      }) as never,
+    )
+    renderAt('/transactions/t9')
+    const split = (await screen.findByText('Split')).nextElementSibling as HTMLElement
+    expect(split.textContent).toBe('Itemised (4 items)')
+    const items = await screen.findByRole('region', { name: 'Items' })
+    await waitFor(() =>
+      expect(
+        within(items)
+          .getAllByRole('listitem')
+          .map((item) => item.textContent),
+      ).toEqual([
+        expect.stringMatching(/^Milk: .*4\.00, for Alice, Bob and Cara$/),
+        expect.stringMatching(/^Beer: .*20\.00, for Bob$/),
+        expect.stringMatching(/^Wine: .*30\.00, by shares, for Alice and Bob$/),
+        expect.stringMatching(/^Discount: -.*2\.00, for Alice, Bob and Cara$/),
+      ]),
+    )
+    const query = listCalls().find((call) => call.tableId === 'items')?.queries
+    expect(query).toEqual([
+      Query.equal('transactionId', 't9'),
+      Query.orderAsc('position'),
+      Query.limit(100),
+    ])
+  })
+
+  it('shows no Items for an expense without item rows, and keeps its split', async () => {
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES)
+    getRow.mockResolvedValue(
+      row('t9', {
+        groupId: 'house1',
+        inputJson: JSON.stringify({ split: { mode: 'equal', personIds: ['alice'] } }),
+      }) as never,
+    )
+    renderAt('/transactions/t9')
+    const split = (await screen.findByText('Split')).nextElementSibling as HTMLElement
+    await waitFor(() => expect(listCalls().some((call) => call.tableId === 'items')).toBe(true))
+    expect(split.textContent).toBe('Equally between 1 person')
+    expect(screen.queryByRole('region', { name: 'Items' })).toBeNull()
+  })
+
+  it('reads the items of a bill too', async () => {
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES, [
+      { $id: 'i0', position: 0, name: 'Line rental', amountCents: 6000, splitJson: '{}' },
+    ])
+    getRow.mockResolvedValue(row('t9', { groupId: 'house1', kind: 'bill' }) as never)
+    renderAt('/transactions/t9')
+    const items = await screen.findByRole('region', { name: 'Items' })
+    expect(within(items).getByRole('listitem').textContent).toMatch(/^Line rental: .*60\.00$/)
+  })
+
+  it.each(['shift', 'payment', 'loan'] as const)('reads no items for a %s', async (kind) => {
+    mockGroups(acme)
+    mockRows()
+    getRow.mockResolvedValue(row('t1', { kind }) as never)
+    renderAt('/transactions/t1')
+    expect(await screen.findByText('Group')).toBeTruthy()
+    await act(async () => {})
+    expect(listCalls().some((call) => call.tableId === 'items')).toBe(false)
+  })
+
+  it('says so when the items can’t be read', async () => {
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES)
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+      if (tableId === 'items') throw new Error('offline')
+      return { total: 0, rows: tableId === 'members' ? HOUSEMATES : [] }
+    }) as never)
+    getRow.mockResolvedValue(row('t9', { groupId: 'house1' }) as never)
+    renderAt('/transactions/t9')
+    expect(
+      await screen.findByText(
+        'We couldn’t load this expense’s items. Reload the page to try again.',
+      ),
+    ).toBeTruthy()
   })
 })

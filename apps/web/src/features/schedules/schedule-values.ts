@@ -4,6 +4,7 @@ import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import type { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
 import type { z } from 'zod'
 import { centsToText } from '../groups/employer-form'
+import { hoursText, parseHours } from '../shifts/shift-values'
 import { fromRrule, type Repeat, toRrule } from './rrule'
 
 /** The schedule form's fields, as typed. Shift schedules only (bills are #33). */
@@ -15,32 +16,6 @@ export type ScheduleValues = Repeat & {
   startsOn: string
   skipPublicHolidays: boolean
   autoPost: boolean
-}
-
-// `7`, `7.5`, `7.25` or `7:30`.
-const HOURS = /^(\d{1,2})(?:([.:])(\d{1,2}))?$/
-
-/** Typed hours as whole minutes: `7.5` and `7:30` are 450. NaN if it isn't hours. */
-export function parseHours(text: string): number {
-  const match = HOURS.exec(text.trim())
-  if (!match) return Number.NaN
-  const [, whole, separator, part] = match
-  let minutes = Number(whole) * 60
-  if (separator === ':') {
-    if (Number(part) > 59) return Number.NaN
-    minutes += Number(part)
-  } else if (part !== undefined) {
-    // Integers only: `.25` is 25/100 of an hour, rounded to the minute.
-    minutes += Math.round((Number(part) * 60) / 10 ** part.length)
-  }
-  return minutes
-}
-
-/** Minutes as hours to type back: 450 → `7:30`, 480 → `8`. */
-export function hoursText(minutes: number): string {
-  const rest = minutes % 60
-  const whole = (minutes - rest) / 60
-  return rest === 0 ? String(whole) : `${whole}:${String(rest).padStart(2, '0')}`
 }
 
 function cents(text: string, currency: string): number {
@@ -68,7 +43,10 @@ export function toScheduleInput(
     kind: 'shift',
     description: values.description.trim(),
     template: {
-      shift: { minutes: parseHours(values.hours), rateCents: cents(values.rate, currency) },
+      shift: {
+        minutes: parseHours(values.hours) ?? Number.NaN,
+        rateCents: cents(values.rate, currency),
+      },
     },
     rrule: toRrule(values),
     startsOn: values.startsOn,

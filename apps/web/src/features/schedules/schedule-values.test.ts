@@ -1,13 +1,7 @@
 import type { Schedules } from '@ledgerly/core/generated/rows'
 import { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
 import { describe, expect, it } from 'vitest'
-import {
-  fromSchedule,
-  hoursText,
-  parseHours,
-  type ScheduleValues,
-  toScheduleInput,
-} from './schedule-values'
+import { fromSchedule, type ScheduleValues, toScheduleInput } from './schedule-values'
 
 const IDS = { id: 'abcdefghij0123456789', groupId: 'g1' }
 
@@ -57,19 +51,6 @@ describe('toScheduleInput', () => {
     expect(input.template.shift?.minutes).toBeNaN()
     expect(input.template.shift?.rateCents).toBeNaN()
     expect(scheduleInputSchema.safeParse(input).success).toBe(false)
-  })
-})
-
-describe('hours', () => {
-  it('reads 7, 7.5, 7.25 and 7:30, and writes them back', () => {
-    expect(parseHours('7')).toBe(420)
-    expect(parseHours(' 7.5 ')).toBe(450)
-    expect(parseHours('7.25')).toBe(435)
-    expect(parseHours('7:30')).toBe(450)
-    expect(parseHours('7:60')).toBeNaN()
-    expect(parseHours('-1')).toBeNaN()
-    expect(hoursText(450)).toBe('7:30')
-    expect(hoursText(300)).toBe('5')
   })
 })
 

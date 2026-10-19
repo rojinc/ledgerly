@@ -79,6 +79,9 @@ Row ID = the Appwrite user ID. One per user.
 | `lastInvoiceNumber` | integer | default 0. Only the `statements` function changes it, in the same transaction that numbers the invoice ([finalize step 2](statements.md#2-finalize-post-statementsidfinalize)). |
 | `summaryFrequency` | enum(none, weekly, fortnightly, monthly) | default `none` |
 | `nextSummaryAt` | datetime? | Set by `identity` when `summaryFrequency` or `timezone` changes (empty for `none`), then moved forward by the scheduler ([step 4](scheduling.md#step-4-summary-emails)) |
+| `hoursCapMinutes` | integer? | The user's own work-hours limit (F-82): 60 to 10080 for a week, 60 to 20160 for a fortnight. All three `hoursCap*` columns are set together, or all empty for no limit. |
+| `hoursCapPeriod` | enum(week, fortnight)? | A week runs Monday to Sunday in the profile's `timezone` |
+| `hoursCapStartsOn` | varchar(10)? | A fortnight's first Monday (YYYY-MM-DD); fortnights count from it, before and after. Empty for a week. |
 
 Indexes: `idx_nextSummaryAt (nextSummaryAt)`.
 Permissions: `read("user:<userId>")`. Writes go through `identity PATCH /profile`, except `lastInvoiceNumber` (`statements`) and `nextSummaryAt` (also `scheduler`).
@@ -223,7 +226,7 @@ Permissions: `read("team:<groupId>")` (the function sets the group's team when i
 | `groupId` | varchar(36) | |
 | `kind` | enum(shift, bill, expense, income) | |
 | `description` | varchar(200) | |
-| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule), and without `receiptFileIds` (a receipt belongs to one transaction) |
+| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule), and without `receiptFileIds` (a receipt belongs to one transaction); a bill's is `due`, with no `dueOn`, billing period or `days` split |
 | `rrule` | varchar(255) | RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=TH` |
 | `startsOn` | varchar(10) | First possible occurrence (local date) |
 | `endsOn` | varchar(10)? | Last possible occurrence. Empty = until stopped. |

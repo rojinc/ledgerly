@@ -1,8 +1,15 @@
 import type { Members } from '@ledgerly/core/generated/rows'
+import { buildShares } from '@ledgerly/core/ledger/build-shares'
+import { assertShareInvariants } from '@ledgerly/core/ledger/invariants'
+import { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { describe, expect, it } from 'vitest'
 import {
   defaultTicks,
   type HouseExpenseValues,
+  type ItemValues,
+  itemCents,
+  itemProblems,
+  NEW_ITEM,
   parsePercent,
   parseShares,
   percentText,
@@ -37,6 +44,8 @@ function values(extra: Partial<HouseExpenseValues> = {}): HouseExpenseValues {
     splitBetween: ['alice', 'bob', 'cara'],
     parts: {},
     note: '',
+    itemised: false,
+    items: [],
     ...extra,
   }
 }
@@ -326,5 +335,249 @@ describe('splitProblems', () => {
     expect(
       problems({ ...two, splitMode: 'weights', parts: { alice: '2', bob: '1' } }).partsTotal,
     ).toBeUndefined()
+  })
+})
+
+describe('itemised receipts (#42)', () => {
+  const item = (extra: Partial<ItemValues>): ItemValues => ({ ...NEW_ITEM, ...extra })
+  // User flow 7: Bob pays; milk, bread and the discount are for everyone, the beer for Bob.
+  const flow7 = (extra: Partial<HouseExpenseValues> = {}) =>
+    values({
+      itemised: true,
+      amount: '',
+      category: '',
+      paidBy: 'bob',
+      splitBetween: ['cara', 'alice', 'bob'],
+      items: [
+        item({ name: 'Milk', amount: '4' }),
+        item({ name: 'Bread', amount: '5' }),
+        item({ name: 'Beer', amount: '20', excluded: ['alice', 'cara'] }),
+        item({ name: 'Discount', amount: '2', discount: true }),
+      ],
+      ...extra,
+    })
+  const everyone = ['alice', 'bob', 'cara']
+
+  it('sends user flow 7 exactly: items in order, no total or split, payers adding up', () => {
+    const body = toHouseExpenseBody(flow7(), IDS, 'AUD')
+    expect(body).toEqual({
+      id: 'tx1',
+      groupId: 'house1',
+      kind: 'expense',
+      date: '2026-10-19',
+      description: 'Groceries',
+      payers: [{ personId: 'bob', cents: 2700 }],
+      items: [
+        { name: 'Milk', amountCents: 400, split: { mode: 'equal', personIds: everyone } },
+        { name: 'Bread', amountCents: 500, split: { mode: 'equal', personIds: everyone } },
+        { name: 'Beer', amountCents: 2000, split: { mode: 'equal', personIds: ['bob'] } },
+        { name: 'Discount', amountCents: -200, split: { mode: 'equal', personIds: everyone } },
+      ],
+    })
+    expect(body).not.toHaveProperty('totalCents')
+    expect(body).not.toHaveProperty('split')
+  })
+
+  it('previews flow 7 from core, summing each person’s items', () => {
+    const preview = previewShares(
+      toHouseExpenseBody(flow7(), IDS, 'AUD'),
+      { ownerPersonId: 'alice' },
+      MEMBERS,
+      'alice',
+    )
+    expect('shares' in preview).toBe(true)
+    if (!('shares' in preview)) return
+    const received = Object.fromEntries(preview.shares.map((s) => [s.personId, s.receivedCents]))
+    // User flow 7: each shared item splits 3 ways; the beer is Bob’s alone.
+    expect(received).toEqual({ alice: 234, bob: 2233, cara: 233 })
+    expect(preview.shares.find((s) => s.personId === 'bob')?.givenCents).toBe(2700)
+  })
+
+  it('sends shares per item, an item’s category, and a negative amount typed as one', () => {
+    const body = toHouseExpenseBody(
+      flow7({
+        items: [
+          item({
+            name: 'Wine',
+            amount: '30',
+            category: 'groceries',
+            mode: 'weights',
+            excluded: ['cara'],
+            shares: { alice: '2', bob: '1', cara: '5' },
+          }),
+          item({ name: 'Coupon', amount: '-3' }),
+        ],
+      }),
+      IDS,
+      'AUD',
+    )
+    expect(body.items).toEqual([
+      {
+        name: 'Wine',
+        amountCents: 3000,
+        category: 'groceries',
+        split: {
+          mode: 'weights',
+          weights: [
+            { personId: 'alice', weight: 2 },
+            { personId: 'bob', weight: 1 },
+          ],
+        },
+      },
+      { name: 'Coupon', amountCents: -300, split: { mode: 'equal', personIds: everyone } },
+    ])
+    expect(body.payers).toEqual([{ personId: 'bob', cents: 2700 }])
+  })
+
+  it('refunds one person the negative total, never several, and core accepts the body', () => {
+    const refund = flow7({
+      severalPaid: true,
+      paid: { alice: '5', bob: '5' },
+      items: [item({ name: 'Returned kettle', amount: '30', discount: true })],
+    })
+    const body = toHouseExpenseBody(refund, IDS, 'AUD')
+    expect(body.payers).toEqual([{ personId: 'bob', cents: -3000 }])
+    // The ledger's own checks, as the function runs them: the schema, shares, then invariants.
+    const input = transactionInputSchema.parse(body)
+    const { totalCents, shares } = buildShares(
+      { ...input, kind: 'expense', date: input.date as never },
+      {
+        groupType: 'house',
+        ownerPersonId: 'alice',
+        callerPersonId: 'alice',
+        members: MEMBERS.map((m) => ({
+          personId: m.personId,
+          joinedOn: m.joinedOn,
+          leftOn: m.leftOn,
+        })) as never,
+      },
+    )
+    expect(totalCents).toBe(-3000)
+    expect(() =>
+      assertShareInvariants(
+        { kind: 'expense', totalCents },
+        shares,
+        MEMBERS.map((m) => m.personId),
+      ),
+    ).not.toThrow()
+    expect(shares.find((s) => s.personId === 'bob')).toMatchObject({ givenCents: -3000 })
+    expect(shares.reduce((sum, s) => sum + s.receivedCents, 0)).toBe(-3000)
+  })
+
+  it('words a discount that pushes someone below zero', () => {
+    const preview = previewShares(
+      toHouseExpenseBody(
+        flow7({
+          items: [
+            item({ name: 'Beer', amount: '20', excluded: ['alice', 'cara'] }),
+            item({ name: 'Big coupon', amount: '15', discount: true }),
+          ],
+        }),
+        IDS,
+        'AUD',
+      ),
+      { ownerPersonId: 'alice' },
+      MEMBERS,
+      'alice',
+    )
+    expect(preview).toEqual({ error: 'A discount can’t make anyone’s part go below zero.' })
+  })
+
+  it('words a refund’s item that pushes someone above zero as a refund', () => {
+    // −30.00 back for all three; Bob's beer makes his part −10.00 + 20.00.
+    const preview = previewShares(
+      toHouseExpenseBody(
+        flow7({
+          items: [
+            item({ name: 'Returned kettle', amount: '-30' }),
+            item({ name: 'Beer', amount: '20', excluded: ['alice', 'cara'] }),
+          ],
+        }),
+        IDS,
+        'AUD',
+      ),
+      { ownerPersonId: 'alice' },
+      MEMBERS,
+      'alice',
+    )
+    expect(preview).toEqual({
+      error: 'On a refund, an item can’t make anyone’s part go above zero.',
+    })
+  })
+
+  it('keeps a typed minus negative when the discount box is ticked too', () => {
+    expect(itemCents(item({ amount: '-2.00', discount: true }), 'AUD')).toBe(-200)
+    expect(itemCents(item({ amount: '2.00', discount: true }), 'AUD')).toBe(-200)
+    expect(itemCents(item({ amount: '-2.00' }), 'AUD')).toBe(-200)
+  })
+
+  it('checks each item, then the total', () => {
+    expect(
+      itemProblems(
+        flow7({
+          items: [
+            item({ name: ' ', amount: '' }),
+            item({ name: 'Eggs', amount: 'lots', excluded: everyone }),
+            item({ name: 'Wine', amount: '0', mode: 'weights', shares: { alice: '0', bob: '' } }),
+          ],
+        }),
+        'AUD',
+      ),
+    ).toEqual({
+      items: {
+        0: { name: 'Required', amount: 'Required', shares: {} },
+        1: {
+          amount: 'Enter an amount like 40.50',
+          people: 'Tick at least one person for this item.',
+          shares: {},
+        },
+        2: {
+          amount: 'Enter an amount other than 0',
+          shares: {
+            alice: 'Enter a whole number from 1 to 10000',
+            bob: 'Required',
+            cara: 'Required',
+          },
+        },
+      },
+    })
+    expect(itemProblems(flow7(), 'AUD')).toEqual({ items: {} })
+    expect(
+      itemProblems(
+        flow7({
+          items: [
+            item({ name: 'A', amount: '5' }),
+            item({ name: 'B', amount: '5', discount: true }),
+          ],
+        }),
+        'AUD',
+      ).total,
+    ).toBe('The items add up to 0.')
+    expect(itemProblems(flow7({ items: [] }), 'AUD').total).toBe('Add at least one item.')
+    // Each item may be up to $100,000,000.00; their sum, either way, may not.
+    const big = (amount: string) => item({ name: 'Car', amount })
+    expect(itemProblems(flow7({ items: [big('99999999'), big('1.00')] }), 'AUD')).toEqual({
+      items: {},
+    })
+    for (const [first, second] of [
+      ['100000000', '1.01'],
+      ['-100000000', '-1.01'],
+    ] as const) {
+      expect(itemProblems(flow7({ items: [big(first), big(second)] }), 'AUD').total).toMatch(
+        /^The items add up to more than .*100,000,000\.00\.$/,
+      )
+    }
+    expect(
+      itemProblems(flow7({ items: [item({ name: 'x'.repeat(121), amount: '1' })] }), 'AUD').items,
+    ).toEqual({ 0: { name: 'At most 120 characters', shares: {} } })
+    expect(
+      itemProblems(flow7({ items: [item({ name: 'x'.repeat(120), amount: '1' })] }), 'AUD').items,
+    ).toEqual({})
+    expect(
+      itemProblems(
+        flow7({ items: Array.from({ length: 31 }, () => item({ name: 'X', amount: '1' })) }),
+        'AUD',
+      ).total,
+    ).toBe('A receipt can have at most 30 items.')
   })
 })

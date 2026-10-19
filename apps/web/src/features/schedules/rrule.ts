@@ -93,18 +93,26 @@ export function fromRrule(rule: string): Repeat | undefined {
   return repeat
 }
 
-/** In words, for the list: "Every Thursday", "Every 2 weeks on Mon, Wed", "Last day of each month". */
-export function describeRepeat(repeat: Repeat): string {
-  if (repeat.pattern === 'monthly') {
-    return repeat.monthDay === -1
-      ? 'Last day of each month'
-      : `On day ${repeat.monthDay} of each month`
-  }
+/**
+ * In words, for the list: "Every Thursday", "Every 2 weeks on Mon, Wed", "Last day of each
+ * month", with the rule's own end: "10 shifts" or "until 24 Dec 2026" (`formatDate` words it).
+ */
+export function describeRepeat(repeat: Repeat, formatDate: (date: string) => string): string {
   const days = WEEKDAYS.filter((day) => repeat.days.includes(day))
   const names = days.map((day) =>
     days.length === 1 ? WEEKDAY_LABEL[day] : WEEKDAY_LABEL[day].slice(0, 3),
   )
-  return repeat.interval > 1
-    ? `Every ${repeat.interval} weeks on ${names.join(', ')}`
-    : `Every ${names.join(', ')}`
+  const how =
+    repeat.pattern === 'monthly'
+      ? repeat.monthDay === -1
+        ? 'Last day of each month'
+        : `On day ${repeat.monthDay} of each month`
+      : repeat.interval > 1
+        ? `Every ${repeat.interval} weeks on ${names.join(', ')}`
+        : `Every ${names.join(', ')}`
+  if (repeat.end === 'count') {
+    return `${how}, ${repeat.count} ${repeat.count === '1' ? 'shift' : 'shifts'}`
+  }
+  if (repeat.end === 'until') return `${how}, until ${formatDate(repeat.until)}`
+  return how
 }

@@ -42,6 +42,7 @@ export const routes: RouteObject[] = [
           statementRoutes,
           peopleRoutes,
           shiftRoutes,
+          scheduleRoutes,
           billRoutes,
           scheduleRoutes,
           billRoutes,

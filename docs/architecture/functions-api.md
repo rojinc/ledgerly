@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
@@ -84,7 +84,7 @@ type TransactionInput = {
     startTime?: string          // 'HH:mm', for display
     endTime?: string
   }
-  bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate } // dueOn required when status is 'due'; schedule templates leave it out
+  bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate } // dueOn required when status is 'due'; a schedule template is { status: 'due' } with no dueOn or period
   payment?: { fromPersonId: string; toPersonId: string }
   adjustment?: { shares: { personId: string; givenCents: number; receivedCents: number }[]; reason: string }
   receiptFileIds?: string[]     // at most 10, each once; a PATCH without it keeps the stored list
@@ -107,8 +107,8 @@ Each route parses its body with its schema from `packages/core/src/schemas/` bef
 - **Amounts** are integer cents, at most `MAX_AMOUNT_CENTS` in size, and so are computed totals: a shift's `minutes × rateCents / 60` and the sum of the `items`. Rates are ≥ 0. A shift's `minutes` and `breakMinutes` are at most 1440 (one day).
 - **People:** a list names each person at most once, and a transaction names at most 15 people in all.
 - **Kinds:** `shift`, `bill`, `payment` and `adjustment` are required for their own kind and rejected on any other. `payers` and `split` are for expense, bill and loan; `items` (1–30) for expense and bill; a `days` split for bills only. `totalCents` is required unless the kind is `shift` (where it is computed, so it is rejected) or there are `items`. A payment's `fromPersonId` and `toPersonId` must be different people. Sums against the total (payers, `exact` splits, items) and the sign rules are ledger rules, checked by `buildShares()`.
-- **Bills** (one-off transactions, not schedule templates): a `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`.
-- **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it.
+- **Bills:** a one-off `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`. A schedule's bill template has status `due` and no `dueOn`, `periodStart`, `periodEnd` or `days` split ([scheduling](scheduling.md#what-a-schedule-is)).
+- **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it, and so is a schedule's `startsOn` at most 31 days before today on `POST /schedules` and on a `PATCH` that changes it, so a mistyped year can't make years of past occurrences.
 - **Lists:** at most 10 `receiptFileIds`, each at most once (the ledger function checks each file), and 366 `exdates`. Schedule templates have no `receiptFileIds`.
 - **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365. `region` must be a country or state the public holiday library knows (`publicHolidayChecker`), checked by the function on create and `PATCH`.
 - **Business details:** `abn` (11), `bsb` (6) and `accountNumber` (up to 12) are stored as digits only. Spaces and dashes are dropped.
@@ -139,7 +139,7 @@ What every write does, in **one TablesDB transaction**:
 3. Write the transaction row, replace its items and shares, and append an `activity` row.
 4. Commit. On conflict, retry once from step 1.
 
-On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use.
+On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use. The scheduler's `PATCH /schedules/{id}`, `/end` and `DELETE` do the same for a schedule's group.
 
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
@@ -182,14 +182,14 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /bootstrap` | `{ timezone }` | `{ profile, personId, personalGroupId, linkedGroupIds }` | the user; idempotent |
-| `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency? }` | `profile` | the user |
+| `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency?, hoursCap? }` | `profile` | the user |
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
-`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole.
+`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
 
 `linkedGroupIds` (`/bootstrap`, `/claim`) lists only the groups joined in that call, so after a retry it leaves out groups an earlier, interrupted call already joined.
 
@@ -207,7 +207,7 @@ Cron: `5 * * * *`, sent as `POST /` with the `schedule` trigger. A person callin
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /schedules` | `ScheduleInput` | `{ schedule, created: number }` | admin; house members for their own |
-| `PATCH /schedules/{id}` | `ScheduleInput` (same `id`) | `{ schedule, created, removed }` | creator or admin |
+| `PATCH /schedules/{id}` | `ScheduleInput` (same `id`) | `{ schedule, created, updated, removed }` | creator or admin |
 | `POST /schedules/{id}/end` | `{ endsOn: LocalDate }` | `{ schedule, removed }` | creator or admin |
 | `DELETE /schedules/{id}` | none | `{}` | creator or admin; no posted occurrences |
 | `POST /schedules/preview` | `ScheduleInput` without `id` + `{ count?: number }` (1–100, default 10) | `{ dates: LocalDate[], skipped: { date, reason: 'exdate' \| 'holiday' }[] }` | any member; not in an archived group |
@@ -242,9 +242,12 @@ Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP rou
 | `POST /statements/{id}/finalize` | `{ send: boolean }` | `statement` (call **async**) | admin |
 | `POST /statements/{id}/send` | none | `{ sentAt }` | admin; final only |
 | `POST /statements/{id}/void` | `{ reason }` | `statement` | admin; latest final only |
+| `POST /statements/{id}/discard` | none (`emptyBodySchema`) | `{}` | admin; drafts only |
 | `POST /statements/reissue` | `{ groupId, periodStart, periodEnd }` | `statement` (draft) | admin |
 
-On the four `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
+On the five `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
+
+`/discard` deletes the draft ([§5](statements.md#5-discard-post-statementsiddiscard)), so calling it again gets `NOT_FOUND`. The app treats that as done.
 
 Details: [Statements and invoices](statements.md).
 

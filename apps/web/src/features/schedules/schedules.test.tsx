@@ -361,3 +361,263 @@ describe('SchedulesPage', () => {
     expect(screen.queryByRole('button', { name: 'End' })).toBeNull()
   })
 })
+
+// #137 review (lead, 06:17): B1 and the should-fixes.
+describe('#137 review', () => {
+  // 11:00 on Monday 19 Oct 2026 in Sydney.
+  const NOW = new Date('2026-10-19T00:00:00.000Z')
+  const fakeToday = () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+  }
+  afterEach(() => vi.useRealTimers())
+
+  const fill = (hours = '5') => {
+    fireEvent.click(screen.getByLabelText('Thursday'))
+    fireEvent.change(screen.getByLabelText('Paid hours per shift'), { target: { value: hours } })
+  }
+
+  it('B1: with no day ticked, says so there only, with no rule jargon on Starts on', async () => {
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    fireEvent.change(screen.getByLabelText('Paid hours per shift'), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    expect(await screen.findByText('Pick at least one day')).toBeTruthy()
+    expect(screen.getByLabelText('Starts on').getAttribute('aria-invalid')).toBe('false')
+    expect(screen.queryByText(/KEY=VALUE|BYDAY|startsOn/)).toBeNull()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('B1: a last date before the start says so in words, under Last date', async () => {
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    fill()
+    fireEvent.change(screen.getByLabelText('Starts on'), { target: { value: '2026-10-22' } })
+    fireEvent.click(screen.getByLabelText('On a date'))
+    fireEvent.change(screen.getByLabelText('Last date'), { target: { value: '2026-10-01' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    expect(await screen.findByText('Must be on or after the start date')).toBeTruthy()
+    expect(screen.getByLabelText('Last date').getAttribute('aria-invalid')).toBe('true')
+    expect(screen.queryByText(/UNTIL/)).toBeNull()
+    expect(callsTo('/schedules')).toHaveLength(0)
+  })
+
+  it('starts a new schedule at most 31 days ago, and says past dates are created too', async () => {
+    fakeToday()
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    fill()
+    const startsOn = screen.getByLabelText('Starts on') as HTMLInputElement
+    expect(startsOn.min).toBe('2026-09-18')
+    fireEvent.change(startsOn, { target: { value: '2006-10-01' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    expect(await screen.findByText(/^Pick a date from .*2026 on$/)).toBeTruthy()
+    expect(callsTo('/schedules')).toHaveLength(0)
+    fireEvent.change(startsOn, { target: { value: '2026-10-08' } })
+    const preview = screen.getByRole('region', { name: 'Next shifts' })
+    expect(
+      within(preview).getByText(
+        /^Dates from Thu, (8 Oct|Oct 8),? 2026 to yesterday are created too\. They wait for you to confirm them\.$/,
+      ),
+    ).toBeTruthy()
+    // From today on, no note.
+    fireEvent.change(startsOn, { target: { value: '2026-10-19' } })
+    expect(within(preview).queryByText(/to yesterday are created too/)).toBeNull()
+    fireEvent.change(startsOn, { target: { value: '2026-10-08' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(callsTo('/schedules')).toHaveLength(1))
+    expect(callsTo('/schedules')[0]?.[3]).toMatchObject({ startsOn: '2026-10-08' })
+  })
+
+  it('keeps an edited schedule’s start, however old, with no limit', async () => {
+    fakeToday()
+    mockGroup(acme)
+    mockSchedules([{ ...thursdays, exdates: [], startsOn: '2025-01-02' }])
+    mockScheduler()
+    renderAt(`/schedules/${thursdays.$id}`)
+    const startsOn = (await screen.findByLabelText('Starts on')) as HTMLInputElement
+    expect(startsOn.min).toBe('')
+  })
+
+  it('gives the hour limits their own messages', async () => {
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    fill('25')
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    expect(await screen.findByText('At most 24 hours a shift')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Paid hours per shift'), { target: { value: '0' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    expect(await screen.findByText('Enter more than 0 hours')).toBeTruthy()
+  })
+
+  it('prices a shift as the ledger rounds it, not cut down', async () => {
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    // 7 h 20 min at $25.55 is $187.3666…: the ledger rounds it to $187.37.
+    fill('7:20')
+    fireEvent.change(screen.getByLabelText('Hourly rate (AUD)'), { target: { value: '25.55' } })
+    const preview = screen.getByRole('region', { name: 'Next shifts' })
+    expect((await within(preview).findAllByText(/\$187\.37$/)).length).toBeGreaterThan(0)
+  })
+
+  it('says every 3 weeks, not every other week, for three', () => {
+    mockGroup(acme)
+    renderAt('/schedules/new?groupId=g1')
+    fireEvent.change(screen.getByLabelText('Every'), { target: { value: '3' } })
+    expect(screen.getByText('Every 3 weeks counts from this week.')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Every'), { target: { value: '2' } })
+    expect(screen.getByText('Every other week counts from this week.')).toBeTruthy()
+  })
+
+  it('puts focus on the list’s heading after saving, and refreshes Today and the calendar', async () => {
+    mockGroup(acme)
+    mockScheduler()
+    mockSchedules([thursdays])
+    const { queryClient } = renderAt('/schedules/new?groupId=g1')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fill()
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('heading', { level: 1, name: 'Schedules' }),
+      ),
+    )
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['today'] })
+  })
+
+  it('shows a schedule as ended once its end date or its rule’s last date has passed', async () => {
+    fakeToday()
+    mockGroup(acme)
+    mockSchedules([
+      { ...thursdays, $id: 's1', description: 'Ended by date', endsOn: '2026-10-18' },
+      { ...thursdays, $id: 's2', description: 'Ends today', endsOn: '2026-10-19' },
+      {
+        ...thursdays,
+        $id: 's3',
+        description: 'Rule ended',
+        rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261015',
+      },
+      {
+        ...thursdays,
+        $id: 's4',
+        description: 'Ten shifts',
+        rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=10',
+      },
+    ])
+    renderAt('/schedules?groupId=g1')
+    const row = async (name: string) => (await screen.findByText(name)).closest('li') as HTMLElement
+    for (const name of ['Ended by date', 'Rule ended']) {
+      const ended = await row(name)
+      expect(within(ended).getByText(/· Ended$/)).toBeTruthy()
+      expect(within(ended).queryByRole('button', { name: 'End' })).toBeNull()
+      expect(within(ended).queryByRole('link')).toBeNull()
+    }
+    const today = await row('Ends today')
+    expect(within(today).queryByText(/· Ended$/)).toBeNull()
+    expect(within(today).getByRole('button', { name: 'End' })).toBeTruthy()
+    expect(within(await row('Rule ended')).getByText(/^Every Thursday, until /)).toBeTruthy()
+    expect(
+      within(await row('Ten shifts')).getByText(/^Every Thursday, 10 shifts · from /),
+    ).toBeTruthy()
+  })
+
+  it('ends from today by default, or from the start when it hasn’t started', async () => {
+    fakeToday()
+    mockGroup(acme)
+    mockSchedules([
+      { ...thursdays, $id: 's1', description: 'Running', startsOn: '2026-10-01' },
+      { ...thursdays, $id: 's2', description: 'Later', startsOn: '2026-11-05' },
+    ])
+    renderAt('/schedules?groupId=g1')
+    const running = (await screen.findByText('Running')).closest('li') as HTMLElement
+    fireEvent.click(within(running).getByRole('button', { name: 'End' }))
+    expect((within(running).getByLabelText('Last date') as HTMLInputElement).value).toBe(
+      '2026-10-19',
+    )
+    const later = screen.getByText('Later').closest('li') as HTMLElement
+    fireEvent.click(within(later).getByRole('button', { name: 'End' }))
+    expect((within(later).getByLabelText('Last date') as HTMLInputElement).value).toBe('2026-11-05')
+  })
+
+  it('checks End’s date in words, and puts focus back on End after Cancel or ending', async () => {
+    mockGroup(acme)
+    mockSchedules([thursdays])
+    mockScheduler({ ok: true, data: { schedule: { ...thursdays, endsOn: '2099-12-31' } } })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'End' }))
+    const field = screen.getByLabelText('Last date')
+    expect(document.activeElement).toBe(field)
+    fireEvent.change(field, { target: { value: '2026-10-01' } })
+    fireEvent.click(screen.getByRole('button', { name: 'End schedule' }))
+    expect(
+      screen.getByText(/^Pick a date on or after the start, Thu, (22 Oct|Oct 22),? 2026$/),
+    ).toBeTruthy()
+    expect(callsTo(`/schedules/${thursdays.$id}/end`)).toHaveLength(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'End' }))
+    fireEvent.click(screen.getByRole('button', { name: 'End' }))
+    fireEvent.change(screen.getByLabelText('Last date'), { target: { value: '2099-12-31' } })
+    fireEvent.click(screen.getByRole('button', { name: 'End schedule' }))
+    await waitFor(() => expect(callsTo(`/schedules/${thursdays.$id}/end`)).toHaveLength(1))
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'End' })),
+    )
+  })
+
+  it('shows no past-dates note when editing: an edit doesn’t recreate them', async () => {
+    fakeToday()
+    mockGroup(acme)
+    mockSchedules([{ ...thursdays, exdates: [], startsOn: '2026-10-01' }])
+    mockScheduler()
+    renderAt(`/schedules/${thursdays.$id}`)
+    const preview = await screen.findByRole('region', { name: 'Next shifts' })
+    await within(preview).findByText(/(22 Oct|Oct 22),? 2026/)
+    expect(within(preview).queryByText(/to yesterday are created too/)).toBeNull()
+  })
+
+  it('puts focus on the list’s heading after ending on a past date, as End goes', async () => {
+    fakeToday()
+    mockGroup(acme)
+    const running = { ...thursdays, startsOn: '2026-09-03' }
+    mockSchedules([running])
+    // The scheduler answers with the schedule ended yesterday; the list reads it as stored.
+    call.mockImplementation(async () => {
+      const ended = { ...running, endsOn: '2026-10-18' }
+      mockSchedules([ended])
+      return { ok: true, data: { schedule: ended } }
+    })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'End' }))
+    fireEvent.change(screen.getByLabelText('Last date'), { target: { value: '2026-10-18' } })
+    fireEvent.click(screen.getByRole('button', { name: 'End schedule' }))
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('heading', { level: 2, name: /^Shift schedules in/ }),
+      ),
+    )
+    expect(await screen.findByText(/· Ended$/)).toBeTruthy()
+  })
+
+  it('gives a viewer no Edit or End, even on a schedule they set up', async () => {
+    mockGroup(acme, 'viewer')
+    mockSchedules([thursdays])
+    renderAt('/schedules?groupId=g1')
+    expect(await screen.findByText('Thursday shift')).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Thursday shift' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'End' })).toBeNull()
+    cleanup()
+    mockGroup(acme, 'viewer')
+    renderAt(`/schedules/${thursdays.$id}`)
+    expect(
+      await screen.findByText(
+        'Only an admin, or the member who set it up, can change this schedule.',
+      ),
+    ).toBeTruthy()
+  })
+})
