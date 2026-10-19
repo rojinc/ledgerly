@@ -4,11 +4,11 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Members, Profiles, Shares } from '@ledgerly/core/generated/rows'
 import { buildPersonalReport } from '@ledgerly/core/reports/personal-report'
 import { netsFromShares } from '@ledgerly/core/settle/nets'
-import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
+import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { type EmailContent, summaryEmail } from '@ledgerly/server/email/templates'
-import { AppwriteException, type Models, Query } from 'node-appwrite'
-import { pages } from '../pages'
+import { AppwriteException, Query } from 'node-appwrite'
+import { allRows, pages } from '../pages'
 import { appBase, type Services } from '../services'
 
 export type SummaryCounts = { sent: number; skipped: number; failed: number }
@@ -131,7 +131,8 @@ async function summaryOf(
   // Nothing to say, and Appwrite refuses an `equal` with no values.
   if (groups.length === 0) return undefined
   // idx_person_date
-  const shares = await everyRow<Shares>(services, TABLES.shares, [
+  // Every one, however far the run has got: a summary needs them all.
+  const shares = await allRows<Shares>(services.db, TABLES.shares, [
     Query.equal('personId', profile.personId),
     Query.lessThanEqual('date', period.end),
     Query.equal(
@@ -175,7 +176,7 @@ async function summaryOf(
  */
 async function joinedGroups({ db }: Services, personId: string): Promise<Groups[]> {
   // idx_person_status
-  const members = await everyRow<Members>({ db }, TABLES.members, [
+  const members = await allRows<Members>(db, TABLES.members, [
     Query.equal('personId', personId),
     Query.equal('status', ['active', 'left']),
   ])
@@ -196,17 +197,4 @@ async function verifiedEmail({ users }: Services, userId: string): Promise<strin
     if (error instanceof AppwriteException && error.code === 404) return undefined
     throw error
   }
-}
-
-// All matching rows, however far the run has got: a summary needs every one.
-async function everyRow<R extends Models.Row>(
-  { db }: Pick<Services, 'db'>,
-  tableId: TableId,
-  queries: string[],
-): Promise<R[]> {
-  const rows: R[] = []
-  for await (const row of pages<R>({ db, outOfTime: () => false }, tableId, queries)) {
-    rows.push(row)
-  }
-  return rows
 }
