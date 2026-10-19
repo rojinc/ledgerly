@@ -377,8 +377,11 @@ describe('TodayPage', () => {
     call.mockReturnValueOnce(new Promise(() => {}))
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-    const stop = (await screen.findByRole('button', { name: 'Stop' })) as HTMLButtonElement
-    expect(stop.disabled).toBe(true)
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    expect(stop.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(stop)
+    await settle()
+    expect(call).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('link', { name: /Open the shift/ })).toBeNull()
   })
 
@@ -625,8 +628,11 @@ describe('TodayPage', () => {
     call.mockReturnValue(new Promise(() => {}))
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
-    const start = (await screen.findByRole('button', { name: 'Start' })) as HTMLButtonElement
-    expect(start.disabled).toBe(true)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    expect(start.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(start)
+    await settle()
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('reloads today after a failed start, to show a timer started elsewhere', async () => {

@@ -4,6 +4,7 @@ import { LoginPage } from './features/auth/login-page'
 import { RedirectIfSignedIn, RequireAuth } from './features/auth/route-guards'
 import { SignupPage } from './features/auth/signup-page'
 import { VerifyEmailPage } from './features/auth/verify-email-page'
+import { billRoutes } from './features/bills/routes'
 import { CalendarPage } from './features/calendar/calendar-page'
 import { DashboardPage } from './features/dashboard/dashboard-page'
 import { groupRoutes } from './features/groups/routes'
@@ -37,6 +38,7 @@ export const routes: RouteObject[] = [
           statementRoutes,
           peopleRoutes,
           shiftRoutes,
+          billRoutes,
         ],
       },
     ],
