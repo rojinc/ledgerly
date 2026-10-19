@@ -448,10 +448,45 @@ describe('NewShiftPage', () => {
     })
     expect(await screen.findByRole('heading', { name: 'As first sent' })).toBeTruthy()
     expect(screen.getByText(/already added by an earlier try/)).toBeTruthy()
+    // Shown on this visit only: the history entry no longer carries it, so a reload won't.
+    await waitFor(() => expect(router.state.location.state).toBeNull())
+    expect(screen.getByText(/already added by an earlier try/)).toBeTruthy()
     // Its write's answer was lost, so what it changed is reloaded.
     for (const key of [['balances', 'g1'], ['history', 'g1'], ['today'], ['calendar']]) {
       expect(invalidated).toContainEqual(expect.objectContaining({ queryKey: key }))
     }
+  })
+
+  it.each<[string, Partial<Transactions>]>([
+    ['someone else’s row', { createdBy: 'p2' }],
+    ['a row that isn’t a shift', { kind: 'expense' }],
+  ])('shows the CONFLICT rather than open %s', async (_, extra) => {
+    call.mockResolvedValue(failure('A different transaction already has this ID.'))
+    const { router } = await renderNew('/shifts/new')
+    getRow.mockImplementation((async ({ rowId }: { rowId: string }) =>
+      shiftRow({ $id: rowId, ...extra })) as never)
+    type('Start', '09:00')
+    type('End', '17:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'A different transaction already has this ID.',
+    )
+    expect(router.state.location.pathname).toBe('/shifts/new')
+  })
+
+  it('keeps Save focusable while saving, and ignores a second submit', async () => {
+    call.mockReturnValue(new Promise(() => {}))
+    await renderNew('/shifts/new')
+    type('Start', '09:00')
+    type('End', '17:00')
+    const save = screen.getByRole('button', { name: 'Add shift' })
+    fireEvent.click(save)
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    expect(saving.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(saving)
+    await act(async () => {})
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('shows a CONFLICT when no shift was saved with the ID', async () => {
@@ -635,7 +670,6 @@ describe('ShiftPage', () => {
   it.each<[string, Members['role'], Partial<Transactions>]>([
     ['a viewer', 'viewer', {}],
     ['a locked shift', 'admin', { statementId: 's1' }],
-    ['a void shift', 'admin', { status: 'void', voidReason: 'Sick' }],
   ])('shows %s’s date, times, break, hours and pay (#147 O4)', async (_, role, extra) => {
     mockGroup(acme, role)
     mockRow(shiftRow(extra))
@@ -648,6 +682,13 @@ describe('ShiftPage', () => {
       Hours: expect.stringMatching(/^8 h 0 min at .*25\.50 an hour$/),
       Pay: expect.stringMatching(/204\.00$/),
     })
+  })
+
+  it('shows a void shift’s summary with no pay, since it pays nothing', async () => {
+    mockRow(shiftRow({ status: 'void', voidReason: 'Sick' }))
+    renderAt('/shifts/t1')
+    await screen.findByText('Date')
+    expect(Object.keys(summary())).toEqual(['Date', 'Times', 'Break', 'Hours'])
   })
 
   it('shows hours with no times for a shift stored as hours (#147 O4)', async () => {
@@ -835,18 +876,22 @@ describe('ShiftPage', () => {
     const confirm = (await screen.findByRole('button', {
       name: 'Confirm as worked',
     })) as HTMLButtonElement
-    expect(confirm.disabled).toBe(false)
+    const off = () => confirm.getAttribute('aria-disabled') === 'true'
+    expect(off()).toBe(false)
     type('End', '19:30')
-    expect(confirm.disabled).toBe(true)
+    expect(off()).toBe(true)
     expect(screen.getByText('Save your changes first.').id).toBe(
       confirm.getAttribute('aria-describedby'),
     )
+    // Still focusable, but a click does nothing.
+    fireEvent.click(confirm)
+    expect(call).not.toHaveBeenCalled()
     // Back as stored: nothing to save.
     type('End', '17:30')
-    expect(confirm.disabled).toBe(false)
+    expect(off()).toBe(false)
     type('End', '19:30')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(confirm.disabled).toBe(false))
+    await waitFor(() => expect(off()).toBe(false))
     expect(screen.queryByText('Save your changes first.')).toBeNull()
     expect(call).toHaveBeenCalledTimes(1)
     expect(call.mock.calls[0]?.[2]).toBe('/transactions/t1')
