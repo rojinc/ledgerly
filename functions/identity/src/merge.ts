@@ -1,4 +1,5 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type {
   Balances,
   Groups,
@@ -9,6 +10,7 @@ import type {
   Shares,
   Statements,
 } from '@ledgerly/core/generated/rows'
+import type { MergeMembers } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
@@ -23,6 +25,9 @@ import type { Services } from './services'
 // identity-and-invites.md#merging-two-persons: placeholder P is merged into U in steps that are
 // each safe to repeat. Logs hold IDs and counts only (security-and-privacy.md). Every loop stops
 // once `deadline` (epoch ms) has passed, so a claim never runs into the function's timeout.
+
+/** IDs per query filter (its value cap). */
+const PAGE = 100
 
 /** Thrown inside a transaction when P turned out not to be U's to merge. */
 class NotOurs extends Error {}
@@ -101,11 +106,15 @@ export async function markMerged(
       const rows = await listAll<Members>(db, TABLES.members, [
         Query.equal('personId', placeholderId),
       ])
+      const groupIds = [...new Set(rows.map((row) => row.groupId))].sort()
       await tx.write({
         action: 'update',
         tableId: TABLES.persons,
         rowId: placeholderId,
-        data: { mergeGroupIds: [...new Set(rows.map((row) => row.groupId))].sort() },
+        data: {
+          mergeGroupIds: groupIds,
+          mergeMembersJson: JSON.stringify(await memberDates(db, rows, intoId, groupIds)),
+        },
       })
       const deletes = await typedKeyDeletes(db, placeholderId, verified)
       if (deletes.length > 0) await tx.write(...deletes)
@@ -127,6 +136,37 @@ export async function markMerged(
 }
 
 /**
+ * P's member dates in each of P's groups, and U's where U has a row there (#242 B2), so step 3
+ * can plan a posted row's items as the members were before the merge.
+ */
+async function memberDates(
+  db: Db,
+  rows: readonly Members[],
+  intoId: string,
+  groupIds: readonly string[],
+): Promise<MergeMembers> {
+  const own: Members[] = []
+  // In chunks under the query filter's value cap.
+  for (let start = 0; start < groupIds.length; start += PAGE) {
+    own.push(
+      ...(await listAll<Members>(db, TABLES.members, [
+        Query.equal('personId', intoId),
+        Query.equal('groupId', groupIds.slice(start, start + PAGE)),
+      ])),
+    )
+  }
+  const dates = (row: Members) => ({
+    joinedOn: row.joinedOn as LocalDate,
+    leftOn: (row.leftOn ?? null) as LocalDate | null,
+  })
+  return groupIds.map((groupId) => {
+    const theirs = rows.find((row) => row.groupId === groupId) as Members
+    const ours = own.find((row) => row.groupId === groupId)
+    return { groupId, from: dates(theirs), into: ours ? dates(ours) : null }
+  })
+}
+
+/**
  * What step 2 did: the kept groups (U left them on their own), the groups U joined, where U had
  * no joined row before (`linkedGroupIds`), the groups put off while a statement is finalizing,
  * and whether every one of the groups was seen to.
@@ -140,7 +180,8 @@ export type MembersResult = { kept: Set<string>; joined: string[]; putOff: strin
  * leave a pair of one, or an employer group paying itself. A group with a statement being
  * finalized is put off whole, P's row included: its inputs and shares must wait, and P's row
  * moved without them would let a leave, a removal or an edit count P's part as someone else's.
- * A row is finished once it no longer points at P, so a retry carries on.
+ * A group step 3 can't go on in (`ready` false) is put off the same way, before anything is
+ * written. A row is finished once it no longer points at P, so a retry carries on.
  */
 export async function moveMembers(
   services: Services,
@@ -149,6 +190,7 @@ export async function moveMembers(
   intoId: string,
   groupIds: readonly string[],
   deadline: number,
+  ready: (groupId: string) => boolean,
 ): Promise<MembersResult> {
   const { db } = services
   const result: MembersResult = { kept: new Set(), joined: [], putOff: [], done: true }
@@ -162,6 +204,10 @@ export async function moveMembers(
       ((await twoSided(db, groupId)) || (await leftOnTheirOwn(db, groupId, intoId, own.$createdAt)))
     ) {
       result.kept.add(groupId)
+      continue
+    }
+    if (!ready(groupId)) {
+      result.putOff.push(groupId)
       continue
     }
     try {
@@ -380,12 +426,15 @@ export async function moveIdentities(
 }
 
 /**
- * Shares moved per transaction: each may take two writes (combine), plus the group's guard and
- * the delete of its `balances` row.
+ * Shares moved per transaction: each may take two writes (combine), plus the group's guard, U's
+ * member row guard and the delete of the group's `balances` row.
  */
 const SHARES_PER_BATCH = Math.floor((MAX_OPS_PER_DB_TRANSACTION - 3) / 2)
 
-/** What became of the groups whose shares a call looked at. `done`: P has none left there. */
+/**
+ * What became of the groups whose shares a call looked at. `done`: none was put off or cut off.
+ * P's shares stay in a group where U has no joined row, and `stray()` sees them.
+ */
 export type SharesResult = { moved: number; putOff: string[]; done: boolean }
 
 /**

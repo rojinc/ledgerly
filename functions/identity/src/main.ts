@@ -7,6 +7,7 @@ import {
 } from '@ledgerly/server/http/create-handler'
 import { bootstrap } from './routes/bootstrap'
 import { postClaim } from './routes/claim'
+import { passwordNotice } from './routes/password-notice'
 import { joinPendingGroup, listPendingGroups } from './routes/pending-groups'
 import { updateProfile } from './routes/profile'
 import { sendReminder } from './routes/reminders'
@@ -22,7 +23,19 @@ export function identityRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
-    route('POST', '/', async (ctx) => run(ctx.scheduled, () => services(ctx))),
+    // One route for both runs that come with no caller: the hourly schedule finishes merges
+    // (identity-and-invites.md#finishing-merges), and the users.*.update.password and
+    // users.*.recovery.*.update events send the password notice (#password-notice). Anything
+    // else, a signed-in call included, gets the password notice's FORBIDDEN.
+    route(
+      'POST',
+      '/',
+      async (ctx) =>
+        ctx.scheduled
+          ? run(ctx.scheduled, () => services(ctx))
+          : passwordNotice(services(ctx), ctx.event, ctx.headers, ctx.body),
+      { event: true },
+    ),
     route('POST', '/bootstrap', async (ctx) =>
       bootstrap(services(ctx), requireUser(ctx.userId), ctx.body),
     ),

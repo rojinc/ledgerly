@@ -21,6 +21,14 @@ const SAMMY = {
   claimedAt: null,
   mergedInto: 'pSam',
   mergeGroupIds: ['g1'],
+  // Step 1's record of the member dates, here for g1 and the twin's g2 (#242 B2 (a)).
+  mergeMembersJson: JSON.stringify(
+    ['g1', 'g2'].map((groupId) => ({
+      groupId,
+      from: { joinedOn: '2026-01-01', leftOn: null },
+      into: null,
+    })),
+  ),
 }
 const PHONE = {
   $id: 'iPhone',
@@ -95,7 +103,7 @@ function afterFirstRead(services: Fakes, tableId: string, then: () => unknown) {
 
 /** A scheduled run, as Appwrite sends it: no JWT, the `schedule` trigger. */
 async function hourly(services: Fakes) {
-  return call(services, 'POST', '/', undefined, null, 'schedule')
+  return call(services, 'POST', '/', undefined, null, { 'x-appwrite-trigger': 'schedule' })
 }
 
 function identity(services: Fakes, id: string) {
@@ -148,7 +156,10 @@ describe('POST / (the hourly run)', () => {
 
   it('is refused to a signed-in caller, and to a call without the schedule trigger', async () => {
     const services = seeded()
-    expect((await call(services, 'POST', '/', undefined, 'u1', 'schedule')).body).toMatchObject({
+    expect(
+      (await call(services, 'POST', '/', undefined, 'u1', { 'x-appwrite-trigger': 'schedule' }))
+        .body,
+    ).toMatchObject({
       ok: false,
       error: { code: 'FORBIDDEN' },
     })
