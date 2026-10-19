@@ -258,7 +258,7 @@ describe('POST /bootstrap', () => {
     expect(services.teams.members('g1')).toHaveLength(1)
   })
 
-  it("adopts the email's placeholder over the phone's, and leaves the phone's for a merge", async () => {
+  it("adopts the email's placeholder over the phone's, and merges the phone's into it", async () => {
     const services = fakes({
       persons: [placeholder('pEmail'), placeholder('pPhone')],
       identities: [
@@ -270,11 +270,14 @@ describe('POST /bootstrap', () => {
     const result = await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)
     expect(result.personId).toBe('pEmail')
     expect(services.db.rows('identities')).toEqual([
-      expect.objectContaining({ $id: 'i1', personId: 'pPhone', verified: false }),
+      expect.objectContaining({ $id: 'i1', personId: 'pEmail', verified: true }),
       expect.objectContaining({ $id: 'i2', personId: 'pEmail', verified: true }),
     ])
-    expect(services.db.rows('persons').find((row) => row.$id === 'pPhone')?.userId).toBeNull()
-    expect(warn).toHaveBeenCalledWith('claim needs a merge; skipped')
+    expect(services.db.rows('persons').find((row) => row.$id === 'pPhone')).toMatchObject({
+      userId: null,
+      mergedInto: 'pEmail',
+    })
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('names a new person "Me" when the account has no name, and keeps the name an adopted one had', async () => {

@@ -136,7 +136,13 @@ export const updateTransaction = (services: ServicesFor) =>
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
           await requireNoOpenMerge(db, existing, oldShares, oldItems)
-          await attachReceipts(files, existing.groupId, receipts, storedReceipts)
+          await attachReceipts(files, db, tx, {
+            groupId: existing.groupId,
+            transactionId: existing.$id,
+            fileIds: receipts,
+            stored: storedReceipts,
+            now,
+          })
           const balances = await balanceWrite(db, existing.groupId, oldShares, shareData)
           await tx.write(
             { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },

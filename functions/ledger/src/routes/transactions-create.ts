@@ -78,7 +78,12 @@ export const createTransaction = (services: ServicesFor) =>
         await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
         await requireNotFinalizing(db, input.groupId, [input.date])
         // permissions.md#storage: checked and limited to the team before the row commits.
-        await attachReceipts(files, input.groupId, receipts)
+        await attachReceipts(files, db, tx, {
+          groupId: input.groupId,
+          transactionId: input.id,
+          fileIds: receipts,
+          now,
+        })
         const shares = planned.shares.map((share) => shareColumns(row, share))
         const balances = await balanceWrite(db, input.groupId, [], shares)
         await tx.write(

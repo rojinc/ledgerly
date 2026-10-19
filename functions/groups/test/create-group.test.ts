@@ -12,6 +12,7 @@ import {
   NOW,
   ok,
   person,
+  placeholder,
   profile,
   TODAY,
   TRY_AGAIN,
@@ -184,6 +185,33 @@ describe('POST /groups', () => {
     expect(services.teams.members('g1')).toEqual([
       { $id: expect.any(String), userId: 'u1', roles: [] },
     ])
+  })
+
+  it('keeps one key for a new counterpart, the email', async () => {
+    const services = setUp()
+    const counterpart = { displayName: 'Boss', email: 'boss@example.com', phone: '0412345678' }
+    await ok<CreateGroupResult>(services, 'POST', '/groups', { ...EMPLOYER, counterpart })
+    expect(services.db.rows('identities')).toEqual([
+      expect.objectContaining({ key: 'email:boss@example.com' }),
+    ])
+  })
+
+  it.each([
+    ['an employer', EMPLOYER],
+    ['a pair', { ...PAIR, counterpart: { displayName: 'Kim', email: 'boss@example.com' } }],
+  ])('answers CONFLICT when a claim of %s counterpart found commits meanwhile', async (_, body) => {
+    const services = fakes({
+      persons: [person(1), placeholder('pBoss', 'Boss')],
+      profiles: [profile(1)],
+      identities: [identity('i2', 'email:boss@example.com', 'pBoss')],
+    })
+    // Adopting the placeholder writes its row (identity-and-invites.md#claim).
+    beforeCommit(services.db, () => updateRow(services.db, 'persons', 'pBoss', { userId: 'u7' }))
+    expect(await failure(services, 'POST', '/groups', body)).toMatchObject({
+      status: 409,
+      code: 'CONFLICT',
+    })
+    expect(services.db.rows('groups')).toEqual([])
   })
 
   it('starts with the period that contains a future anchor', async () => {
