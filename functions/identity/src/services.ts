@@ -22,7 +22,7 @@ export interface UsersApi {
   get(params: { userId: string }): Promise<AccountUser>
 }
 
-/** What the routes work with, so tests can pass FakeDb, FakeTeams and a fixed clock. */
+/** What the routes work with, so tests can pass FakeDb, FakeTeams, fake email and a fixed clock. */
 export type Services = {
   db: Db
   teams: TeamsApi
