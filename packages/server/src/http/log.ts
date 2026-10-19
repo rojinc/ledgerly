@@ -171,7 +171,9 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
           whole(counts[name]),
         ]),
       ),
-    cause: 'error' in fields ? describe(fields.error) : fields.cause,
+    // Pinned at run time too, as a cast could pass any text.
+    cause:
+      'error' in fields ? describe(fields.error) : fields.cause === 'budget' ? 'budget' : undefined,
   }
   const level =
     event === 'password_notice' || event === 'change_notice'

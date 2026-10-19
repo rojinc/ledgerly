@@ -231,6 +231,11 @@ group('logProblem', () => {
     expect(lines()[0]?.cause).toBe('TypeError')
   })
 
+  it('writes a fixed cause only as one of its names', () => {
+    logProblem('change_notice', { outcome: 'failed', cause: 'a@example.com' as 'budget' })
+    expect(lines()[0]).not.toHaveProperty('cause')
+  })
+
   it('names an error that is undefined', () => {
     logProblem('draft_failed', { groupId: 'g1', error: undefined })
     expect(lines()[0]?.cause).toBe('undefined')
