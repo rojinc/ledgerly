@@ -147,10 +147,13 @@ async function row(name: string) {
 describe('NewHousePage', () => {
   it('creates a house with the defaults, then opens it', async () => {
     call.mockResolvedValue(ok({ group: { ...HOUSE, $id: 'new1' }, members: [] }))
-    const { router } = renderAt('/groups/new-house')
+    const { router, queryClient } = renderAt('/groups/new-house')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     type('House name', ' Flat 3 ')
     click('Create house')
     await waitFor(() => expect(router.state.location.pathname).toBe('/groups/new1'))
+    // The groups list shows the new house.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
     const [fn, method, path, body] = sent() as [string, string, string, { id: string }]
     expect([fn, method, path]).toEqual(['groups', 'POST', '/groups'])
     // Currency, time zone and region come from the profile, on the server.
@@ -299,7 +302,8 @@ describe('HousePage', () => {
   describe('adding a housemate', () => {
     it('sends the name, email, role and today in the house’s time zone', async () => {
       call.mockResolvedValue(ok(member('m4', { displayName: 'Lee', status: 'placeholder' })))
-      renderAt('/groups/g1')
+      const { queryClient } = renderAt('/groups/g1')
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
       await row('Alex')
       // 22:00 UTC on the 18th is the 19th in Sydney.
       expect(input('Moved in').value).toBe('2026-10-19')
@@ -316,6 +320,27 @@ describe('HousePage', () => {
       ])
       // Ready for the next one.
       expect(input('Name').value).toBe('')
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.members('g1') })
+    })
+
+    it('keeps Add housemate focusable while it saves, and sends once', async () => {
+      let answer: (result: Result<unknown>) => void = () => {}
+      call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+      renderAt('/groups/g1')
+      await row('Alex')
+      type('Name', 'Lee')
+      const add = screen.getByRole('button', { name: 'Add housemate' })
+      fireEvent.click(add)
+      expect(await screen.findByRole('button', { name: 'Adding…' })).toBe(add)
+      // aria-disabled, not disabled, so the button keeps focus (jsdom doesn't move it either way).
+      expect(add.getAttribute('aria-disabled')).toBe('true')
+      expect(add.hasAttribute('disabled')).toBe(false)
+      fireEvent.click(add)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(call).toHaveBeenCalledTimes(1)
+      answer(ok(member('m4', { displayName: 'Lee', status: 'placeholder' })))
+      expect(await screen.findByText('Added Lee.')).toBeTruthy()
     })
 
     it('defaults to today in a UTC house too', async () => {
@@ -356,8 +381,12 @@ describe('HousePage', () => {
   describe('admin actions', () => {
     it('changes only what was changed', async () => {
       call.mockResolvedValue(ok({}))
-      renderAt('/groups/g1')
+      const { queryClient } = renderAt('/groups/g1')
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
       const sam = await row('Sam')
+      // Every row has the same buttons, each described by the housemate's name.
+      expect(within(sam).getByRole('button', { name: 'Change', description: 'Sam' })).toBeTruthy()
+      expect(within(sam).getByRole('button', { name: 'Remove', description: 'Sam' })).toBeTruthy()
       fireEvent.click(within(sam).getByRole('button', { name: 'Change' }))
       // Focus moves into the form.
       expect(document.activeElement).toBe(within(sam).getByLabelText('Name'))
@@ -365,6 +394,7 @@ describe('HousePage', () => {
       fireEvent.click(within(sam).getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(call).toHaveBeenCalled())
       expect(sent()).toEqual(['groups', 'PATCH', '/groups/g1/members/m3', { role: 'admin' }])
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
       // Back to the row, with focus on the button that opened the form.
       await waitFor(() =>
         expect(document.activeElement).toBe(within(sam).getByRole('button', { name: 'Change' })),
@@ -506,6 +536,10 @@ describe('HousePage', () => {
       await waitFor(() => expect(router.state.location.pathname).toBe('/groups'))
       expect(sent()).toEqual(['groups', 'POST', '/groups/g1/leave', undefined])
       expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
+      // Back doesn't show the house as it was: its cached rows are gone.
+      expect(queryClient.getQueryData(queryKeys.group('g1'))).toBeUndefined()
+      expect(queryClient.getQueryData(queryKeys.members('g1'))).toBeUndefined()
+      expect(queryClient.getQueryData(queryKeys.myMember('g1', 'p1'))).toBeUndefined()
     })
 
     it('shows a refusal in plain words', async () => {
@@ -552,7 +586,8 @@ describe('HousePage', () => {
         } as Groups
         return ok(stored.group)
       })
-      renderAt('/groups/g1')
+      const { queryClient } = renderAt('/groups/g1')
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
       const settings = await screen.findByRole('region', { name: 'Settings' })
       const name = within(settings).getByLabelText('House name') as HTMLInputElement
       expect(name.value).toBe('Flat 3')
@@ -574,6 +609,61 @@ describe('HousePage', () => {
         },
       ])
       expect(name.value).toBe('Flat 4')
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
+    })
+
+    it('sends only what changed, so another admin’s change isn’t undone', async () => {
+      call.mockImplementation(async (_fn, _method, _path, body) => {
+        const { name, settings } = body as { name?: string; settings?: unknown }
+        stored.group = {
+          ...stored.group,
+          ...(name ? { name } : {}),
+          ...(settings ? { settingsJson: JSON.stringify(settings) } : {}),
+        } as Groups
+        return ok(stored.group)
+      })
+      const { queryClient } = renderAt('/groups/g1')
+      const settings = await screen.findByRole('region', { name: 'Settings' })
+      // Another admin renames the house and splits bills equally meanwhile, and this page
+      // reloads it.
+      stored.group = {
+        ...stored.group,
+        name: 'Flat 9',
+        settingsJson: JSON.stringify({
+          type: 'house',
+          autoFinalize: false,
+          defaultBillSplit: 'equal',
+        }),
+      }
+      await queryClient.invalidateQueries({ queryKey: queryKeys.group('g1') })
+      expect(await screen.findByRole('heading', { name: 'Flat 9', level: 1 })).toBeTruthy()
+      // Only auto-finalize changes here: the split sent is the one stored now, not the one this
+      // form showed when it opened.
+      fireEvent.click(within(settings).getByLabelText(/Finalize the divide automatically/))
+      fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
+      expect(await within(settings).findByText('Saved.')).toBeTruthy()
+      expect(sent()).toEqual([
+        'groups',
+        'PATCH',
+        '/groups/g1',
+        { settings: { type: 'house', autoFinalize: true, defaultBillSplit: 'equal' } },
+      ])
+      // A rename sends the name alone.
+      call.mockClear()
+      fireEvent.change(within(settings).getByLabelText('House name'), {
+        target: { value: 'Flat 4' },
+      })
+      fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalled())
+      expect(sent()).toEqual(['groups', 'PATCH', '/groups/g1', { name: 'Flat 4' }])
+    })
+
+    it('sends nothing when nothing changed', async () => {
+      renderAt('/groups/g1')
+      const settings = await screen.findByRole('region', { name: 'Settings' })
+      fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
+      expect(await within(settings).findByText('Saved.')).toBeTruthy()
+      expect(call).not.toHaveBeenCalled()
     })
 
     it('says the role changed when a save is refused for it, and focuses the heading', async () => {
@@ -586,6 +676,9 @@ describe('HousePage', () => {
       })
       renderAt('/groups/g1')
       const settings = await screen.findByRole('region', { name: 'Settings' })
+      fireEvent.change(within(settings).getByLabelText('House name'), {
+        target: { value: 'Flat 4' },
+      })
       fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
       expect(await screen.findByText('Your role here is now Member.')).toBeTruthy()
       expect(screen.queryByRole('region', { name: 'Settings' })).toBeNull()
@@ -596,6 +689,9 @@ describe('HousePage', () => {
       call.mockResolvedValue(refused('FORBIDDEN', "Your role in this group can't do this."))
       renderAt('/groups/g1')
       const settings = await screen.findByRole('region', { name: 'Settings' })
+      fireEvent.change(within(settings).getByLabelText('House name'), {
+        target: { value: 'Flat 4' },
+      })
       fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
       expect(
         await within(settings).findByText("Your role in this group can't do this."),
