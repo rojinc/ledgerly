@@ -570,6 +570,40 @@ describe('#137 review', () => {
     )
   })
 
+  it('shows no past-dates note when editing: an edit doesn’t recreate them', async () => {
+    fakeToday()
+    mockGroup(acme)
+    mockSchedules([{ ...thursdays, exdates: [], startsOn: '2026-10-01' }])
+    mockScheduler()
+    renderAt(`/schedules/${thursdays.$id}`)
+    const preview = await screen.findByRole('region', { name: 'Next shifts' })
+    await within(preview).findByText(/(22 Oct|Oct 22),? 2026/)
+    expect(within(preview).queryByText(/to yesterday are created too/)).toBeNull()
+  })
+
+  it('puts focus on the list’s heading after ending on a past date, as End goes', async () => {
+    fakeToday()
+    mockGroup(acme)
+    const running = { ...thursdays, startsOn: '2026-09-03' }
+    mockSchedules([running])
+    // The scheduler answers with the schedule ended yesterday; the list reads it as stored.
+    call.mockImplementation(async () => {
+      const ended = { ...running, endsOn: '2026-10-18' }
+      mockSchedules([ended])
+      return { ok: true, data: { schedule: ended } }
+    })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'End' }))
+    fireEvent.change(screen.getByLabelText('Last date'), { target: { value: '2026-10-18' } })
+    fireEvent.click(screen.getByRole('button', { name: 'End schedule' }))
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('heading', { level: 2, name: /^Shift schedules in/ }),
+      ),
+    )
+    expect(await screen.findByText(/· Ended$/)).toBeTruthy()
+  })
+
   it('gives a viewer no Edit or End, even on a schedule they set up', async () => {
     mockGroup(acme, 'viewer')
     mockSchedules([thursdays])

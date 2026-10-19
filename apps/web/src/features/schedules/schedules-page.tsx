@@ -227,11 +227,12 @@ function ScheduleRow({
             flushSync(() => setEnding(false))
             trigger.current?.focus()
           }}
-          onEnded={() => {
+          onEnded={(stopped) => {
             flushSync(() => setEnding(false))
-            // Still running (a later end date): its End is back; ended: the list's heading.
-            if (trigger.current) trigger.current.focus()
-            else onEnded()
+            // Decided from the answer: ended (a past date), its End goes, so the list's heading;
+            // still running (a later date), its End is back.
+            if (hasEnded(stopped, today)) onEnded()
+            else trigger.current?.focus()
           }}
         />
       )}
@@ -249,7 +250,7 @@ function EndSchedule({
   schedule: Schedules
   today: string
   onCancel: () => void
-  onEnded: () => void
+  onEnded: (stopped: Schedules) => void
 }) {
   const end = useEndSchedule(schedule.$id)
   // Not before it starts.
@@ -272,7 +273,7 @@ function EndSchedule({
               ? `Pick a date on or after the start, ${formatDate(schedule.startsOn)}`
               : undefined
         setError(problem)
-        if (!problem) end.mutate({ endsOn }, { onSuccess: onEnded })
+        if (!problem) end.mutate({ endsOn }, { onSuccess: ({ schedule }) => onEnded(schedule) })
       }}
     >
       <TextField

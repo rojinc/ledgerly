@@ -448,9 +448,12 @@ function ScheduleForm({
       <PreviewPanel
         body={{ ...preview, count: 10 }}
         currency={group.currency}
-        // Past dates are created too, from the start to yesterday.
+        // A new schedule creates its past dates too, from the start to yesterday. An edit
+        // doesn't recreate them.
         backdatedFrom={
-          values.startsOn !== '' && values.startsOn < today ? values.startsOn : undefined
+          !schedule && values.startsOn !== '' && values.startsOn < today
+            ? values.startsOn
+            : undefined
         }
       />
     </div>
