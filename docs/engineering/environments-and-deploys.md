@@ -13,6 +13,7 @@ There is no separate prod project for now (owner decision, 2026-10-19). `ledgerl
 - It needs a web platform for its app domain (and `localhost` for local development), Resend as custom SMTP, and email verification turned on.
 - Auth methods: only email + password and email OTP (phone from M3). Team invites, magic URL and anonymous are off, because clients never manage team memberships.
 - Membership privacy: team members see only each other's user ID, not email, phone, name, MFA or last access.
+- Session invalidation (Auth → Security, on since 2026-10-19): a password changed through the password route signs the user out of every other session. A recovery reset doesn't: Appwrite applies the setting only to that route ([#290](https://github.com/rojinc/ledgerly/issues/290)). Like the settings above, no deploy pushes it.
 
 ## Resources as code
 
