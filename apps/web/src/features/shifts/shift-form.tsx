@@ -149,14 +149,21 @@ export function ShiftForm({
   return (
     <form
       noValidate
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          await onSave(body)
-          form.reset(form.getValues())
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
+      onSubmit={(event) => {
+        // Save stays focusable while saving (aria-disabled), so a second submit is ignored here.
+        if (isSubmitting) {
+          event.preventDefault()
+          return
         }
-      })}
+        void form.handleSubmit(async (body) => {
+          try {
+            await onSave(body)
+            form.reset(form.getValues())
+          } catch (error) {
+            form.setError('root', { message: (error as Error).message })
+          }
+        })(event)
+      }}
       className="flex flex-col gap-4"
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
@@ -256,7 +263,7 @@ export function ShiftForm({
           : ' '}
       </p>
       <div className="flex items-center gap-3">
-        <Button type="submit" disabled={isSubmitting}>
+        <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : submitLabel}
         </Button>
         {isSubmitSuccessful && !isDirty && !errors.root && (
