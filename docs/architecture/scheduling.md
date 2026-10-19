@@ -141,6 +141,29 @@ Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a 
 
 The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
 
+### Step 5: receipt clean-up
+
+Deletes the files in the `receipts` bucket that no transaction lists, using the [`receiptFiles`](data-model.md#receiptfiles) rows the ledger keeps ([permissions](permissions.md#storage)). A run deletes at most 200 files; the rest wait for the next run.
+
+1. **Taken off every transaction:** rows with `detachedAt <= now − 24 h` (`idx_detachedAt`), paged by `$id`. For each row:
+   1. If `deletingAt` is empty, one database transaction stages `deletingAt = now`, then checks that the stored row still lists no transaction and has the same `detachedAt`. If not, the row is skipped: it was attached again.
+   2. Delete the file. A missing file counts as deleted.
+   3. Delete the row. A missing row counts as deleted.
+
+   A run that stops between these steps leaves `deletingAt` and `detachedAt` set, so the next run finishes the delete.
+2. **Never attached:** files in `receipts` with `$createdAt` after `now − 72 h` and at or before `now − 24 h`, paged by `$createdAt`, so a deleted file is never the cursor. A file with a `receiptFiles` row is left to pass 1. For each file with no row:
+   1. One database transaction creates the row with `detachedAt` set to the file's `$createdAt` and `deletingAt = now`. If the row already exists (409), the ledger attached the file first, and it's skipped.
+   2. Delete the file, then the row, as in pass 1.
+
+   Each run looks at 48 hours of uploads, so files are still found after a scheduler outage of up to 48 hours.
+
+**Races with an attach:**
+- an attach that commits first makes the step's check or commit fail, and the file stays;
+- an attach after the step's commit finds `deletingAt` and is refused;
+- once the row is gone, an attach finds the file gone too, because the ledger reads the rows before it looks at the files.
+
+A file or row that fails is counted and left for the next run, and the step carries on. A Storage error is never taken for a database conflict. The run returns counts only; logs hold file IDs and error codes, never file names.
+
 ## Schedule routes
 
 All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#scheduler).

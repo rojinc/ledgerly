@@ -10,6 +10,7 @@ export const TABLES = {
   transactions: 'transactions',
   shares: 'shares',
   items: 'items',
+  receiptFiles: 'receiptFiles',
   schedules: 'schedules',
   statements: 'statements',
   activity: 'activity',

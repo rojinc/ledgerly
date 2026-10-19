@@ -22,7 +22,7 @@ Production runs on the **Pro** plan. Development may use Free, which is why we k
 | Long history lists | Cursor pagination, filtered by date range | Nothing more needed. |
 | Slow queries | An index exists for every query in [data model](data-model.md) | Any new query in a PR must name the index it uses. |
 | Duplicate writes from retries or bad mobile networks | Client-generated IDs; deterministic occurrence IDs | Nothing more needed. |
-| Receipt storage cost | Client resizes images to at most 1600 px and WebP before upload; 10 MB cap | Clean up unattached files (M4). Add lifecycle rules if storage costs matter. |
+| Receipt storage cost | Client resizes images to at most 1600 px and WebP before upload; 10 MB cap. The scheduler deletes files that no transaction lists after 24 hours ([step 5](scheduling.md#step-5-receipt-clean-up)); the work grows with the files that are due. | Add lifecycle rules if storage costs matter. |
 | Data grows forever | Closed periods never change; reports read statements for old periods | Archive shares and transactions older than N years to cold storage. Not before 2028. |
 | Realtime fan-out | One subscription per signed-in app for the tables it reads. The activity feed has no channel of its own: every activity row is written with a row of one of those tables, whose event refreshes it. Appwrite sends only rows the user can read, and only queries on screen refetch. | Nothing more needed for groups of under 20 people. |
 | Email volume | Resend | Separate transactional and summary sending streams. |

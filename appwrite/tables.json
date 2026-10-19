@@ -825,6 +825,54 @@
     ]
   },
   {
+    "$id": "receiptFiles",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "receiptFiles",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "transactionIds",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": true,
+        "default": null
+      },
+      {
+        "key": "detachedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "deletingAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_detachedAt",
+        "type": "key",
+        "columns": ["detachedAt"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
     "$id": "schedules",
     "$permissions": [],
     "databaseId": "main",

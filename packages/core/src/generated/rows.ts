@@ -214,6 +214,13 @@ export type Items = Models.Row & {
     splitJson: string;
 }
 
+export type ReceiptFiles = Models.Row & {
+    groupId: string | null;
+    transactionIds: string[] | null;
+    detachedAt: string | null;
+    deletingAt: string | null;
+}
+
 export type Schedules = Models.Row & {
     groupId: string;
     kind: SchedulesKind;

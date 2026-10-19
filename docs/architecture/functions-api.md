@@ -159,7 +159,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 - Every write that attaches a file (`POST /transactions`, `PATCH` and `/receipts`) checks it and limits it to the group's team first ([permissions](permissions.md#storage)). The check runs after step 1's membership, role, archived and locked checks, so a caller those checks refuse never changes a file.
 - A `PATCH` body without `receiptFileIds` keeps the stored list, so edit forms that don't show receipts don't drop them. `[]` clears it.
-- Taking a file off a list doesn't delete it or change its permissions; the scheduler's clean-up ([#163](https://github.com/rojinc/ledgerly/issues/163)) deletes files no transaction lists. The same file may be on two transactions of one group.
+- Taking a file off a list doesn't delete it or change its permissions. Once no transaction lists it, the scheduler deletes it 24 hours later ([step 5](scheduling.md#step-5-receipt-clean-up)); putting it back on a transaction before then keeps it. A file the scheduler has started deleting is refused like a missing one. The same file may be on two transactions of one group.
 
 ## groups
 
