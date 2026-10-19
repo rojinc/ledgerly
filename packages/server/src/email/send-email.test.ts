@@ -196,6 +196,9 @@ describe('sendEmail', () => {
   it.each([
     [2_500, 2_500],
     [30_000, 10_000],
+    // AbortSignal.timeout throws a RangeError for these, which isn't an EmailError.
+    [1_234.7, 1_234],
+    [-5, 0],
   ])('takes a timeout of %d ms as %d ms', async (timeoutMs, applied) => {
     const timeout = vi.spyOn(AbortSignal, 'timeout')
     await sendEmail(email, { timeoutMs })

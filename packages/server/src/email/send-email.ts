@@ -68,7 +68,8 @@ export async function sendEmail(
         content: Buffer.from(content).toString('base64'),
       })),
     }),
-    signal: AbortSignal.timeout(Math.min(timeoutMs, TIMEOUT_MS)),
+    // A whole number of ms, never below 0: AbortSignal.timeout throws a RangeError otherwise.
+    signal: AbortSignal.timeout(Math.max(0, Math.floor(Math.min(timeoutMs, TIMEOUT_MS)))),
   }
   let response: Response
   try {

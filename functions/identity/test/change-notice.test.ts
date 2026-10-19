@@ -543,6 +543,22 @@ describe('sending (step 6)', () => {
     expect(lines()).toHaveLength(26)
   })
 
+  it('counts the reads before the first send against the 12 s and 14 s', async () => {
+    const services = seeded(old(2))
+    const get = services.users.get.bind(services.users)
+    services.users.get = async (params) => {
+      await sleep(11_800)
+      return get(params)
+    }
+    const attempts = clocked(services)
+    expect((await run(services)).status).toBe(500)
+    expect(attempts.map(({ at, timeoutMs }) => [at, timeoutMs])).toEqual([[11_800, 2_200]])
+    expect(lines()).toEqual([
+      'identity: email change notice for user u1: sent',
+      'identity: email change notice for user u1: failed (budget): 1 left',
+    ])
+  })
+
   it('cuts each send’s timeout to what’s left of 14 s, so a slow Resend ends the run in time', async () => {
     const services = seeded(old(4))
     // Each send takes 5 s, or times out first, as sendEmail does.
