@@ -2,7 +2,7 @@ import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { MERGE_BATCH } from '../src/merge'
-import { moveInputs, VOID_REASON } from '../src/merge-inputs'
+import { moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
 import { beforeStaging, NOW } from './harness'
 
 // P (a placeholder) is merged into U; X is someone else.
@@ -222,5 +222,91 @@ describe('moveInputs (step 3)', () => {
       done: false,
     })
     expect(input(store, 't1')).toEqual(EXPENSE)
+  })
+})
+
+describe('moveTemplates (step 3)', () => {
+  function schedule(id: string, template: object, extra: object = {}) {
+    return {
+      $id: id,
+      groupId: 'g1',
+      kind: 'expense',
+      description: 'Rent',
+      templateJson: JSON.stringify(template),
+      rrule: 'FREQ=MONTHLY',
+      startsOn: '2026-01-01',
+      endsOn: null,
+      exdates: null,
+      generatedThrough: '2026-11-30',
+      nextRunAt: '2026-11-01T00:00:00.000Z',
+      ...extra,
+    }
+  }
+
+  function template(store: FakeDb, id: string) {
+    return JSON.parse(store.rows('schedules').find((row) => row.$id === id)?.templateJson as string)
+  }
+
+  const RENT = {
+    totalCents: 90000,
+    payers: [{ personId: 'pU', cents: 90000 }],
+    split: { mode: 'equal', personIds: ['pP', 'pU'] },
+  }
+
+  it('renames P in a template, and leaves one without P alone', async () => {
+    const other = schedule('sc2', { split: { mode: 'equal', personIds: ['pU', 'pX'] } })
+    const store = seed([], { schedules: [schedule('sc1', RENT), other] })
+    expect(await moveTemplates(store, merge, ['g1'], FAR)).toEqual({
+      rewritten: 1,
+      putOff: [],
+      done: true,
+    })
+    expect(template(store, 'sc1').split).toEqual({
+      mode: 'weights',
+      weights: [{ personId: 'pU', weight: 2 }],
+    })
+    expect(store.rows('schedules')[1]?.templateJson).toBe(other.templateJson)
+    expect(store.rows('groups')[0]?.rev).not.toBe('r0')
+  })
+
+  it('runs again when an expansion moved the schedule on after it was read', async () => {
+    const store = seed([], { schedules: [schedule('sc1', RENT)] })
+    const expansion = beforeStaging(
+      store,
+      (operations) => operations.includes('templateJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'schedules',
+            rowId: 'sc1',
+            data: { generatedThrough: '2026-12-31' },
+          }),
+        ),
+    )
+    expect(await moveTemplates(store, merge, ['g1'], FAR)).toMatchObject({ rewritten: 1 })
+    expect(expansion).toHaveBeenCalled()
+    const [stored] = store.rows('schedules')
+    expect(stored?.generatedThrough).toBe('2026-12-31')
+    expect(template(store, 'sc1').payers).toEqual([{ personId: 'pU', cents: 90000 }])
+  })
+
+  it('puts off a group that is finalizing, and stops at the deadline', async () => {
+    const finalizing = seed([], {
+      schedules: [schedule('sc1', RENT)],
+      statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-09-01' }],
+    })
+    expect(await moveTemplates(finalizing, merge, ['g1'], FAR)).toEqual({
+      rewritten: 0,
+      putOff: ['g1'],
+      done: false,
+    })
+    expect(template(finalizing, 'sc1')).toEqual(RENT)
+    const late = seed([], { schedules: [schedule('sc1', RENT)] })
+    expect(await moveTemplates(late, merge, ['g1'], 0)).toEqual({
+      rewritten: 0,
+      putOff: [],
+      done: false,
+    })
   })
 })

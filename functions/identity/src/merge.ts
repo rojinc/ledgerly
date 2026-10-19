@@ -249,8 +249,8 @@ export class Changed extends Error {}
 /** Shares moved per transaction: each may take two writes (combine), plus the group's guard. */
 const SHARES_PER_BATCH = Math.floor((MERGE_BATCH - 1) / 2)
 
-/** What became of the groups whose shares a call looked at. */
-export type SharesResult = { moved: number; putOff: string[] }
+/** What became of the groups whose shares a call looked at. `done`: P has none left there. */
+export type SharesResult = { moved: number; putOff: string[]; done: boolean }
 
 /**
  * Step 3, shares: repoints P's shares to U, a group at a time, skipping `kept` groups (U left
@@ -273,7 +273,8 @@ export async function moveShares(
   const skip = new Set(kept)
   const putOff: string[] = []
   let moved = 0
-  while (Date.now() < deadline) {
+  for (;;) {
+    if (Date.now() >= deadline) return { moved, putOff, done: false }
     const { rows } = await db.listRows<Shares>({
       databaseId: DATABASE_ID,
       tableId: TABLES.shares,
@@ -285,7 +286,7 @@ export async function moveShares(
       total: false,
     })
     const groupId = rows[0]?.groupId
-    if (groupId === undefined) break
+    if (groupId === undefined) return { moved, putOff, done: putOff.length === 0 }
     const batch = await moveShareBatch(db, fromId, intoId, groupId)
     if (batch === 'putOff') {
       skip.add(groupId)
@@ -294,7 +295,6 @@ export async function moveShares(
       moved += batch
     }
   }
-  return { moved, putOff }
 }
 
 /** Thrown inside a batch when the group has a statement being finalized. */

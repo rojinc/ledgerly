@@ -1,5 +1,6 @@
-import type { Items, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { Items, Schedules, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import { type Merge, mergeInput, mergeSplit } from '@ledgerly/core/identity/merge-input'
+import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { splitSpecSchema } from '@ledgerly/core/schemas/split'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -8,7 +9,7 @@ import { randomId } from '@ledgerly/server/identity/random-id'
 import { activityWrite, storedInputSchema } from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
 import { Changed, Finalizing, isFinalizing, MERGE_BATCH } from './merge'
-import { isAppwriteError } from './rows'
+import { getRowOrNull, isAppwriteError } from './rows'
 
 // identity-and-invites.md#merging-two-persons, step 3, inputs. Logs hold IDs and counts only.
 
@@ -289,4 +290,124 @@ async function listById<R extends Transactions | Items>(
     total: false,
   })
   return new Map(rows.map((row) => [row.$id, row]))
+}
+
+/** The schedule columns an expansion, edit or end writes: any change means read it again. */
+const SCHEDULE_COLUMNS = [
+  'templateJson',
+  'rrule',
+  'startsOn',
+  'endsOn',
+  'exdates',
+  'generatedThrough',
+  'nextRunAt',
+] as const
+
+/** What became of the groups' schedules. `done`: every group was read to the end. */
+export type TemplatesResult = { rewritten: number; putOff: string[]; done: boolean }
+
+/**
+ * Step 3, templates: P becomes U inside `schedules.templateJson` in `groupIds`
+ * (`idx_groupId`), one schedule at a time. Each write guards the group and checks for a
+ * `finalizing` statement, as for inputs, then is staged with the schedule guard: the schedule
+ * row is written, then read again as stored, so an expansion, edit or end that got there first
+ * runs it again (scheduling.md). No schedule kind is a payment or loan, so none is voided.
+ */
+export async function moveTemplates(
+  db: Db,
+  merge: Merge,
+  groupIds: readonly string[],
+  deadline: number,
+): Promise<TemplatesResult> {
+  const result: TemplatesResult = { rewritten: 0, putOff: [], done: true }
+  for (const groupId of groupIds) {
+    const outcome = await moveGroupTemplates(db, merge, groupId, deadline, result)
+    if (outcome === 'putOff') result.putOff.push(groupId)
+    if (outcome === 'cutOff') {
+      result.done = false
+      break
+    }
+  }
+  if (result.putOff.length > 0) result.done = false
+  return result
+}
+
+async function moveGroupTemplates(
+  db: Db,
+  merge: Merge,
+  groupId: string,
+  deadline: number,
+  result: TemplatesResult,
+): Promise<'done' | 'putOff' | 'cutOff'> {
+  let cursor: string | undefined
+  for (;;) {
+    if (Date.now() >= deadline) return 'cutOff'
+    const { rows } = await db.listRows<Schedules>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.schedules,
+      queries: [
+        Query.equal('groupId', groupId),
+        Query.orderAsc('$id'),
+        Query.limit(PAGE),
+        ...(cursor === undefined ? [] : [Query.cursorAfter(cursor)]),
+      ],
+      total: false,
+    })
+    let changed = false
+    for (const schedule of rows) {
+      const templateJson = renamedTemplate(schedule, merge)
+      if (templateJson === undefined) continue
+      if (Date.now() >= deadline) return 'cutOff'
+      try {
+        await rewriteTemplate(db, groupId, schedule, templateJson)
+        result.rewritten += 1
+      } catch (error) {
+        if (error instanceof Finalizing) return 'putOff'
+        if (!(error instanceof Changed || isAppwriteError(error, 409))) throw error
+        // It changed after it was read: read this page again, as it is now.
+        changed = true
+        break
+      }
+    }
+    if (changed) continue
+    const last = rows.at(-1)
+    if (!last || rows.length < PAGE) return 'done'
+    cursor = last.$id
+  }
+}
+
+/** The schedule's template with P renamed, or undefined when it doesn't name P. */
+function renamedTemplate(schedule: Schedules, merge: Merge): string | undefined {
+  const template = transactionTemplateSchema.parse(JSON.parse(schedule.templateJson))
+  const templateJson = JSON.stringify(mergeInput(template, schedule.kind, merge).input)
+  return templateJson === JSON.stringify(template) ? undefined : templateJson
+}
+
+/** One template: the group's guard and the finalizing check, then the schedule guard. */
+async function rewriteTemplate(
+  db: Db,
+  groupId: string,
+  schedule: Schedules,
+  templateJson: string,
+): Promise<void> {
+  await withTransaction(db, async (tx) => {
+    await tx.write({
+      action: 'update',
+      tableId: TABLES.groups,
+      rowId: groupId,
+      data: { rev: randomId() },
+    })
+    if (await isFinalizing(db, groupId)) throw new Finalizing()
+    await tx.write({
+      action: 'update',
+      tableId: TABLES.schedules,
+      rowId: schedule.$id,
+      data: { templateJson },
+    })
+    const stored = await getRowOrNull<Schedules>(db, TABLES.schedules, schedule.$id)
+    const same = SCHEDULE_COLUMNS.every(
+      (column) => JSON.stringify(stored?.[column]) === JSON.stringify(schedule[column]),
+    )
+    if (!stored || !same) throw new Changed()
+  })
 }

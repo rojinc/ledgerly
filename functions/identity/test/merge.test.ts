@@ -327,7 +327,11 @@ describe('moveShares (step 3)', () => {
       share('s5', 't2', 'pX', 4000, 0),
     ])
     const before = nets(store, 'g1')
-    expect(await moveShares(store, 'pP', 'pU', new Set(), FAR)).toEqual({ moved: 2, putOff: [] })
+    expect(await moveShares(store, 'pP', 'pU', new Set(), FAR)).toEqual({
+      moved: 2,
+      putOff: [],
+      done: true,
+    })
     const after = nets(store, 'g1')
     expect(after).toEqual({ pU: (before.pP ?? 0) + (before.pU ?? 0), pX: before.pX })
     // One share per person per transaction (I-5), and every transaction still sums to 0 (I-1).
@@ -354,6 +358,7 @@ describe('moveShares (step 3)', () => {
     expect(await moveShares(store, 'pP', 'pU', new Set(['g1']), FAR)).toEqual({
       moved: 0,
       putOff: ['g2'],
+      done: false,
     })
     expect(store.rows('shares').filter((row) => row.personId === 'pP')).toHaveLength(2)
     // The put-off group's guard rolled back with its batch.
@@ -383,7 +388,11 @@ describe('moveShares (step 3)', () => {
 
   it('starts no batch once the deadline has passed', async () => {
     const store = seed([share('s1', 't1', 'pP', 0, 100)])
-    expect(await moveShares(store, 'pP', 'pU', new Set(), 0)).toEqual({ moved: 0, putOff: [] })
+    expect(await moveShares(store, 'pP', 'pU', new Set(), 0)).toEqual({
+      moved: 0,
+      putOff: [],
+      done: false,
+    })
     expect(store.rows('shares')[0]?.personId).toBe('pP')
   })
 
