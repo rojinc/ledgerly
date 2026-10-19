@@ -13,6 +13,7 @@ import {
   latestFinal,
   NO_SUCH_STATEMENT,
   parseBody,
+  statementName,
   updateStatement,
 } from '../shared'
 import { unlock } from './finalize'
@@ -60,7 +61,7 @@ export async function voidRoute(
           statement.groupId,
           person.$id,
           'statement.voided',
-          `${statement.displayNumber ?? 'Statement'} voided`,
+          `${statementName(statement)} voided`,
           now,
           { before: { status: 'final' }, after: { status: 'void', reason } },
         ),

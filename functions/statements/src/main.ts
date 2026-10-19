@@ -6,6 +6,7 @@ import {
   type RouteContext,
   route,
 } from '@ledgerly/server/http/create-handler'
+import { discardRoute } from './routes/discard'
 import { draftDueStatements } from './routes/draft-due'
 import { finalizeRoute } from './routes/finalize'
 import { previewStatement } from './routes/preview'
@@ -43,6 +44,9 @@ export function statementsRoutes(
     ),
     route('POST', '/statements/:id/void', async (ctx) =>
       voidRoute(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
+    ),
+    route('POST', '/statements/:id/discard', async (ctx) =>
+      discardRoute(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
     ),
     route('POST', '/statements/reissue', async (ctx) =>
       reissueStatement(services(ctx), requireUser(ctx.userId), ctx.body),
