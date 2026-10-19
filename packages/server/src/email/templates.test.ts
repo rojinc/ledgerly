@@ -597,11 +597,11 @@ describe('reminderEmail', () => {
     expect(content.html).toContain('Sam Pay at https://evil.example now sent you a reminder')
   })
 
-  // Embeddings and overrides (U+202A–U+202E), isolates (U+2066–U+2069) and the two marks.
+  // Embeddings and overrides (U+202A–U+202E), isolates (U+2066–U+2069) and the three marks.
   const BIDI = [
-    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f,
+    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f, 0x061c,
   ]
-  it.each(BIDI.map((code) => [code.toString(16).toUpperCase(), code]))(
+  it.each(BIDI.map((code) => [code.toString(16).toUpperCase().padStart(4, '0'), code]))(
     'removes the bidi control U+%s from a name, before cutting it',
     (_hex, code) => {
       const control = String.fromCodePoint(code)
