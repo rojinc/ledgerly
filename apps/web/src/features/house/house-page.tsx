@@ -92,10 +92,25 @@ function House({
   const sorted = [...members].sort((a, b) => a.displayName.localeCompare(b.displayName))
   // A button that goes away takes focus with it: focus goes to the heading instead.
   const focusHeading = () => heading.current?.focus()
+  // The caller's role can change while the page is open (their own change, another admin's, or
+  // a refused write that reloads it), and the house can be archived. The forms and buttons that
+  // go with the old role are gone, with any refusal they showed: say so, and focus the heading.
+  const [newRole, setNewRole] = useState<Members['role']>()
+  const lastRole = useRef(role)
+  useEffect(() => {
+    if (lastRole.current === role) return
+    if (lastRole.current && role) setNewRole(role)
+    lastRole.current = role
+    if (document.activeElement === document.body) heading.current?.focus()
+  }, [role, heading])
 
   return (
     <>
       {archived && <Message>{ARCHIVED_NOTICE}</Message>}
+      {/* Mounted from the start, so the announcement is read out when it changes. */}
+      <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        {newRole && `Your role here is now ${ROLE_LABEL[newRole]}.`}
+      </p>
       <section aria-labelledby="housemates" className="flex flex-col gap-2">
         <h2 id="housemates" className="font-medium">
           Housemates
@@ -143,7 +158,9 @@ function MemberRow({
   writes: ReturnType<typeof useMemberWrites>
   onRemoved: () => void
 }) {
-  const [mode, setMode] = useState<Mode>('view')
+  const [chosen, setMode] = useState<Mode>('view')
+  // An open form closes when the caller stops being an admin, or the house is archived.
+  const mode = isAdmin ? chosen : 'view'
   const buttons = {
     edit: useRef<HTMLButtonElement>(null),
     moveOut: useRef<HTMLButtonElement>(null),
@@ -289,6 +306,7 @@ function Confirm({
         </Button>
         <Button
           ref={cancel}
+          aria-describedby={textId}
           variant="outline"
           aria-disabled={pending}
           onClick={() => !pending && onCancel()}
@@ -324,9 +342,7 @@ function LeaveHouse({ group }: { group: Groups }) {
           text={
             <>
               <p>Your balance here must be 0 first: settle up before you leave.</p>
-              <p className="font-medium">
-                Leaving is final. To come back, you’d need to be invited again.
-              </p>
+              <p className="font-medium">Leaving is final: you can’t come back to this house.</p>
             </>
           }
           action="Leave this house"

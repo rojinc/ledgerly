@@ -7,7 +7,6 @@ import { callFunction, type ErrorCode, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { formatDate } from '../statements/invoice-view'
-import { REMOVE_REFUSED } from './house-values'
 import { houseRoutes } from './routes'
 
 vi.mock('../../lib/appwrite', () => ({
@@ -395,6 +394,38 @@ describe('HousePage', () => {
       ).toBeTruthy()
     })
 
+    it('says so and focuses the heading when an admin steps down to member', async () => {
+      call.mockImplementation(async () => {
+        stored.members = stored.members.map((row) =>
+          row.$id === 'm1' ? { ...row, role: 'member' } : row,
+        )
+        return ok({})
+      })
+      renderAt('/groups/g1')
+      const alex = await row('Alex')
+      fireEvent.click(within(alex).getByRole('button', { name: 'Change' }))
+      fireEvent.change(within(alex).getByLabelText('Role'), { target: { value: 'member' } })
+      fireEvent.click(within(alex).getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText('Your role here is now Member.')).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Flat 3', level: 1 }))
+    })
+
+    it('closes an open form and says why when the house is archived meanwhile', async () => {
+      call.mockImplementation(async () => {
+        stored.group = { ...stored.group, archivedAt: '2026-10-18T21:00:00.000Z' }
+        return refused('ARCHIVED', 'Group is archived')
+      })
+      renderAt('/groups/g1')
+      const sam = await row('Sam')
+      fireEvent.click(within(sam).getByRole('button', { name: 'Change' }))
+      fireEvent.change(within(sam).getByLabelText('Name'), { target: { value: 'Samira' } })
+      fireEvent.click(within(sam).getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText(/This group is archived/)).toBeTruthy()
+      expect(screen.queryByRole('textbox')).toBeNull()
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Flat 3', level: 1 }))
+    })
+
     it('marks someone as moved out, today in the house’s time zone by default', async () => {
       call.mockResolvedValue(ok({}))
       renderAt('/groups/g1')
@@ -442,7 +473,10 @@ describe('HousePage', () => {
       const sam = await row('Sam')
       fireEvent.click(within(sam).getByRole('button', { name: 'Remove' }))
       fireEvent.click(within(sam).getByRole('button', { name: 'Remove' }))
-      expect(await within(sam).findByRole('alert')).toHaveProperty('textContent', REMOVE_REFUSED)
+      expect(await within(sam).findByRole('alert')).toHaveProperty(
+        'textContent',
+        'They have money or a schedule in this house. Mark them as moved out instead.',
+      )
       fireEvent.click(within(sam).getByRole('button', { name: 'Cancel' }))
       expect(document.activeElement).toBe(within(sam).getByRole('button', { name: 'Remove' }))
     })
@@ -456,18 +490,20 @@ describe('HousePage', () => {
       const leave = await screen.findByRole('region', { name: 'Leave this house' })
       fireEvent.click(within(leave).getByRole('button', { name: 'Leave this house' }))
       expect(within(leave).getByText(/balance here must be 0/)).toBeTruthy()
-      expect(within(leave).getByText(/Leaving is final/)).toBeTruthy()
+      expect(
+        within(leave).getByText('Leaving is final: you can’t come back to this house.'),
+      ).toBeTruthy()
       fireEvent.click(within(leave).getByRole('button', { name: 'Leave this house' }))
       await waitFor(() => expect(router.state.location.pathname).toBe('/groups'))
       expect(sent()).toEqual(['groups', 'POST', '/groups/g1/leave', undefined])
       expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
     })
 
-    it('shows a refusal, and counts NOT_A_MEMBER on a retry as done', async () => {
-      call.mockResolvedValueOnce(
+    it('shows a refusal in plain words', async () => {
+      call.mockResolvedValue(
         refused('VALIDATION_FAILED', "Settle up first: your balance in this group isn't 0."),
       )
-      const { router } = renderAt('/groups/g1')
+      renderAt('/groups/g1')
       const leave = await screen.findByRole('region', { name: 'Leave this house' })
       fireEvent.click(within(leave).getByRole('button', { name: 'Leave this house' }))
       fireEvent.click(within(leave).getByRole('button', { name: 'Leave this house' }))
@@ -475,10 +511,23 @@ describe('HousePage', () => {
         'textContent',
         "Settle up first: your balance in this group isn't 0.",
       )
-      // The first try went through, but its answer was lost.
+    })
+
+    it('counts NOT_A_MEMBER on a retry as done, after a try whose answer was lost', async () => {
+      // The first try went through, but its answer never came back.
+      call.mockResolvedValueOnce(refused('INTERNAL', 'We couldn’t reach the server.'))
+      const { router, queryClient } = renderAt('/groups/g1')
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      const leave = await screen.findByRole('region', { name: 'Leave this house' })
+      fireEvent.click(within(leave).getByRole('button', { name: 'Leave this house' }))
+      fireEvent.click(within(leave).getByRole('button', { name: 'Leave this house' }))
+      expect(await within(leave).findByText('We couldn’t reach the server.')).toBeTruthy()
+      expect(router.state.location.pathname).toBe('/groups/g1')
       call.mockResolvedValueOnce(refused('NOT_A_MEMBER'))
       fireEvent.click(within(leave).getByRole('button', { name: 'Leave this house' }))
       await waitFor(() => expect(router.state.location.pathname).toBe('/groups'))
+      // The house leaves the groups list.
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
     })
   })
 
@@ -516,6 +565,22 @@ describe('HousePage', () => {
         },
       ])
       expect(name.value).toBe('Flat 4')
+    })
+
+    it('says the role changed when a save is refused for it, and focuses the heading', async () => {
+      call.mockImplementation(async () => {
+        // Another admin made Alex a member meanwhile.
+        stored.members = stored.members.map((row) =>
+          row.$id === 'm1' ? { ...row, role: 'member' } : row,
+        )
+        return refused('FORBIDDEN', "Your role in this group can't do this.")
+      })
+      renderAt('/groups/g1')
+      const settings = await screen.findByRole('region', { name: 'Settings' })
+      fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
+      expect(await screen.findByText('Your role here is now Member.')).toBeTruthy()
+      expect(screen.queryByRole('region', { name: 'Settings' })).toBeNull()
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Flat 3', level: 1 }))
     })
 
     it('shows the server’s refusal, and no form for settings it can’t read', async () => {

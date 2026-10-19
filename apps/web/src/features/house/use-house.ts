@@ -9,6 +9,7 @@ import type {
 import { type QueryClient, useMutation, useQueryClient } from '@tanstack/react-query'
 import { callFunction, type ErrorCode, type Method } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
+import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { writeErrorMessage } from '../groups/archive-group'
 
@@ -29,14 +30,22 @@ async function groups<T>(method: Method, path: string, body?: unknown): Promise<
   return result.data
 }
 
-/** After a write: the house, the groups list and its members show what's stored now. */
-async function refresh(queryClient: QueryClient, userId: string, groupId: string) {
+/** Who is signed in, and their person, for the keys a write refreshes. */
+function useCaller() {
+  const userId = useCurrentUser().data?.$id ?? ''
+  const personId = useBootstrap(userId).data?.personId ?? ''
+  return { userId, personId }
+}
+
+type Caller = ReturnType<typeof useCaller>
+
+/** After a write: the house, the groups list, its members and the caller's role, as stored now. */
+async function refresh(queryClient: QueryClient, { userId, personId }: Caller, groupId: string) {
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: queryKeys.group(groupId) }),
     queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) }),
     queryClient.invalidateQueries({ queryKey: queryKeys.members(groupId) }),
-    // The caller's own row, for their role (prefix of queryKeys.myMember).
-    queryClient.invalidateQueries({ queryKey: ['member', groupId] }),
+    queryClient.invalidateQueries({ queryKey: queryKeys.myMember(groupId, personId) }),
   ])
 }
 
@@ -55,24 +64,24 @@ export function useCreateHouse() {
 
 /** `PATCH /groups/{id}`: the house's settings. */
 export function useUpdateHouse(groupId: string) {
-  const userId = useCurrentUser().data?.$id ?? ''
+  const caller = useCaller()
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: (body: UpdateGroupBody) => groups<Groups>('PATCH', `/groups/${groupId}`, body),
     onSuccess: async (group) => {
       queryClient.setQueryData(queryKeys.group(groupId), group)
-      await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
+      await queryClient.invalidateQueries({ queryKey: queryKeys.groups(caller.userId) })
     },
     // The house or the caller's role may have changed: show what's true now.
-    onError: () => refresh(queryClient, userId, groupId),
+    onError: () => refresh(queryClient, caller, groupId),
   })
 }
 
 /** `POST /groups/{id}/members`, `PATCH` and `DELETE` on one member. */
 export function useMemberWrites(groupId: string) {
-  const userId = useCurrentUser().data?.$id ?? ''
+  const caller = useCaller()
   const queryClient = useQueryClient()
-  const done = () => refresh(queryClient, userId, groupId)
+  const done = () => refresh(queryClient, caller, groupId)
   const add = useMutation({
     mutationFn: (body: AddMemberBody) =>
       groups<Members>('POST', `/groups/${groupId}/members`, body),
