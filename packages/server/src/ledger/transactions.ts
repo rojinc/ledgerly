@@ -534,7 +534,8 @@ type ActivityAction =
  */
 export function activityWrite(
   row: Pick<Transactions, '$id' | 'groupId' | 'description'>,
-  actorPersonId: string,
+  // Null for a system job (data-model.md#activity).
+  actorPersonId: string | null,
   action: ActivityAction,
   summary: string,
   changes: Record<string, { before: unknown; after: unknown }> | null,
