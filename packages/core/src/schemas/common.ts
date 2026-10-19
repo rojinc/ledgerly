@@ -88,3 +88,10 @@ export function checkDateOrder(
     ctx.addIssue({ code: 'custom', message: 'Must not be before the start date', path: [path] })
   }
 }
+
+/**
+ * `details` of the `CONFLICT` a leave, a member removal, `PATCH /transactions/{id}` or `/post` gets
+ * while a merge into one of the people is still open in the group: try again shortly
+ * (identity-and-invites.md#while-a-merge-is-open-in-a-group).
+ */
+export type MergingRefusal = { reason: 'merging' }
