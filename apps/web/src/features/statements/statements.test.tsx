@@ -390,6 +390,21 @@ describe('StatementPage: a draft', () => {
     )
   })
 
+  it.each([
+    ['a Chinese name', '张三 Pty Ltd', true],
+    ['a Latin one', 'Café Ngọc', false],
+  ])('warns when the PDF can’t show a character, for %s', async (_, name, warned) => {
+    const recipient = { personId: 'pe', name, emails: ['delivered@resend.dev'] }
+    store(statement('s1', {}, snapshot({ recipient })))
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/groups/g1/statements/s1')
+    await screen.findByRole('article', { name: 'Draft invoice' })
+    const warning = screen.queryByText(
+      'Some characters in this invoice can’t be shown in the PDF yet. They’ll print as �.',
+    )
+    expect(warning !== null).toBe(warned)
+  })
+
   it('says when nothing is owed, or the employer is in credit', async () => {
     store(
       statement('s1', {}, snapshot({ invoice: { balanceDueCents: -500, paymentTermsDays: 14 } })),
