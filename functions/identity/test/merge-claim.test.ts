@@ -557,6 +557,38 @@ describe('POST /claim, merging a placeholder', () => {
     expect(stopped()).toEqual([])
   })
 
+  it('renames Sammy in a row a final statement locked, and changes nothing else on it (#263)', async () => {
+    // g1's statement st1 is final and locks t1, so a void could unlock it later.
+    const services = house({
+      statements: [{ $id: 'st1', groupId: 'g1', status: 'final', periodStart: '2026-10-01' }],
+    })
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't1',
+        data: { statementId: 'st1' },
+      }),
+    )
+    const before = services.db.rows('transactions').find((row) => row.$id === 't1')
+    await claim(services)
+    expect(namingSammy(services)).toEqual({
+      identities: [],
+      members: [],
+      shares: [],
+      transactions: [],
+      schedules: [],
+      reminders: [],
+    })
+    const after = services.db.rows('transactions').find((row) => row.$id === 't1')
+    expect([after?.statementId, after?.status, after?.totalCents]).toEqual([
+      'st1',
+      before?.status,
+      before?.totalCents,
+    ])
+    expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
+  })
+
   it('stops a merge into an account being deleted, and joins it to nothing (#246)', async () => {
     const services = house()
     await withTransaction(services.db, (tx) =>
