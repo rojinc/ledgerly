@@ -57,5 +57,7 @@ describe('OtherDevicesSection', () => {
     expect(signOut).toHaveBeenCalledTimes(1)
     await act(async () => finish())
     expect(await screen.findByText('Signed out of 1 other device.')).toBeTruthy()
+    // React Query calls the mutation after an await, so count again once it has settled.
+    expect(signOut).toHaveBeenCalledTimes(1)
   })
 })
