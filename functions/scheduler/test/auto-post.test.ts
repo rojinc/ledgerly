@@ -274,6 +274,33 @@ describe('step 2: auto-post', () => {
     expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
   })
 
+  it('doesn’t post one whose payers an edit drops just before its guard, once its creator left', async () => {
+    const services = seeded()
+    const samPays = {
+      ...groceries,
+      template: {
+        totalCents: 6_000,
+        payers: [{ personId: 'pSam', cents: 6_000 }],
+        split: { mode: 'equal', personIds: ['pSam'] },
+      },
+    }
+    await create(services, samPays, 'u2')
+    await update(services, 'members', 'elm-pAlex', { status: 'left', role: 'viewer' })
+    const id = `${groceries.id}_20261012`
+    // The 12th names its payers when step 2 reads it; then an edit leaves Alex paying.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => {
+        const { payers, ...rest } = JSON.parse(row(services, id).inputJson)
+        return update(services, 'transactions', id, { inputJson: JSON.stringify(rest) })
+      },
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
+    expect(row(services, id).status).toBe('scheduled')
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('posted')
+  })
+
   it('still posts a shift whose creator has left, since the owner is paid', async () => {
     const services = seeded()
     await create(services, thursdays)
