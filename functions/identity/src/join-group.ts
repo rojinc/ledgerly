@@ -11,7 +11,8 @@ import type { Services } from './services'
  * identity-and-invites.md#joining-a-group: joins the person's `placeholder` member row, in an
  * order a retry can always finish. True if this call joined it; false if the row is gone or
  * no longer pending (another claim running at the same time joined it), or if the group's team
- * is gone: an account deletion is purging the group, its rows last (#322). Throws `deleted()`
+ * is gone: an account deletion is purging the group, its rows last (#322). A team gone just
+ * after the commit is false too, with the row joined; the purge deletes it. Throws `deleted()`
  * once the person's account is being deleted, as their lookup would have.
  */
 export async function joinGroup(

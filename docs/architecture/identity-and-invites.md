@@ -96,7 +96,7 @@ A member joins a group only through the person's own action ([D-016](decisions.m
 
 Joining, done by the `identity` function, in this order so a retry can always finish it:
 
-1. Add the user to the group's team ("already a member" counts as done). A team that's gone means an account deletion is [purging](#each-group-they-joined) the group, its member rows last: the row is skipped, not joined, and the claim goes on to the others (a join from the app answers `NOT_A_MEMBER`). The same holds when the team goes just after step 2 commits. An archived group with its team joins as before.
+1. Add the user to the group's team ("already a member" counts as done). A team that's gone means an account deletion is [purging](#each-group-they-joined) the group, its member rows last: the row is skipped, not joined, and the claim goes on to the others (a join from the app answers `NOT_A_MEMBER`). If the team goes just after step 2 commits, the row stays joined and the purge deletes it with the others: the claim leaves the group out, and a join from the app answers with the row. An archived group with its team joins as before.
 2. In one database transaction: set the status to `active` (or `left` if `leftOn` is already set, so a former housemate can still see and settle up) and write one `member.joined` activity row. If this step fails, or the member row is gone by now (an admin removed it meanwhile), remove the team membership from step 1 again, so no one keeps access without having joined. Only a row a parallel join has just joined keeps it.
 
 All three ways write the same row, so the group can't tell which one happened.

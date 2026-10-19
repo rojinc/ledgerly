@@ -242,7 +242,8 @@ describe('POST /claim', () => {
   it('skips a row whose team is gone, a group being purged, and joins the others', async () => {
     const services = claimFixture([
       placeholderRow('m1', 'g1', 'pSam', BEFORE),
-      placeholderRow('m9', 'g9', 'pSam', BEFORE),
+      // Listed first, so the claim must go on past it.
+      placeholderRow('m9', 'g9', 'pSam', '2026-09-01T00:00:00.000Z'),
     ])
     expect(await claimed(services)).toEqual(['g1'])
     expect(statusOf(services, 'm9')).toBe('placeholder')
@@ -260,12 +261,15 @@ describe('POST /claim', () => {
     })
     expect(await claimed(services)).toEqual([])
     expect(calls).toBe(2)
+    // Joined already: the purge deletes the row with the others.
+    expect(statusOf(services, 'm1')).toBe('active')
   })
 
   it('still fails the claim for any other team error', async () => {
     const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
     vi.spyOn(services.teams, 'createMembership').mockRejectedValue(
-      new AppwriteException('Server error', 500, 'general_unknown'),
+      // Another 404, so only `team_not_found` counts as a purge.
+      new AppwriteException('User not found', 404, 'user_not_found'),
     )
     expect((await call(services, 'POST', '/claim')).status).toBe(500)
     expect(statusOf(services, 'm1')).toBe('placeholder')
