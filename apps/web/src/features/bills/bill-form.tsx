@@ -87,13 +87,20 @@ export function BillForm({
     <form
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          await onSave(body)
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
+      onSubmit={(event) => {
+        // Save stays focusable while saving (aria-disabled), so a second submit is ignored here.
+        if (isSubmitting) {
+          event.preventDefault()
+          return
         }
-      })}
+        void form.handleSubmit(async (body) => {
+          try {
+            await onSave(body)
+          } catch (error) {
+            form.setError('root', { message: (error as Error).message })
+          }
+        })(event)
+      }}
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
       <TextField
@@ -146,7 +153,7 @@ export function BillForm({
           {...form.register('dueOn')}
         />
       )}
-      <Button type="submit" className="self-start" disabled={isSubmitting}>
+      <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : submitLabel}
       </Button>
     </form>

@@ -2,9 +2,13 @@ import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
+import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
-import { type ReactNode, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { flushSync } from 'react-dom'
+import { useLocation, useNavigate, useParams } from 'react-router'
+import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
+import { queryKeys } from '../../lib/query-keys'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { centsToText } from '../groups/employer-form'
@@ -14,15 +18,33 @@ import { LedgerError, useTransaction } from '../transactions/use-transactions'
 import { BillForm } from './bill-form'
 import { isOverdue, storedExtras, toBillValues } from './bill-values'
 import { Message, usePersonalGroup } from './bills-page'
-import { useMarkPaid, useSaveBill, useSkipBill } from './use-bills'
+import { markStale, useMarkPaid, useSaveBill, useSkipBill } from './use-bills'
 
 /** `/bills/new`: a bill in the personal group, due or already paid. */
 export function NewBillPage() {
   const personal = usePersonalGroup()
   const navigate = useNavigate()
+  const queryClient = useQueryClient()
   const save = useSaveBill()
   // One ID per visit, so retrying after an error can't add the bill twice.
   const [id] = useState(() => ID.unique())
+
+  // The same ID again with different content: an earlier try was saved although its answer was
+  // lost, and the form changed since. Open the bill as saved, rather than refusing forever.
+  async function openSaved(error: unknown) {
+    if (!(error instanceof LedgerError && error.code === 'CONFLICT')) throw error
+    const row = await tablesDB
+      .getRow<Transactions>({ databaseId: DATABASE_ID, tableId: 'transactions', rowId: id })
+      .catch(() => {
+        throw error
+      })
+    // Only the bill this visit sent: the caller's own, and a bill.
+    if (row.createdBy !== personal.personId || row.kind !== 'bill') throw error
+    queryClient.setQueryData(queryKeys.transaction(id), row)
+    // The lost answer's refresh never ran.
+    markStale(queryClient, row.groupId)
+    navigate(`/bills/${id}`, { replace: true, state: { alreadySaved: true } })
+  }
   let content: ReactNode
   if (personal.group) {
     const today = localToday(personal.group.timezone, new Date())
@@ -44,14 +66,8 @@ export function NewBillPage() {
           try {
             await save.mutateAsync({ body, isNew: true })
           } catch (error) {
-            // The same ID again, with different content: an earlier try may have been saved
-            // although its answer was lost. Say so, rather than inviting a duplicate.
-            if (error instanceof LedgerError && error.code === 'CONFLICT') {
-              throw new Error(
-                'This may already have been saved from your last try. Check Bills before adding it again.',
-              )
-            }
-            throw error
+            await openSaved(error)
+            return
           }
           navigate(`/bills/${id}`, { replace: true })
         }}
@@ -78,11 +94,26 @@ export function BillPage() {
   const transaction = useTransaction(id)
   // Each action's panel goes once the bill changes: focus lands here, and the result is read out.
   const heading = useRef<HTMLHeadingElement>(null)
+  const location = useLocation()
+  const navigate = useNavigate()
+  // Shown on this visit only: the history entry's state is cleared, so a reload doesn't repeat it.
+  const [alreadySaved] = useState(
+    () => (location.state as { alreadySaved?: boolean } | null)?.alreadySaved,
+  )
+  useEffect(() => {
+    if (location.state) navigate('.', { replace: true, state: null })
+  }, [location.state, navigate])
   return (
     <div className="flex flex-col gap-6">
       <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold break-words outline-none">
         {transaction.data?.description ?? 'Bill'}
       </h1>
+      {alreadySaved && (
+        <Message>
+          This bill was already added by an earlier try. Here it is as saved: change it here if you
+          need to.
+        </Message>
+      )}
       {transaction.data ? (
         <BillDetails row={transaction.data} onDone={() => heading.current?.focus()} />
       ) : transaction.isError ? (
@@ -98,6 +129,7 @@ function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void })
   const group = useGroup(row.groupId)
   const [done, setDone] = useState('')
   const [editing, setEditing] = useState(false)
+  const editHeading = useRef<HTMLHeadingElement>(null)
   const finish = (message: string) => {
     setEditing(false)
     setDone(message)
@@ -146,7 +178,12 @@ function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void })
       {row.status === 'due' &&
         (editing ? (
           <section aria-labelledby="edit-heading" className="flex flex-col gap-3">
-            <h2 id="edit-heading" className="font-medium">
+            <h2
+              id="edit-heading"
+              ref={editHeading}
+              tabIndex={-1}
+              className="font-medium outline-none"
+            >
               Change this bill
             </h2>
             <EditBill
@@ -163,7 +200,15 @@ function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void })
         ) : (
           <>
             <MarkPaid row={row} today={today} onPaid={() => finish('Marked paid.')} />
-            <Button variant="outline" className="self-start" onClick={() => setEditing(true)}>
+            <Button
+              variant="outline"
+              className="self-start"
+              onClick={() => {
+                // The button goes as the form opens: focus moves to the form's heading.
+                flushSync(() => setEditing(true))
+                editHeading.current?.focus()
+              }}
+            >
               Change this bill
             </Button>
             <SkipBill row={row} onSkipped={() => finish('Skipped.')} />
