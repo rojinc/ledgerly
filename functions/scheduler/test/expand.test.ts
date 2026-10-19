@@ -208,14 +208,18 @@ describe('nextRunAt', () => {
     ['2026-10-04', 'Australia/Sydney', '2026-10-04T13:05:00.000Z'],
     ['2026-10-31', 'America/Los_Angeles', '2026-11-01T07:05:00.000Z'],
     ['2026-11-01', 'America/Los_Angeles', '2026-11-02T08:05:00.000Z'],
+    // Havana's clocks go back from 01:00 to 00:00 on 1 November: the first 00:05.
+    ['2026-10-31', 'America/Havana', '2026-11-01T04:05:00.000Z'],
   ])('after %s in %s is 00:05 the next day there', (today, timeZone, expected) => {
     expect(nextRunAt(today as LocalDate, timeZone)).toBe(expected)
   })
 
   it.each([
-    // Their clocks go from 00:00 straight to 01:00 on 6 September and 8 March.
+    // Their clocks go from 00:00 straight to 01:00 on 6 September, 8 March and 29 March.
     ['2026-09-05', 'America/Santiago', '2026-09-06T04:05:00.000Z'],
     ['2026-03-07', 'America/Havana', '2026-03-08T05:05:00.000Z'],
+    ['2026-03-28', 'Atlantic/Azores', '2026-03-29T01:05:00.000Z'],
+    ['2026-03-28', 'Asia/Beirut', '2026-03-28T22:05:00.000Z'],
   ])('after %s in %s, where midnight is skipped, is 01:05', (today, timeZone, expected) => {
     expect(nextRunAt(today as LocalDate, timeZone)).toBe(expected)
   })

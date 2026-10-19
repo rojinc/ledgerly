@@ -93,8 +93,9 @@ export function planOccurrence(
 
 /**
  * The next 00:05 in `timeZone` after `today`, as UTC (scheduling.md, step 1). Where the clocks
- * skip midnight (Santiago and Havana on their DST day), 00:05 would land the evening before, so
- * it is 01:05, just after the day starts.
+ * skip midnight west of UTC (Santiago, Havana and the Azores on their DST day), 00:05 would land
+ * the evening before, so it is 01:05, just after the day starts. East of UTC (Beirut, Cairo) it
+ * already moves on to 01:05. Where midnight happens twice, it is the first 00:05.
  */
 export function nextRunAt(today: LocalDate, timeZone: string): string {
   const tomorrow = addDays(today, 1)
