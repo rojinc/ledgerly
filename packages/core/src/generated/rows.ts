@@ -19,6 +19,13 @@ export const ProfilesSummaryFrequency = {
 
 export type ProfilesSummaryFrequency = (typeof ProfilesSummaryFrequency)[keyof typeof ProfilesSummaryFrequency];
 
+export const ProfilesHoursCapPeriod = {
+    WEEK: "week",
+    FORTNIGHT: "fortnight"
+} as const;
+
+export type ProfilesHoursCapPeriod = (typeof ProfilesHoursCapPeriod)[keyof typeof ProfilesHoursCapPeriod];
+
 export const GroupsType = {
     PERSONAL: "personal",
     HOUSE: "house",
@@ -134,6 +141,9 @@ export type Profiles = Models.Row & {
     lastInvoiceNumber: number;
     summaryFrequency: ProfilesSummaryFrequency;
     nextSummaryAt: string | null;
+    hoursCapMinutes: number | null;
+    hoursCapPeriod: ProfilesHoursCapPeriod | null;
+    hoursCapStartsOn: string | null;
 }
 
 export type Groups = Models.Row & {

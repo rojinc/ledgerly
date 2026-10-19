@@ -8,3 +8,7 @@ export const MAX_OPS_PER_DB_TRANSACTION = 90
 // Number.MAX_SAFE_INTEGER.
 export const MAX_AMOUNT_CENTS = 10_000_000_000
 export const MAX_WEIGHT = 10_000
+
+// F-82 (#53): a work-hours limit is the user's own, from 1 hour up to every hour of its period.
+export const MIN_HOURS_CAP_MINUTES = 60
+export const MAX_HOURS_CAP_MINUTES = { week: 7 * 24 * 60, fortnight: 14 * 24 * 60 } as const
