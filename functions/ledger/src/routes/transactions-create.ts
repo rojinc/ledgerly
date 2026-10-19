@@ -5,6 +5,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
+import { balanceWrite } from '@ledgerly/server/ledger/balances'
 import {
   activityWrite,
   findTransaction,
@@ -78,6 +79,8 @@ export const createTransaction = (services: ServicesFor) =>
         await requireNotFinalizing(db, input.groupId, [input.date])
         // permissions.md#storage: checked and limited to the team before the row commits.
         await attachReceipts(files, input.groupId, receipts)
+        const shares = planned.shares.map((share) => shareColumns(row, share))
+        const balances = await balanceWrite(db, input.groupId, [], shares)
         await tx.write(
           {
             action: 'create',
@@ -97,12 +100,7 @@ export const createTransaction = (services: ServicesFor) =>
             },
             permissions,
           },
-          ...replaceRows(
-            TABLES.shares,
-            [],
-            planned.shares.map((share) => shareColumns(row, share)),
-            permissions,
-          ),
+          ...replaceRows(TABLES.shares, [], shares, permissions),
           ...replaceRows(
             TABLES.items,
             [],
@@ -117,6 +115,7 @@ export const createTransaction = (services: ServicesFor) =>
             null,
             now,
           ),
+          ...balances,
         )
       })
       return readView(db, input.id)

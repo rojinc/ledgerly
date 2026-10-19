@@ -1,5 +1,7 @@
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
+import { missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
+import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router'
 import { useSwap } from '../../lib/use-swap'
@@ -10,7 +12,7 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { DivideView } from './divide-view'
 import { readSnapshot } from './invoice-sections'
-import { formatDate, InvoiceView } from './invoice-view'
+import { formatDate, InvoiceView, lineText } from './invoice-view'
 import { STATUS_LABEL } from './statements-page'
 import {
   downloadPdf,
@@ -39,6 +41,27 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 /** A statement's dates in words: `1 Oct 2026 – 31 Oct 2026`. */
 function periodText(statement: Pick<Statements, 'periodStart' | 'periodEnd'>): string {
   return `${formatDate(statement.periodStart)} – ${formatDate(statement.periodEnd)}`
+}
+
+/**
+ * Whether the invoice PDF will print any of the snapshot's text as � (#269): the issuer's
+ * business details, the recipient and the lines, as packages/server/src/pdf/invoice-pdf.ts
+ * prints them.
+ */
+function unprintable({ issuer, recipient, lines }: StatementSnapshot): boolean {
+  const business = issuer?.business
+  return [
+    business?.businessName ?? issuer?.name,
+    business?.address,
+    business?.email,
+    business?.phone,
+    business?.bank?.accountName,
+    business?.payId,
+    business?.invoiceNotes,
+    recipient?.name,
+    ...(recipient?.emails ?? []),
+    ...lines.map(lineText),
+  ].some((text) => text !== undefined && missingGlyphs(text).length > 0)
 }
 
 /** An invoice by its number; a divide, which never has one, by its period (#166). */
@@ -149,6 +172,11 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       {isDraft && refresh.isError && (
         <Message alert>
           We couldn’t update this draft, so it may be out of date. {refresh.error.message}
+        </Message>
+      )}
+      {isDraft && !divide && snapshot && unprintable(snapshot) && (
+        <Message>
+          Some characters in this invoice can’t be shown in the PDF yet. They’ll print as �.
         </Message>
       )}
       {open && row.status === 'finalizing' && (
