@@ -317,6 +317,27 @@ function stagedByTransaction(services: Fakes): Map<string, string[]> {
   return staged
 }
 
+// Runs `change` just before the commit of the first transaction whose writes include `text`.
+function beforeCommitOf(services: Fakes, text: string, change: () => Promise<unknown>) {
+  const stage = services.db.createOperations.bind(services.db)
+  const commit = services.db.updateTransaction.bind(services.db)
+  let target: string | undefined
+  let done = false
+  vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+    if (target === undefined && JSON.stringify(params.operations).includes(text)) {
+      target = params.transactionId
+    }
+    return stage(params)
+  })
+  vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+    if (!done && params.commit && params.transactionId === target) {
+      done = true
+      await change()
+    }
+    return commit(params)
+  })
+}
+
 function deleteRow(services: Fakes, tableId: TableId, rowId: string) {
   return withTransaction(services.db, (tx) => tx.write({ action: 'delete', tableId, rowId }))
 }
@@ -630,10 +651,75 @@ describe('POST /delete: purging a group nobody else is in', () => {
         services.files.upload('statements', 'st3', [team('h2')])
       },
     )
+    // The purge archives it first all the same, so nothing can start in it once the team is gone.
+    const archivedAt: Record<string, unknown> = {}
+    const deleteTeam = services.teams.delete.bind(services.teams)
+    vi.spyOn(services.teams, 'delete').mockImplementation(async (params) => {
+      archivedAt[params.teamId] = rowOf(services, 'groups', params.teamId)?.archivedAt
+      await deleteTeam(params)
+      return {}
+    })
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(archivedAt.h2).toBe(DELETED_AT)
     expect(leftOf(services, PURGED)).toEqual([])
     expect(services.files.ids()).not.toContain('statements/st3')
   })
+
+  it('fails, deleting no row, when a bucket is missing: only a missing file counts as done', async () => {
+    const services = world()
+    services.files.removeBucket('receipts')
+    const { status, logs } = await call(services)
+    expect(status).toBe(500)
+    expect(logs.join('\n')).not.toMatch(/Sam|Kim|@/)
+    expect(rowOf(services, 'transactions', 't3')).toBeDefined()
+    expect(services.files.ids()).toContain('receipts/r2')
+  })
+
+  it('deletes a share whose transaction is gone, before the member rows (I-3)', async () => {
+    const services = world()
+    await insert(services, 'shares', [share('tGone', 'h2', 'pKim', 0, 500)])
+    const staged = stagedByTransaction(services)
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'shares', 'tGone-pKim')).toBeUndefined()
+    expect(leftOf(services, PURGED)).toEqual([])
+    const writes = [...staged.values()].flat()
+    expect(writes.indexOf('shares/tGone-pKim')).toBeGreaterThan(-1)
+    expect(writes.indexOf('members/h2-pKim')).toBeGreaterThan(writes.indexOf('shares/tGone-pKim'))
+  })
+
+  it.each([
+    ['before the other stages', 'staging'],
+    ['between the other’s staging and its commit', 'commit'],
+  ])(
+    'leaves no placeholder without a member row when two purges delete its last two, %s',
+    async (_, when) => {
+      const services = world()
+      // Alex purges h1, where Lee is a placeholder too, as Sam's purge deletes Lee's row in h2.
+      let alex: unknown
+      const alexPurges = async () => {
+        const own = rowOf(services, 'members', 'h1-p2') as unknown as Members
+        alex = await purge(services, own).catch((error: unknown) => error)
+      }
+      if (when === 'staging') {
+        beforeStaging(
+          services.db,
+          (operations) => operations.includes('"rowId":"h2-pLee"'),
+          alexPurges,
+        )
+      } else {
+        beforeCommitOf(services, '"rowId":"h2-pLee"', alexPurges)
+      }
+      // Sam's transaction loses, so h2 waits for the next run, which finds Lee's last row.
+      expect((await remove(services)).finished).toBe(false)
+      expect(alex).toBe(true)
+      expect(rowOf(services, 'members', 'h2-pLee')).toBeDefined()
+      vi.restoreAllMocks()
+      expect((await remove(services)).finished).toBe(true)
+      expect(services.db.rows('members').filter((row) => row.personId === 'pLee')).toEqual([])
+      expect(rowOf(services, 'persons', 'pLee')).toBeUndefined()
+      expect(rowOf(services, 'identities', 'iLee')).toBeUndefined()
+    },
+  )
 
   it('doesn’t wait for a timer someone else left running: it goes with the group', async () => {
     const services = world()
@@ -740,10 +826,10 @@ describe('POST /delete: a purged group’s receipts (#248)', () => {
     expect(rowOf(services, 'receiptFiles', 'r7')).toMatchObject(detached)
   })
 
-  it('stops before the next file once the time budget is used up, and a rerun finishes with the same rows', async () => {
+  it('makes progress on every run when its receipts take several, never looking for one twice', async () => {
     const withReceipts = async () => {
       const services = world()
-      const ids = ['tMany0', 'tMany1']
+      const ids = ['tMany0', 'tMany1', 'tMany2', 'tMany3']
       await insert(
         services,
         'transactions',
@@ -759,37 +845,51 @@ describe('POST /delete: a purged group’s receipts (#248)', () => {
     const once = await withReceipts()
     expect((await remove(once)).finished).toBe(true)
     const services = await withReceipts()
-    let deleted = 0
-    const deleteFile = services.files.deleteFile.bind(services.files)
-    vi.spyOn(services.files, 'deleteFile').mockImplementation(async (params) => {
-      deleted += 1
-      await deleteFile(params)
-      return {}
+    // Every receipt looked at across runs, and how many in this run.
+    const looked: string[] = []
+    let thisRun = 0
+    const getFile = services.files.getFile.bind(services.files)
+    vi.spyOn(services.files, 'getFile').mockImplementation(async (params) => {
+      if (params.bucketId === 'receipts') {
+        looked.push(params.fileId)
+        thisRun += 1
+      }
+      return getFile(params)
     })
-    // Used up once the fifth of h2's 21 deletable receipts is gone, all in its first 100.
-    services.outOfTime = () => deleted >= 5
-    expect((await remove(services)).finished).toBe(false)
-    expect(deleted).toBe(5)
-    expect(rowOf(services, 'transactions', 't3')).toBeDefined()
-    services.outOfTime = () => false
-    expect((await remove(services)).finished).toBe(true)
+    // Each run's budget is used up after 12 receipts, of the 43 in h2 it looks at.
+    services.outOfTime = () => thisRun >= 12
+    const left = () => services.db.rows('transactions').filter((row) => row.groupId === 'h2')
+    for (let run = 1; ; run += 1) {
+      expect(run).toBeLessThanOrEqual(5)
+      const before = left().length
+      thisRun = 0
+      const { finished } = await remove(services)
+      // It stops before a transaction's receipts, never partway through them.
+      expect(thisRun).toBeLessThan(12 + 10)
+      if (finished) break
+      expect(left().length).toBeLessThan(before)
+    }
+    // Each receipt went just before its transaction's batch, in the same run.
+    expect(looked.length).toBeGreaterThan(40)
+    expect(new Set(looked).size).toBe(looked.length)
     expect(state(services)).toEqual(state(once))
   })
 
-  it('reads the receipt rows 100 file IDs at a time, as Appwrite allows', async () => {
+  it('reads the transactions a receipt’s row lists 100 IDs at a time, as Appwrite allows', async () => {
     const services = world()
-    const ids = Array.from({ length: 12 }, (_, n) => `tMany${String(n).padStart(2, '0')}`)
-    await insert(
-      services,
-      'transactions',
-      ids.map((id) => posted(id, 'h2', 1000)),
-    )
-    const fileIds: string[] = []
-    for (const id of ids) {
-      const listed = await tenReceipts(services, id)
-      await setRow(services, 'transactions', id, { receiptFileIds: listed })
-      fileIds.push(...listed)
+    // One receipt on 120 of h2's transactions.
+    const ids = Array.from({ length: 120 }, (_, n) => `tShared${String(n).padStart(3, '0')}`)
+    for (let start = 0; start < ids.length; start += 60) {
+      await insert(
+        services,
+        'transactions',
+        ids
+          .slice(start, start + 60)
+          .map((id) => posted(id, 'h2', 1000, { receiptFileIds: ['fShared'] })),
+      )
     }
+    await insert(services, 'receiptFiles', [receipt('fShared', ids)])
+    services.files.upload('receipts', 'fShared', [team('h2')])
     const listRows = vi.spyOn(services.db, 'listRows')
     expect((await remove(services)).finished).toBe(true)
     const sizes = listRows.mock.calls.flatMap(([params]) =>
@@ -798,13 +898,36 @@ describe('POST /delete: a purged group’s receipts (#248)', () => {
         .filter((query) => query.method === 'equal' && query.attribute === '$id')
         .map((query) => query.values.length),
     )
-    expect(sizes.length).toBeGreaterThan(0)
+    expect(sizes).toContain(100)
     expect(Math.max(...sizes)).toBeLessThanOrEqual(100)
-    // 125 of h2's receipts: every one of these went, and its row is detached.
-    expect(services.files.ids().filter((id) => id.includes('tMany'))).toEqual([])
-    for (const fileId of fileIds) {
-      expect(rowOf(services, 'receiptFiles', fileId)).toMatchObject(detached)
+    expect(services.files.ids()).not.toContain('receipts/fShared')
+    expect(rowOf(services, 'receiptFiles', 'fShared')).toMatchObject(detached)
+  })
+
+  it('keeps a receipt whose row doesn’t list the transaction, as a crash leaves a row-less one', async () => {
+    const services = world()
+    // r6 has no row, and tLate lists it too, in a later batch than t3's.
+    await insert(services, 'transactions', [
+      ...[0, 1, 2].map((n) => posted(`tBig${n}`, 'h2', 4500)),
+      posted('tLate', 'h2', 100, { receiptFileIds: ['r6'] }),
+    ])
+    for (const n of [0, 1, 2]) {
+      await insert(
+        services,
+        'items',
+        Array.from({ length: 30 }, (_, position) => item(`tBig${n}`, position, 150)),
+      )
     }
+    crashOnCall(services.db, 'createOperations', (params) =>
+      JSON.stringify(params.operations).includes('"rowId":"tLate"'),
+    )
+    expect((await call(services)).status).toBe(500)
+    vi.restoreAllMocks()
+    // Taking r6 off t3 made it a row that lists nothing; the next run must still keep it.
+    expect(rowOf(services, 'receiptFiles', 'r6')).toMatchObject(detached)
+    expect(rowOf(services, 'transactions', 'tLate')).toBeDefined()
+    expect((await remove(services)).finished).toBe(true)
+    expect(services.files.ids()).toContain('receipts/r6')
   })
 
   it('takes up to 10 receipts off with each transaction, within 90 writes with the guard', async () => {

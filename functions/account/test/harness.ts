@@ -124,9 +124,18 @@ export class FakeUsers implements UsersApi {
   }
 }
 
-/** In-memory Storage, with Appwrite's 404 for a file that doesn't exist (or no longer does). */
+/**
+ * In-memory Storage, with Appwrite's 404 for a file that doesn't exist (or no longer does), and
+ * for a bucket that doesn't (`removeBucket`).
+ */
 export class FakeFiles implements FilesApi {
   private files = new Map<string, string[]>()
+  private missingBuckets = new Set<string>()
+
+  /** Every call naming this bucket fails as Appwrite's do for a bucket that doesn't exist. */
+  removeBucket(bucketId: string): void {
+    this.missingBuckets.add(bucketId)
+  }
 
   /** A file in the bucket with these permissions. */
   upload(bucketId: string, fileId: string, permissions: string[]): void {
@@ -149,6 +158,9 @@ export class FakeFiles implements FilesApi {
   }
 
   private find(bucketId: string, fileId: string): string[] {
+    if (this.missingBuckets.has(bucketId)) {
+      throw new AppwriteException('Bucket not found', 404, 'storage_bucket_not_found')
+    }
     const permissions = this.files.get(`${bucketId}/${fileId}`)
     if (!permissions) {
       throw new AppwriteException('File not found', 404, 'storage_file_not_found')
