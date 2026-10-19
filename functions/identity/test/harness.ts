@@ -26,6 +26,7 @@ export function account(overrides: Partial<AccountUser> = {}): AccountUser {
     emailVerification: true,
     phone: '',
     phoneVerification: false,
+    labels: [],
     passwordUpdate: '',
     ...overrides,
   }

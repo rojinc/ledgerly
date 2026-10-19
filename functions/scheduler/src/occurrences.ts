@@ -6,11 +6,10 @@ import { expandSchedule, occurrenceId } from '@ledgerly/core/recurrence/expand-s
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import type { TransactionInput, TransactionTemplate } from '@ledgerly/core/schemas/ledger'
 import type { Db } from '@ledgerly/server/appwrite/client'
-import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { receiptRows, writeReceiptRows } from '@ledgerly/server/ledger/receipt-files'
+import { allRows } from '@ledgerly/server/appwrite/pages'
+import { TABLES } from '@ledgerly/server/appwrite/tables'
+import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import {
-  guardGroup,
   guardGroupAndMembers,
   type Ledger,
   type Plan,
@@ -20,26 +19,15 @@ import {
   teamRead,
   transactionColumns,
 } from '@ledgerly/server/ledger/transactions'
-import { AppwriteException, Query } from 'node-appwrite'
-import { allRows } from './pages'
+import {
+  goneIsRaced,
+  guardSchedule,
+  itemsOf,
+  laterOf,
+} from '@ledgerly/server/scheduler/end-schedule'
+import { Query } from 'node-appwrite'
 
 const MS_PER_MINUTE = 60_000
-// The schedule row's columns an expansion depends on. A change to any of them by someone else
-// makes the expansion run again with the schedule as it is now.
-const SCHEDULE_COLUMNS = [
-  'kind',
-  'description',
-  'templateJson',
-  'rrule',
-  'startsOn',
-  'endsOn',
-  'exdates',
-  'skipPublicHolidays',
-  'autoPost',
-  'horizonDays',
-  'generatedThrough',
-  'nextRunAt',
-] as const
 
 type Occurrence = { input: TransactionInput; planned: Plan }
 
@@ -338,103 +326,8 @@ function groupItems(items: Items[]): Map<string, Items[]> {
   return byRow
 }
 
-/**
- * Deletes the schedule's occurrences dated `from` or later that are still `scheduled` or `due`
- * and not edited (`overridden`), with their items. `all` deletes every one that isn't posted,
- * for `DELETE /schedules/{id}`, voided and edited ones last, so a delete that stops partway
- * leaves the rows that keep their dates from being made again; those can list receipts, which
- * it takes off (data-model.md#receiptfiles). Each batch guards the group, stages its deletes,
- * then checks the stored rows and items: a row edited, posted or voided meanwhile, an item
- * added to it, or an archive or settings change throws `Raced` (ledger.md#concurrency).
- * Returns how many it deleted.
- */
-export async function removeOccurrences(
-  db: Db,
-  group: Groups,
-  scheduleId: string,
-  from: LocalDate | null,
-  now: Date,
-  options: { all?: boolean } = {},
-): Promise<number> {
-  const removable = (row: Transactions) =>
-    options.all
-      ? row.status !== 'posted' && row.statementId === null
-      : (row.status === 'scheduled' || row.status === 'due') && !row.overridden
-  // idx_schedule_date. Paged by $id: another request may be deleting these rows too.
-  const rows = (
-    await allRows<Transactions>(db, TABLES.transactions, [
-      Query.equal('scheduleId', scheduleId),
-      ...(from ? [Query.greaterThanEqual('date', from)] : []),
-    ])
-  )
-    .filter(removable)
-    .sort((a, b) => Number(keepsDate(a)) - Number(keepsDate(b)))
-  for (let start = 0; start < rows.length; start += PAGE) {
-    const page = rows.slice(start, start + PAGE)
-    const items = await itemsOf(
-      db,
-      page.map((row) => row.$id),
-    )
-    // Each occurrence goes with its items and its receipt rows, in transactions of at most 90
-    // writes, so no item is ever left without its transaction.
-    const units = page.map((row) => ({
-      row,
-      itemIds: items.filter((item) => item.transactionId === row.$id).map((item) => item.$id),
-    }))
-    const writesOf = ({ row, itemIds }: (typeof units)[number]) =>
-      1 + itemIds.length + (row.receiptFileIds?.length ?? 0)
-    for (const batch of packed(units, writesOf)) {
-      await withTransaction(db, async (tx) => {
-        await guardGroup(tx, db, group)
-        const fileIds = batch.flatMap(({ row }) => row.receiptFileIds ?? [])
-        const receipts = await receiptRows(db, [...new Set(fileIds)])
-        await goneIsRaced(
-          tx.write(
-            ...batch.flatMap(({ row, itemIds }) => [
-              { action: 'delete' as const, tableId: TABLES.transactions, rowId: row.$id },
-              ...itemIds.map((itemId) => ({
-                action: 'delete' as const,
-                tableId: TABLES.items,
-                rowId: itemId,
-              })),
-            ]),
-          ),
-        )
-        await writeReceiptRows(
-          db,
-          tx,
-          receipts,
-          batch.flatMap(({ row }) =>
-            (row.receiptFileIds ?? []).map((fileId) => ({ fileId, remove: [row.$id] })),
-          ),
-          now,
-        )
-        // The stored rows and items, not this transaction's view, where they're already gone.
-        // An item or receipt added before the deletes were staged would be left without its
-        // transaction; one added after it also wrote the transaction row, so the commit fails.
-        const ids = batch.map(({ row }) => row.$id)
-        const stored = await allRows<Transactions>(db, TABLES.transactions, [
-          Query.equal('$id', ids),
-        ])
-        const receiptsAsRead = new Map(batch.map(({ row }) => [row.$id, receiptList(row)]))
-        const unchanged = (row: Transactions) =>
-          removable(row) && receiptList(row) === receiptsAsRead.get(row.$id)
-        if (stored.length !== ids.length || !stored.every(unchanged)) throw new Raced()
-        const staged = new Set(batch.flatMap(({ row, itemIds }) => [row.$id, ...itemIds]))
-        if ((await itemsOf(db, ids)).some((item) => !staged.has(item.$id))) throw new Raced()
-      })
-    }
-  }
-  return rows.length
-}
-
 // Ids per query, well under Appwrite's limit on values in one `equal`.
 const PAGE = 50
-
-// A voided or edited occurrence keeps its date from being made again (scheduling.md#idempotency).
-function keepsDate(row: Transactions): boolean {
-  return row.status === 'void' || row.overridden
-}
 
 // The ones of `ids` that have a row.
 async function existingIds(db: Db, ids: readonly string[]): Promise<string[]> {
@@ -446,59 +339,6 @@ async function existingIds(db: Db, ids: readonly string[]): Promise<string[]> {
     found.push(...rows.map((row) => row.$id))
   }
   return found
-}
-
-// idx_transaction_position, PAGE transactions at a time.
-async function itemsOf(db: Db, transactionIds: readonly string[]): Promise<Items[]> {
-  const items: Items[] = []
-  for (let start = 0; start < transactionIds.length; start += PAGE) {
-    items.push(
-      ...(await allRows<Items>(db, TABLES.items, [
-        Query.equal('transactionId', transactionIds.slice(start, start + PAGE)),
-      ])),
-    )
-  }
-  return items
-}
-
-// A write to a row deleted meanwhile is a race: the caller runs again with things as they are.
-async function goneIsRaced(write: Promise<void>): Promise<void> {
-  try {
-    await write
-  } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404) throw new Raced()
-    throw error
-  }
-}
-
-/**
- * Stages `data` on the schedule row, then checks the stored row still has what `seen` has:
- * another expansion, edit or end that got there first makes this one run again.
- */
-export async function guardSchedule(
-  tx: Tx,
-  db: Db,
-  seen: Schedules,
-  data: Partial<Schedules>,
-): Promise<void> {
-  await goneIsRaced(
-    tx.write({ action: 'update', tableId: TABLES.schedules, rowId: seen.$id, data }),
-  )
-  let stored: Schedules
-  try {
-    stored = await db.getRow<Schedules>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.schedules,
-      rowId: seen.$id,
-    })
-  } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404) throw new Raced()
-    throw error
-  }
-  const changed = SCHEDULE_COLUMNS.some(
-    (column) => JSON.stringify(stored[column]) !== JSON.stringify(seen[column]),
-  )
-  if (changed) throw new Raced()
 }
 
 function datesOf(schedule: Schedules, group: Groups, from: LocalDate, to: LocalDate): LocalDate[] {
@@ -572,28 +412,4 @@ function occurrenceWrites(schedule: Schedules, { input, planned }: Occurrence): 
       permissions,
     ),
   ]
-}
-
-// Units of writes (an occurrence, its items and its receipt rows) packed into transactions of at
-// most 90 writes, after the group's guard. An occurrence has at most 30 items and 10 receipts,
-// so each unit fits.
-function packed<T>(units: readonly T[], writesOf: (unit: T) => number): T[][] {
-  const batches: T[][] = []
-  let writes = MAX_OPS_PER_DB_TRANSACTION
-  for (const unit of units) {
-    if (writes + writesOf(unit) > MAX_OPS_PER_DB_TRANSACTION) {
-      batches.push([])
-      writes = 1
-    }
-    batches.at(-1)?.push(unit)
-    writes += writesOf(unit)
-  }
-  return batches
-}
-
-const receiptList = (row: Transactions) => JSON.stringify(row.receiptFileIds ?? [])
-
-/** The later of two dates; `date` when `other` is empty. */
-export function laterOf(date: LocalDate, other: LocalDate | null): LocalDate {
-  return other && compareDates(other, date) > 0 ? other : date
 }
