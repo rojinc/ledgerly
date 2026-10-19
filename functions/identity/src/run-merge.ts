@@ -32,6 +32,8 @@ export async function finishMerges(
   const result: MergesResult = { joined: [], finished: 0 }
   for (const placeholder of await mergedInto(services.db, intoId)) {
     if (Date.now() >= deadline) break
+    // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
+    if (placeholder.userId || placeholder.deletedAt) continue
     if (!(await hasIdentity(services.db, placeholder.$id))) continue
     const { joined, finished } = await runMerge(services, userId, placeholder.$id, intoId, deadline)
     result.joined.push(...joined)

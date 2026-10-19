@@ -379,6 +379,27 @@ describe('moveInputs (step 3)', () => {
     expect(store.rows('groups')[0]?.rev).toBe('r0')
   })
 
+  it('leaves a row a finalize locked after it was read (I-7)', async () => {
+    const store = seed([transaction('t1', EXPENSE)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { statementId: 'st1' },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 0 })
+    const [row] = store.rows('transactions')
+    expect(row?.statementId).toBe('st1')
+    expect(JSON.parse(row?.inputJson as string)).toEqual(EXPENSE)
+  })
+
   it('reads a row again when it was edited after it was read, so the edit isn’t lost', async () => {
     const store = seed([transaction('t1', EXPENSE)])
     const edited = { ...EXPENSE, note: 'Edited meanwhile' }
@@ -510,6 +531,30 @@ describe('moveTemplates (step 3)', () => {
     const [stored] = store.rows('schedules')
     expect(stored?.generatedThrough).toBe('2026-12-31')
     expect(template(store, 'sc1').payers).toEqual([{ personId: 'pU', cents: 90000 }])
+  })
+
+  it('runs again on a template edited after it was read, so the edit isn’t lost', async () => {
+    const store = seed([], { schedules: [schedule('sc1', RENT)] })
+    // The rent goes up just before the merge stages its rewrite.
+    const raised = { ...RENT, totalCents: 95000, payers: [{ personId: 'pU', cents: 95000 }] }
+    beforeStaging(
+      store,
+      (operations) => operations.includes('templateJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'schedules',
+            rowId: 'sc1',
+            data: { templateJson: JSON.stringify(raised) },
+          }),
+        ),
+    )
+    expect(await moveTemplates(store, merge, ['g1'], FAR)).toMatchObject({ rewritten: 1 })
+    expect(template(store, 'sc1')).toEqual({
+      ...raised,
+      split: { mode: 'weights', weights: [{ personId: 'pU', weight: 2 }] },
+    })
   })
 
   it('puts off a group that is finalizing, and stops at the deadline', async () => {

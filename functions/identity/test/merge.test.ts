@@ -70,6 +70,19 @@ describe('markMerged (step 1)', () => {
     expect(store.rows('persons').find((row) => row.$id === 'pP')?.mergedInto).toBe('pX')
   })
 
+  it('refuses a P adopted or deleted just before its staging, checked after staging', async () => {
+    for (const change of [{ userId: 'u2' }, { deletedAt: '2026-10-18T00:00:00.000Z' }]) {
+      const store = db()
+      beforeStaging(
+        store,
+        (operations) => operations.includes('mergedInto'),
+        () => updateRow(store, 'persons', 'pP', change),
+      )
+      expect(await markMerged(store, 'pP', 'pU')).toBe(false)
+      expect(store.rows('persons').find((row) => row.$id === 'pP')?.mergedInto).toBeNull()
+    }
+  })
+
   it('counts P as U’s when a claim for U marked it first, and refuses a P deleted meanwhile', async () => {
     const first = db()
     beforeStaging(
@@ -322,7 +335,7 @@ describe('moveMembers (step 2)', () => {
       const add = services.teams.createMembership.bind(services.teams)
       vi.spyOn(services.teams, 'createMembership').mockImplementationOnce(async (params) => {
         await leave(services)
-        return add(params)
+        return (await add(params)) as never
       })
       await expect(moveMembers(services, 'u1', 'pP', 'pU', FAR)).rejects.toThrow(TRY_AGAIN)
       expect(services.teams.members('g1')).toEqual([])

@@ -443,6 +443,25 @@ describe('POST /claim, merging a placeholder', () => {
     expect(stopped()).toEqual([])
   })
 
+  it('never carries on a merge of a person who has an account now, or was deleted', async () => {
+    for (const change of [{ userId: 'u9' }, { deletedAt: '2026-10-18T00:00:00.000Z' }]) {
+      const services = house({ persons: [] })
+      await withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pP',
+          data: { mergedInto: 'pSam', ...change },
+        }),
+      )
+      expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
+        joined: [],
+        finished: 0,
+      })
+      expect(namingSammy(services).members).toEqual(['m1', 'm3'])
+    }
+  })
+
   it('ends the same way when two claims run at once', async () => {
     const services = house()
     const answers = await Promise.all([claim(services), claim(services)])
