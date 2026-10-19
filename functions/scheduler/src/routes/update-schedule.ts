@@ -3,6 +3,7 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import { scheduleInputSchema, type UpdatedSchedule } from '@ledgerly/core/schemas/scheduler'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { refuseDeletedPeople } from '@ledgerly/server/ledger/deleted-people'
 import { guardGroupAndMembers, ledgerRoute, loadLedger } from '@ledgerly/server/ledger/transactions'
 import { generateOccurrences, guardSchedule } from '../occurrences'
 import { parseBody } from '../parse-body'
@@ -58,6 +59,13 @@ export async function updateSchedule(
       await guardSchedule(tx, db, schedule, changes)
       // The people the new template names stay members while it exists (ledger.md#concurrency).
       await guardGroupAndMembers(tx, db, membership.group, ledger, people)
+      // The whole template, also people it named already: deleting their account ended the
+      // schedule, and this edit could start it again (functions-api.md#ledger).
+      await refuseDeletedPeople(tx, db, ledger, {
+        kind: input.kind,
+        input: input.template,
+        guard: true,
+      })
     })
     // The expansion brings the occurrences from today on in line with the new rule. One that
     // stops partway is finished by the next cron run.

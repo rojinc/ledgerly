@@ -153,7 +153,12 @@ function archive(services: Fakes, groupId = 'acme') {
   )
 }
 
-function setRow(services: Fakes, tableId: 'transactions' | 'members', rowId: string, data: object) {
+function setRow(
+  services: Fakes,
+  tableId: 'transactions' | 'members' | 'persons',
+  rowId: string,
+  data: object,
+) {
   return withTransaction(services.db, (tx) =>
     tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
   )
@@ -1460,5 +1465,99 @@ describe('DELETE /schedules/{id}', () => {
       expect(services.db.rows('receiptFiles')).toHaveLength(200)
       expect(occurrences(services, groceries.id)).toEqual([])
     })
+  })
+})
+
+// functions-api.md#ledger ("Deleted people"): the same rule as the ledger's, for templates.
+describe('a person who deleted their account, in a group they had joined', () => {
+  const deleteAccount = (services: Fakes) =>
+    setRow(services, 'persons', 'pAlex', { deletedAt: '2026-10-17T00:00:00.000Z' })
+
+  const refused = { status: 400, code: 'VALIDATION_FAILED' }
+
+  it('can’t be named in a new schedule', async () => {
+    const services = seeded()
+    await deleteAccount(services)
+    expect(await failure(services, 'POST', '/schedules', { body: rent })).toEqual(refused)
+    expect(services.db.rows('schedules')).toEqual([])
+  })
+
+  it('can’t be added to a template, or kept in one, so an ended schedule doesn’t start again', async () => {
+    const services = seeded()
+    const samOnly = {
+      ...rent,
+      id: 'rentElmSam0000000002',
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, rent)
+    await create(services, samOnly)
+    // Deleting the account ends the schedules that name them (identity-and-invites.md).
+    await ok(services, 'POST', `/schedules/${rent.id}/end`, { body: { endsOn: '2026-11-01' } })
+    await deleteAccount(services)
+    const before = services.db.rows('transactions').length
+    // An edit form opened before the deletion sends no end date.
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: rent })).toEqual(
+      refused,
+    )
+    expect(
+      await failure(services, 'PATCH', `/schedules/${samOnly.id}`, {
+        body: { ...samOnly, template: rent.template },
+      }),
+    ).toEqual(refused)
+    expect(services.db.rows('transactions')).toHaveLength(before)
+    expect(services.db.rows('schedules').find((row) => row.$id === rent.id)?.endsOn).toBe(
+      '2026-11-01',
+    )
+  })
+
+  it('is refused when the deletion commits just before the schedule guards them', async () => {
+    const services = seeded()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"persons"'),
+      () => deleteAccount(services),
+    )
+    expect(await failure(services, 'POST', '/schedules', { body: rent })).toEqual(refused)
+    expect(services.db.rows('schedules')).toEqual([])
+  })
+
+  it.each([
+    ['a new schedule', 'POST'],
+    ['an edit', 'PATCH'],
+  ])(
+    'fails %s whose commit comes after the deletion, and refuses it when run again',
+    async (_, method) => {
+      const services = seeded()
+      if (method === 'PATCH') {
+        await create(services, {
+          ...rent,
+          template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+        })
+      }
+      // After the guard on pAlex's row is staged: the deletion's write fails the commit (409).
+      beforeCommit(services.db, () => deleteAccount(services))
+      const path = method === 'POST' ? '/schedules' : `/schedules/${rent.id}`
+      expect(await failure(services, method, path, { body: rent })).toEqual(refused)
+      const stored = scheduleRow(services, rent.id)
+      if (method === 'POST') expect(stored).toBeUndefined()
+      else expect(JSON.parse(stored?.templateJson ?? '{}').split.personIds).toEqual(['pSam'])
+    },
+  )
+
+  it('is refused when the deletion commits just before an edit guards them', async () => {
+    const services = seeded()
+    const samOnly = {
+      ...rent,
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, samOnly)
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"persons"'),
+      () => deleteAccount(services),
+    )
+    expect(await failure(services, 'PATCH', `/schedules/${rent.id}`, { body: rent })).toEqual(
+      refused,
+    )
   })
 })
