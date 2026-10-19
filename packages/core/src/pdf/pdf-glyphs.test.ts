@@ -38,6 +38,18 @@ describe('missingGlyphs and printable', () => {
     expect(printable(text)).toBe(text)
   })
 
+  // Decomposed, as macOS paste and some Vietnamese input methods give it: Roboto lacks most
+  // combining marks (no U+0302), but has the composed letters.
+  it.each([
+    ['Vietnamese', 'Nguyễn Thị Ánh'],
+    ['a circumflex', 'Ê'],
+  ])('prints decomposed %s composed', (_, text) => {
+    const decomposed = text.normalize('NFD')
+    expect(decomposed).not.toBe(text)
+    expect(missingGlyphs(decomposed)).toEqual([])
+    expect(printable(decomposed)).toBe(text.normalize('NFC'))
+  })
+
   it('counts each time a character occurs', () => {
     expect(missingGlyphs('张张 and 张')).toEqual([0x5f20, 0x5f20, 0x5f20])
   })

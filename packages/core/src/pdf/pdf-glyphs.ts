@@ -106,21 +106,24 @@ function drawable(codePoint: number): boolean {
 }
 
 /**
- * The code points in `text` that the PDF font can't draw, in order, once for each time they
- * occur. A surrogate pair, such as most emoji, is one character; a lone surrogate is missing.
+ * The code points in `text`, composed (NFC) first, that the PDF font can't draw, in order, once
+ * for each time they occur. Roboto has the composed letters but few combining marks, so a
+ * decomposed `Ê` (E + U+0302) counts as drawable. A surrogate pair, such as most emoji, is one
+ * character; a lone surrogate is missing.
  */
 export function missingGlyphs(text: string): number[] {
-  return Array.from(text, (char) => char.codePointAt(0) as number).filter(
+  return Array.from(text.normalize('NFC'), (char) => char.codePointAt(0) as number).filter(
     (codePoint) => !drawable(codePoint),
   )
 }
 
 /**
- * `text` with each character the PDF font can't draw replaced by U+FFFD, so the gap shows:
+ * `text` composed (NFC), so decomposed accents print as the letters Roboto has, with each
+ * character the PDF font still can't draw replaced by U+FFFD, so the gap shows:
  * `张三 Pty Ltd` → `�� Pty Ltd`.
  */
 export function printable(text: string): string {
-  return Array.from(text, (char) =>
+  return Array.from(text.normalize('NFC'), (char) =>
     drawable(char.codePointAt(0) as number) ? char : '\uFFFD',
   ).join('')
 }

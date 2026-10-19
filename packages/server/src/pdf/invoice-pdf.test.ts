@@ -375,6 +375,15 @@ describe('renderInvoicePdf', () => {
     expect(warn).not.toHaveBeenCalled()
   })
 
+  it('prints decomposed accents composed, not as �', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const businessName = 'Nguyễn Thị Ánh'.normalize('NFD')
+    const snapshot = buildStatementSnapshot(goldenInput({ businessName }))
+    const text = await pdfText(await renderInvoicePdf(snapshot, details))
+    expect(text).toMatch(/^Nguyễn Thị Ánh /)
+    expect(warn).not.toHaveBeenCalled()
+  })
+
   it('refuses a divide', async () => {
     const snapshot = { ...goldenSnapshot(), issuer: undefined }
     await expect(renderInvoicePdf(snapshot, details)).rejects.toThrow('needs an invoice snapshot')
