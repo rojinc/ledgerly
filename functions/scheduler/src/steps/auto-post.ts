@@ -8,6 +8,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { postInTransaction } from '@ledgerly/server/ledger/post'
 import {
   findTransaction,
+  isMergingRefusal,
   type Ledger,
   ledgerRoute,
   loadGroupLedger,
@@ -46,7 +47,8 @@ export async function autoPost(services: Services): Promise<PostCounts> {
     try {
       if (await post(services, $id)) counts.posted += 1
     } catch (error) {
-      if (error instanceof AppError && error.code === 'LOCKED') {
+      // A finalizing statement, or a merge still open in the group: a later run posts it.
+      if ((error instanceof AppError && error.code === 'LOCKED') || isMergingRefusal(error)) {
         counts.skipped += 1
       } else {
         counts.failed += 1

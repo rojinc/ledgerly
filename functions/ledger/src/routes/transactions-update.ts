@@ -22,6 +22,7 @@ import {
   readView,
   replaceRows,
   requireCreatorOrAdmin,
+  requireNoOpenMerge,
   requireNotFinalizing,
   requireNotTooFarAhead,
   requireUnlocked,
@@ -95,6 +96,13 @@ export const updateTransaction = (services: ServicesFor) =>
               : existing.status === 'posted'
                 ? existing.createdBy
                 : person
+          const [oldShares, oldItems] = await Promise.all([
+            listShares(db, existing.$id),
+            listItems(db, existing.$id),
+          ])
+          // Before planning, which would refuse the merged person as not a member, and again
+          // after the guard writes, for a merge step 2 that commits in between.
+          await requireNoOpenMerge(db, existing, oldShares, oldItems)
           const planned = plan(input, existing.status, ledger, payer)
           const content = transactionColumns(input, planned)
           const storedReceipts = existing.receiptFileIds ?? []
@@ -112,10 +120,6 @@ export const updateTransaction = (services: ServicesFor) =>
                 ? existing.remindedAt
                 : null,
           }
-          const [oldShares, oldItems] = await Promise.all([
-            listShares(db, existing.$id),
-            listItems(db, existing.$id),
-          ])
           const row = { $id: existing.$id, ...columns }
           const shareData = planned.shares.map((share) => shareColumns(row, share))
           const itemData = planned.items.map((item) => ({ transactionId: existing.$id, ...item }))
@@ -131,6 +135,7 @@ export const updateTransaction = (services: ServicesFor) =>
           }
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
+          await requireNoOpenMerge(db, existing, oldShares, oldItems)
           await attachReceipts(files, existing.groupId, receipts, storedReceipts)
           const balances = await balanceWrite(db, existing.groupId, oldShares, shareData)
           await tx.write(
