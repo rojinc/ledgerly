@@ -10,6 +10,7 @@ import { useSwap } from '../../lib/use-swap'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
+import { useCurrentUser } from '../auth/use-current-user'
 
 const RATE_LIMITED = 'You’ve sent a reminder recently. Try again in a few days.'
 // The app-wide banner offers "Send it again" until the email is verified.
@@ -21,18 +22,32 @@ const UNVERIFIED =
  * you type. The app never shows their stored address; the function checks it's one the group
  * already holds for them (identity-and-invites.md#reminders).
  */
-export function ReminderSection({ group, name }: { group: Groups; name: string }) {
+export function ReminderSection({
+  group,
+  personId,
+  name,
+}: {
+  group: Groups
+  personId: string
+  name: string
+}) {
   const swap = useSwap()
   const [sent, setSent] = useState(false)
+  // One ID per reminder, kept across retries after an error, Cancel included, so it can't go
+  // twice (the function answers a retry with the first one's time). Only a success makes a new one.
+  const [id, setId] = useState(() => ID.unique())
   return (
     <div className="flex flex-col gap-2">
       {swap.opened ? (
         <ReminderForm
+          id={id}
           group={group}
+          personId={personId}
           name={name}
           heading={swap.heading}
           onSent={() => {
             setSent(true)
+            setId(ID.unique())
             swap.close()
           }}
           onCancel={swap.close}
@@ -59,23 +74,24 @@ export function ReminderSection({ group, name }: { group: Groups; name: string }
 }
 
 function ReminderForm({
+  id,
   group,
+  personId,
   name,
   heading,
   onSent,
   onCancel,
 }: {
+  id: string
   group: Groups
+  personId: string
   name: string
   heading: RefObject<HTMLHeadingElement | null>
   onSent: () => void
   onCancel: () => void
 }) {
   const queryClient = useQueryClient()
-  // One ID per reminder, kept across retries after an error so it can't go twice (the function
-  // answers a retry with the first one's time). The form closes once it's sent, and opening it
-  // again makes a new one.
-  const [id] = useState(() => ID.unique())
+  const verified = useCurrentUser().data?.emailVerification
   const [email, setEmail] = useState('')
   const [fieldError, setFieldError] = useState('')
   const [failed, setFailed] = useState('')
@@ -112,13 +128,18 @@ function ReminderForm({
       return
     }
     const { code, message } = result.error
-    if (code === 'VALIDATION_FAILED') fieldProblem(message)
-    else if (code === 'RATE_LIMITED') setFailed(RATE_LIMITED)
-    else if (code === 'FORBIDDEN') setFailed(UNVERIFIED)
+    if (code === 'VALIDATION_FAILED') {
+      // It may be "Nothing is owed to you": reload the balance, so the button goes if so.
+      void queryClient.invalidateQueries({ queryKey: queryKeys.balances(group.$id) })
+      fieldProblem(message)
+    } else if (code === 'RATE_LIMITED') setFailed(RATE_LIMITED)
+    else if (code === 'FORBIDDEN' && verified === false) setFailed(UNVERIFIED)
     else {
-      // Archived meanwhile: reload the group, so the page shows it read-only.
-      if (code === 'ARCHIVED') {
+      // Archived, or the caller's role changed, meanwhile: reload them, so the page shows what
+      // they can do now.
+      if (code === 'ARCHIVED' || code === 'FORBIDDEN') {
         void queryClient.invalidateQueries({ queryKey: queryKeys.group(group.$id) })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.myMember(group.$id, personId) })
       }
       setFailed(message)
     }
@@ -131,7 +152,12 @@ function ReminderForm({
       className="flex flex-col gap-4 rounded-md border border-border p-4"
       onSubmit={(event) => void submit(event)}
     >
-      <h2 id="reminder-heading" ref={heading} tabIndex={-1} className="font-medium outline-none">
+      <h2
+        id="reminder-heading"
+        ref={heading}
+        tabIndex={-1}
+        className="min-w-0 font-medium break-words outline-none"
+      >
         Remind {name} what they owe
       </h2>
       <p className="text-sm text-muted-foreground">

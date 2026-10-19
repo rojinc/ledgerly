@@ -16,7 +16,11 @@ vi.mock('../../lib/appwrite', () => ({
   tablesDB: { listRows: vi.fn(), getRow: vi.fn() },
 }))
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
-vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
+// Whether the viewer's email is verified: some reminder tests view it unverified.
+let mockVerified = true
+vi.mock('../auth/use-current-user', () => ({
+  useCurrentUser: () => ({ data: { $id: 'u1', emailVerification: mockVerified } }),
+}))
 // The viewer's person: the lender (p1) by default; some tests view as Sam (p2).
 let mockPersonId = 'p1'
 vi.mock('../auth/use-bootstrap', () => ({
@@ -140,6 +144,7 @@ function sent() {
 
 beforeEach(() => {
   mockPersonId = 'p1'
+  mockVerified = true
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(NOW)
 })
@@ -626,18 +631,55 @@ describe('PairPage: send a reminder (#266)', () => {
     expect(ids[2]).not.toBe(ids[0])
   })
 
+  it('keeps the id after an error when the form is closed and opened again', async () => {
+    mockGroup(5000)
+    mockRows()
+    call
+      .mockResolvedValueOnce(refused('INTERNAL', 'We couldn’t send the reminder. Try again later.'))
+      .mockResolvedValueOnce(ok({ sentAt: NOW.toISOString() }))
+    await openForm()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Send a reminder' }))
+    // A fresh form, but the same reminder: the first may have been saved though it wasn't sent.
+    expect(screen.queryByRole('alert')).toBeNull()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await sentNews()
+    const ids = call.mock.calls.map(([, , , body]) => (body as { id: string }).id)
+    expect(ids).toEqual([ids[0], ids[0]])
+  })
+
+  it('clears the last error when Send is pressed again', async () => {
+    mockGroup(5000)
+    mockRows()
+    const answers: ((result: Result<unknown>) => void)[] = []
+    call.mockImplementation(() => new Promise((resolve) => answers.push(resolve)))
+    await openForm()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    answers[0]?.(refused('VALIDATION_FAILED', 'Use an address you added them with.'))
+    await waitFor(() =>
+      expect(input('Their email address').getAttribute('aria-invalid')).toBe('true'),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByRole('button', { name: 'Sending…' })
+    expect(input('Their email address').getAttribute('aria-invalid')).not.toBe('true')
+    answers[1]?.(refused('INTERNAL', 'Something went wrong.'))
+    await screen.findByRole('alert')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByRole('button', { name: 'Sending…' })
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it.each([
     [
       'RATE_LIMITED',
       'Too many reminders.',
       'alert',
       'You’ve sent a reminder recently. Try again in a few days.',
-    ],
-    [
-      'FORBIDDEN',
-      'Verify your email address before sending reminders.',
-      'alert',
-      /^Verify your email address before sending reminders\. .*banner at the top of the page/,
     ],
     ['INTERNAL', 'Something went wrong.', 'alert', 'Something went wrong.'],
     ['ARCHIVED', 'This group is archived.', 'alert', 'This group is archived.'],
@@ -689,7 +731,9 @@ describe('PairPage: send a reminder (#266)', () => {
     const busy = await screen.findByRole('button', { name: 'Sending…' })
     expect(busy.getAttribute('aria-disabled')).toBe('true')
     fireEvent.click(busy)
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    expect(cancel.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(cancel)
     expect(call).toHaveBeenCalledTimes(1)
     expect(screen.getByLabelText('Their email address')).toBeTruthy()
     answer(ok({ sentAt: NOW.toISOString() }))
@@ -707,6 +751,47 @@ describe('PairPage: send a reminder (#266)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     await screen.findByRole('alert')
     expect(reload).toHaveBeenCalledWith({ queryKey: queryKeys.group('g1') })
+  })
+
+  it('asks an unverified sender to verify their email when refused as FORBIDDEN', async () => {
+    mockVerified = false
+    mockGroup(5000)
+    mockRows()
+    call.mockResolvedValue(refused('FORBIDDEN', 'Verify your email address first.'))
+    await openForm()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect((await screen.findByRole('alert')).textContent).toMatch(
+      /^Verify your email address before sending reminders\. .*banner at the top of the page/,
+    )
+  })
+
+  it('shows why, and reloads the group and role, when a verified sender is refused as FORBIDDEN', async () => {
+    mockGroup(5000)
+    mockRows()
+    call.mockResolvedValue(refused('FORBIDDEN', 'Your role in this group can’t do this.'))
+    const { queryClient } = renderAt('/people/g1')
+    const reload = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Send a reminder' }))
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Your role in this group can’t do this.',
+    )
+    expect(reload).toHaveBeenCalledWith({ queryKey: queryKeys.group('g1') })
+    expect(reload).toHaveBeenCalledWith({ queryKey: queryKeys.myMember('g1', 'p1') })
+  })
+
+  it('reloads the balance when the address is refused', async () => {
+    mockGroup(5000)
+    mockRows()
+    call.mockResolvedValue(refused('VALIDATION_FAILED', 'Nothing is owed to you in this group.'))
+    const { queryClient } = renderAt('/people/g1')
+    const reload = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Send a reminder' }))
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await waitFor(() => expect(reload).toHaveBeenCalledWith({ queryKey: queryKeys.balances('g1') }))
   })
 
   it('is offered to a member too', async () => {
