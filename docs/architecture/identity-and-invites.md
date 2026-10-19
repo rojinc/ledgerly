@@ -183,7 +183,7 @@ The `identity` function subscribes to two Appwrite events: `users.*.update.passw
 
 A forged or replayed call can do nothing new: at worst it asks again, within the hour, for the email the real event already sent, and Resend's key drops that copy. **Accepted:**
 - A phone-only account gets no notice until SMS can carry it (#175).
-- Other sessions aren't signed out.
+- Other sessions are signed out only for a change through the password route, by the project's session invalidation setting ([environments](../engineering/environments-and-deploys.md#environments)). A recovery reset leaves them signed in; [#290](https://github.com/rojinc/ledgerly/issues/290) handles that.
 - A notice to the old address when the email or phone changes is #268.
 - **A first password set through an email or phone change.** Appwrite may set a first password through an email or phone change on an account that has none (made with an email code). That fires only `users.*.update.email` or `.phone`, so no notice goes. #268's notice to the old address covers that path; the 24-hour deletion refusal holds either way, since `passwordUpdate` is set.
 - A send that fails (a Resend outage, say) isn't retried: Appwrite doesn't run an event again. The run logs `failed`.
