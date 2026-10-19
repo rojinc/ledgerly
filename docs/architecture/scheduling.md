@@ -128,7 +128,7 @@ Each reminder goes out once. In one database transaction, `remindedAt` is staged
 
 ### Step 4: summary emails
 
-Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a summary goes out at most once), then send the summary for the period that just ended ([ledger reports](ledger.md#reports)). Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local:
+Profiles where `nextSummaryAt <= now` get the summary of the period that just ended ([ledger reports](ledger.md#reports)). `nextSummaryAt` moves forward in the same database transaction that sends the email, as reminders do, so a summary goes out at most once. Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local:
 
 | Frequency | Sent | Covers |
 | --- | --- | --- |
@@ -142,7 +142,14 @@ Profiles where `nextSummaryAt <= now`: first move `nextSummaryAt` forward (so a 
 - Send times are worked out as local dates, then 07:00 on that date is converted to UTC (as `closeAtFor` does). Never add hours, or DST would move the send time.
 - Core's `nextSummaryAt(frequency, timeZone, now, previous?)` and `summaryPeriod(frequency, D)` implement this, so `identity` and the scheduler agree.
 
-The email goes only to a verified account email, and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
+The email goes only to a verified account email, never to a blocked account ([deleting one](identity-and-invites.md#order) blocks it first), and a period with no shares and every balance at 0 sends nothing; either way `nextSummaryAt` still moves forward.
+
+For each profile, in this order:
+1. **Build the summary.** It covers the groups the person joined and can still open, archived groups included ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)): an `active` member row, or a `left` one while they're still in the group's team (moved out, not left on their own, [permissions](permissions.md#members)). Their shares in those groups up to the period's end are read once (`idx_person_date`, at most 100 groups a query). `buildPersonalReport` turns the ones in the period into spending by category and income, one section per currency. Each group's balance is the person's net from `netsFromShares` up to the period's end; groups at 0 are left out. A pair group is named by its other member, as the app names it (its own name is its creator's label). A read that fails for now (a timeout, a rate limit) leaves `nextSummaryAt` as it is, so the next run tries again. A summary that can never be built (an amount too big to show, or a query Appwrite refuses) moves on and counts as failed, because it would fail on every run. Failures are logged with the profile ID and error code only.
+2. **Move `nextSummaryAt` forward**, guarded: the new time is staged, then the stored row is checked for the same `nextSummaryAt`, frequency and timezone. A profile edited or moved on by another run meanwhile gets nothing from this run.
+3. **Send, then commit**, with Resend's idempotency key `summary-<userId>-<periodEnd>`. A failed send rolls the move back, so the next run tries again with the same key, which Resend delivers once within 24 hours; an email Resend will never take (a bad address) moves on and counts as failed. A profile that changes after the email went out fails the commit and still counts as sent.
+
+The email links to `<APP_URL>/`, and to `<APP_URL>/profile`, where summaries can be turned off. The run's result counts summaries `sent`, `skipped` (nothing to send) and `failed`.
 
 ### Step 6: nightly check
 
