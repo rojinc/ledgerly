@@ -1,8 +1,8 @@
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
 import { Link, useParams } from 'react-router'
+import { useSwap } from '../../lib/use-swap'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -30,29 +30,6 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
       {children}
     </p>
   )
-}
-
-/**
- * Shows a panel in place of the button that opened it, with focus on the panel's heading, and
- * puts focus back on the button when it closes: the focused element unmounts either way.
- */
-function useSwap() {
-  const [opened, setOpened] = useState(false)
-  const trigger = useRef<HTMLButtonElement>(null)
-  const heading = useRef<HTMLHeadingElement>(null)
-  return {
-    opened,
-    trigger,
-    heading,
-    open: () => {
-      flushSync(() => setOpened(true))
-      heading.current?.focus()
-    },
-    close: () => {
-      flushSync(() => setOpened(false))
-      trigger.current?.focus()
-    },
-  }
 }
 
 /** `/groups/{groupId}/statements/{id}`: review a draft, finalize and send it, or the PDF (#32). */
