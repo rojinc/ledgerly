@@ -989,7 +989,7 @@ describe('POST /statements/{id}/discard', () => {
     expect((await reissue(services, '2026-10-01', '2026-10-31')).status).toBe(200)
   })
 
-  it('leaves the boundaries alone when an earlier draft is discarded, so it can be reissued again', async () => {
+  it('leaves the boundaries alone when a reissue of a void statement’s range is discarded, so it can be reissued again', async () => {
     const voided = { ...septemberFinal(), status: 'void' }
     const services = house([
       {
