@@ -23,13 +23,30 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
   )
 }
 
+// Only the mode, and the head count of an equal split, are read.
+const SPLIT_TEXT: Record<string, string> = {
+  exact: 'By amounts',
+  percent: 'By percentages',
+  weights: 'By shares',
+}
+
+function splitParts(split: { mode?: unknown; personIds?: unknown } | undefined) {
+  const personIds = split?.personIds
+  if (split?.mode === 'equal' && Array.isArray(personIds) && personIds.length > 0) {
+    const count = personIds.length
+    return { splitText: `Equally between ${count} ${count === 1 ? 'person' : 'people'}` }
+  }
+  const text = typeof split?.mode === 'string' ? SPLIT_TEXT[split.mode] : undefined
+  return text ? { splitText: text } : {}
+}
+
 // Only the parts shown are read: a full template parse fails on stored inputs it doesn't model,
 // such as a bill's.
 function storedParts(inputJson: string): {
   note?: string
   shift?: { minutes: number; rateCents: number }
-  /** An equal split's head count (#180). */
-  equalSplit?: number
+  /** How a house expense was split, in words (#180, #181). */
+  splitText?: string
 } {
   try {
     const stored = JSON.parse(inputJson) as {
@@ -44,13 +61,10 @@ function storedParts(inputJson: string): {
       Number.isInteger(minutes) && Number.isInteger(rateCents)
         ? { minutes: minutes as number, rateCents: rateCents as number }
         : undefined
-    const personIds = stored?.split?.personIds
-    const equalSplit =
-      stored?.split?.mode === 'equal' && Array.isArray(personIds) ? personIds.length : undefined
     return {
       ...(note ? { note } : {}),
       ...(shift ? { shift } : {}),
-      ...(equalSplit ? { equalSplit } : {}),
+      ...splitParts(stored?.split),
     }
   } catch {
     return {}
@@ -103,7 +117,7 @@ function Details({ row }: { row: Transactions }) {
   const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
   const locked = row.statementId !== null
   const archived = group.data.archivedAt !== null
-  const { note, shift, equalSplit } = storedParts(row.inputJson)
+  const { note, shift, splitText } = storedParts(row.inputJson)
 
   return (
     <>
@@ -144,12 +158,10 @@ function Details({ row }: { row: Transactions }) {
           </>
         )}
         {/* An employer entry's one-person split says nothing its type doesn't. */}
-        {group.data.type === 'house' && equalSplit && (
+        {group.data.type === 'house' && splitText && (
           <>
             <dt className="text-muted-foreground">Split</dt>
-            <dd>
-              Equally between {equalSplit} {equalSplit === 1 ? 'person' : 'people'}
-            </dd>
+            <dd>{splitText}</dd>
           </>
         )}
         <dt className="text-muted-foreground">Group</dt>
