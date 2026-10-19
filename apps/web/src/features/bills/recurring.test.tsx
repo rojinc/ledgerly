@@ -313,7 +313,9 @@ describe('BillsPage: recurring', () => {
     )
     fireEvent.click(region.getByRole('button', { name: 'Stop Rent' }))
     expect(
-      screen.getByText('Remove Rent? It hasn’t started yet, so no bills are kept.'),
+      screen.getByText(
+        'Remove Rent? It hasn’t started yet, so its bills are removed, except any you’ve already paid.',
+      ),
     ).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
     expect(await screen.findByText('Removed Rent.')).toBeTruthy()
