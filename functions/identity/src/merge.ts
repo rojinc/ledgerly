@@ -350,12 +350,15 @@ export async function moveIdentities(
 }
 
 /**
- * Shares moved per transaction: each may take two writes (combine), plus the group's guard and
- * the delete of its `balances` row.
+ * Shares moved per transaction: each may take two writes (combine), plus the group's guard, U's
+ * member row guard and the delete of the group's `balances` row.
  */
 const SHARES_PER_BATCH = Math.floor((MAX_OPS_PER_DB_TRANSACTION - 3) / 2)
 
-/** What became of the groups whose shares a call looked at. `done`: P has none left there. */
+/**
+ * What became of the groups whose shares a call looked at. `done`: none was put off or cut off.
+ * P's shares stay in a group where U has no joined row, and `stray()` sees them.
+ */
 export type SharesResult = { moved: number; putOff: string[]; done: boolean }
 
 /**
