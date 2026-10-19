@@ -144,7 +144,7 @@ describe('moveMembers (step 2)', () => {
     return services.db
       .rows('activity')
       .filter((row) => row.action === 'member.joined')
-      .map((row) => [row.groupId, row.actorPersonId, row.summary, row.at])
+      .map((row) => [row.groupId, row.actorPersonId, row.subjectPersonId, row.summary, row.at])
   }
 
   it('repoints P’s row to U, or keeps U’s with the earlier joinedOn, and joins U to each team', async () => {
@@ -173,9 +173,9 @@ describe('moveMembers (step 2)', () => {
       expect(services.teams.members(groupId)?.map((member) => member.userId)).toEqual(['u1'])
     }
     expect(joinedRows(services)).toEqual([
-      ['g1', 'pU', 'Sammy joined', NOW.toISOString()],
-      ['g2', 'pU', 'Sammy joined', NOW.toISOString()],
-      ['g3', 'pU', 'Sam Lee joined', NOW.toISOString()],
+      ['g1', 'pU', 'pU', 'joined', NOW.toISOString()],
+      ['g2', 'pU', 'pU', 'joined', NOW.toISOString()],
+      ['g3', 'pU', 'pU', 'joined', NOW.toISOString()],
     ])
     // Nothing points at P any more: a second run is a no-op.
     expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toEqual({
