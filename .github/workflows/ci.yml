@@ -44,4 +44,10 @@ jobs:
         env:
           TZ: Australia/Sydney
 
+      # Every workspace again in Sydney time: functions and the web app handle local dates
+      # too, and must not depend on the machine's timezone either (testing.md#rules).
+      - run: npm test
+        env:
+          TZ: Australia/Sydney
+
       - run: npm run build
