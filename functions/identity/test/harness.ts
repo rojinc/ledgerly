@@ -4,6 +4,7 @@ import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import type { Email } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
+import type { Sms } from '@ledgerly/server/sms/send-sms'
 import { vi } from 'vitest'
 import { identityRoutes } from '../src/main'
 import type { AccountUser, Services } from '../src/services'
@@ -17,12 +18,13 @@ export const APP_URL = 'https://app.example.com'
 
 type Seed = ConstructorParameters<typeof FakeDb>[0]
 
-/** `sent` holds every email the fake `sendEmail` was given, in order. */
+/** `sent` and `texts` hold every email and SMS the fakes were given, in order. */
 export type Fakes = Services & {
   db: FakeDb
   teams: FakeTeams
   account: AccountUser
   sent: Email[]
+  texts: Sms[]
 }
 
 /** An account with a verified email and nothing else, as `users.get` returns it. */
@@ -44,6 +46,7 @@ export function fakes(
 ): Fakes {
   const user = options.account ?? account()
   const sent: Email[] = []
+  const texts: Sms[] = []
   return {
     db: new FakeDb(seed),
     teams: new FakeTeams(options.teams),
@@ -52,10 +55,14 @@ export function fakes(
       sent.push(email)
       return { id: `email-${sent.length}` }
     },
+    sendSms: async (sms) => {
+      texts.push(sms)
+    },
     now: NOW,
     appUrl: APP_URL,
     account: user,
     sent,
+    texts,
   }
 }
 

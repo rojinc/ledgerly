@@ -24,7 +24,7 @@ Adding anything not on this page needs a line in the PR explaining why. See [Cod
 
 | Need | Appwrite product |
 | --- | --- |
-| Accounts | Auth: email + password, email OTP, later Google OAuth and phone OTP |
+| Accounts | Auth: email + password, email OTP, later Google OAuth. Phone numbers are only verified, never used to log in ([D-017](decisions.md)) |
 | Data | **TablesDB** with multi-row **transactions** |
 | Group access | **Teams**: one team per group |
 | Files | Storage buckets `receipts` and `statements`, with image previews for thumbnails |
@@ -39,7 +39,7 @@ Function libraries: `node-appwrite` (server SDK), `pdfmake` (PDFs), `date-holida
 | Service | Use |
 | --- | --- |
 | **Resend** | All outgoing email from functions (statements, invites, reminders, summaries). Also used as Appwrite Auth's custom SMTP server so verification emails come from our domain. |
-| **SMS provider** (e.g. Twilio) | Phone invites and phone OTP. Added in M3. |
+| **SMS provider** (the owner picks it in [#175](https://github.com/rojinc/ledgerly/issues/175)) | Phone invites, sent by functions through its HTTP API with `fetch`, no SDK ([D-017](decisions.md)). Added in M3. |
 | **Sentry** | Error tracking for web and functions. Added in M4. |
 | **Stripe** | SaaS subscriptions. Added in M4. |
 

@@ -10,7 +10,7 @@
 - Create both projects in the **same Appwrite Cloud region**, as close to users as possible (Sydney for Australia, if offered on the plan).
 - Prod runs on the **Pro** plan (higher limits, backups). Dev can run on Free.
 - Each project needs a web platform for its app domain (and `localhost` in dev), Resend as custom SMTP, and email verification turned on.
-- Auth methods: only email + password and email OTP (phone from M3). Team invites, magic URL and anonymous are off, because clients never manage team memberships.
+- Auth methods: only email + password and email OTP. Team invites, magic URL and anonymous are off, because clients never manage team memberships. Phone login stays off too: from M3, Appwrite only verifies a phone number a user adds to their account ([D-017](../architecture/decisions.md)).
 - Membership privacy: team members see only each other's user ID, not email, phone, name, MFA or last access.
 
 ## Resources as code
@@ -58,7 +58,7 @@ Each function runs from a bundle: `npm run build` writes `functions/<name>/dist/
 - **Key scopes** are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`). Give a function only the scopes a documented route needs; a change to them gets the `security` label.
 - `GET /health`, the only route that runs without a signed-in caller, returns `{ fn, version }` on every function, where `version` is the commit the bundle was built from (`-dirty` when built with uncommitted changes).
 
-Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, later `SMS_*` and `SENTRY_DSN`.
+Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, `SMS_API_KEY` and `SMS_FROM` (the sender name or number SMS come from; plus `SMS_ACCOUNT_ID` if the provider picked in [#175](https://github.com/rojinc/ledgerly/issues/175) needs one), later `SENTRY_DSN`.
 
 ## Schema changes
 
