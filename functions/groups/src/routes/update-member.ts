@@ -31,6 +31,9 @@ export async function updateMember(
   body: unknown,
 ): Promise<Members> {
   const changes = parseBody(updateMemberBodySchema, body)
+  // The contract allows `null` (move back in); until #169 builds it, refuse it rather than
+  // treat it as a move-out.
+  if (changes.leftOn === null) throw invalid('Moving someone back in is not available yet.')
   const { person: caller } = await requireMember(db, teams, userId, groupId, { roles: ['admin'] })
   const stored = await getMemberOf(db, groupId, memberId)
 

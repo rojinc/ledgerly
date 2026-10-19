@@ -120,7 +120,7 @@ Every task issue lists **Scope**: the paths it may change. Two tasks can run in 
 - Each function is its own folder (`functions/ledger/`, `functions/groups/` …).
 - Each web feature is its own folder (`apps/web/src/features/shifts/` …).
 - `packages/core` and `packages/server` are split into subfolders, and there are **no barrel files**, so two tasks never edit the same `index.ts`.
-- Known shared files: `apps/web/src/routes.tsx` (one line per feature), `package.json` / `package-lock.json` (only for dependency changes) and `docs/SUMMARY.md`. On conflicts there, keep both sides.
+- Known shared files: `apps/web/src/routes.tsx` (one line per feature), `apps/web/src/lib/query-keys.ts` and `apps/web/src/lib/realtime.ts` (one line per query key), `package.json` / `package-lock.json` (only for dependency changes) and `docs/SUMMARY.md`. On conflicts there, keep both sides.
 
 ## Contract changes
 
