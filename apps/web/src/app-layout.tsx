@@ -14,6 +14,7 @@ const NAV = [
   { to: '/today', label: 'Today' },
   { to: '/calendar', label: 'Calendar' },
   { to: '/transactions', label: 'History' },
+  { to: '/schedules', label: 'Schedules' },
   { to: '/groups', label: 'Groups' },
   { to: '/people', label: 'People' },
   { to: '/bills', label: 'Bills' },
