@@ -180,8 +180,12 @@ describe('PasswordSection, an account with a password', () => {
     expect(current.name).toBe('current-password')
     type('Current password', OLD)
     type('New password', SECRET)
+    const fresh = screen.getByLabelText('New password') as HTMLInputElement
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(update).toHaveBeenCalledTimes(1))
+    // Cleared with form.reset(), not only taken off the page.
+    await waitFor(() => expect(current.value).toBe(''))
+    expect(fresh.value).toBe('')
     expect(update.mock.calls[0]?.[0]).toStrictEqual({
       password: SECRET,
       oldPassword: OLD,
@@ -194,6 +198,27 @@ describe('PasswordSection, an account with a password', () => {
     expect((screen.getByLabelText('New password') as HTMLInputElement).value).toBe('')
     expect((screen.getByLabelText('Current password') as HTMLInputElement).value).toBe('')
     expect(document.body.innerHTML).not.toContain(OLD)
+  })
+
+  it('never lets the form submit itself, and sends again after a refusal', async () => {
+    update
+      .mockRejectedValueOnce(new AppwriteException('refused', 400, 'password_pwned'))
+      .mockResolvedValue(user('2026-10-19T06:00:00.000Z'))
+    await renderSection()
+    await openChange()
+    type('Current password', OLD)
+    type('New password', SECRET)
+    const form = (screen.getByLabelText('New password') as HTMLInputElement).form as HTMLFormElement
+    // false: preventDefault ran, so the passwords never reach a URL or a request of their own.
+    expect(fireEvent.submit(form)).toBe(false)
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'This password has appeared in a data breach. Pick another one.',
+    )
+    type('New password', `${SECRET} 2`)
+    expect(fireEvent.submit(form)).toBe(false)
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(2))
+    expect(update.mock.calls[1]?.[0]).toStrictEqual({ password: `${SECRET} 2`, oldPassword: OLD })
+    expect(await screen.findByText('Password changed.')).toBeTruthy()
   })
 
   it('asks for the current password', async () => {
@@ -253,7 +278,12 @@ describe('PasswordSection, an account with a password', () => {
     await openChange()
     type('Current password', OLD)
     type('New password', SECRET)
+    const current = screen.getByLabelText('Current password') as HTMLInputElement
+    const fresh = screen.getByLabelText('New password') as HTMLInputElement
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    // Cleared with form.reset(), not only taken off the page.
+    expect(current.value).toBe('')
+    expect(fresh.value).toBe('')
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Change password' }))
     expect(update).not.toHaveBeenCalled()
     expect(document.body.innerHTML).not.toContain(SECRET)
