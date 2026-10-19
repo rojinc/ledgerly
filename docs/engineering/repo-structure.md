@@ -75,6 +75,7 @@ ledgerly/
 │           ├── ui/            shadcn/ui components (generated, then owned)
 │           └── features/      one folder per feature
 │               ├── auth/
+│               ├── bills/
 │               ├── groups/
 │               ├── calendar/
 │               ├── shifts/
