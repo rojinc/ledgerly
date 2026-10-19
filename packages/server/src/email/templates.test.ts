@@ -439,4 +439,17 @@ describe('user-typed text', () => {
       ).toThrow('Email links must be http(s)')
     },
   )
+
+  it('checks every link, not only the first', () => {
+    expect(() =>
+      summaryEmail({
+        periodStart: day('2026-10-12'),
+        periodEnd: day('2026-10-18'),
+        reports: [],
+        balances: [],
+        url: 'https://app.example/',
+        profileUrl: 'javascript:alert(1)',
+      }),
+    ).toThrow('Email links must be http(s)')
+  })
 })

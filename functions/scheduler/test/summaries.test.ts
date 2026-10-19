@@ -1,7 +1,8 @@
 import { MAX_AMOUNT_CENTS } from '@ledgerly/core/constants/limits'
 import type { Profiles } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import type { Email } from '@ledgerly/server/email/send-email'
+import { type Email, EmailError } from '@ledgerly/server/email/send-email'
+import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import type { RunResult } from '../src/routes/run'
 import type { AccountUser } from '../src/services'
@@ -69,8 +70,9 @@ const house = (name: string, extra = {}) => ({
   ...extra,
 })
 
-// Sam's groups: joined (Acme, Elm St, Bob in USD, an archived one, one moved out of, one left on
-// their own), and one added to but never joined (Ash St).
+// Sam's groups: joined (Acme, Elm St, the pair with Alex in USD, an archived one, one moved out
+// of, so still in its team, and one left on their own, so out of its team), and one added to but
+// never joined (Ash St). The pair's own name, "Bob", is Alex's label for Sam.
 function seeded(
   options: {
     profiles?: ReturnType<typeof profile>[]
@@ -98,6 +100,7 @@ function seeded(
         member('elm', 'pSam', { role: 'member' }),
         member('elm', 'pAlex'),
         member('trip', 'pSam'),
+        member('trip', 'pAlex', { displayName: 'Alex' }),
         member('birch', 'pSam'),
         member('pine', 'pSam', { status: 'left', role: 'viewer', leftOn: '2026-10-01' }),
         member('oak', 'pSam', { status: 'left', role: 'viewer', leftOn: '2026-10-01' }),
@@ -110,6 +113,7 @@ function seeded(
     {
       ...(options.accounts ? { accounts: options.accounts } : {}),
       ...(options.now ? { now: options.now } : {}),
+      teams: { pine: ['u1'], oak: ['u2'] },
     },
   )
 }
@@ -128,8 +132,8 @@ function weekOfShares() {
     share('birch', '2026-09-01', 'expense', 'household', 0, 1_500),
     // After it: in neither.
     share('elm', '2026-10-19', 'expense', 'groceries', 0, 100_000),
-    // A group Sam left on their own still counts; one they never joined doesn't, and nor does
-    // someone else's share.
+    // A group Sam left on their own doesn't count (they can't open it), one they never joined
+    // doesn't, and nor does someone else's share.
     share('oak', '2026-10-14', 'expense', 'food', 0, 9_900),
     share('ash', '2026-10-14', 'expense', 'food', 0, 7_700),
     share('elm', '2026-10-14', 'expense', 'groceries', 0, 5_000, 'pAlex'),
@@ -162,24 +166,47 @@ describe('step 4: summary emails', () => {
       idempotencyKey: 'summary-u1-2026-10-18',
     })
     const text = email?.text ?? ''
-    expect(text).toContain('In AUD:\n\nYou spent $179.00.')
-    expect(text).toContain('- Food: $99.00\n- Groceries: $50.00\n- Electricity: $30.00')
+    expect(text).toContain('In AUD:\n\nYou spent $80.00.')
+    expect(text).toContain('- Groceries: $50.00\n- Electricity: $30.00')
     // Acme's payment plus personal income.
     expect(text).toContain('Your income was $400.00.')
     expect(text).toContain('Owed to you:\n\n- Elm St: $40.00\n- Acme: $25.00')
-    // Left Oak Ave, moved out of Pine Rd; Birch Ln is archived.
-    expect(text).toContain('You owe:\n\n- Oak Ave: $99.00\n- Pine Rd: $30.00\n- Birch Ln: $15.00')
+    // Moved out of Pine Rd; Birch Ln is archived.
+    expect(text).toContain('You owe:\n\n- Pine Rd: $30.00\n- Birch Ln: $15.00')
     expect(text).toMatch(/In USD:\n\nYou spent USD\s20\.00\.\n\n- Food: USD\s20\.00/)
-    expect(text).toMatch(/Owed to you:\n\n- Bob: USD\s20\.00/)
+    // The pair is named by its other member, as the app names it (#145).
+    expect(text).toMatch(/Owed to you:\n\n- Alex: USD\s20\.00/)
     expect(text).toContain('Open Ledgerly: https://app.example.com/')
     expect(text).toContain('Change your summary emails: https://app.example.com/profile')
   })
 
-  it('leaves out a group Sam never joined, and shares after the week', async () => {
+  it('leaves out groups Sam never joined or left on their own, a pair’s label, and later shares', async () => {
     const services = seeded()
     await runCron(services)
     const text = sent(services)[0]?.text ?? ''
-    expect(text).not.toMatch(/Ash St|\$77\.00|\$1,000\.00/)
+    expect(text).not.toMatch(/Ash St|\$77\.00|Oak Ave|\$99\.00|Bob|\$1,000\.00/)
+  })
+
+  it('reads the shares of more than 100 groups, at most 100 groups a query', async () => {
+    const many = Array.from({ length: 120 }, (_, index) => `g${String(index).padStart(3, '0')}`)
+    const services = fakes(
+      {
+        persons: [person('pSam', 'u1')],
+        groups: many.map((id) => group(id, 'pSam', house(`House ${id}`))),
+        members: many.map((id) => member(id, 'pSam')),
+        profiles: [profile()],
+        shares: many.map((id) => share(id, '2026-10-14', 'expense', 'groceries', 0, 100)),
+      },
+      { accounts: { u1: { email: 'sam@example.com', emailVerification: true } } },
+    )
+    const list = vi.spyOn(services.db, 'listRows')
+    expect((await runCron(services)).summaries).toEqual({ sent: 1, skipped: 0, failed: 0 })
+    expect(sent(services)[0]?.text).toContain('You spent $120.00.')
+    const values = list.mock.calls
+      .filter(([params]) => params.tableId === 'shares')
+      .map(([params]) => JSON.parse(params.queries?.find((q) => q.includes('"groupId"')) ?? '{}'))
+    // A full page of 100 shares reads one more page, so 100 shows twice.
+    expect(values.map((query) => query.values.length)).toEqual([100, 100, 20])
   })
 
   it('moves on from a summary that can’t be shown, and counts it as failed', async () => {
@@ -312,7 +339,28 @@ describe('step 4: summary emails', () => {
     expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
-  it('sends nothing when the profile changes after the move is staged', async () => {
+  it('sends nothing when the profile changes before the move is staged', async () => {
+    const services = seeded()
+    const changed = '2026-10-19T21:00:00.000Z'
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"nextSummaryAt"'),
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'profiles',
+            rowId: 'u1',
+            data: { nextSummaryAt: changed },
+          }),
+        ),
+    )
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
+    expect(storedProfile(services).nextSummaryAt).toBe(changed)
+  })
+
+  it('counts it sent when the profile changes after the email went out', async () => {
     const services = seeded()
     const changed = '2026-10-19T21:00:00.000Z'
     beforeCommit(services.db, () =>
@@ -325,8 +373,9 @@ describe('step 4: summary emails', () => {
         }),
       ),
     )
-    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 0 })
-    expect(services.sendEmail).not.toHaveBeenCalled()
+    // The commit fails, so the move is the edit's; Resend won't deliver the key twice.
+    expect((await runCron(services)).summaries).toEqual({ sent: 1, skipped: 0, failed: 0 })
+    expect(services.sendEmail).toHaveBeenCalledTimes(1)
     expect(storedProfile(services).nextSummaryAt).toBe(changed)
   })
 
@@ -343,13 +392,45 @@ describe('step 4: summary emails', () => {
     expect(storedProfile(services).nextSummaryAt).toBe('2026-11-01T20:00:00.000Z')
   })
 
-  it('counts a failed send, and doesn’t send that summary again', async () => {
+  it('counts a failed send and tries it again next run, with the same key', async () => {
     const services = seeded()
     services.sendEmail.mockRejectedValueOnce(new Error('Resend is down'))
     expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(storedProfile(services).nextSummaryAt).toBe(DUE)
+    expect((await runCron(services)).summaries).toEqual({ sent: 1, skipped: 0, failed: 0 })
+    expect(storedProfile(services).nextSummaryAt).toBe(NEXT_WEEK)
+    expect(sent(services).map((email) => email.idempotencyKey)).toEqual([
+      'summary-u1-2026-10-18',
+      'summary-u1-2026-10-18',
+    ])
+  })
+
+  it('moves on from an email Resend will never take, and counts it as failed', async () => {
+    const services = seeded()
+    services.sendEmail.mockRejectedValueOnce(new EmailError('Bad address', 'validation_error', 422))
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 1 })
     expect(storedProfile(services).nextSummaryAt).toBe(NEXT_WEEK)
     expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 0 })
-    expect(services.sendEmail).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['moves on from one Appwrite refuses to build', 400, NEXT_WEEK],
+    ['tries one again that hit a rate limit', 429, DUE],
+  ])('%s, counting it as failed', async (_case, code, nextSummaryAt) => {
+    const services = seeded()
+    const list = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      if (params.tableId === 'shares') throw new AppwriteException('No', code, 'general_query')
+      return list(params)
+    })
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(storedProfile(services).nextSummaryAt).toBe(nextSummaryAt)
+    // IDs and codes only.
+    expect(quiet).toHaveBeenCalledWith(
+      `scheduler: summary failed for profile u1: AppwriteException ${code} general_query`,
+    )
+    quiet.mockRestore()
   })
 
   it('tries a summary again next run when it can’t be built', async () => {

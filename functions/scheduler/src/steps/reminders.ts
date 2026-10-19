@@ -172,7 +172,10 @@ async function remind(
 
 // Resend's errors for an email it will never send as asked: a bad address, or the same key
 // with different content (the group was renamed after a send whose mark failed).
-const NEVER_SENT: ReadonlySet<string> = new Set(['validation_error', 'invalid_idempotent_request'])
+export const NEVER_SENT: ReadonlySet<string> = new Set([
+  'validation_error',
+  'invalid_idempotent_request',
+])
 
 // It still needs the reminder the page read it for.
 function stillDue(seen: Transactions, stored: Transactions | undefined): boolean {

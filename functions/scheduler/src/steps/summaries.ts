@@ -5,11 +5,15 @@ import type { Groups, Members, Profiles, Shares } from '@ledgerly/core/generated
 import { buildPersonalReport } from '@ledgerly/core/reports/personal-report'
 import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import { isInTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { EmailError } from '@ledgerly/server/email/send-email'
 import { type EmailContent, summaryEmail } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
 import { allRows, pages } from '../pages'
 import { appBase, type Services } from '../services'
+import { describe } from './auto-post'
+import { NEVER_SENT } from './reminders'
 
 export type SummaryCounts = { sent: number; skipped: number; failed: number }
 
@@ -32,8 +36,9 @@ export async function sendSummaries(services: Services): Promise<SummaryCounts> 
     try {
       const outcome = await summarise(services, profile, links)
       if (outcome) counts[outcome] += 1
-    } catch {
-      // The next run tries it again: nextSummaryAt hasn't moved.
+    } catch (error) {
+      // The next run tries it again: nextSummaryAt hasn't moved. IDs and codes only.
+      console.error(`scheduler: summary failed for profile ${profile.$id}: ${describe(error)}`)
       counts.failed += 1
     }
   }
@@ -41,9 +46,9 @@ export async function sendSummaries(services: Services): Promise<SummaryCounts> 
 }
 
 /**
- * Builds the summary first, so a failed read is tried again next run. Then moves
- * `nextSummaryAt` on, and only then sends, so the summary goes out at most once. With
- * nothing to send (`none`, no verified email, an empty period), it still moves on.
+ * Builds the summary, then moves `nextSummaryAt` on and sends it (`moveOn`). A failed read is
+ * tried again next run. With nothing to send (`none`, no verified email, an empty period), it
+ * still moves on.
  */
 async function summarise(
   services: Services,
@@ -54,32 +59,44 @@ async function summarise(
   try {
     email = seen.summaryFrequency === 'none' ? undefined : await summaryOf(services, seen, links)
   } catch (error) {
-    // A summary that can't be shown (an amount too big to format, say) would fail on every
-    // run, so it moves on and counts as failed. Anything else, a failed read among them, leaves
-    // it for the next run.
-    if (!(error instanceof RangeError)) throw error
+    // One that can never be built (an amount too big to show, a query Appwrite refuses) would
+    // fail on every run, so it moves on and counts as failed. A read that failed for now (a
+    // timeout, a rate limit) leaves it for the next run.
+    if (!lasting(error)) throw error
+    console.error(`scheduler: summary failed for profile ${seen.$id}: ${describe(error)}`)
     return (await moveOn(services, seen)) ? 'failed' : undefined
   }
-  if (!(await moveOn(services, seen))) return undefined
-  if (!email) return 'skipped'
-  try {
-    await services.sendEmail({ to: email.to, ...email.content, idempotencyKey: email.key })
-    return 'sent'
-  } catch {
-    // Moved on already, so this period's summary is lost rather than sent twice.
-    return 'failed'
-  }
+  return moveOn(services, seen, email)
+}
+
+function lasting(error: unknown): boolean {
+  return (
+    error instanceof RangeError ||
+    (error instanceof AppwriteException &&
+      error.code >= 400 &&
+      error.code < 500 &&
+      error.code !== 429)
+  )
 }
 
 class Changed extends Error {}
 
 /**
- * Moves `nextSummaryAt` to the next send time, guarded as conventions.md#functions says: staged
- * first, then the stored row is checked. False when the profile changed after the page was
- * read (an edit, or another run that got there first); it then gets nothing from this run.
+ * Moves `nextSummaryAt` to the next send time and sends `email`, as reminders do
+ * (scheduling.md#step-4-summary-emails, conventions.md#functions): the new time is staged, the
+ * stored row is checked, and the email goes out before the commit, with a key Resend delivers
+ * once within 24 hours. A failed send rolls the move back, so the next run tries again; an
+ * email Resend will never take moves on and counts as failed. Undefined when the profile
+ * changed after the page was read (an edit, or another run that got there first): it gets
+ * nothing from this run.
  */
-async function moveOn({ db, now }: Services, seen: Profiles): Promise<boolean> {
+async function moveOn(
+  { db, now, sendEmail }: Services,
+  seen: Profiles,
+  email?: { to: string; content: EmailContent; key: string },
+): Promise<keyof SummaryCounts | undefined> {
   const next = nextSummaryAt(seen.summaryFrequency, seen.timezone, now, seen.nextSummaryAt)
+  let outcome = 'skipped' as keyof SummaryCounts
   try {
     await withTransaction(db, async (tx) => {
       await tx.write({
@@ -101,13 +118,22 @@ async function moveOn({ db, now }: Services, seen: Profiles): Promise<boolean> {
       ) {
         throw new Changed()
       }
+      if (!email) return
+      try {
+        await sendEmail({ to: email.to, ...email.content, idempotencyKey: email.key })
+        outcome = 'sent'
+      } catch (error) {
+        if (!(error instanceof EmailError && NEVER_SENT.has(error.type))) throw error
+        outcome = 'failed'
+      }
     })
-    return true
+    return outcome
   } catch (error) {
-    if (error instanceof Changed) return false
-    // Changed or deleted after staging.
+    if (error instanceof Changed) return undefined
+    // Changed or deleted after staging: the next run looks at it again. An email that went out
+    // still counts; Resend won't deliver it twice within 24 hours.
     if (error instanceof AppwriteException && (error.code === 404 || error.code === 409)) {
-      return false
+      return outcome === 'sent' ? 'sent' : undefined
     }
     throw error
   }
@@ -127,29 +153,36 @@ async function summaryOf(
   if (!to) return undefined
   const sendDate = localToday(profile.timezone, new Date(profile.nextSummaryAt as string))
   const period = summaryPeriod(profile.summaryFrequency as PeriodCycle, sendDate)
-  const groups = await joinedGroups(services, profile.personId)
-  // Nothing to say, and Appwrite refuses an `equal` with no values.
-  if (groups.length === 0) return undefined
-  // idx_person_date
+  const groups = await joinedGroups(services, profile)
+  // idx_person_date, for at most 100 groups at a time (Appwrite's cap on `equal`'s values).
   // Every one, however far the run has got: a summary needs them all.
-  const shares = await allRows<Shares>(services.db, TABLES.shares, [
-    Query.equal('personId', profile.personId),
-    Query.lessThanEqual('date', period.end),
-    Query.equal(
-      'groupId',
-      groups.map((group) => group.$id),
-    ),
-  ])
+  const shares: Shares[] = []
+  for (let start = 0; start < groups.length; start += PAGE_GROUPS) {
+    const ids = groups.slice(start, start + PAGE_GROUPS).map((group) => group.$id)
+    shares.push(
+      ...(await allRows<Shares>(services.db, TABLES.shares, [
+        Query.equal('personId', profile.personId),
+        Query.lessThanEqual('date', period.end),
+        Query.equal('groupId', ids),
+      ])),
+    )
+  }
   const inPeriod = shares.filter((share) => share.date >= period.start)
-  const balances = groups
+  const owing = groups
     .map((group) => ({
-      groupName: group.name,
-      currency: group.currency,
+      group,
       // Only this person's shares, so one net.
       cents:
         netsFromShares(shares.filter((share) => share.groupId === group.$id))[0]?.netCents ?? 0,
     }))
-    .filter((balance) => balance.cents !== 0)
+    .filter(({ cents }) => cents !== 0)
+  const balances = await Promise.all(
+    owing.map(async ({ group, cents }) => ({
+      groupName: await nameFor(services, group, profile),
+      currency: group.currency,
+      cents,
+    })),
+  )
   if (inPeriod.length === 0 && balances.length === 0) return undefined
   const reports = buildPersonalReport(
     profile.personId,
@@ -170,21 +203,43 @@ async function summaryOf(
   }
 }
 
+const PAGE_GROUPS = 100
+
 /**
- * The groups whose money the summary covers: the ones the person joined, so an `active` or
- * `left` member row, archived groups included (ledger.md#reports, D-016).
+ * The groups whose money the summary covers: the ones the person joined and can still open,
+ * archived groups included (ledger.md#reports, D-016). An `active` member row, or a `left` one
+ * while they're still in the group's team: someone who moved out is, someone who left on their
+ * own isn't (permissions.md#members).
  */
-async function joinedGroups({ db }: Services, personId: string): Promise<Groups[]> {
+async function joinedGroups({ db, teams }: Services, profile: Profiles): Promise<Groups[]> {
   // idx_person_status
   const members = await allRows<Members>(db, TABLES.members, [
-    Query.equal('personId', personId),
+    Query.equal('personId', profile.personId),
     Query.equal('status', ['active', 'left']),
   ])
-  return Promise.all(
-    members.map(({ groupId }) =>
-      db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId }),
+  const open = await Promise.all(
+    members.map(
+      (member) => member.status === 'active' || isInTeam(teams, member.groupId, profile.$id),
     ),
   )
+  return Promise.all(
+    members
+      .filter((_, index) => open[index])
+      .map(({ groupId }) =>
+        db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId }),
+      ),
+  )
+}
+
+/**
+ * The group's name as the app shows it to this person: a pair group's own `name` is its
+ * creator's label for the other member, which may be this person, so a pair is named by its
+ * other member (#145).
+ */
+async function nameFor({ db }: Services, group: Groups, profile: Profiles): Promise<string> {
+  if (group.type !== 'pair') return group.name
+  const members = await allRows<Members>(db, TABLES.members, [Query.equal('groupId', group.$id)])
+  return members.find((member) => member.personId !== profile.personId)?.displayName ?? group.name
 }
 
 // Only to the account's own email, once it's verified, and not once the account is blocked:
