@@ -150,7 +150,19 @@ On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't 
 
 A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `remindedAt`, so the new date gets its own reminder. An auto-post occurrence cleared this way is one step 2 posts again: on its new date, or at the next hourly run if that date has passed, unless step 2's rules hold it back (a date before the day it was made, or more than 7 days ago; [auto-post](scheduling.md#step-2-auto-post)).
 
-**Deleted people.** `POST /transactions`, `PATCH` and `/post` refuse, with `VALIDATION_FAILED`, an input whose people (`everyPersonId()`: payers, the split, items) include a person with `deletedAt` whom the stored input didn't already name, **in a group where that person's member row isn't `placeholder`**. Payments and adjustments are exempt, so balances with a former member can still be settled. Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). The scheduler's `POST` and `PATCH /schedules` apply the same rule to the template, and `PATCH` checks the whole template, people the stored one named included: deleting an account ends the schedules that name them, and an edit could start one again.
+**Deleted people.** `POST /transactions`, `PATCH`, `/post` and `POST /timer/start` refuse, with `VALIDATION_FAILED`, a write that would newly name a person with `deletedAt`, **in a group where that person's member row isn't `placeholder`**.
+
+- **Who a write names:** everyone it gives a share, or would once posted, and everyone its input names. That's its payers (the payer the server fills in included), its split or the default split, its items, and a shift's two people.
+- **Newly:** not on the transaction already. On it already are:
+  - the people its stored input names (`everyPersonId()`: payers, the split, items);
+  - those holding one of its shares;
+  - for a row not yet posted that was made before their account was deleted, those that posting it as stored would give a share.
+
+  For a create or a timer start, everyone counts as newly named.
+- **So a row made before the deletion** can still be posted as it is, and edited, even where only its default split or its shift gives them a share. An edit that gives them their first share (a new date in a house, say) is refused. **A row made after it** (an occurrence of a schedule the deletion didn't end) can't give them a share.
+- **Exempt:** payments and adjustments, so balances with a former member can still be settled; and `POST /timer/stop`, since the timer was checked when it started and its shares go to the same two people.
+- Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
+- **Schedules:** the scheduler's `POST` and `PATCH /schedules` apply the same rule to a trial occurrence on the first date the save can make one: `startsOn`, or for `PATCH` the later of `startsOn` and today in the group's time zone. When the template names no payers, the caller is the trial's payer, since an occurrence stores none and whoever posts it pays. `PATCH` checks everyone the trial names, those the stored template named included. Deleting an account ends the schedules the person created, or whose template's input names them (`everyPersonId()`), and an edit could start one again.
 
 **Merges still open.** `PATCH` and `/post` refuse with `CONFLICT` (`details: { reason: 'merging' }`) a row whose stored shares, input or item splits name a person whose merge is still open in the group ([merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)). The app asks to try again shortly.
 
