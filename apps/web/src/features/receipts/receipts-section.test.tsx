@@ -60,11 +60,14 @@ beforeEach(() => {
   mockVerified = true
   fetches.length = 0
   localStorage.setItem('cookieFallback', '{"a_session":"s"}')
+  // The SDK's methods are overloaded; the object form is the one used.
+  type FileParams = { fileId: string; width?: number }
   vi.mocked(storage.getFilePreview).mockImplementation(
-    ({ fileId, width }) => `https://store/${fileId}/preview?width=${width}`,
+    ((params: FileParams) =>
+      `https://store/${params.fileId}/preview?width=${params.width}`) as never,
   )
   vi.mocked(storage.getFileDownload).mockImplementation(
-    ({ fileId }) => `https://store/${fileId}/download`,
+    ((params: FileParams) => `https://store/${params.fileId}/download`) as never,
   )
   getFile.mockImplementation((async ({ fileId }: { fileId: string }) => ({
     $id: fileId,
