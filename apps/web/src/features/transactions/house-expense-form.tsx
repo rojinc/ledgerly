@@ -149,8 +149,9 @@ function houseExpenseResolver(
     }
     for (const [path, field] of Object.entries(ERROR_FIELD)) {
       const message = get(found, path)?.message as string | undefined
-      // Several payers: a schema error on them goes under their amounts.
-      if (message) add(field === 'paidBy' && values.severalPaid ? 'paidTotal' : field, message)
+      // Several payers: a schema error on them goes under their amounts. A refund has one.
+      const several = values.severalPaid && !(values.itemised && itemsTotal(values, currency) < 0)
+      if (message) add(field === 'paidBy' && several ? 'paidTotal' : field, message)
     }
     if (Object.keys(errors).length > 0) {
       return { values: {}, errors: errors as FieldErrors<HouseExpenseValues> }
@@ -168,6 +169,21 @@ function houseExpenseResolver(
     }
     return result
   }
+}
+
+/**
+ * After a refused Add, when only an item's people or the items' total are wrong: neither has a
+ * field of its own, so focus goes to that item's first person, or to Add item.
+ */
+function focusItems(refused: FieldErrors<HouseExpenseValues>) {
+  if (Object.keys(refused).some((key) => key !== 'items' && key !== 'itemsTotal')) return
+  const items = Object.entries(refused.items ?? {}) as [string, Record<string, unknown>][]
+  if (items.some(([, item]) => item.name || item.amount || item.shares)) return
+  const people = items.find(([, item]) => item.people)
+  const target = people
+    ? document.querySelector<HTMLElement>(`#item-${people[0]}-people input`)
+    : document.getElementById('add-item')
+  target?.focus()
 }
 
 /** A house expense: who paid, and how it's split between whom (#180, #181). */
@@ -309,6 +325,7 @@ export function HouseExpenseForm({
               const first = sorted[0]
               if (first) form.setFocus(`paid.${first.personId}`)
             }
+            focusItems(refused)
           },
         )(event)
       }}

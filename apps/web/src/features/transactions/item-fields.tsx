@@ -1,5 +1,5 @@
 import { CATEGORIES } from '@ledgerly/core/constants/categories'
-import { MAX_ITEMS_PER_TRANSACTION } from '@ledgerly/core/constants/limits'
+import { MAX_AMOUNT_CENTS, MAX_ITEMS_PER_TRANSACTION } from '@ledgerly/core/constants/limits'
 import type { Members } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import type { TransactionInput } from '@ledgerly/core/schemas/ledger'
@@ -8,6 +8,7 @@ import { type UseFormReturn, useFieldArray } from 'react-hook-form'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { type HouseExpenseValues, NEW_ITEM } from './house-expense'
+import { amountExample } from './presets'
 import { GroupError } from './split-fields'
 
 type Member = Pick<Members, 'personId' | 'displayName'>
@@ -62,6 +63,7 @@ export function ItemFields({
       <div className="flex flex-col gap-2">
         <Button
           ref={addButton}
+          id="add-item"
           type="button"
           variant="outline"
           className="self-start"
@@ -80,7 +82,10 @@ export function ItemFields({
         )}
       </div>
       <p className="text-sm">
-        Total: {Number.isInteger(total) ? formatMoney(total, currency) : '–'}
+        Total:{' '}
+        {Number.isInteger(total) && Math.abs(total) <= MAX_AMOUNT_CENTS
+          ? formatMoney(total, currency)
+          : '–'}
       </p>
       <GroupError id="itemsTotal-error" message={totalError} />
     </section>
@@ -127,6 +132,7 @@ function Item({
         id={`item-${index}-amount`}
         inputMode="decimal"
         label={`Item ${number} amount (${currency})`}
+        hint={`For example ${amountExample(currency)}. A minus sign makes it a discount.`}
         error={error('amount')}
         {...form.register(`${path}.amount`)}
       />
@@ -160,7 +166,11 @@ function Item({
           </label>
         </div>
       </fieldset>
-      <fieldset className="flex flex-col gap-2" aria-describedby={people ? peopleError : undefined}>
+      <fieldset
+        id={`item-${index}-people`}
+        className="flex flex-col gap-2"
+        aria-describedby={people ? peopleError : undefined}
+      >
         <legend className="mb-1 text-sm font-medium">Who item {number} is for</legend>
         {members.length === 0 && (
           <p className="text-sm text-muted-foreground">Tick who’s sharing the receipt first.</p>

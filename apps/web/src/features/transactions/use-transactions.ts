@@ -158,6 +158,7 @@ function refresh(queryClient: ReturnType<typeof useQueryClient>, view: Transacti
   const { transaction } = view
   queryClient.setQueryData(queryKeys.transaction(transaction.$id), transaction)
   queryClient.setQueryData(queryKeys.transactionShares(transaction.$id), view.shares)
+  queryClient.setQueryData(queryKeys.transactionItems(transaction.$id), view.items)
   void queryClient.invalidateQueries({ queryKey: queryKeys.balances(transaction.groupId) })
   void queryClient.invalidateQueries({ queryKey: ['history', transaction.groupId] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })

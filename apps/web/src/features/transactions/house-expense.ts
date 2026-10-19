@@ -1,5 +1,9 @@
 import type { Category } from '@ledgerly/core/constants/categories'
-import { MAX_ITEMS_PER_TRANSACTION, MAX_WEIGHT } from '@ledgerly/core/constants/limits'
+import {
+  MAX_AMOUNT_CENTS,
+  MAX_ITEMS_PER_TRANSACTION,
+  MAX_WEIGHT,
+} from '@ledgerly/core/constants/limits'
 import { isLocalDate, type LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { buildShares, type Share } from '@ledgerly/core/ledger/build-shares'
@@ -319,12 +323,13 @@ export function itemProblems(values: HouseExpenseValues, currency: string): Item
       problems.items[index] = found
     }
   })
-  if (
-    !problems.total &&
-    Object.keys(problems.items).length === 0 &&
-    itemsTotal(values, currency) === 0
-  ) {
-    problems.total = 'The items add up to 0.'
+  const total = itemsTotal(values, currency)
+  if (!problems.total && Object.keys(problems.items).length === 0) {
+    if (total === 0) problems.total = 'The items add up to 0.'
+    // Each item may be up to the limit; their sum may not.
+    else if (Math.abs(total) > MAX_AMOUNT_CENTS) {
+      problems.total = `The items add up to more than ${formatMoney(MAX_AMOUNT_CENTS, currency)}.`
+    }
   }
   return problems
 }

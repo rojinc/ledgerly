@@ -525,6 +525,19 @@ describe('itemised receipts (#42)', () => {
       ).total,
     ).toBe('The items add up to 0.')
     expect(itemProblems(flow7({ items: [] }), 'AUD').total).toBe('Add at least one item.')
+    // Each item may be up to $100,000,000.00; their sum, either way, may not.
+    const big = (amount: string) => item({ name: 'Car', amount })
+    expect(itemProblems(flow7({ items: [big('99999999'), big('1.00')] }), 'AUD')).toEqual({
+      items: {},
+    })
+    for (const [first, second] of [
+      ['100000000', '1.01'],
+      ['-100000000', '-1.01'],
+    ] as const) {
+      expect(itemProblems(flow7({ items: [big(first), big(second)] }), 'AUD').total).toMatch(
+        /^The items add up to more than .*100,000,000\.00\.$/,
+      )
+    }
     expect(
       itemProblems(flow7({ items: [item({ name: 'x'.repeat(121), amount: '1' })] }), 'AUD').items,
     ).toEqual({ 0: { name: 'At most 120 characters', shares: {} } })

@@ -798,10 +798,11 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
   async function itemise() {
     mockGroups(house)
     mockRows([], [], HOUSEMATES)
-    renderAt('/transactions/new?groupId=house1')
+    const view = renderAt('/transactions/new?groupId=house1')
     fireEvent.change(await screen.findByLabelText('Amount (AUD)'), { target: { value: '90' } })
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Groceries' } })
     fireEvent.click(screen.getByLabelText('Itemise this receipt'))
+    return view
   }
 
   /** Fills item `number` (from 1), adding it first unless it's the first. */
@@ -817,8 +818,11 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
     screen.getByRole('group', { name: `Who item ${number} is for` })
 
   it('sends user flow 7’s receipt item by item, with core’s preview', async () => {
-    call.mockResolvedValue(ok({ transaction: row('x9', { groupId: 'house1' }), shares: [] }))
-    await itemise()
+    const stored = [{ $id: 'i0', position: 0 }]
+    call.mockResolvedValue(
+      ok({ transaction: row('x9', { groupId: 'house1' }), shares: [], items: stored }),
+    )
+    const { router, queryClient } = await itemise()
     expect(screen.queryByLabelText('Amount (AUD)')).toBeNull()
     expect(screen.queryByRole('group', { name: 'How to split it' })).toBeNull()
     expect(screen.getByRole('group', { name: 'Who’s sharing this receipt' })).toBeTruthy()
@@ -832,6 +836,14 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
     fillItem(4, 'Discount', '2.00')
     fireEvent.click(screen.getByLabelText('Item 4 is a discount'))
     expect(screen.getByText(/^Total: .*27\.00$/)).toBeTruthy()
+    expect(screen.getByLabelText('Item 4 amount (AUD)').getAttribute('aria-describedby')).toBe(
+      'item-3-amount-hint',
+    )
+    expect(
+      screen.getByText('For example 40.50. A minus sign makes it a discount.', {
+        selector: '#item-3-amount-hint',
+      }),
+    ).toBeTruthy()
     const preview = screen.getByRole('region', { name: 'Each person’s part' })
     expect(within(preview).getByText(/^Alice: share .*2\.34$/)).toBeTruthy()
     expect(within(preview).getByText(/^Bob: paid .*27\.00, share .*22\.33$/)).toBeTruthy()
@@ -854,6 +866,9 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
         { name: 'Discount', amountCents: -200, split: { mode: 'equal', personIds: everyone } },
       ],
     })
+    // The answer's items are kept: the expense opens without reading them again.
+    await waitFor(() => expect(router.state.location.pathname).toBe('/transactions/x9'))
+    expect(queryClient.getQueryData(['transaction', 'x9', 'items'])).toBe(stored)
   })
 
   it('splits an item by shares, with its own category', async () => {
@@ -913,8 +928,11 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
     fireEvent.click(screen.getByLabelText('Item 2 is a discount'))
     const message = 'A discount can’t make anyone’s part go below zero.'
     expect(screen.getByRole('status', { name: '' }).textContent).toBe(message)
+    const focused = document.activeElement
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect((await screen.findByRole('alert')).textContent).toBe(message)
+    // The refusal is an alert above the form; focus isn't sent to the items.
+    expect(document.activeElement).toBe(focused)
     expect(call).not.toHaveBeenCalled()
   })
 
@@ -942,12 +960,38 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
     expect(call).not.toHaveBeenCalled()
   })
 
-  it('refuses items that add up to zero', async () => {
+  it('refuses items that add up to zero, focusing Add item', async () => {
     await itemise()
     fillItem(1, 'Milk', '4')
     fillItem(2, 'Milk back', '-4')
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect(await screen.findByText('The items add up to 0.')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Add item' }))
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('refuses items that add up to more than the limit, without breaking the page', async () => {
+    await itemise()
+    fillItem(1, 'Car', '99999999')
+    fillItem(2, 'Boat', '99999999')
+    expect(screen.getByText('Total: –')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(
+      await screen.findByText(/^The items add up to more than .*100,000,000\.00\.$/),
+    ).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('focuses the item’s first person when only its people are wrong', async () => {
+    await itemise()
+    fillItem(1, 'Milk', '4')
+    fillItem(2, 'Bread', '5')
+    for (const name of ['Alice', 'Bob', 'Cara']) {
+      fireEvent.click(within(whoFor(2)).getByLabelText(name))
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('Tick at least one person for this item.')).toBeTruthy()
+    expect(document.activeElement).toBe(within(whoFor(2)).getByLabelText('Alice'))
     expect(call).not.toHaveBeenCalled()
   })
 
