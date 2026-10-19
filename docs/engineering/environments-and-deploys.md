@@ -37,12 +37,14 @@ The two config files share the resource files through the CLI's `includes` field
 | Trigger | Steps |
 | --- | --- |
 | push to `main` | `npm ci` → `npm run build` (the web app with `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID` of dev) → install `appwrite-cli` (pinned) → `appwrite client -e $ENDPOINT -p $DEV_PROJECT -k $DEV_KEY` → `appwrite push table`, `bucket`, `function` and `site`, each with `--all --force` |
-| tag `v*` | the same steps with `--config-file appwrite.config.prod.json` and the prod secrets, in the `production` environment, which needs the owner's approval. The tag must be on `main`. |
+| tag `vMAJOR.MINOR.PATCH` | the same steps with `--config-file appwrite.config.prod.json` and the prod secrets, in the `production` environment (see the owner setup below for who can approve it). The tag must be on `main`. |
 
 - **One deploy per environment at a time,** and a running one is never cancelled.
-- **The CLI exits 0 even when a resource fails to push,** so each push step reads the CLI's output and fails on any `✗ Error`. `appwrite push all` can't be used: it needs a console login, not an API key.
-- **The CLI refuses an endpoint that differs from the config file's,** so `APPWRITE_ENDPOINT` must be exactly the config's `endpoint`, and the project secret must match its `projectId`. The workflow checks both before it pushes.
-- **Until the secrets exist (#3),** a dev deploy is skipped with a warning. A prod deploy fails instead.
+- **The CLI can exit 0 when a resource fails to push** (for example "Deployed 4 of 5 functions … 1 failed."), so each push runs under `pipefail` and also fails on any `✗` or "… failed." line in the CLI's output. `appwrite push all` can't be used: it needs a console login, not an API key.
+- **The CLI takes the endpoint from `APPWRITE_ENDPOINT` over the config file's,** so nothing in the CLI notices a mismatch. The workflow checks that `APPWRITE_ENDPOINT` is exactly the config's `endpoint` and that the project secret matches its `projectId` before it pushes.
+- **The API key** is passed only to the two steps that use it, never to `npm ci` or the build.
+- **Until the secrets exist (#3),** a dev deploy is skipped with a warning. A prod deploy, or a dev deploy with only some of its secrets, fails instead.
+- **Roll forward, never back.** `push table --force` makes the database match the config, so deploying an older commit (an old tag, or re-running an old run) drops columns added since. To undo a release, revert on `main` and tag a new patch release.
 - **The web app** (`appwrite/sites.json`) is a static site.
   - CI builds it and uploads only `dist/`, so Appwrite never runs `npm install` (the same reason as for functions, below).
   - Its build command only checks that `dist/index.html` arrived; the CLI skips a site with no build command.
@@ -51,8 +53,11 @@ The two config files share the resource files through the CLI's `includes` field
 GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_API_KEY`, `APPWRITE_PROD_PROJECT_ID`, `APPWRITE_PROD_API_KEY`.
 
 **Owner setup for deploys (#3):**
-- Give the `production` environment a required reviewer (the owner).
-- Store the two `APPWRITE_PROD_*` secrets as secrets of that environment rather than of the repo, so a prod key is only read after approval.
+- **Who can deploy prod.** Anyone who can push a `v*` tag on a `main` commit. The agents work through the owner's GitHub account, so GitHub can't tell them apart from the owner: the rule that only the owner tags a release is a process rule. What GitHub can add depends on the plan ([GitHub docs](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)):
+  - **Public repo, or GitHub Enterprise:** a required reviewer on the `production` environment, environment secrets, and deployment tags limited to `v*`.
+  - **Private repo on GitHub Pro or Team:** environment secrets and deployment tags limited to `v*`, so only a tag run can read the prod key. No required reviewers.
+  - **Private repo on GitHub Free:** none of these. The prod secrets are repo secrets, and a `production` environment the workflow names is created with no protection.
+- Store the two `APPWRITE_PROD_*` secrets as secrets of the `production` environment where the plan allows it, and limit its deployment tags to `v*`.
 - Create the web site's domain once in the Appwrite console, in each project: an API key can't create it.
 
 ## Function settings
