@@ -19,8 +19,11 @@ export interface UsersApi {
 /** What the routes and jobs work with, so tests can pass FakeDb, fakes and a fixed clock. */
 export type Services = {
   db: Db
-  /** For requireMember, which asks it only about a `left` member. */
-  teams: Pick<TeamsApi, 'listMemberships'>
+  /**
+   * For requireMember, which asks it only about a `left` member, and for step 6, the only one
+   * that removes or adds back a membership (scheduling.md#step-6-nightly-check).
+   */
+  teams: Pick<TeamsApi, 'listMemberships' | 'deleteMembership' | 'createMembership'>
   users: UsersApi
   sendEmail: (email: Email) => Promise<unknown>
   now: Date

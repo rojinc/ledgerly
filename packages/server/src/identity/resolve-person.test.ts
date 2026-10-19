@@ -52,7 +52,7 @@ describe('resolvePerson', () => {
     expect(byEmail).toEqual({ personId: 'pEmail', writes: [] })
   })
 
-  it('plans a placeholder with a random ID and unverified identities when nothing is known', async () => {
+  it('plans a placeholder with a random ID and one unverified identity when nothing is known', async () => {
     const store = db()
     const { personId, writes } = await resolvePerson(
       store,
@@ -76,14 +76,26 @@ describe('resolvePerson', () => {
         verified: false,
         $permissions: [],
       }),
+    ])
+  })
+
+  it('keeps one key, the email if there is one, so only one key can claim the placeholder', async () => {
+    const both = await resolvePerson(
+      db(),
+      { displayName: 'Jo', email: 'jo@example.com', phone: '+61400000001' },
+      'AU',
+    )
+    expect(both.writes).toEqual([
+      expect.objectContaining({ tableId: 'persons' }),
       expect.objectContaining({
-        key: 'phone:+61400000000',
-        type: 'phone',
-        personId,
-        verified: false,
-        $permissions: [],
+        tableId: 'identities',
+        data: expect.objectContaining({ key: 'email:jo@example.com' }),
       }),
     ])
+    // The phone is still checked.
+    await expect(
+      resolvePerson(db(), { displayName: 'Jo', email: 'jo@example.com', phone: '12' }, 'AU'),
+    ).rejects.toThrow(RangeError)
   })
 
   it('creates only the identity it was given', async () => {
@@ -119,5 +131,34 @@ describe('resolvePerson', () => {
     await expect(resolvePerson(db(), { displayName: 'X', phone: '12' }, 'AU')).rejects.toThrow(
       new RangeError('Not a valid phone number'),
     )
+  })
+
+  it('follows mergedInto to the end of the chain, so an email added mid-merge adds U', async () => {
+    const store = new FakeDb({
+      persons: [
+        { $id: 'pOld', displayName: 'Sam', userId: null, mergedInto: 'pMid' },
+        { $id: 'pMid', displayName: 'Sam', userId: null, mergedInto: 'pSam' },
+        { $id: 'pSam', displayName: 'Sam Lee', userId: 'uSam', mergedInto: null },
+      ],
+      identities: [{ $id: 'i1', key: 'email:sam@example.com', type: 'email', personId: 'pOld' }],
+    })
+    expect(
+      await resolvePerson(store, { displayName: 'Sam', email: 'sam@example.com' }, 'AU-NSW'),
+    ).toEqual({ personId: 'pSam', writes: [] })
+  })
+
+  it('reads the chain in the caller’s transaction, and refuses a broken loop', async () => {
+    const store = new FakeDb({
+      persons: [
+        { $id: 'pA', displayName: 'A', userId: null, mergedInto: 'pB' },
+        { $id: 'pB', displayName: 'B', userId: null, mergedInto: 'pA' },
+      ],
+      identities: [{ $id: 'i1', key: 'email:a@example.com', type: 'email', personId: 'pA' }],
+    })
+    await expect(
+      withTransaction(store, (tx) =>
+        resolvePerson(store, { displayName: 'A', email: 'a@example.com' }, 'AU-NSW', tx.id),
+      ),
+    ).rejects.toThrow('A person was merged too many times in a row')
   })
 })

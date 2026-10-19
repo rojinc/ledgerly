@@ -17,6 +17,7 @@ type SeedRow<R> = Partial<R> & { $id: string }
 
 export type Fakes = Services & {
   db: FakeDb
+  teams: FakeTeams
   sendEmail: ReturnType<typeof vi.fn<(email: Email) => Promise<unknown>>>
 }
 

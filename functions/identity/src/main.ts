@@ -7,8 +7,10 @@ import {
 } from '@ledgerly/server/http/create-handler'
 import { bootstrap } from './routes/bootstrap'
 import { postClaim } from './routes/claim'
+import { passwordNotice } from './routes/password-notice'
 import { joinPendingGroup, listPendingGroups } from './routes/pending-groups'
 import { updateProfile } from './routes/profile'
+import { sendReminder } from './routes/reminders'
 import { type Services, servicesFromRequest } from './services'
 
 // The commit this bundle was built from (scripts/build-functions.mjs).
@@ -20,6 +22,16 @@ export function identityRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
+    // identity-and-invites.md#password-notice: the users.*.update.password and
+    // users.*.recovery.*.update events.
+    route(
+      'POST',
+      '/',
+      async (ctx) => passwordNotice(services(ctx), ctx.event, ctx.headers, ctx.body),
+      {
+        event: true,
+      },
+    ),
     route('POST', '/bootstrap', async (ctx) =>
       bootstrap(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
@@ -28,6 +40,9 @@ export function identityRoutes(
     ),
     route('POST', '/claim', async (ctx) =>
       postClaim(services(ctx), requireUser(ctx.userId), ctx.body),
+    ),
+    route('POST', '/reminders', async (ctx) =>
+      sendReminder(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
     route('GET', '/groups/pending', async (ctx) =>
       listPendingGroups(services(ctx), requireUser(ctx.userId)),
