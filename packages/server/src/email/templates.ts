@@ -181,7 +181,9 @@ export function timerRunningEmail(input: {
  * To a placeholder member, from someone in their group (identity-and-invites.md#invites). It
  * names the inviter, as the group calls them, and the group, and nothing else: no amounts. The
  * group is named as a label, since a pair group's name is what its creator calls the person
- * being invited. `url` carries the token in its fragment, which browsers never send to a server.
+ * being invited. Both names are free text, so they stay out of the subject and are cut as a
+ * reminder's sender is (`shortLine`). `url` carries the token in its fragment, which browsers
+ * never send to a server.
  */
 export function inviteEmail(input: {
   inviterName: string
@@ -189,9 +191,9 @@ export function inviteEmail(input: {
   url: string
 }): EmailContent {
   return message(
-    `${input.inviterName} invited you to a group on Ledgerly`,
+    "You've been invited to a group on Ledgerly",
     [
-      `${input.inviterName} added you to the group “${input.groupName}” on Ledgerly and invited you to join.`,
+      `${shortLine(input.inviterName)} added you to the group “${shortLine(input.groupName)}” on Ledgerly and invited you to join.`,
       "If you weren't expecting this, you can ignore this email.",
     ],
     [{ label: 'Accept the invite', url: input.url }],
@@ -228,7 +230,7 @@ export function passwordChangedEmail(input: {
 /**
  * A reminder that someone owes the sender money (F-63, identity-and-invites.md#reminders), to
  * the address the sender typed. `senderName` is the sender's name in that group, free text they
- * chose, so it stays out of the subject, is one line, and is cut to 40 characters; `amountCents` is the whole
+ * chose, so it stays out of the subject and is cut (`shortLine`); `amountCents` is the whole
  * balance owed. Nothing else: no recipient or group name (both are what the sender calls them),
  * no transactions, no note, and only a link to the app.
  */
@@ -238,34 +240,40 @@ export function reminderEmail(input: {
   currency: string
   url: string
 }): EmailContent {
-  // One line, as the subject is, so a line break can't start a paragraph of its own. Cut by
-  // whole character as people see them, so an emoji sequence isn't split.
-  const characters = Array.from(
-    GRAPHEMES.segment(input.senderName.replace(/\s+/g, ' ').trim()),
-    (part) => part.segment,
-  )
-  const sender =
-    characters.length > SENDER_LENGTH
-      ? `${characters
-          .slice(0, SENDER_LENGTH - 1)
-          .join('')
-          .trimEnd()}…`
-      : characters.join('')
   // A balance is worked out from amounts, so it can pass the amount cap.
   const amount = formatNet(input.amountCents, input.currency, LOCALE)
   return message(
     'You have a payment reminder',
     [
-      `${sender} sent you a reminder that you owe them ${amount}.`,
+      `${shortLine(input.senderName)} sent you a reminder that you owe them ${amount}.`,
       "If you've already paid, let them know so they can record it.",
     ],
     [{ label: 'Open Ledgerly', url: input.url }],
   )
 }
 
-// The most of a sender's own name a reminder shows.
-const SENDER_LENGTH = 40
+// The most of someone's own text a reminder or an invite shows, per name.
+const SHORT_LINE_LENGTH = 40
 const GRAPHEMES = new Intl.Segmenter(LOCALE, { granularity: 'grapheme' })
+
+/**
+ * Free text someone chose, for an email body: one line, as the subject is, so a line break
+ * can't start a paragraph of its own, and at most 40 characters as people see them, so an emoji
+ * sequence isn't split; a longer one ends in "…". Cut before `message()` escapes it, so an
+ * escape is never cut in half.
+ */
+function shortLine(text: string): string {
+  const characters = Array.from(
+    GRAPHEMES.segment(text.replace(/\s+/g, ' ').trim()),
+    (part) => part.segment,
+  )
+  return characters.length > SHORT_LINE_LENGTH
+    ? `${characters
+        .slice(0, SHORT_LINE_LENGTH - 1)
+        .join('')
+        .trimEnd()}…`
+    : characters.join('')
+}
 
 /** What one group owes the person (positive) or they owe it (negative), in its currency. */
 export type SummaryBalance = { groupName: string; currency: string; cents: number }

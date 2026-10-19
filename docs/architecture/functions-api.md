@@ -30,7 +30,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 
 | Code | HTTP | When |
 | --- | --- | --- |
-| `UNAUTHENTICATED` | 401 | No signed-in user |
+| `UNAUTHENTICATED` | 401 | No signed-in user. Also `identity POST /invites` from an inviter whose account deletion has started ([invites](identity-and-invites.md#invites)) |
 | `VALIDATION_FAILED` | 400 | Payload failed the zod schema or a ledger rule. `details` holds the issues. |
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |

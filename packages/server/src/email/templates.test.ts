@@ -290,10 +290,13 @@ describe('timerRunningEmail', () => {
 describe('inviteEmail', () => {
   const LINK = 'https://app.example/invite#Qx3_kz-9AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
 
+  const invite = (inviterName: string, groupName: string) =>
+    inviteEmail({ inviterName, groupName, url: LINK })
+
   it('names the inviter and the group, and links to the invite', () => {
-    const content = inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: LINK })
+    const content = invite('Ann Cho', 'Flat 2')
     expectWellFormed(content)
-    expect(content.subject).toBe('Ann Cho invited you to a group on Ledgerly')
+    expect(content.subject).toBe("You've been invited to a group on Ledgerly")
     expect(content.text).toContain(
       'Ann Cho added you to the group “Flat 2” on Ledgerly and invited you to join.',
     )
@@ -302,25 +305,38 @@ describe('inviteEmail', () => {
   })
 
   it('holds no amounts', () => {
-    const content = inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: LINK })
+    const content = invite('Ann Cho', 'Flat 2')
     for (const part of [content.subject, content.text, content.html]) {
       expect(part).not.toMatch(/\$|AUD|\d[\d,]*\.\d{2}\b|\bcents?\b|\bowe/i)
     }
   })
 
-  it('escapes the names in the HTML and keeps the subject on one line', () => {
-    const content = inviteEmail({
-      inviterName: `<b>Ann & "Jo"</b>\r\nBcc: x@example.com`,
-      groupName: `Tom's <i>Flat</i>`,
-      url: LINK,
-    })
-    expect(content.subject).toBe(
-      '<b>Ann & "Jo"</b> Bcc: x@example.com invited you to a group on Ledgerly',
+  it('keeps both names out of the subject, puts each on one line and escapes them', () => {
+    const content = invite(
+      `<b>Ann & "Jo"</b>\r\nBcc: x@example.com`,
+      `Tom's <i>Flat</i>\n\tPay here`,
+    )
+    expect(content.subject).toBe("You've been invited to a group on Ledgerly")
+    expect(content.subject).not.toMatch(/Ann|Jo|Bcc|Tom|Flat|Pay|</)
+    expect(content.text).toContain(
+      `<b>Ann & "Jo"</b> Bcc: x@example.com added you to the group “Tom's <i>Flat</i> Pay here” on`,
     )
     expect(content.html).toContain(
-      '&lt;b&gt;Ann &amp; &quot;Jo&quot;&lt;/b&gt;\r\nBcc: x@example.com added you to the group “Tom&#39;s &lt;i&gt;Flat&lt;/i&gt;”',
+      '&lt;b&gt;Ann &amp; &quot;Jo&quot;&lt;/b&gt; Bcc: x@example.com added you to the group “Tom&#39;s &lt;i&gt;Flat&lt;/i&gt; Pay here” on',
     )
     expect(content.html).not.toMatch(/<b>|<i>/)
+  })
+
+  it('cuts each name past 40 characters, by character, as a reminder cuts its sender', () => {
+    // A family emoji is 5 code points but one character: as the 39th, it is kept whole, not split.
+    const family = '👩‍👩‍👧'
+    const edge = `${'a'.repeat(38)}${family}bb`
+    const cut = `${'a'.repeat(38)}${family}…`
+    expect(invite(edge, 'Flat 2').text).toContain(`${cut} added you to the group “Flat 2”`)
+    expect(invite('Ann', edge).text).toContain(`Ann added you to the group “${cut}” on`)
+    // 40 characters (44 code points) stay whole.
+    const whole = `${'b'.repeat(39)}${family}`
+    expect(invite(whole, whole).text).toContain(`${whole} added you to the group “${whole}” on`)
   })
 
   it('refuses a link that is not http(s), such as one without APP_URL', () => {

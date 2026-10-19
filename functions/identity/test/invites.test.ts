@@ -15,6 +15,7 @@ import {
   NOW,
   placeholderRow,
   TRY_AGAIN,
+  updateRow,
 } from './harness'
 
 type Row = Record<string, unknown> & { $id: string }
@@ -211,8 +212,8 @@ describe('POST /invites', () => {
     expect(services.sent).toHaveLength(1)
     expect(email).toMatchObject({ to: 'sam@example.com', idempotencyKey: `invite/${row?.$id}` })
     expect(email?.text).toContain(`Accept the invite: ${APP_URL}/invite#${token}`)
-    // The inviter as the group calls them, and the group; nothing else.
-    expect(email?.subject).toBe('Annie invited you to a group on Ledgerly')
+    // A fixed subject; in the body, the inviter as the group calls them, and the group.
+    expect(email?.subject).toBe("You've been invited to a group on Ledgerly")
     expect(email?.text).toContain('Annie added you to the group “Flat 2” on Ledgerly')
     expect(`${email?.subject} ${email?.text} ${email?.html}`).not.toMatch(/Cho-Smith|Sammy|Sam Lee/)
     // The guard writes: a fresh rev on the inviter's and the target's persons rows.
@@ -247,9 +248,9 @@ describe('POST /invites', () => {
       expect.objectContaining({ groupId: 'g1', invitedBy: 'pBen' }),
       expect.objectContaining({ groupId: 'g2', memberId: 'mSam2', invitedBy: 'pAnn' }),
     ])
-    expect(services.sent.map((email) => email.subject)).toEqual([
-      'Ben invited you to a group on Ledgerly',
-      'Ann invited you to a group on Ledgerly',
+    expect(services.sent.map((email) => email.text.split('\n\n')[0])).toEqual([
+      'Ben added you to the group “Flat 2” on Ledgerly and invited you to join.',
+      'Ann added you to the group “Sam” on Ledgerly and invited you to join.',
     ])
   })
 
@@ -438,6 +439,66 @@ describe('POST /invites', () => {
       })
       expect(services.db.rows('invites')).toEqual([])
       expect(services.sent).toEqual([])
+    })
+  })
+
+  describe.each([
+    [
+      'the inviter',
+      'pAnn',
+      { status: 401, code: 'UNAUTHENTICATED', message: 'Log in to continue.' },
+    ],
+    // The same answer as a wrong address, so it doesn't show the deletion.
+    [
+      'the person invited',
+      'pSam',
+      { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
+    ],
+  ])('when %s has started deleting their account', (_who, personId, expected) => {
+    // Deletion step 2 (identity-and-invites.md#order): deletedAt and a fresh rev, the identities
+    // kept until step 5. Sam has an account, as anyone deleting one does.
+    const deleting = (services: Fakes) => () =>
+      updateRow(services.db, 'persons', personId, { deletedAt: ago(1000), rev: 'deleting' })
+
+    function expectNothingDone(services: Fakes) {
+      expect(services.db.rows('invites')).toEqual([])
+      // The deletion's write only: this request's guards were rolled back.
+      expect(revs(services)).toEqual({ ...UNTOUCHED, [personId]: 'deleting' })
+      expect(services.sent).toEqual([])
+    }
+
+    it('refuses, committing and sending nothing', async () => {
+      const services = fixture({ samUserId: 'u9' })
+      await deleting(services)()
+      expect(await refused(services)).toEqual(expected)
+      expectNothingDone(services)
+    })
+
+    it('refuses when the deletion commits just before the guards are staged', async () => {
+      const services = fixture({ samUserId: 'u9' })
+      // After step 2's checks: the stored rows, read after the guards, show it.
+      const raced = beforeStaging(
+        services.db,
+        (operations) => operations.includes('"tableId":"persons"'),
+        deleting(services),
+      )
+      expect(await refused(services)).toEqual(expected)
+      expect(raced).toHaveBeenCalled()
+      expectNothingDone(services)
+    })
+
+    it('fails the commit when the deletion commits just after the guards, and the retry refuses', async () => {
+      const services = fixture({ samUserId: 'u9' })
+      // After this request staged its guards, read both rows and counted.
+      const raced = beforeCommit(services.db, deleting(services))
+      expect(await refused(services)).toEqual(expected)
+      // This request's first commit fails (409), then the deletion's own; the retry refuses
+      // before committing.
+      const commits = raced.mock.calls.flatMap(([params], index) =>
+        params.commit ? [raced.mock.settledResults[index]?.type] : [],
+      )
+      expect(commits).toEqual(['rejected', 'fulfilled'])
+      expectNothingDone(services)
     })
   })
 

@@ -1,5 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
-import type { Invites, Members } from '@ledgerly/core/generated/rows'
+import type { Invites, Members, Persons } from '@ledgerly/core/generated/rows'
 import { identityKey, normalizeEmail } from '@ledgerly/core/identity/normalize'
 import { createInviteBodySchema } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
@@ -97,8 +97,9 @@ export async function createInvite(
     await commit()
   } catch (error) {
     if (!isAppwriteError(error, 409)) throw error
-    // Another invite by this inviter, or to this person, committed after this one's guard was
-    // staged: count again, once, so it is refused if it took the last place.
+    // Another invite by this inviter, or to this person, or a deletion of either, committed after
+    // this one's guard was staged: check again, once, so it is refused if that invite took the
+    // last place or that deletion has started.
     await conflictAsTryAgain(commit)
   }
 
@@ -108,10 +109,12 @@ export async function createInvite(
 }
 
 /**
- * Step 3: commits the invite row unless a limit is reached, RATE_LIMITED otherwise, with nothing
- * committed. A guard write (a fresh `rev`) on the inviter's and the target's persons rows is
- * staged before counting (conventions.md#functions), so an invite by the same inviter, or to the
- * same person, that commits after that fails this commit: a burst can't pass the count together.
+ * Step 3: commits the invite row unless either person's account deletion has started or a limit
+ * is reached, with nothing committed otherwise. A guard write (a fresh `rev`) on the inviter's
+ * and the target's persons rows is staged before reading them and counting
+ * (conventions.md#functions), so an invite by the same inviter, or to the same person, or a
+ * deletion of either, that commits after that fails this commit: a burst can't pass the count
+ * together, and the retry sees the deletion.
  */
 async function commitWithinLimits(
   db: Db,
@@ -122,6 +125,14 @@ async function commitWithinLimits(
 ): Promise<void> {
   await withTransaction(db, async (tx) => {
     await tx.write(guard(row.invitedBy), guard(targetPersonId))
+    // The stored rows, not this transaction's view: an account deletion may have started.
+    if ((await getRowOrNull<Persons>(db, TABLES.persons, row.invitedBy))?.deletedAt !== null) {
+      throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
+    }
+    // As a wrong address, so the answer doesn't show the deletion.
+    if ((await getRowOrNull<Persons>(db, TABLES.persons, targetPersonId))?.deletedAt !== null) {
+      throw invalid(NOT_THEIR_EMAIL)
+    }
     if (
       (await reached(db, PER_INVITER, row.invitedBy, now)) ||
       (await reached(db, PER_IDENTITY, row.identityKey, now))

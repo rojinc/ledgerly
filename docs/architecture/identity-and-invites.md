@@ -139,9 +139,13 @@ An invite is a convenience: a link that tells someone they've been added and hel
 
 1. The caller must be allowed to add members in that group ([permissions](permissions.md#roles)) and must have a verified email ([F-02](../product/features.md#accounts-and-profile)); otherwise `FORBIDDEN`.
 2. `memberId` must be in that group (otherwise `NOT_FOUND`) and still a `placeholder` (otherwise `VALIDATION_FAILED`). The invite goes only to the address the caller typed. After normalising, it must be an identity of that member's person, otherwise `VALIDATION_FAILED`. Ledgerly never picks an address the caller didn't give, so it never emails an address the inviter doesn't already know.
-3. **Rate limits:** at most 20 invites per inviter in the last 24 hours, and 3 per identity in the last 7 days. Otherwise return `RATE_LIMITED`, before anything is committed. So that a burst of parallel requests can't pass the count together, first stage a guard write (a fresh `rev`) on the inviter's and the target's `persons` rows, then count.
+3. **Guards, then checks, in one database transaction.** So that a burst of parallel requests can't pass the count together, first stage a guard write (a fresh `rev`) on the inviter's and the target's `persons` rows. Then:
+   1. Read both rows again, as stored (not through the transaction). An inviter with `deletedAt` (their account deletion has started) gets `UNAUTHENTICATED`; a target with `deletedAt` gets the same `VALIDATION_FAILED` as a wrong address (step 2), so the answer doesn't show the deletion. A deletion that commits after the guard was staged fails this commit, and the one retry then refuses.
+   2. **Rate limits:** at most 20 invites per inviter in the last 24 hours, and 3 per identity in the last 7 days. Otherwise return `RATE_LIMITED`, before anything is committed.
 4. Create a random 32-byte token (base64url). Store only its SHA-256 hash, with `expiresAt` 14 days ahead. Commit the invite row before sending, so a failed send still counts toward the limits (it returns `INTERNAL`).
 5. Send `https://<app>/invite#<token>` by email (Resend) or SMS (M3). The token goes in the URL fragment, which browsers never send to servers or in `Referer` headers, so it stays out of logs. The message names the inviter and the group, nothing else. It is sent the same way, with the same response, whether or not the person has an account.
+   - **Subject:** "You've been invited to a group on Ledgerly", fixed: both names are free text, so they stay out of it.
+   - **Body:** "{inviter} added you to the group “{group}” on Ledgerly and invited you to join.", then "If you weren't expecting this, you can ignore this email." and the link. `{inviter}` is the inviter's `members.displayName` in that group and `{group}` the group's name. Each is put on one line and cut to 40 characters as people see them (with "…"), as a reminder's `{sender}` is ([reminders](#reminders), step 9), and HTML-escaped.
 
 `identity POST /invites/accept` with `{ token }`:
 
@@ -177,7 +181,7 @@ The response and the email are the same whether the recipient is a placeholder w
 **Accepted risks:**
 - Hitting the recipient limit tells the sender that someone else reminded that person this week.
 - Whether a typed address matches tells the sender which address the person is known by. The check comes before the limits and a failed one stores nothing, so guesses aren't counted yet, exactly as for an invite's address check (step 2). It only answers for the one person the sender shares a pair group with, and never says whether they have an account. Counting failed checks for both is [#274](https://github.com/rojinc/ledgerly/issues/274).
-- **The sender's name is free text** in the body, up to 40 characters: enough for a short misleading phrase, not a message. Invites have the same exposure (a follow-up).
+- **The sender's name is free text** in the body, up to 40 characters: enough for a short misleading phrase, not a message. Invites have the same exposure, for two names ([invites](#invites)).
 - **One inbox can be several persons** (`a+1@x`, `a+2@x`): each has its own recipient limit. Accepted.
 - **Retention:** `reminders` rows hold person and group IDs only, and are kept until either person's account is deleted (or a purge). Pruning old rows is a later follow-up.
 
