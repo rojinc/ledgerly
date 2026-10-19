@@ -434,6 +434,32 @@ export function afterLatestFinalRead(db: FakeDb, operations: object[]) {
  * Commits `operations`, as another request finishing first would, just before this request's
  * `nth` staging. A row that request changes is then seen by the checks after staging.
  */
+/**
+ * Commits `operations` just before each of this request's first `times` commits. Pass a function
+ * for writes that must change something each time: a write that changes nothing fails no commit.
+ */
+export function beforeCommits(
+  db: FakeDb,
+  operations: object[] | ((time: number) => object[]),
+  times = 1,
+) {
+  const update = db.updateTransaction.bind(db)
+  let left = times
+  return vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
+    if (params.commit && left > 0) {
+      left -= 1
+      // Through the real commit, so this write doesn't count as one of the request's.
+      const { $id } = await db.createTransaction()
+      await db.createOperations({
+        transactionId: $id,
+        operations: typeof operations === 'function' ? operations(times - left) : operations,
+      })
+      await update({ transactionId: $id, commit: true })
+    }
+    return update(params)
+  })
+}
+
 export function beforeStaging(db: FakeDb, operations: object[], nth = 1) {
   const stage = db.createOperations.bind(db)
   let calls = 0

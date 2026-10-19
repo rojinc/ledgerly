@@ -1,6 +1,8 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { statementName } from '../src/shared'
 import {
+  beforeCommits,
   beforeStaging,
   call,
   commitNow,
@@ -473,6 +475,58 @@ describe('finalizing a divide', () => {
     )
     expect(late.code).toBe('CONFLICT')
     expect(services.db.rows('transactions').some((t) => t.statementId === 'st-oct')).toBe(false)
+  })
+
+  describe('step 4, the lock batches', () => {
+    // A run resuming October's finalize: its first commit is the first lock batch.
+    const resuming = () =>
+      house([
+        september(),
+        electricity(),
+        { statements: [septemberFinal(), octoberDraft({ status: 'finalizing' })] },
+      ])
+    const finalizeLate = (services: Fakes) =>
+      failure(services, 'POST', '/statements/st-oct/finalize', { send: false }, 'u-alice')
+    const lockedToOctober = (services: Fakes) =>
+      services.db.rows('transactions').filter((t) => t.statementId === 'st-oct')
+    // Another write in the house each time: it guards the group row too.
+    const groupWrite = (time = 1) => [op('groups', 'house', { rev: `another${time}` })]
+
+    it('locks nothing to a draft discarded between a batch’s check and its commit', async () => {
+      const services = resuming()
+      // The discard: the delete, with its own guard write to the group row.
+      beforeCommits(services.db, [op('statements', 'st-oct', {}, 'delete'), ...groupWrite()])
+      expect((await finalizeLate(services)).code).toBe('CONFLICT')
+      expect(lockedToOctober(services)).toEqual([])
+    })
+
+    it('locks nothing when the statement went back to draft before the batch staged', async () => {
+      const services = resuming()
+      beforeStaging(services.db, [op('statements', 'st-oct', { status: 'draft' })])
+      expect((await finalizeLate(services)).code).toBe('CONFLICT')
+      expect(lockedToOctober(services)).toEqual([])
+    })
+
+    it('locks nothing when another run stored issuedOn before the batch staged', async () => {
+      const services = resuming()
+      beforeStaging(services.db, [op('statements', 'st-oct', { issuedOn: '2026-11-02' })])
+      expect((await finalizeLate(services)).code).toBe('CONFLICT')
+      expect(lockedToOctober(services)).toEqual([])
+    })
+
+    it('stages a batch again up to 3 times after losing its commit to another write', async () => {
+      const services = resuming()
+      beforeCommits(services.db, groupWrite, 3)
+      expect(await finalize(services)).toMatchObject({ status: 'final' })
+      expect(lockedToOctober(services).length).toBeGreaterThan(0)
+    })
+
+    it('gives up with CONFLICT after a fourth lost commit, and stays finalizing', async () => {
+      const services = resuming()
+      beforeCommits(services.db, groupWrite, 4)
+      expect((await finalizeLate(services)).code).toBe('CONFLICT')
+      expect(row(services, 'st-oct')?.status).toBe('finalizing')
+    })
   })
 
   it('finishes a finalize stopped after the upload, with one PDF and the same issue date', async () => {
@@ -1005,5 +1059,22 @@ describe('POST /statements/{id}/discard', () => {
     expect(draft.type).toBe('divide')
     expect((await discard(services, draft.$id)).status).toBe(200)
     expect((await reissue(services, '2026-09-01', '2026-09-30')).status).toBe(200)
+  })
+})
+
+describe('statementName', () => {
+  it('names a statement with no number by its period, and a part of a month by its days', () => {
+    const named = (extra: Partial<Statements>) =>
+      statementName({
+        type: 'divide',
+        displayNumber: null,
+        periodStart: '2026-10-01',
+        periodEnd: '2026-10-31',
+        ...extra,
+      })
+    expect(named({})).toBe('Divide for October')
+    expect(named({ periodEnd: '2026-10-14' })).toBe('Divide for 1–14 October')
+    expect(named({ type: 'invoice' })).toBe('Invoice draft for October')
+    expect(named({ type: 'invoice', displayNumber: 'INV-0010' })).toBe('Invoice INV-0010')
   })
 })

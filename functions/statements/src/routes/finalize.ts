@@ -244,8 +244,8 @@ async function finishVoids(db: Db, groupId: string): Promise<void> {
 
 // One guard write to the group row, and the rest of a database transaction's 90 writes.
 const UNLOCK_BATCH = 89
-// Commits in a row that lost to another write in the group, before giving up.
-const LOCK_MISSES = 3
+// Times a batch whose commit lost to another write in the group is staged again (statements.md).
+const LOCK_RETRIES = 3
 
 /**
  * Step 4: locks the transactions to the statement, a batch per database transaction. Each batch
@@ -274,11 +274,12 @@ async function lock(db: Db, statement: Statements, ids: readonly string[]): Prom
         break
       } catch (error) {
         // Another write in the group committed first: stage the batch again.
-        if (!isAppwriteError(error, 409) || ++misses === LOCK_MISSES) throw error
+        if (!isAppwriteError(error, 409) || ++misses > LOCK_RETRIES) throw error
       }
     }
   }
 }
+
 // Batches in a row that found their rows locked again meanwhile, before giving up.
 const UNLOCK_MISSES = 3
 
