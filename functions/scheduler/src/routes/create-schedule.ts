@@ -12,7 +12,13 @@ import {
 } from '@ledgerly/server/ledger/transactions'
 import { generateOccurrences } from '../occurrences'
 import { parseBody } from '../parse-body'
-import { checkTemplate, findSchedule, getSchedule, scheduleColumns } from '../schedule-rows'
+import {
+  checkTemplate,
+  findSchedule,
+  getSchedule,
+  requireRecentStart,
+  scheduleColumns,
+} from '../schedule-rows'
 import type { Services } from '../services'
 
 /**
@@ -46,6 +52,7 @@ export async function createSchedule(
     if (!existing && inserted) throw new AppError('NOT_FOUND', 'This schedule was deleted.')
     const ledger = await loadLedger(db, membership)
     if (!existing) {
+      requireRecentStart(input.startsOn, membership.group, now)
       // Due at once, so a cron run finishes the expansion if this request can't.
       const row = {
         groupId,

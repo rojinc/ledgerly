@@ -19,6 +19,7 @@ import {
   fakes,
   group,
   member,
+  NOW,
   ok,
   person,
 } from './harness'
@@ -268,6 +269,19 @@ describe('POST /schedules', () => {
     ).toEqual({ status: 409, code: 'CONFLICT' })
   })
 
+  it('starts at most 31 days before today in the group’s timezone', async () => {
+    // Today is 19 October in Sydney, still 18 October in UTC.
+    const services = seeded()
+    expect(
+      await failure(services, 'POST', '/schedules', {
+        body: { ...thursdays, startsOn: '2026-09-17' },
+      }),
+    ).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
+    expect(services.db.rows('schedules')).toEqual([])
+    // Thursday 24 September to 10 December.
+    expect((await create(services, { ...thursdays, startsOn: '2026-09-18' })).created).toBe(12)
+  })
+
   it('checks the template against the ledger before writing anything', async () => {
     const services = seeded()
     const stranger = {
@@ -394,6 +408,20 @@ describe('PATCH /schedules/{id}', () => {
   function patch(services: Fakes, body: { id: string; [key: string]: unknown }, userId = 'u1') {
     return ok<UpdatedSchedule>(services, 'PATCH', `/schedules/${body.id}`, { body, userId })
   }
+
+  it('moves the start at most 31 days before today in the group’s timezone', async () => {
+    const services = await withThursdays()
+    // Today is 19 October in Sydney, still 18 October in UTC.
+    const body = { ...thursdays, startsOn: '2026-09-17' }
+    expect(await failure(services, 'PATCH', `/schedules/${ID}`, { body })).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+    })
+    expect(services.db.rows('schedules')[0]?.startsOn).toBe('2026-10-01')
+    // 31 days is fine, and so is a start further back that doesn't change ("reopens an ended
+    // schedule", below).
+    await patch(services, { ...thursdays, startsOn: '2026-09-18' })
+  })
 
   it('regenerates only future occurrences that aren’t edited, posted or voided', async () => {
     const services = await withThursdays()
@@ -764,7 +792,10 @@ describe('races on schedule edits', () => {
 
   it('reopens an ended schedule from today, never filling in the past', async () => {
     const services = seeded()
+    // Made on 20 September, within 31 days of its start.
+    services.now = new Date('2026-09-19T20:00:00.000Z')
     await create(services, { ...thursdays, startsOn: '2026-09-03', endsOn: '2026-09-20' })
+    services.now = NOW
     await patch(services, { ...thursdays, startsOn: '2026-09-03' })
     const dates = occurrences(services).map((row) => row.date)
     // 3, 10 and 17 September from before; nothing from 24 September to 15 October.
@@ -1131,7 +1162,10 @@ describe('POST /schedules/{id}/end', () => {
 
   it('carries on from today when an end long past is moved later', async () => {
     const services = seeded()
+    // Made on 20 September, within 31 days of its start.
+    services.now = new Date('2026-09-19T20:00:00.000Z')
     await create(services, { ...thursdays, startsOn: '2026-09-03', endsOn: '2026-09-20' })
+    services.now = NOW
     await end(services, '2026-12-31')
     await runCron(services)
     const dates = occurrences(services).map((row) => row.date)

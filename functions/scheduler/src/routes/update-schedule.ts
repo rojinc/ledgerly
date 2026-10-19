@@ -9,6 +9,7 @@ import { parseBody } from '../parse-body'
 import {
   checkTemplate,
   getSchedule,
+  requireRecentStart,
   requireScheduleWriter,
   scheduleColumns,
 } from '../schedule-rows'
@@ -38,6 +39,9 @@ export async function updateSchedule(
         'VALIDATION_FAILED',
         "A schedule's group and kind can't change. End it and add a new one.",
       )
+    }
+    if (input.startsOn !== schedule.startsOn) {
+      requireRecentStart(input.startsOn, membership.group, now)
     }
     const yesterday = addDays(localToday(membership.group.timezone, now), -1)
     const changes = {
