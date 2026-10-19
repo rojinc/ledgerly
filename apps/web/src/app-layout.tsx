@@ -2,6 +2,7 @@ import { NavLink, Outlet } from 'react-router'
 import { authErrorMessage } from './features/auth/auth-error'
 import { useLogOut } from './features/auth/use-log-out'
 import { VerifyEmailBanner } from './features/auth/verify-email-banner'
+import { useRealtimeSync } from './lib/realtime'
 import { cn } from './lib/utils'
 import { Alert } from './ui/alert'
 import { Button } from './ui/button'
@@ -20,6 +21,8 @@ const NAV = [
 
 export function AppLayout() {
   const logOut = useLogOut()
+  // Other people's changes refresh what's on screen while signed in (#48).
+  useRealtimeSync()
   return (
     <div className="flex min-h-dvh flex-col">
       <header className="border-b border-border">

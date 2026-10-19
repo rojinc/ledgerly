@@ -67,6 +67,7 @@ Use the words from the [glossary](../product/glossary.md), in code and in UI tex
 
 - Function components and hooks only.
 - Server data is fetched with TanStack Query. Query keys come from `lib/query-keys.ts`. Don't copy server data into `useState`.
+- A new query key gets its line in `lib/realtime.ts`, or goes in `NOT_LIVE`.
 - Writes use `useMutation` with optimistic updates where the result is predictable.
 - Forms use react-hook-form + the **same zod schema** as the function.
 - Accessibility basics are required: every input has a label, everything works by keyboard, focus is visible, and colour is never the only signal (dashed vs solid on the calendar, not just colour).
