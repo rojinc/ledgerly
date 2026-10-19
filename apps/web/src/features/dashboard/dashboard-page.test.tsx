@@ -160,6 +160,29 @@ describe('DashboardPage: owed to me / I owe', () => {
     expect(nzd.textContent).toMatch(/owed to you .*300\.00 · you owe .*0\.00$/)
   })
 
+  it('names a pair group by its other member (#149)', async () => {
+    // Alex added the viewer, so the group's own name is the viewer's.
+    groupsHook.mockReturnValue({
+      data: [{ $id: 'g5', name: 'Sam', type: 'pair', currency: 'AUD', archivedAt: null }],
+      isError: false,
+      refetch: vi.fn(),
+    } as never)
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) =>
+      tableId === 'members'
+        ? {
+            total: 2,
+            rows: [
+              { $id: 'm1', groupId: 'g5', personId: 'p2', displayName: 'Alex' },
+              { $id: 'm2', groupId: 'g5', personId: 'p1', displayName: 'Sam' },
+            ],
+          }
+        : { total: 0, rows: [] }) as never)
+    renderPage()
+    const section = screen.getByRole('region', { name: 'Owed to me / I owe' })
+    expect(await within(section).findByText('Alex')).toBeTruthy()
+    expect(within(section).queryByText('Sam')).toBeNull()
+  })
+
   it('shows no totals while a balance is missing, and says so', async () => {
     call.mockImplementation(async (_fn, _method, path) =>
       path === '/groups/g2/balances'
