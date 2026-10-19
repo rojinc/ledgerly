@@ -4,6 +4,7 @@ import { startTimer } from './routes/timer-start'
 import { stopTimer } from './routes/timer-stop'
 import { createTransaction } from './routes/transactions-create'
 import { postTransaction } from './routes/transactions-post'
+import { updateReceipts } from './routes/transactions-receipts'
 import { updateTransaction } from './routes/transactions-update'
 import { voidTransaction } from './routes/transactions-void'
 import { type ServicesFor, servicesFromRequest } from './services'
@@ -19,6 +20,7 @@ export function ledgerRoutes(services: ServicesFor): Route[] {
     updateTransaction(services),
     postTransaction(services),
     voidTransaction(services),
+    updateReceipts(services),
     startTimer(services),
     stopTimer(services),
     groupBalances(services),
