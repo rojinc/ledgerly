@@ -75,7 +75,7 @@ export async function joinGroup(
 }
 
 /** Adds the user to the group's team; false if the team is gone (a purge is deleting it). */
-async function joinTeam(teams: Services['teams'], groupId: string, userId: string) {
+export async function joinTeam(teams: Services['teams'], groupId: string, userId: string) {
   try {
     await addToTeam(teams, groupId, userId)
     return true
