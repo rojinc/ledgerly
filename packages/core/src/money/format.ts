@@ -34,8 +34,16 @@ export function formatMoney(cents: number, currency: string, locale?: string): s
  */
 export function centsToDecimal(cents: number, currency: string): string {
   assertAmountCents(cents)
-  return decimal(cents, currencyFormat(currency).digits)
+  let digits = DIGITS.get(currency)
+  if (digits === undefined) {
+    digits = currencyFormat(currency).digits
+    DIGITS.set(currency, digits)
+  }
+  return decimal(cents, digits)
 }
+
+// An export makes thousands of amounts; a NumberFormat for each is slow.
+const DIGITS = new Map<string, number>()
 
 const MONEY_TEXT = /^(-?)(\d+)(?:\.(\d+))?$/
 

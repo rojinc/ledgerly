@@ -10,7 +10,9 @@ type Cell = string | { money: string }
 
 // A spreadsheet runs a cell starting with one of these as a formula, full-width forms included,
 // and some importers trim leading spaces first.
-const FORMULA = /^[\s\u00a0\u3000]*[=+\-@\uff1d\uff0b\uff0d\uff20]|^[\t\r\n]/
+const FORMULA = /^\s*[=+\-@\uff1d\uff0b\uff0d\uff20]|^[\t\r\n]/
+// Lets a spreadsheet read the file as UTF-8.
+const BOM = '\uFEFF'
 // RFC 4180: these make a field need quotes.
 const SPECIAL = /[",\r\n]/
 
@@ -24,7 +26,7 @@ function field(cell: Cell): string {
  * formula gets a leading `'`; an amount never does.
  */
 export function toCsv(header: readonly string[], rows: readonly (readonly Cell[])[]): string {
-  return `﻿${[header, ...rows].map((row) => `${row.map(field).join(',')}\r\n`).join('')}`
+  return `${BOM}${[header, ...rows].map((row) => `${row.map(field).join(',')}\r\n`).join('')}`
 }
 
 function amounts(currency: string, total: number, given: number, received: number): Cell[] {
