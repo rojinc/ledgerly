@@ -40,9 +40,9 @@ export function fakes(
     db: new FakeDb(seed),
     teams: new FakeTeams(options.teams),
     users: { get: async () => user },
-    sendEmail: vi.fn(async () => ({ id: 'email-1' })),
     now: NOW,
-    appUrl: 'https://app.example/',
+    sendEmail: vi.fn(async () => ({ id: 'email-1' })),
+    appUrl: 'https://app.example',
     account: user,
   }
 }

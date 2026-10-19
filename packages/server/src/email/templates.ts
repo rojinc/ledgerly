@@ -1,6 +1,6 @@
 import { endOfMonth, type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import type { PersonalReport } from '@ledgerly/core/reports/personal-report'
 import type { Attachment } from './send-email'
 
@@ -203,6 +203,48 @@ export function passwordChangedEmail(input: {
     [{ label: 'Go to Ledgerly', url: input.url }],
   )
 }
+
+/**
+ * A reminder that someone owes the sender money (F-63, identity-and-invites.md#reminders), to
+ * the address the sender typed. `senderName` is the sender's name in that group, free text they
+ * chose, so it stays out of the subject, is one line, and is cut to 40 characters; `amountCents` is the whole
+ * balance owed. Nothing else: no recipient or group name (both are what the sender calls them),
+ * no transactions, no note, and only a link to the app.
+ */
+export function reminderEmail(input: {
+  senderName: string
+  amountCents: number
+  currency: string
+  url: string
+}): EmailContent {
+  // One line, as the subject is, so a line break can't start a paragraph of its own. Cut by
+  // whole character as people see them, so an emoji sequence isn't split.
+  const characters = Array.from(
+    GRAPHEMES.segment(input.senderName.replace(/\s+/g, ' ').trim()),
+    (part) => part.segment,
+  )
+  const sender =
+    characters.length > SENDER_LENGTH
+      ? `${characters
+          .slice(0, SENDER_LENGTH - 1)
+          .join('')
+          .trimEnd()}…`
+      : characters.join('')
+  // A balance is worked out from amounts, so it can pass the amount cap.
+  const amount = formatNet(input.amountCents, input.currency, LOCALE)
+  return message(
+    'You have a payment reminder',
+    [
+      `${sender} sent you a reminder that you owe them ${amount}.`,
+      "If you've already paid, let them know so they can record it.",
+    ],
+    [{ label: 'Open Ledgerly', url: input.url }],
+  )
+}
+
+// The most of a sender's own name a reminder shows.
+const SENDER_LENGTH = 40
+const GRAPHEMES = new Intl.Segmenter(LOCALE, { granularity: 'grapheme' })
 
 /** What one group owes the person (positive) or they owe it (negative), in its currency. */
 export type SummaryBalance = { groupName: string; currency: string; cents: number }
