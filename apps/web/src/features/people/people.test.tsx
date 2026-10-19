@@ -152,7 +152,9 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.useRealTimers()
+  vi.restoreAllMocks()
   vi.resetAllMocks()
+  sessionStorage.clear()
 })
 
 describe('NewPairPage', () => {
@@ -651,6 +653,51 @@ describe('PairPage: send a reminder (#266)', () => {
     const ids = call.mock.calls.map(([, , , body]) => (body as { id: string }).id)
     expect(ids).toEqual([ids[0], ids[0]])
   })
+
+  it.each([
+    ['sessionStorage', () => {}],
+    [
+      'memory, where storage is blocked',
+      () => {
+        for (const method of ['getItem', 'setItem', 'removeItem'] as const) {
+          vi.spyOn(Storage.prototype, method).mockImplementation(() => {
+            throw new DOMException('Blocked', 'SecurityError')
+          })
+        }
+      },
+    ],
+  ])(
+    'keeps the id after an error when the page is left and opened again (%s)',
+    async (_where, storage) => {
+      storage()
+      mockGroup(5000)
+      mockRows()
+      call
+        .mockResolvedValueOnce(
+          refused('INTERNAL', 'We couldn’t send the reminder. Try again later.'),
+        )
+        .mockResolvedValueOnce(ok({ sentAt: NOW.toISOString() }))
+        .mockResolvedValueOnce(ok({ sentAt: NOW.toISOString() }))
+      const send = async () => {
+        await openForm()
+        type('Their email address', 'sam@example.com')
+        fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+      }
+      await send()
+      await screen.findByRole('alert')
+      // Away and back (or a reload): the section unmounts, and the reminder is still unsent.
+      cleanup()
+      await send()
+      await sentNews()
+      // Sent, so the next one is a new reminder.
+      cleanup()
+      await send()
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(3))
+      const ids = call.mock.calls.map(([, , , body]) => (body as { id: string }).id)
+      expect(ids[1]).toBe(ids[0])
+      expect(ids[2]).not.toBe(ids[0])
+    },
+  )
 
   it('clears the last error when Send is pressed again', async () => {
     mockGroup(5000)

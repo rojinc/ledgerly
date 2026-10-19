@@ -18,6 +18,33 @@ import { TextField } from '../../ui/field'
 import { useCurrentUser } from '../auth/use-current-user'
 
 const RATE_LIMITED = 'You’ve sent a reminder recently. Try again in a few days.'
+
+// The unsent reminder's ID, by group and person, so leaving the page or a reload after an error
+// still sends that one reminder. It's kept in sessionStorage, or for this visit only where the
+// browser blocks that.
+const blocked = new Map<string, string>()
+
+function unsentId(key: string): string {
+  let id: string | undefined
+  try {
+    id = sessionStorage.getItem(key) ?? undefined
+  } catch {
+    id = blocked.get(key)
+  }
+  id ??= ID.unique()
+  keepUnsent(key, id)
+  return id
+}
+
+function keepUnsent(key: string, id: string | null) {
+  try {
+    if (id) sessionStorage.setItem(key, id)
+    else sessionStorage.removeItem(key)
+  } catch {
+    if (id) blocked.set(key, id)
+    else blocked.delete(key)
+  }
+}
 // The app-wide banner offers "Send it again" until the email is verified.
 const UNVERIFIED =
   'Verify your email address before sending reminders. The link is in the email we sent you; the banner at the top of the page can send it again.'
@@ -70,9 +97,11 @@ export function ReminderSection({
 }) {
   const swap = useSwap()
   const [sent, setSent] = useState(false)
-  // One ID per reminder, kept across retries after an error, Cancel included, so it can't go
-  // twice (the function answers a retry with the first one's time). Only a success makes a new one.
-  const [id, setId] = useState(() => ID.unique())
+  // One ID per reminder, kept across retries after an error (Cancel, leaving the page and a
+  // reload included), so it can't go twice: the function answers a retry with the first one's
+  // time. Only a success makes a new one.
+  const key = `ledgerly:reminder:${group.$id}:${personId}`
+  const [id, setId] = useState(() => unsentId(key))
   return (
     <div className="flex flex-col gap-2">
       {swap.opened ? (
@@ -84,7 +113,8 @@ export function ReminderSection({
           heading={swap.heading}
           onSent={() => {
             setSent(true)
-            setId(ID.unique())
+            keepUnsent(key, null)
+            setId(unsentId(key))
             swap.close()
           }}
           onCancel={swap.close}
