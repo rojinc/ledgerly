@@ -20,8 +20,8 @@ const functions =
 const version = gitVersion()
 // The invoice PDF's Noto fonts (packages/server/src/pdf/fonts.ts), too big to bundle, with the
 // SHA-256 of each pinned file (#270). A file that is missing or has changed fails the build.
-// The emoji package is found as packages/server, whose devDependency it is, would: npm may not
-// put it in the root node_modules.
+// The emoji package is resolved from packages/server, whose devDependency it is: npm may not put
+// it in the root node_modules.
 const fromServer = createRequire(`${root}/packages/server/package.json`)
 const fonts = {
   statements: [

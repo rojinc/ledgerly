@@ -522,12 +522,19 @@ describe('breakable', () => {
   // Each is one character to a reader, made of more than one UTF-16 unit or code point.
   it.each([
     ['an emoji', '😀'],
-    ['a family', '👨‍👩‍👧'],
+    ['a family', '👨\u200D👩\u200D👧'],
     ['a flag', '🇦🇺'],
-    ['a keycap', '1️⃣'],
-    ['a letter and its mark', 'ṣ'],
+    ['a keycap', '1\uFE0F\u20E3'],
+    ['a letter and its mark', 's\u0323'],
   ])('keeps %s whole as the 20th character', (_, character) => {
     const word = `${'x'.repeat(19)}${character}`
-    expect(breakable(`${word}y`)).toBe(`${word}​y`)
+    expect(breakable(`${word}y`)).toBe(`${word}\u200By`)
+  })
+
+  // A space starts the count again, and each break restarts it at the character after it.
+  it('breaks every 20 characters of a word, counting from its start', () => {
+    const a = 'a'.repeat(19)
+    const b = 'b'.repeat(20)
+    expect(breakable(`${a} ${b}${b}b`)).toBe(`${a} ${b}\u200B${b}\u200Bb`)
   })
 })
