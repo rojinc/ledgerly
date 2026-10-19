@@ -96,8 +96,15 @@ export type BootstrapResult = {
 /** `POST /claim` */
 export type ClaimResult = { linkedGroupIds: string[] }
 
-/** One group in `GET /groups/pending`: no more than its name, type and whether it's archived. */
-export type PendingGroup = Pick<Groups, 'type' | 'name' | 'archivedAt'> & { id: string }
+/**
+ * One group in `GET /groups/pending`: no more than its name, type and whether it's archived, and
+ * for a pair group the other member's display name, since `name` is the creator's label for the
+ * caller.
+ */
+export type PendingGroup = Pick<Groups, 'type' | 'name' | 'archivedAt'> & {
+  id: string
+  counterpartName?: string
+}
 
 /** `GET /groups/pending` */
 export type PendingGroupsResult = { groups: PendingGroup[] }

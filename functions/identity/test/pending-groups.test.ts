@@ -44,11 +44,13 @@ function group(id: string, name: string, extra: object = {}) {
   }
 }
 
+// A pair group's name is its creator's label for the other person: here, for Sam.
 const GROUPS = [
-  group('g1', 'Zed and Sam'),
-  group('g2', 'Ann and Sam', { archivedAt: '2026-10-02T00:00:00.000Z' }),
+  group('g1', 'Sam'),
+  group('g2', 'Sammy', { archivedAt: '2026-10-02T00:00:00.000Z' }),
   group('g3', 'Joined already'),
   group('g4', 'Someone else'),
+  group('g5', 'Flat 2', { type: 'house' }),
 ]
 
 function fixture(members: Array<ReturnType<typeof placeholderRow>> = defaultMembers()) {
@@ -64,6 +66,11 @@ function defaultMembers() {
     placeholderRow('m2', 'g2', 'pSam', BEFORE),
     placeholderRow('m3', 'g3', 'pSam', BEFORE, { status: 'active' }),
     placeholderRow('m4', 'g4', 'pOther', BEFORE),
+    placeholderRow('m5', 'g5', 'pSam', BEFORE),
+    // The creators, already joined.
+    placeholderRow('a1', 'g1', 'pZed', BEFORE, { displayName: 'Zed Park', status: 'active' }),
+    placeholderRow('a2', 'g2', 'pAnn', BEFORE, { displayName: 'Ann Cho', status: 'active' }),
+    placeholderRow('a5', 'g5', 'pAnn', BEFORE, { displayName: 'Ann Cho', status: 'active' }),
   ]
 }
 
@@ -82,8 +89,28 @@ describe('GET /groups/pending', () => {
     const services = fixture()
     const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups).toEqual([
-      { id: 'g2', type: 'pair', name: 'Ann and Sam', archivedAt: '2026-10-02T00:00:00.000Z' },
-      { id: 'g1', type: 'pair', name: 'Zed and Sam', archivedAt: null },
+      {
+        id: 'g2',
+        type: 'pair',
+        name: 'Sammy',
+        counterpartName: 'Ann Cho',
+        archivedAt: '2026-10-02T00:00:00.000Z',
+      },
+      // A house keeps its own name, with no member named.
+      { id: 'g5', type: 'house', name: 'Flat 2', archivedAt: null },
+      { id: 'g1', type: 'pair', name: 'Sam', counterpartName: 'Zed Park', archivedAt: null },
+    ])
+  })
+
+  it('names a pair group by the other member, never the caller’s own row', async () => {
+    // Sam's own row comes last in the table, so it would win if it were read.
+    const services = fixture([
+      placeholderRow('a1', 'g1', 'pZed', BEFORE, { displayName: 'Zed Park', status: 'active' }),
+      placeholderRow('m1', 'g1', 'pSam', BEFORE, { displayName: 'Sam' }),
+    ])
+    const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
+    expect(groups).toEqual([
+      { id: 'g1', type: 'pair', name: 'Sam', counterpartName: 'Zed Park', archivedAt: null },
     ])
   })
 
@@ -131,7 +158,7 @@ describe('POST /groups/{id}/join', () => {
     ])
     // Not pending any more.
     const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
-    expect(groups.map((g) => g.id)).toEqual(['g2'])
+    expect(groups.map((g) => g.id)).toEqual(['g2', 'g5'])
   })
 
   it('joins an archived group', async () => {

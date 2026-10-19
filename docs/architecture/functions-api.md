@@ -179,7 +179,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | see [permissions](permissions.md) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
-| `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt }[] }` | the user |
+| `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole.
@@ -188,7 +188,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 
 `/groups/pending` and `/join` are how someone who already had an account when they were added joins a group ([Joining a group](identity-and-invites.md#joining-a-group)). Both act only on the caller's own person:
 
-- `/groups/pending` lists the groups where that person is a `placeholder` member (`members.idx_person_status`), archived ones included.
+- `/groups/pending` lists the groups where that person is a `placeholder` member (`members.idx_person_status`), archived ones included. For a `pair` group it adds `counterpartName`, the other member's display name: the group's own `name` is what its creator calls the caller. Nothing else about the other member is returned, never an email or phone.
 - `/join` reads the caller's member row in that group first, so someone who isn't in the group learns nothing about it; with no row it returns `NOT_A_MEMBER`. It then runs the steps in [Joining a group](identity-and-invites.md#joining-a-group): team first, then `active` (or `left` if `leftOn` is set) with a `member.joined` row. If the row is already `active`, or `left` for someone who moved out (still in the team), it returns `{ group, member }` unchanged and doesn't touch the team, so a retry is safe. Someone who left on their own (`left`, no longer in the team) gets `NOT_A_MEMBER`: coming back after leaving isn't supported in v1. If the join fails while the row is still `placeholder`, the team membership from the first step is taken back. Joining writes no ledger data, so it works on archived groups, the same as claim and invites.
 
 Details: [People, identity and invites](identity-and-invites.md).
