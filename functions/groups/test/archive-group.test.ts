@@ -1,6 +1,8 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
+import type { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { describe, expect, it } from 'vitest'
 import {
+  beforeCommit,
   beforeStaging,
   failure,
   fakes,
@@ -15,6 +17,63 @@ import {
 } from './harness'
 
 const CLOSE_AT = '2026-10-31T13:00:00.000Z'
+const TIMER_RUNNING = 'A timer is running in this group. Stop or void it first.'
+
+/** p1's employer group g2, with Acme as the placeholder employer, and `shifts` in it. */
+function employerFixture(shifts: ReturnType<typeof shift>[] = []) {
+  return fakes(
+    {
+      persons: [person(1), placeholder('pA', 'Acme')],
+      groups: [group('g2', 'employer', { nextCloseAt: CLOSE_AT }), group('g3', 'employer')],
+      members: [
+        member('m1', 'g2', 'p1', 'admin', 'active'),
+        member('mA', 'g2', 'pA', 'viewer', 'placeholder'),
+        member('m3', 'g3', 'p1', 'admin', 'active'),
+      ],
+      transactions: shifts,
+    },
+    { g2: ['u1'], g3: ['u1'] },
+  )
+}
+
+/** A shift in `groupId`; `running` is a timer that hasn't stopped (scheduling.md#timer-shifts). */
+function shift(id: string, status: string, groupId = 'g2') {
+  return {
+    $id: id,
+    groupId,
+    kind: 'shift',
+    status,
+    date: '2026-10-19',
+    description: 'Shift',
+    totalCents: 0,
+    startedAt: '2026-10-18T19:00:00.000Z',
+    createdBy: 'p1',
+    updatedBy: 'p1',
+  }
+}
+
+/**
+ * The writes of a `ledger POST /timer/start` in g2, staged in a transaction of their own: the
+ * group guard and the running shift. Returns its commit.
+ */
+async function stageTimerStart(db: FakeDb, id: string) {
+  const { $id: transactionId } = await db.createTransaction()
+  const { $id, ...data } = shift(id, 'running')
+  await db.createOperations({
+    transactionId,
+    operations: [
+      { action: 'update', databaseId: 'main', tableId: 'groups', rowId: 'g2', data: { rev: id } },
+      {
+        action: 'create',
+        databaseId: 'main',
+        tableId: 'transactions',
+        rowId: $id,
+        data: { ...data, inputJson: '{}' },
+      },
+    ],
+  })
+  return () => db.updateTransaction({ transactionId, commit: true })
+}
 
 function houseFixture() {
   return fakes(
@@ -86,6 +145,62 @@ describe('POST /groups/{id}/archive', () => {
       status: 409,
       code: 'ARCHIVED',
     })
+  })
+
+  it('refuses while a timer is running in the group', async () => {
+    const services = employerFixture([shift('t1', 'running')])
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TIMER_RUNNING,
+    })
+    expect(services.db.rows('groups')[0]).toMatchObject({ archivedAt: null, nextCloseAt: CLOSE_AT })
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('archives once the timer has stopped or been voided, whatever runs in other groups', async () => {
+    const services = employerFixture([
+      shift('t1', 'posted'),
+      shift('t2', 'void'),
+      shift('t3', 'running', 'g3'),
+    ])
+    expect(await ok(services, 'POST', '/groups/g2/archive')).toMatchObject({
+      archivedAt: NOW.toISOString(),
+    })
+  })
+
+  it('refuses when a timer start commits just before the archive stages', async () => {
+    const services = employerFixture()
+    beforeStaging(services.db, 1, async () => (await stageTimerStart(services.db, 't1'))())
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toMatchObject({
+      code: 'CONFLICT',
+      message: TIMER_RUNNING,
+    })
+    expect(services.db.rows('groups')[0]).toMatchObject({ archivedAt: null })
+  })
+
+  it('fails a timer start staged before the archive commits', async () => {
+    const services = employerFixture()
+    const commitStart = await stageTimerStart(services.db, 't1')
+    await ok(services, 'POST', '/groups/g2/archive')
+    // The start reruns (ledger.md#concurrency) and gets ARCHIVED from requireMember.
+    await expect(commitStart()).rejects.toMatchObject({ code: 409 })
+    expect(services.db.rows('transactions')).toEqual([])
+  })
+
+  it('fails the archive when a timer start commits after its check, and refuses the retry', async () => {
+    const services = employerFixture()
+    beforeCommit(services.db, async () => (await stageTimerStart(services.db, 't1'))())
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('groups')[0]).toMatchObject({ archivedAt: null, nextCloseAt: CLOSE_AT })
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toMatchObject({
+      message: TIMER_RUNNING,
+    })
+    expect(services.db.rows('activity')).toEqual([])
   })
 
   it("won't archive a personal group", async () => {
