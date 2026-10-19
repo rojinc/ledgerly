@@ -697,6 +697,21 @@ describe('fileName', () => {
     // Korean, typed or pasted decomposed, comes out as whole syllables.
     expect(fileName('한국 집')).toBe('한국-집')
     expect(fileName('한국'.normalize('NFD'))).toBe('한국')
+    // Only Latin accents come off a Latin letter; marks alone aren't a name.
+    expect(fileName('aा')).toBe('aा')
+    expect(fileName('İstanbul')).toBe('istanbul')
+    expect(fileName('\u0301\u0301')).toBe('group')
+  })
+
+  it('cuts by code point where the browser has no Intl.Segmenter', () => {
+    const segmenter = Intl.Segmenter
+    Object.assign(Intl, { Segmenter: undefined })
+    try {
+      expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(60))
+      expect(fileName('नमस्ते')).toBe('नमस्ते')
+    } finally {
+      Object.assign(Intl, { Segmenter: segmenter })
+    }
   })
 
   it('keeps 60 characters at most, without a dash at the end', () => {

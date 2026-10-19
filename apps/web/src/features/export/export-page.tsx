@@ -14,8 +14,6 @@ import { download, fileUrl, groupExport, myRecordsExport, profileExport } from '
 // Long names make file names some systems refuse.
 const NAME_LENGTH = 60
 
-const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-
 /**
  * A file name from the group's name: letters of any script, digits and dashes, up to 60
  * characters. Accents come off Latin letters only: elsewhere, as in Hindi or Thai, a mark is part
@@ -24,14 +22,24 @@ const GRAPHEMES = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 export function fileName(name: string): string {
   const slug = name
     .normalize('NFKD')
-    .replace(/(\p{Script=Latin})\p{M}+/gu, '$1')
+    .replace(/(\p{Script=Latin})[\u0300-\u036f]+/gu, '$1')
     .normalize('NFC')
     .toLowerCase()
     .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')
     .replace(/^-/, '')
-  // By what reads as one character, so a syllable or a letter with its marks isn't cut in half.
-  const kept = Array.from(GRAPHEMES.segment(slug), ({ segment }) => segment).slice(0, NAME_LENGTH)
-  return kept.join('').replace(/-$/, '') || 'group'
+  const kept = characters(slug).slice(0, NAME_LENGTH).join('').replace(/-$/, '')
+  // Marks alone aren't a name.
+  return /[\p{L}\p{N}]/u.test(kept) ? kept : 'group'
+}
+
+/**
+ * `text` by what reads as one character, so a syllable or a letter with its marks isn't cut in
+ * half; by code point where the browser has no `Intl.Segmenter` (Firefox before 125).
+ */
+function characters(text: string): string[] {
+  if (typeof Intl.Segmenter !== 'function') return Array.from(text)
+  const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)
+  return Array.from(graphemes, ({ segment }) => segment)
 }
 
 function GroupOption({ group }: { group: Groups }) {
