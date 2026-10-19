@@ -4,12 +4,13 @@
 
 | Environment | Appwrite project | Deployed by | Data |
 | --- | --- | --- | --- |
-| **dev** | `ledgerly-dev` | every merge to `main` | test data only; may be reset |
-| **prod** | `ledgerly-prod` | a `v*` tag on `main` | real users |
+| **the one environment** | `ledgerly-dev` | every merge to `main` | **real users** |
 
-- Create both projects in the **same Appwrite Cloud region**, as close to users as possible (Sydney for Australia, if offered on the plan).
-- Prod runs on the **Pro** plan (higher limits, backups). Dev can run on Free.
-- Each project needs a web platform for its app domain (and `localhost` in dev), Resend as custom SMTP, and email verification turned on.
+There is no separate prod project for now (owner decision, 2026-10-19). `ledgerly-dev` is production: never reset it, never load test data that could reach real users, and keep schema changes add-only ([below](#schema-changes)).
+
+- The project is in Appwrite Cloud's Sydney region, close to its users.
+- With real users on it, it needs the **Pro** plan (higher limits, backups): the owner's call (#3).
+- It needs a web platform for its app domain (and `localhost` for local development), Resend as custom SMTP, and email verification turned on.
 - Auth methods: only email + password and email OTP (phone from M3). Team invites, magic URL and anonymous are off, because clients never manage team memberships.
 - Membership privacy: team members see only each other's user ID, not email, phone, name, MFA or last access.
 
@@ -18,15 +19,14 @@
 All Appwrite resources are described in files and pushed with the Appwrite CLI. **Nobody edits tables, buckets or functions in the Appwrite console.** A change made by hand gets overwritten on the next deploy.
 
 ```
-appwrite.config.json        projectId = dev,  includes appwrite/*.json
-appwrite.config.prod.json   projectId = prod, includes the same appwrite/*.json
+appwrite.config.json        projectId = ledgerly-dev, includes appwrite/*.json
 appwrite/tables.json        every table, column and index (must match data-model.md)
 appwrite/buckets.json
 appwrite/functions.json     runtime, entrypoint (dist/main.js), schedule, execute, timeout
 appwrite/sites.json         the web app (Appwrite Sites), uploaded already built
 ```
 
-The two config files share the resource files through the CLI's `includes` field, so dev and prod can't drift. `appwrite push` rewrites these files with its own formatting; never commit that rewrite, because Biome would fail on it.
+The config file lists the resource files through the CLI's `includes` field. `appwrite push` rewrites these files with its own formatting; never commit that rewrite, because Biome would fail on it.
 
 ## CI/CD (GitHub Actions)
 
@@ -36,30 +36,26 @@ The two config files share the resource files through the CLI's `includes` field
 
 | Trigger | Steps |
 | --- | --- |
-| push to `main` | `npm ci` → `npm run build` (the web app with `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID` of dev) → install `appwrite-cli` (pinned) → `appwrite client -e $ENDPOINT -p $DEV_PROJECT -k $DEV_KEY` → `appwrite push table`, `bucket`, `function` and `site`, each with `--all --force` |
-| run by hand (**Run workflow**) on a tag `vMAJOR.MINOR.PATCH` | the same steps with `--config-file appwrite.config.prod.json` and the prod secrets, in the `production` environment. The run fails unless it was started on a release tag whose commit is on `main`. Only the owner runs it; agents never do, and never create `v*` tags (AGENTS.md). Pushing a tag deploys nothing. |
+| push to `main` | `npm ci` → `npm run build` (the web app with `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID`) → install `appwrite-cli` (pinned) → `appwrite client -e $ENDPOINT -p $PROJECT -k $KEY` → `appwrite push table`, `bucket`, `function` and `site`, each with `--all --force` |
+| **Run workflow** on `main`, by a person | the same steps: a redeploy of `main`'s latest commit. Agents never run it (AGENTS.md). |
 
-- **One deploy per environment at a time,** and a running one is never cancelled.
+- **One deploy at a time,** and a running one is never cancelled.
+- **Only `main`'s latest commit deploys.** `push table --force` makes the database match the commit's `tables.json`, so deploying an older commit would drop columns added since, with their data. A re-run of an older run is skipped with a warning (the newer commit's own run deploys it), and a run on another branch fails. To undo a change, revert it on `main`.
 - **The CLI can exit 0 when a resource fails to push** (for example "Deployed 4 of 5 functions … 1 failed."), so each push runs under `pipefail` and also fails on any `✗` or "… failed." line in the CLI's output. `appwrite push all` can't be used: it needs a console login, not an API key.
 - **The CLI takes the endpoint from `APPWRITE_ENDPOINT` over the config file's,** so nothing in the CLI notices a mismatch. The workflow checks that `APPWRITE_ENDPOINT` is exactly the config's `endpoint` and that the project secret matches its `projectId` before it pushes.
 - **The API key** is passed only to the two steps that use it, never to `npm ci` or the build.
-- **Until the secrets exist (#3),** a dev deploy is skipped with a warning. A prod deploy, or a dev deploy with only some of its secrets, fails instead.
-- **Roll forward, never back.** `push table --force` makes the database match the config, so deploying an older commit (an old tag, or re-running an old run) drops columns added since. To undo a release, revert on `main` and tag a new patch release.
+- **Until the secrets exist (#3),** a deploy is skipped with a warning. One with only some of its secrets fails instead.
 - **The web app** (`appwrite/sites.json`) is a static site.
   - CI builds it and uploads only `dist/`, so Appwrite never runs `npm install` (the same reason as for functions, below).
   - Its build command only checks that `dist/index.html` arrived; the CLI skips a site with no build command.
   - `fallbackFile` is `index.html`, so client routes such as `/shifts/123` load the app.
 
-GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_API_KEY`, `APPWRITE_PROD_PROJECT_ID`, `APPWRITE_PROD_API_KEY`.
+GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_API_KEY`.
 
 **Owner setup for deploys (#3):**
-- **Who can deploy prod.** Anyone who can run a workflow in the repo. The agents work through the owner's GitHub account, so GitHub can't tell them apart from the owner: the rule that only the owner tags a release and runs the prod deploy is a process rule (AGENTS.md). What GitHub can add depends on the plan ([GitHub docs](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)):
-  - **Public repo, or GitHub Enterprise:** a required reviewer on the `production` environment, environment secrets, and deployment tags limited to `v*`.
-  - **Private repo on GitHub Pro or Team:** environment secrets and deployment tags limited to `v*`, so only a tag run can read the prod key. No required reviewers.
-  - **Private repo on GitHub Free:** none of these. The prod secrets are repo secrets, and a `production` environment the workflow names is created with no protection.
-- **Add the prod secrets only when you're ready to release** (#3). Until they exist, a prod run fails at its first step.
-- Store the two `APPWRITE_PROD_*` secrets as secrets of the `production` environment where the plan allows it, and limit its deployment tags to `v*`.
-- Create the web site's domain once in the Appwrite console, in each project: an API key can't create it.
+- Add the three secrets as repository secrets. `APPWRITE_ENDPOINT` must be exactly the config's `endpoint` (`https://syd.cloud.appwrite.io/v1`). The API key needs the scopes for tables, buckets, functions and sites.
+- Create the web site's domain once in the Appwrite console: an API key can't create it.
+- **Who can deploy:** every merge to `main`, and anyone who can press **Run workflow**. Agents work through the owner's GitHub account, so GitHub can't tell them apart from the owner: "agents never run a deploy by hand" is a process rule (AGENTS.md).
 
 ## Function settings
 
@@ -93,4 +89,4 @@ The Appwrite CLI **deletes columns that disappear from the config** when it push
 
 ## Backups
 
-Prod uses Appwrite's managed backups (Pro plan). Before any destructive migration in prod, take a manual backup and note its ID in the PR.
+`ledgerly-dev` has real users, so it uses Appwrite's managed backups (Pro plan). Before any destructive migration, take a manual backup and note its ID in the PR.

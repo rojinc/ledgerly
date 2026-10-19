@@ -1,15 +1,16 @@
 name: Deploy
 
-# A push to main deploys to dev. Prod deploys only when the owner runs this workflow by hand on
-# a release tag; agents never do (AGENTS.md, environments-and-deploys.md#cicd-github-actions).
+# Every push to main deploys to ledgerly-dev, the one Appwrite project, which has real users.
+# "Run workflow" redeploys main's latest commit; only a person runs it, never an agent
+# (AGENTS.md, docs/engineering/environments-and-deploys.md#cicd-github-actions).
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
-# One deploy per environment at a time, and never cancelled half-way through a push.
+# One deploy at a time, and never cancelled half-way through a push.
 concurrency:
-  group: deploy-${{ github.event_name == 'workflow_dispatch' && 'prod' || 'dev' }}
+  group: deploy
   cancel-in-progress: false
 
 permissions:
@@ -22,35 +23,28 @@ defaults:
 
 jobs:
   deploy:
-    name: deploy ${{ github.event_name == 'workflow_dispatch' && 'prod' || 'dev' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || 'dev' }}
-    # The API key is passed only to the steps that need it, never to npm or the build. The
-    # `|| ''` keeps a missing prod secret from falling back to the dev one.
+    # The API key is passed only to the steps that need it, never to npm or the build.
     env:
-      IS_PROD: ${{ github.event_name == 'workflow_dispatch' }}
-      CONFIG: ${{ github.event_name == 'workflow_dispatch' && 'appwrite.config.prod.json' || 'appwrite.config.json' }}
+      CONFIG: appwrite.config.json
       APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
-      PROJECT_ID: ${{ github.event_name == 'workflow_dispatch' && secrets.APPWRITE_PROD_PROJECT_ID || github.event_name != 'workflow_dispatch' && secrets.APPWRITE_DEV_PROJECT_ID || '' }}
+      PROJECT_ID: ${{ secrets.APPWRITE_DEV_PROJECT_ID }}
     steps:
-      # Until the owner adds the secrets (#3), a dev deploy is skipped with a warning. A prod
-      # deploy, or a dev one with only some of its secrets, fails instead.
+      # Until the owner adds the secrets (#3), a deploy is skipped with a warning. One with only
+      # some of them fails instead.
       - name: Check the secrets
         id: secrets
         env:
-          API_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.APPWRITE_PROD_API_KEY || github.event_name != 'workflow_dispatch' && secrets.APPWRITE_DEV_API_KEY || '' }}
+          API_KEY: ${{ secrets.APPWRITE_DEV_API_KEY }}
         run: |
           if [ -n "$APPWRITE_ENDPOINT" ] && [ -n "$PROJECT_ID" ] && [ -n "$API_KEY" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
-          elif [ "$IS_PROD" = "true" ]; then
-            echo "::error::The prod deploy secrets aren't set."
-            exit 1
           elif [ -n "$APPWRITE_ENDPOINT$PROJECT_ID$API_KEY" ]; then
-            echo "::error::Only some of the dev deploy secrets are set."
+            echo "::error::Only some of the APPWRITE_* deploy secrets are set."
             exit 1
           else
-            echo "::warning::Dev deploy skipped: the APPWRITE_* secrets aren't set yet (#3)."
+            echo "::warning::Deploy skipped: the APPWRITE_* secrets aren't set yet (#3)."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           fi
 
@@ -58,23 +52,31 @@ jobs:
         if: steps.secrets.outputs.ready == 'true'
         with:
           persist-credentials: false
-          # The whole history, so a release tag can be checked against main.
+          # Every branch, so this commit can be checked against main's latest.
           fetch-depth: 0
 
-      # A prod run must be started on a release tag (vMAJOR.MINOR.PATCH) whose commit is on main.
-      - name: Check the release tag
-        if: steps.secrets.outputs.ready == 'true' && github.event_name == 'workflow_dispatch'
+      # `push table --force` makes the database match this commit's tables.json, so deploying
+      # an older commit (re-running an old run) would drop columns added since, with their data.
+      # Only main's latest commit deploys; a newer one's own run deploys that.
+      - name: Check this is main's latest commit
+        id: latest
+        if: steps.secrets.outputs.ready == 'true'
         run: |
-          if [ "$GITHUB_REF_TYPE" != "tag" ] || ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Run the prod deploy on a release tag (vMAJOR.MINOR.PATCH), not on $GITHUB_REF_NAME."
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Deploy only from main, not $GITHUB_REF."
             exit 1
           fi
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+          if [ "$(git rev-parse origin/main)" = "$GITHUB_SHA" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Skipped: main has a newer commit, and its own run deploys it."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # The CLI takes the endpoint from APPWRITE_ENDPOINT over the config file's, and the config
       # file names the project, so this is the only check that the secrets and the file agree.
       - name: Check the config matches the secrets
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.latest.outputs.deploy == 'true'
         run: |
           node -e '
             const { CONFIG, APPWRITE_ENDPOINT, PROJECT_ID } = process.env
@@ -86,36 +88,37 @@ jobs:
           '
 
       - uses: actions/setup-node@v6
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.latest.outputs.deploy == 'true'
         with:
           node-version-file: .nvmrc
           cache: npm
 
-      - if: steps.secrets.outputs.ready == 'true'
+      - if: steps.latest.outputs.deploy == 'true'
         run: npm ci
 
       # Builds the function bundles, and the web app for this project.
-      - if: steps.secrets.outputs.ready == 'true'
+      - if: steps.latest.outputs.deploy == 'true'
         run: npm run build
         env:
           VITE_APPWRITE_ENDPOINT: ${{ env.APPWRITE_ENDPOINT }}
           VITE_APPWRITE_PROJECT_ID: ${{ env.PROJECT_ID }}
 
       - name: Install the Appwrite CLI
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.latest.outputs.deploy == 'true'
         run: npm install --global appwrite-cli@28.7.0
 
       - name: Push tables, buckets, functions and the web site
-        if: steps.secrets.outputs.ready == 'true'
+        if: steps.latest.outputs.deploy == 'true'
         env:
-          API_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.APPWRITE_PROD_API_KEY || github.event_name != 'workflow_dispatch' && secrets.APPWRITE_DEV_API_KEY || '' }}
+          API_KEY: ${{ secrets.APPWRITE_DEV_API_KEY }}
         run: |
           appwrite client --endpoint "$APPWRITE_ENDPOINT" --project-id "$PROJECT_ID" --key "$API_KEY"
+          log="$RUNNER_TEMP/push.log"
           push() {
-            appwrite push "$@" --all --force --config-file "$CONFIG" 2>&1 | tee push.log
+            appwrite push "$@" --all --force --config-file "$CONFIG" 2>&1 | tee "$log"
             # The CLI can exit 0 after a failure ("✗ Error: …", or "Deployed 4 of 5 functions
             # … 1 failed."), so read what it printed too.
-            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed' push.log; then
+            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed' "$log"; then
               echo "::error::appwrite push $1 failed."
               exit 1
             fi
