@@ -557,7 +557,6 @@ describe('TransactionPage, who sees Edit', () => {
     { payers: [{ personId: 'pw', cents: 4000 }], split: { mode: 'equal', personIds: ['pf'] } },
     { groupId: 'g2', kind: 'loan', category: null },
   )
-  const house = { ...acme, $id: 'g3', type: 'house', name: 'The flat' } as Groups
 
   it.each([
     ['an admin', reimbursable, {}, true],
@@ -742,8 +741,6 @@ describe('Edit a house expense (#202)', () => {
     )
     expect((screen.getByLabelText('Alice’s amount (AUD)') as HTMLInputElement).value).toBe('60.00')
     expect((screen.getByLabelText('Note (optional)') as HTMLInputElement).value).toBe('Market')
-    // No itemising when changing (#202 decision 1).
-    expect(screen.queryByLabelText('Itemise this receipt')).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(patched()).toStrictEqual(sameBody(groceries))

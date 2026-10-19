@@ -493,6 +493,26 @@ describe('toHouseExpenseValues (#202)', () => {
     ],
     ['no payers', { split: { mode: 'equal', personIds: ['bob'] } }],
     [
+      'payers out of personId order',
+      {
+        payers: [
+          { personId: 'bob', cents: 3000 },
+          { personId: 'alice', cents: 6000 },
+        ],
+        split: { mode: 'equal', personIds: ['bob'] },
+      },
+    ],
+    [
+      'the same payer twice',
+      {
+        payers: [
+          { personId: 'alice', cents: 3000 },
+          { personId: 'alice', cents: 6000 },
+        ],
+        split: { mode: 'equal', personIds: ['bob'] },
+      },
+    ],
+    [
       'several payers with one paying nothing',
       {
         payers: [
