@@ -1,8 +1,8 @@
 import type { Activity, Items, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { TransactionView } from '@ledgerly/core/schemas/ledger'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { createHandler } from '@ledgerly/server/http/create-handler'
-import type { TransactionView } from '@ledgerly/server/ledger/transactions'
 import { ledgerRoutes } from '../src/main'
 
 // "Today" in every test: 2026-10-18 in Sydney.

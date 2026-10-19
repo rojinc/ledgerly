@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import type { Groups, Members, Profiles } from '../generated/rows'
 import {
   currencySchema,
   displayNameSchema,
@@ -80,3 +81,26 @@ export type CreateInviteBody = z.infer<typeof createInviteBodySchema>
 export const acceptInviteBodySchema = z.strictObject({ token: z.string().max(128) })
 
 export type AcceptInviteBody = z.infer<typeof acceptInviteBodySchema>
+
+// Responses (functions-api.md#identity), shared by the function and the web app. `PATCH /profile`
+// returns the profile row itself.
+
+/** `POST /bootstrap` */
+export type BootstrapResult = {
+  profile: Profiles
+  personId: string
+  personalGroupId: string
+  linkedGroupIds: string[]
+}
+
+/** `POST /claim` */
+export type ClaimResult = { linkedGroupIds: string[] }
+
+/** One group in `GET /groups/pending`: no more than its name, type and whether it's archived. */
+export type PendingGroup = Pick<Groups, 'type' | 'name' | 'archivedAt'> & { id: string }
+
+/** `GET /groups/pending` */
+export type PendingGroupsResult = { groups: PendingGroup[] }
+
+/** `POST /groups/{id}/join` */
+export type JoinGroupResult = { group: Groups; member: Members }

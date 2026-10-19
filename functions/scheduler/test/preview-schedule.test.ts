@@ -1,5 +1,5 @@
+import type { SchedulePreview } from '@ledgerly/core/schemas/scheduler'
 import { describe, expect, it } from 'vitest'
-import type { SchedulePreview } from '../src/routes/preview-schedule'
 import { failure, fakes, group, member, ok, person } from './harness'
 
 // Sam (u1) owns Acme; Alex (u2) is a viewer there; Sydney is a day ahead of UTC at NOW.

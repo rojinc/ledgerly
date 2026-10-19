@@ -1,4 +1,5 @@
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
+import type { Balances } from '@ledgerly/core/schemas/ledger'
 import { useQuery } from '@tanstack/react-query'
 import { Query } from 'appwrite'
 import { callFunction } from '../../lib/api'
@@ -72,12 +73,6 @@ export function useMyMember(groupId: string, personId: string) {
       return rows[0] ?? null
     },
   })
-}
-
-// Hand-copied from the ledger function's response until #113 moves response types to core.
-export type Balances = {
-  people: { personId: string; netCents: number }[]
-  transfers: { fromPersonId: string; toPersonId: string; cents: number }[]
 }
 
 /**

@@ -1,6 +1,7 @@
 import type { IdentitiesType, Members, Persons } from '@ledgerly/core/generated/rows'
 import { identityKey } from '@ledgerly/core/identity/normalize'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
+import type { ClaimResult } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
@@ -27,7 +28,7 @@ export async function postClaim(
   services: Services,
   userId: string,
   body: unknown,
-): Promise<{ linkedGroupIds: string[] }> {
+): Promise<ClaimResult> {
   parseBody(emptyBodySchema, body ?? {})
   const user = await services.users.get({ userId })
   return { linkedGroupIds: await claim(services, userId, verifiedIdentities(user)) }

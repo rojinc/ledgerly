@@ -1,7 +1,7 @@
+import type { CreateGroupResult } from '@ledgerly/core/schemas/groups'
 import type { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
-import type { CreateGroupResult } from '../src/routes/create-group'
 import {
   beforeCommit,
   createRow,

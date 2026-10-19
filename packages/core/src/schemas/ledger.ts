@@ -5,7 +5,10 @@ import {
   MAX_ITEMS_PER_TRANSACTION,
   MAX_PEOPLE_PER_TRANSACTION,
 } from '../constants/limits'
+import type { Items, Shares, Transactions } from '../generated/rows'
 import { shiftAmountCents } from '../money/shift-amount'
+import type { Net } from '../settle/nets'
+import type { Transfer } from '../settle/suggest-transfers'
 import {
   categorySchema,
   centsSchema,
@@ -276,3 +279,11 @@ export const stopTimerBodySchema = z.strictObject({
 })
 
 export type StopTimerBody = z.infer<typeof stopTimerBodySchema>
+
+// Responses (functions-api.md#ledger), shared by the function and the web app.
+
+/** What every transaction write and the timer routes return. */
+export type TransactionView = { transaction: Transactions; shares: Shares[]; items: Items[] }
+
+/** `GET /groups/{groupId}/balances`: each person's net, and the transfers that would settle it. */
+export type Balances = { people: Net[]; transfers: Transfer[] }

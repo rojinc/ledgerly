@@ -1,6 +1,7 @@
 import type { Groups, Shares } from '@ledgerly/core/generated/rows'
-import { type Net, netsFromShares } from '@ledgerly/core/settle/nets'
-import { suggestTransfers, type Transfer } from '@ledgerly/core/settle/suggest-transfers'
+import type { Balances } from '@ledgerly/core/schemas/ledger'
+import { netsFromShares } from '@ledgerly/core/settle/nets'
+import { suggestTransfers } from '@ledgerly/core/settle/suggest-transfers'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { requireMember } from '@ledgerly/server/auth/require-member'
@@ -9,8 +10,6 @@ import { route } from '@ledgerly/server/http/create-handler'
 import { listAll } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 import type { ServicesFor } from '../services'
-
-export type Balances = { people: Net[]; transfers: Transfer[] }
 
 const READS = 3
 

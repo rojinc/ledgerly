@@ -1,4 +1,5 @@
 import type { Groups, Members, Persons, Profiles } from '@ledgerly/core/generated/rows'
+import type { CreateGroupResult } from '@ledgerly/core/schemas/groups'
 import {
   type CreateGroupBody,
   createGroupBodySchema,
@@ -30,8 +31,6 @@ import {
   teamRead,
   today,
 } from '../shared'
-
-export type CreateGroupResult = { group: Groups; members: Members[] }
 
 // permissions.md#default-roles-by-group-type: the counterpart's role.
 const COUNTERPART_ROLE = { employer: 'viewer', pair: 'admin' } as const
