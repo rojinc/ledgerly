@@ -79,6 +79,9 @@ Row ID = the Appwrite user ID. One per user.
 | `lastInvoiceNumber` | integer | default 0. Only the `statements` function changes it, in the same transaction that numbers the invoice ([finalize step 2](statements.md#2-finalize-post-statementsidfinalize)). |
 | `summaryFrequency` | enum(none, weekly, fortnightly, monthly) | default `none` |
 | `nextSummaryAt` | datetime? | Set by `identity` when `summaryFrequency` or `timezone` changes (empty for `none`), then moved forward by the scheduler ([step 4](scheduling.md#step-4-summary-emails)) |
+| `hoursCapMinutes` | integer? | The user's own work-hours limit (F-82): 60 to 10080 for a week, 60 to 20160 for a fortnight. All three `hoursCap*` columns are set together, or all empty for no limit. |
+| `hoursCapPeriod` | enum(week, fortnight)? | A week runs Monday to Sunday in the profile's `timezone` |
+| `hoursCapStartsOn` | varchar(10)? | A fortnight's first Monday (YYYY-MM-DD); fortnights count from it, before and after. Empty for a week. |
 
 Indexes: `idx_nextSummaryAt (nextSummaryAt)`.
 Permissions: `read("user:<userId>")`. Writes go through `identity PATCH /profile`, except `lastInvoiceNumber` (`statements`) and `nextSummaryAt` (also `scheduler`).

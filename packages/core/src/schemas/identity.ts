@@ -1,10 +1,13 @@
 import { z } from 'zod'
+import { MAX_HOURS_CAP_MINUTES, MIN_HOURS_CAP_MINUTES } from '../constants/limits'
+import { isLocalDate, weekdayOf } from '../dates/local-date'
 import type { Groups, Members, Profiles } from '../generated/rows'
 import {
   currencySchema,
   displayNameSchema,
   emailSchema,
   idSchema,
+  localDateSchema,
   phoneSchema,
   regionSchema,
   text,
@@ -46,6 +49,38 @@ export const bootstrapBodySchema = z.strictObject({ timezone: timezoneSchema })
 
 export type BootstrapBody = z.infer<typeof bootstrapBodySchema>
 
+/**
+ * The user's own work-hours limit (F-82, data-model.md#profiles): per week (Monday to Sunday),
+ * or per fortnight counted from a Monday they pick. No visa or award rules: it only warns.
+ */
+export const hoursCapSchema = z
+  .strictObject({
+    minutes: z.int().min(MIN_HOURS_CAP_MINUTES),
+    period: z.enum(['week', 'fortnight']),
+    startsOn: localDateSchema.optional(),
+  })
+  .superRefine((cap, ctx) => {
+    if (cap.minutes > MAX_HOURS_CAP_MINUTES[cap.period]) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['minutes'],
+        message: `At most ${MAX_HOURS_CAP_MINUTES[cap.period] / 60} hours a ${cap.period}`,
+      })
+    }
+    if (cap.period === 'week') {
+      if (cap.startsOn !== undefined) {
+        ctx.addIssue({ code: 'custom', path: ['startsOn'], message: 'A week has no start date' })
+      }
+    } else if (cap.startsOn === undefined) {
+      ctx.addIssue({ code: 'custom', path: ['startsOn'], message: 'Required for a fortnight' })
+    } else if (isLocalDate(cap.startsOn) && weekdayOf(cap.startsOn) !== 1) {
+      // A date that isn't one is already refused by localDateSchema.
+      ctx.addIssue({ code: 'custom', path: ['startsOn'], message: 'Must be a Monday' })
+    }
+  })
+
+export type HoursCap = z.infer<typeof hoursCapSchema>
+
 /** `PATCH /profile` */
 export const updateProfileBodySchema = z.strictObject({
   displayName: displayNameSchema.optional(),
@@ -55,6 +90,8 @@ export const updateProfileBodySchema = z.strictObject({
   business: businessDetailsSchema.optional(),
   invoicePrefix: text(0, 16).optional(),
   summaryFrequency: z.enum(['none', 'weekly', 'fortnightly', 'monthly']).optional(),
+  /** `null` clears it. */
+  hoursCap: hoursCapSchema.nullable().optional(),
 })
 
 export type UpdateProfileBody = z.infer<typeof updateProfileBodySchema>

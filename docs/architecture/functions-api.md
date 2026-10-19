@@ -182,14 +182,14 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /bootstrap` | `{ timezone }` | `{ profile, personId, personalGroupId, linkedGroupIds }` | the user; idempotent |
-| `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency? }` | `profile` | the user |
+| `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency?, hoursCap? }` | `profile` | the user |
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
-`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole.
+`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
 
 `linkedGroupIds` (`/bootstrap`, `/claim`) lists only the groups joined in that call, so after a retry it leaves out groups an earlier, interrupted call already joined.
 
