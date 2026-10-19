@@ -46,10 +46,39 @@ Rules:
 - **Collect the minimum.** No address-book upload, no location, no tracking pixels in emails.
 - **No personal data in logs**: no emails, phone numbers, names, bank details or amounts with names. Log IDs and error codes.
 - **Placeholders** are people who never agreed to our terms. Store only what the adding user typed, never show their contact details to other members, and delete it on request.
-- **Account deletion** removes contact details and the personal group, and anonymises the person in shared groups ([details](identity-and-invites.md#deleting-an-account-m4)).
-- **Data export:** users can export their data as CSV (M4).
+- **Account deletion** removes contact details, the profile and every group no one else is in, and anonymises the person in shared groups. It needs a sign-in from the last 10 minutes ([details](identity-and-invites.md#deleting-an-account-m4)).
+- **Data export:** users download their own records and profile as CSV ([below](#data-export)).
 
 Privacy law obligations (for example Australia's Privacy Act) need professional advice before public launch. That is a launch blocker in [roadmap M4](../planning/roadmap.md).
+
+## Data export
+
+F-06 and F-72 ([#50](https://github.com/rojinc/ledgerly/issues/50)). The export is built **in the browser** from rows the user can already read: no function, no stored file, and no access to `identities` or to other people's contact details. It covers the user's own records and their profile, which is what v1 offers for an access request ([#54](https://github.com/rojinc/ledgerly/issues/54) confirms it).
+
+| File | One row per | Columns |
+| --- | --- | --- |
+| A group's CSV, for a date range | share; a transaction with no shares gets one row with empty person columns | `date,status,kind,description,category,currency,total,person,given,received,net` |
+| `my-records.csv` | the user's own share, across their groups | `group,groupType,date,kind,description,category,currency,total,given,received,net` |
+| `profile.csv` | profile field | `field,value`: the profile, business details, and the account's own email and phone |
+
+Rules, in `packages/core/src/export/`:
+
+- **Money** is a decimal string made from integer cents with the currency's digits (`-12.30`, `0.05`; JPY `1234`), never through a float. **Dates** are the stored `YYYY-MM-DD`. `person` is the member's display name in that group.
+- **RFC 4180:** CRLF line ends, a UTF-8 byte order mark, quotes doubled, and quotes around any field holding `,`, `"`, CR or LF.
+- **Spreadsheet formulas:** a text cell starting with `=`, `+`, `-`, `@` (or their full-width forms `＝＋－＠`), tab or CR gets a leading `'`, so opening the file never runs a formula someone typed. Names, descriptions, categories and profile values are all text cells; money cells never get one.
+- Any member can export a group they can read, viewers and people who moved out included. Nothing is written or uploaded.
+- **What a spreadsheet does on opening** is outside the file: Excel may drop the leading zeros of a BSB or account number, show an ABN in scientific notation, read a text like `1/2` as a date, or read `12.30` wrongly where the decimal separator is a comma. The values in the file are exact; CSV has no way to mark a column as text.
+- **Your data** is two files, offered as two links once both are made, since browsers don't reliably allow two downloads from one click.
+
+## Retention
+
+For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal review, [#54](https://github.com/rojinc/ledgerly/issues/54), may change it):
+
+- **Final statements and their PDFs stay as issued** after the worker deletes their account, ABN and bank details included, because the other side already holds them ([D-010](decisions.md#d-010-closed-periods-never-change)).
+- **A purged group's invoices are deleted** with it. The delete screen tells users to export first.
+- **Backups** follow Appwrite Cloud's retention, so deleted data can stay in a backup for that period.
+- **Activity rows written before #50** keep the names in their text, as history; rows written since name no one ([activity](data-model.md#activity)).
+- **Deleting needs a recent sign-in and an old password.** The session must be under 10 minutes old, and `passwordUpdate` over 24 hours old, so a stolen session can't set a first password, sign in fresh and delete the account the same day ([refusals](identity-and-invites.md#refusals)). Accepted risk: signing in with Google (OAuth, later) would make a fresh session without a password change, so this rule must be revisited when OAuth is added. A follow-up emails the account's verified address whenever a password is set or changed.
 
 ## Secrets inventory
 
