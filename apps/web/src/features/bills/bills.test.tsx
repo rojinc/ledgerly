@@ -51,7 +51,8 @@ function bill(id: string, extra: Partial<Transactions> = {}): Transactions {
     description: 'Phone',
     category: 'phone',
     totalCents: 4550,
-    inputJson: JSON.stringify({ category: 'phone', totalCents: 4550, bill: { status: 'due' } }),
+    // As the ledger stores it: the status, due date, category and total are columns.
+    inputJson: JSON.stringify({ bill: {} }),
     statementId: null,
     voidReason: null,
     createdBy: 'p1',
@@ -348,6 +349,47 @@ describe('BillPage', () => {
       bill: { status: 'due', dueOn: '2026-10-28' },
     })
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+
+  it('keeps the split, note and billing period it doesn’t show when changing a bill', async () => {
+    const split = { mode: 'equal', personIds: ['p1'] }
+    getRow.mockResolvedValue(
+      bill('b1', {
+        inputJson: JSON.stringify({
+          split,
+          note: 'Account 123',
+          bill: { periodStart: '2026-09-01', periodEnd: '2026-09-30' },
+        }),
+      }) as never,
+    )
+    call.mockResolvedValue(view(bill('b1')))
+    renderAt('/bills/b1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change this bill' }))
+    type('Description', 'Phone and internet')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sentBody()).toMatchObject({
+      description: 'Phone and internet',
+      split,
+      note: 'Account 123',
+      bill: {
+        status: 'due',
+        dueOn: '2026-10-25',
+        periodStart: '2026-09-01',
+        periodEnd: '2026-09-30',
+      },
+    })
+  })
+
+  it('moves focus to the heading when the change is cancelled', async () => {
+    getRow.mockResolvedValue(bill('b1') as never)
+    renderAt('/bills/b1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change this bill' }))
+    const cancel = screen.getByRole('button', { name: 'Cancel' })
+    cancel.focus()
+    fireEvent.click(cancel)
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Phone' }))
   })
 
   it('skips a bill with a reason, needing one first', async () => {

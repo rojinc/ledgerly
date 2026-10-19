@@ -1,7 +1,11 @@
-import type { Category } from '@ledgerly/core/constants/categories'
+import { CATEGORIES, type Category } from '@ledgerly/core/constants/categories'
 import { endOfMonth, parseLocalDate } from '@ledgerly/core/dates/local-date'
 import { parseMoney } from '@ledgerly/core/money/format'
-import type { TransactionTemplate, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
+import {
+  type TransactionTemplate,
+  type transactionInputSchema,
+  transactionTemplateSchema,
+} from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
 
 /** The bill form's fields, all as typed. */
@@ -32,6 +36,7 @@ export function toBillBody(
   values: BillValues,
   ids: { id: string; groupId: string },
   currency: string,
+  kept: StoredExtras = {},
 ): z.input<typeof transactionInputSchema> {
   return {
     ...ids,
@@ -39,21 +44,57 @@ export function toBillBody(
     description: values.description.trim(),
     ...(values.category ? { category: values.category } : {}),
     totalCents: cents(values.amount, currency),
+    ...(kept.split ? { split: kept.split } : {}),
+    ...(kept.note ? { note: kept.note } : {}),
     ...(values.paid
       ? { date: values.paidOn, bill: { status: 'paid' as const } }
-      : { date: values.dueOn, bill: { status: 'due' as const, dueOn: values.dueOn } }),
+      : {
+          date: values.dueOn,
+          bill: { status: 'due' as const, dueOn: values.dueOn, ...kept.period },
+        }),
   }
 }
 
-/** The form's values for a stored due bill. */
+/** What a stored bill keeps that the form doesn't show, so a PATCH doesn't drop it. */
+export type StoredExtras = {
+  split?: TransactionTemplate['split']
+  note?: string
+  period?: { periodStart?: string; periodEnd?: string }
+}
+
+/**
+ * The split, note and billing period from a bill's `inputJson`, which the ledger stores without
+ * the bill's status, due date or category (those are columns). Anything unreadable is left out.
+ */
+export function storedExtras(inputJson: string): StoredExtras {
+  try {
+    const stored = JSON.parse(inputJson) as {
+      split?: unknown
+      note?: unknown
+      bill?: { periodStart?: unknown; periodEnd?: unknown }
+    } | null
+    const split = transactionTemplateSchema.shape.split.safeParse(stored?.split)
+    const { periodStart, periodEnd } = stored?.bill ?? {}
+    return {
+      ...(split.success && split.data ? { split: split.data } : {}),
+      ...(typeof stored?.note === 'string' && stored.note !== '' ? { note: stored.note } : {}),
+      ...(typeof periodStart === 'string' && typeof periodEnd === 'string'
+        ? { period: { periodStart, periodEnd } }
+        : {}),
+    }
+  } catch {
+    return {}
+  }
+}
+
+/** The form's values for a stored due bill, from its columns. */
 export function toBillValues(
-  row: { description: string; date: string; dueOn: string | null },
-  stored: TransactionTemplate,
+  row: { description: string; date: string; dueOn: string | null; category: string | null },
   amountText: string,
 ): BillValues {
   return {
     description: row.description,
-    category: stored.category ?? '',
+    category: CATEGORIES.find((category) => category === row.category) ?? '',
     amount: amountText,
     dueOn: row.dueOn ?? row.date,
     paid: false,

@@ -2,7 +2,6 @@ import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
-import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { ID } from 'appwrite'
 import { type ReactNode, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router'
@@ -13,7 +12,7 @@ import { useGroup } from '../groups/use-groups'
 import { formatDate } from '../statements/invoice-view'
 import { LedgerError, useTransaction } from '../transactions/use-transactions'
 import { BillForm } from './bill-form'
-import { isOverdue, toBillValues } from './bill-values'
+import { isOverdue, storedExtras, toBillValues } from './bill-values'
 import { Message, usePersonalGroup } from './bills-page'
 import { useMarkPaid, useSaveBill, useSkipBill } from './use-bills'
 
@@ -95,16 +94,6 @@ export function BillPage() {
   )
 }
 
-// The stored input, or undefined if it can't be read (then the bill isn't editable here).
-function storedInput(inputJson: string) {
-  try {
-    const stored = transactionTemplateSchema.safeParse(JSON.parse(inputJson))
-    return stored.success ? stored.data : undefined
-  } catch {
-    return undefined
-  }
-}
-
 function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void }) {
   const group = useGroup(row.groupId)
   const [done, setDone] = useState('')
@@ -126,7 +115,6 @@ function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void })
 
   const today = localToday(group.data.timezone, new Date())
   const dueOn = row.dueOn ?? row.date
-  const stored = storedInput(row.inputJson)
   const status =
     row.status === 'due'
       ? isOverdue(dueOn, today)
@@ -156,7 +144,7 @@ function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void })
         )}
       </dl>
       {row.status === 'due' &&
-        (editing && stored ? (
+        (editing ? (
           <section aria-labelledby="edit-heading" className="flex flex-col gap-3">
             <h2 id="edit-heading" className="font-medium">
               Change this bill
@@ -164,19 +152,20 @@ function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void })
             <EditBill
               row={row}
               group={group.data}
-              stored={stored}
               onSaved={() => finish('Saved.')}
-              onCancel={() => setEditing(false)}
+              onCancel={() => {
+                // The form and its Cancel go: keep focus on the page.
+                setEditing(false)
+                onDone()
+              }}
             />
           </section>
         ) : (
           <>
             <MarkPaid row={row} today={today} onPaid={() => finish('Marked paid.')} />
-            {stored && (
-              <Button variant="outline" className="self-start" onClick={() => setEditing(true)}>
-                Change this bill
-              </Button>
-            )}
+            <Button variant="outline" className="self-start" onClick={() => setEditing(true)}>
+              Change this bill
+            </Button>
             <SkipBill row={row} onSkipped={() => finish('Skipped.')} />
           </>
         ))}
@@ -187,13 +176,11 @@ function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void })
 function EditBill({
   row,
   group,
-  stored,
   onSaved,
   onCancel,
 }: {
   row: Transactions
   group: Groups
-  stored: NonNullable<ReturnType<typeof storedInput>>
   onSaved: () => void
   onCancel: () => void
 }) {
@@ -203,9 +190,10 @@ function EditBill({
       <BillForm
         group={group}
         id={row.$id}
-        defaultValues={toBillValues(row, stored, centsToText(row.totalCents, group.currency))}
+        defaultValues={toBillValues(row, centsToText(row.totalCents, group.currency))}
         submitLabel="Save"
         canMarkPaid={false}
+        kept={storedExtras(row.inputJson)}
         onSave={async (body) => {
           await save.mutateAsync({ body, isNew: false })
           onSaved()

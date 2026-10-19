@@ -7,7 +7,7 @@ import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { centsToText } from '../groups/employer-form'
-import { type BillValues, toBillBody } from './bill-values'
+import { type BillValues, type StoredExtras, toBillBody } from './bill-values'
 
 type Props = {
   group: Groups
@@ -16,6 +16,8 @@ type Props = {
   submitLabel: string
   /** A new bill can be added as already paid; an edit keeps a due bill due. */
   canMarkPaid: boolean
+  /** A stored bill's parts the form doesn't show, sent back unchanged. */
+  kept?: StoredExtras
   onSave: (body: TransactionInput) => Promise<unknown>
 }
 
@@ -63,9 +65,17 @@ function billResolver(
 }
 
 /** A personal bill: new (due or already paid), or a due one's changes. */
-export function BillForm({ group, id, defaultValues, submitLabel, canMarkPaid, onSave }: Props) {
+export function BillForm({
+  group,
+  id,
+  defaultValues,
+  submitLabel,
+  canMarkPaid,
+  kept,
+  onSave,
+}: Props) {
   const toBody = (values: BillValues) =>
-    toBillBody(values, { id, groupId: group.$id }, group.currency)
+    toBillBody(values, { id, groupId: group.$id }, group.currency, kept)
   const form = useForm<BillValues, unknown, TransactionInput>({
     resolver: billResolver(toBody, group.currency),
     defaultValues,

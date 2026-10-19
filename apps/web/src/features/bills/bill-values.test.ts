@@ -1,6 +1,13 @@
 import { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { describe, expect, it } from 'vitest'
-import { type BillValues, isOverdue, monthsBefore, toBillBody, toBillValues } from './bill-values'
+import {
+  type BillValues,
+  isOverdue,
+  monthsBefore,
+  storedExtras,
+  toBillBody,
+  toBillValues,
+} from './bill-values'
 
 const BASE: BillValues = {
   description: ' Phone ',
@@ -48,20 +55,54 @@ describe('toBillBody', () => {
 })
 
 describe('toBillValues', () => {
-  it('starts an edit from the stored bill', () => {
+  it('starts an edit from the stored bill’s columns', () => {
     expect(
       toBillValues(
-        { description: 'Phone', date: '2026-10-25', dueOn: '2026-10-25' },
-        { category: 'phone', totalCents: 4550 },
+        { description: 'Phone', date: '2026-10-25', dueOn: '2026-10-25', category: 'phone' },
         '45.50',
       ),
     ).toStrictEqual({ ...BASE, description: 'Phone' })
   })
 
-  it('falls back to the date, and no category', () => {
+  it('falls back to the date, and no category for one it doesn’t know', () => {
     expect(
-      toBillValues({ description: 'Gas', date: '2026-11-02', dueOn: null }, {}, '10.00'),
+      toBillValues(
+        { description: 'Gas', date: '2026-11-02', dueOn: null, category: 'other-thing' },
+        '10.00',
+      ),
     ).toMatchObject({ dueOn: '2026-11-02', category: '' })
+  })
+})
+
+describe('storedExtras', () => {
+  it('reads the split, note and billing period, and sends them back', () => {
+    const split = { mode: 'equal' as const, personIds: ['p1'] }
+    const kept = storedExtras(
+      JSON.stringify({
+        split,
+        note: 'Account 123',
+        bill: { periodStart: '2026-09-01', periodEnd: '2026-09-30' },
+      }),
+    )
+    expect(kept).toStrictEqual({
+      split,
+      note: 'Account 123',
+      period: { periodStart: '2026-09-01', periodEnd: '2026-09-30' },
+    })
+    const body = toBillBody(BASE, IDS, 'AUD', kept)
+    expect(body).toMatchObject({
+      split,
+      note: 'Account 123',
+      bill: { status: 'due', dueOn: '2026-10-25', periodStart: '2026-09-01' },
+    })
+    expect(transactionInputSchema.safeParse(body).success).toBe(true)
+  })
+
+  it('keeps nothing from what the ledger stores for a plain bill, or what it can’t read', () => {
+    expect(storedExtras(JSON.stringify({ bill: {} }))).toStrictEqual({})
+    expect(storedExtras(JSON.stringify({ split: { mode: 'nope' }, note: '' }))).toStrictEqual({})
+    expect(storedExtras('not json')).toStrictEqual({})
+    expect(storedExtras('null')).toStrictEqual({})
   })
 })
 
