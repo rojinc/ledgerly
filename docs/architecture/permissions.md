@@ -74,7 +74,7 @@ Routes that don't act as a joined member of an existing group skip steps 2–5, 
 
 Scheduled jobs run with the server key and no caller. They write as the system and record `actorPersonId = null` in `activity`. A run is a scheduled job only when `x-appwrite-trigger` is exactly `schedule` (`ctx.scheduled` in `createHandler`). A missing JWT never makes a request a scheduled job; on any other request it means `UNAUTHENTICATED`, except on a route declared public. Only `/health` is public, and it returns nothing about the caller or the project. (A forged `X-Appwrite-Trigger: schedule` arrives merged as `schedule, http`, so the exact match fails closed.)
 
-**Event runs** are the third kind of run without a JWT. A run is one only when `x-appwrite-trigger` is exactly `event` and there's no JWT (`ctx.event` in `createHandler`), and only a route that opts in accepts it. Any other route answers it `UNAUTHENTICATED`, as for a missing JWT. Today only `identity POST /` opts in, for the [password notice](identity-and-invites.md#password-notice). It's safe because an event route:
+**Event runs** are the third kind of run without a JWT. A run is one only when `x-appwrite-trigger` is exactly `event` and there's no JWT (`ctx.event` in `createHandler`), and only a route that opts in accepts it. Any other route answers it `UNAUTHENTICATED`, as for a missing JWT. Today only `identity POST /` opts in, for the [password notice](identity-and-invites.md#password-notice) and the [email and phone change notice](identity-and-invites.md#email-and-phone-change-notice). It's safe because an event route:
 - trusts nothing in the body but a user ID;
 - reads everything it decides from again, server-side;
 - has an effect that is idempotent.

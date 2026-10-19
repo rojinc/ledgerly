@@ -189,6 +189,37 @@ A forged or replayed call can do nothing new: at worst it asks again, within the
 - A send that fails (a Resend outage, say) isn't retried: Appwrite doesn't run an event again. The run logs `failed`.
 - After the deploy, the lead checks on `ledgerly-dev` that setting a first password and a recovery reset both fire the event, with the user ID in `x-appwrite-event`. If the reset doesn't, the recovery event is added here.
 
+## Email and phone change notice
+
+When an account's email or phone number changes, a notice goes out by email, so a stolen session that moves the account to someone else's address or number is noticed ([#268](https://github.com/rojinc/ledgerly/issues/268)). It uses the [password notice](#password-notice)'s event route.
+
+`identity` also subscribes to `users.*.update.email` and `users.*.update.phone`. Each runs `POST /` as an [event run](permissions.md#function-side-checks), and the route tells the three events apart by the end of the event's name in `x-appwrite-event`.
+
+1. **Who and the user:** as for the password notice (its steps 1 and 2). Only an event run gets in, the route takes only the user ID, and it reads the user again with `users.get`. Nothing else comes from the event: not the old or new value, even if the payload holds one.
+2. **It writes nothing, ever:** no row stores the change. **Nothing is sent** when the user is gone or their person has `deletedAt` (`gone`), so a deletion under way changes nothing here.
+3. **An email change** notifies the **old** address, which comes from our own `identities`, never from the event. It's the identity on the user's person that:
+   - has `type = email` and `verified = true`;
+   - has a key that isn't the account's current email;
+   - has the newest `verifiedAt` of those.
+
+   Claim never deletes a verified key, so that row is still there after the change. With no person, or no such identity (the old email was never verified), nothing is sent (`no_old_address`).
+   - **The email** says the account's email was changed to the new address, masked as `j***@example.com`: its first character, `***`, then `@` and the domain, HTML-escaped.
+   - **Key:** `email-change-notice-<SHA-256 hex of "<userId>:<old key>:<new key>">`, so each change sends at most one.
+4. **A phone change** notifies the account's **current verified email** (`emailVerification`), not the old number: SMS needs [#175](https://github.com/rojinc/ledgerly/issues/175). With no verified email, nothing is sent (`unverified`).
+   - **The email** says the account's phone number was changed to one ending in its last 3 digits (`…678`), or that it was removed if the account has none now.
+   - **Key:** `phone-change-notice-<SHA-256 hex of "<userId>:<new phone key, or none>">`.
+5. **Both emails** have a fixed subject that holds no address or number. They say "If this wasn't you, write to `<SUPPORT_EMAIL>` from this address right away", or "reply to this email" when the `SUPPORT_EMAIL` variable isn't set. They have one link, the app's sign-in page (`APP_URL`), and no token or link that signs anyone in. Recovering an account someone else has taken over is [#290](https://github.com/rojinc/ledgerly/issues/290).
+6. **Logs** hold the user ID and the outcome only: `sent`, `gone`, `no_old_address`, `unverified`, or `failed` with the email error's type. A failed send fails the run.
+
+**With the password notice:** an account with no password that changes its email or phone may get a first password from Appwrite. That fires only this event, not `update.password` ([accepted](#password-notice)), so this notice is the one that covers it. Each event sends at most one email.
+
+**Accepted:**
+- After A → B → A → C, the email change notice goes to B, the newest other verified address, not A.
+- A replayed event after Resend's 24-hour key has expired sends the same notice again. Only Appwrite makes an event run ([permissions](permissions.md#function-side-checks)), so that's a replay of a real change.
+- A phone change on an account with no verified email gets no notice until SMS can carry one (#175). The SMS notice to the old number is a follow-up after #175.
+- A send that fails isn't retried, as for the password notice.
+- **Dev checks, by the lead after the deploy:** an email change and a phone change each fire their event, with the user ID in `x-appwrite-event`; `emailVerification` is false right after an email change; and whether an account with no password also fires `update.password`.
+
 ## Deleting an account (M4)
 
 `account POST /delete` ([functions API](functions-api.md#account)), from the delete screen ([#50](https://github.com/rojinc/ledgerly/issues/50)). Deletion has its own function, `account`, so `identity` (which runs bootstrap for every new user) never holds `users.write` or file access. **Deleting means anonymising.** Shares, statements and balances point at the person ([I-3](ledger.md#invariants)), so the `persons` row stays: `deletedAt` set, `userId` cleared, `displayName` "Former member", and no permissions. Their identities, profile (business details included), the invites they sent and the Appwrite user are deleted. There is no undo or grace period in v1: typing DELETE is the confirmation.

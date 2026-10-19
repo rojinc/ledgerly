@@ -88,7 +88,7 @@ The owner confirms these names against the server: a missing scope fails the dep
 | --- | --- | --- | --- | --- |
 | `ledger` | HTTP | `users` | 15 s | `rows.*`, `files.*` (receipt permissions), `teams.read` (whether a `left` member is still in the team, #117) |
 | `groups` | HTTP | `users` | 15 s | `rows.*`, `teams.*` |
-| `identity` | HTTP + event `users.*.update.password` ([password notice](../architecture/identity-and-invites.md#password-notice); #236 Part 2 adds it to `functions.json` with its code) | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
+| `identity` | HTTP + events `users.*.update.password` ([password notice](../architecture/identity-and-invites.md#password-notice); #236 Part 2 adds it to `functions.json` with its code), `users.*.update.email` and `users.*.update.phone` ([change notice](../architecture/identity-and-invites.md#email-and-phone-change-notice); #268's build adds them) | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
 | `account` (#50 Part 3 adds it to `functions.json` with its code) | HTTP + cron `35 * * * *` | `users` | 900 s (the hourly job finishes account deletions; `POST /delete` stops after 20 s, inside the 30 s synchronous limit) | `rows.*`, `teams.*`, `users.read` (the caller's session age and `passwordUpdate`), `users.write` (labelling, blocking and deleting a deleted account's user and sessions), `files.read` and `files.write` (a purged group's receipts and statement PDFs, checked before each delete) |
 | `scheduler` | HTTP + cron `5 * * * *` | `users` | 900 s | `rows.*`, `teams.read` (whether a `left` member is still in the team, #117), `teams.write` (only the [nightly check](../architecture/scheduling.md#step-6-nightly-check), removing stale memberships), `users.read` (reminder emails) |
 | `statements` | HTTP + cron `15 * * * *` | `users` | 300 s | `rows.*`, `files.*` (PDFs), `teams.read` (whether a `left` member is still in the team, #117) |
@@ -101,7 +101,7 @@ Each function runs from a bundle: `npm run build` writes `functions/<name>/dist/
 - **Key scopes** are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`). Give a function only the scopes a documented route needs; a change to them gets the `security` label.
 - `GET /health`, the only route that runs without a signed-in caller, returns `{ fn, version }` on every function, where `version` is the commit the bundle was built from (`-dirty` when built with uncommitted changes).
 
-Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, later `SMS_*` and `SENTRY_DSN`.
+Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, `SUPPORT_EMAIL` (the address the [change notice](../architecture/identity-and-invites.md#email-and-phone-change-notice) tells a user to write to; optional, the owner sets it on #3), later `SMS_*` and `SENTRY_DSN`.
 
 ## Schema changes
 
