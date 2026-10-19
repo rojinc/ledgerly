@@ -121,6 +121,7 @@ export type Persons = Models.Row & {
     mergedInto: string | null;
     deletedAt: string | null;
     rev: string | null;
+    mergeGroupIds: string[] | null;
 }
 
 export type Identities = Models.Row & {
