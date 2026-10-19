@@ -128,9 +128,16 @@ export function mergeInput<T extends Named>(
   return { input: result, voided: fromItselfToItself(result, kind, merge.into) }
 }
 
-/** A payment or loan from U to U, which moves no money between two people any more. */
+/**
+ * A payment or loan from U to U, which moves no money between two people any more. Only the
+ * people an input names count, so a loan counts only with its payers and its split both stated:
+ * with no split, everyone but the lender borrows (ledger.md#default-split), and with no payers,
+ * whoever posts it lends.
+ */
 function fromItselfToItself(input: Named, kind: TransactionKind, into: string): boolean {
-  if (kind !== 'payment' && kind !== 'loan') return false
-  const people = everyPersonId(input)
-  return people.length > 0 && people.every((personId) => personId === into)
+  if (kind === 'payment') {
+    return input.payment?.fromPersonId === into && input.payment.toPersonId === into
+  }
+  if (kind !== 'loan' || !input.payers?.length || !input.split) return false
+  return everyPersonId(input).every((personId) => personId === into)
 }

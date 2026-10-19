@@ -74,7 +74,11 @@ export async function claim(
   const deadline = Date.now() + MERGE_BUDGET_MS
   await claimIdentities(services, person.$id, identities)
   // Every merge into this person that isn't finished: one just marked, or one cut off before.
-  const merges = await finishMerges(services, userId, person.$id, deadline)
+  // A merge that fails is left for the next claim, so it never stops a login.
+  const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
+    console.warn(`merge into ${person.$id} stopped: ${errorName(error)}`)
+    return { joined: [], finished: 0 }
+  })
   // A finished merge moved P's identities here, the claimed one too: it's verified now.
   if (merges.finished > 0) await claimIdentities(services, person.$id, identities)
   const linked = new Set(merges.joined)
@@ -166,4 +170,11 @@ async function rowsToJoin(db: Db, person: Persons): Promise<Members[]> {
     if (page.length < PAGE_SIZE) return rows
     cursor = page.at(-1)?.$id
   }
+}
+
+/** An error's code or class name, never its message, which may quote stored data. */
+function errorName(error: unknown): string {
+  if (error instanceof AppError) return error.code
+  if (isAppwriteError(error, 409)) return 'conflict'
+  return error instanceof Error ? error.name : 'unknown'
 }

@@ -80,7 +80,12 @@ function house(more: Record<string, object[]> = {}): Fakes {
     {
       persons: [SAM, SAMMY, ALEX],
       identities: [EMAIL, PHONE],
-      groups: [group('g1'), group('g2'), ...(more.groups ?? [])],
+      groups: [
+        group('g1'),
+        group('g2'),
+        { ...group('gMe'), type: 'personal' },
+        ...(more.groups ?? []),
+      ],
       members: [
         placeholderRow('m1', 'g1', 'pP', BEFORE),
         placeholderRow('m2', 'g1', 'pX', BEFORE, { status: 'active', displayName: 'Alex' }),
@@ -89,6 +94,12 @@ function house(more: Record<string, object[]> = {}): Fakes {
           status: 'active',
           displayName: 'Sam Lee',
           joinedOn: '2026-09-15',
+        }),
+        // Sam's personal group, which a placeholder is never in.
+        placeholderRow('mMe', 'gMe', 'pSam', BEFORE, {
+          status: 'active',
+          role: 'admin',
+          displayName: 'Sam Lee',
         }),
         ...(more.members ?? []),
       ],
@@ -109,6 +120,29 @@ function house(more: Record<string, object[]> = {}): Fakes {
         share('s3', 't2', 'g2', 'pSam', 6000, 3000),
         share('s4', 't2', 'g2', 'pP', 0, 3000),
         ...(more.shares ?? []),
+      ],
+      // g1's weekly cleaning, shared by Sammy and Alex.
+      schedules: [
+        {
+          $id: 'sc1',
+          groupId: 'g1',
+          kind: 'expense',
+          description: 'Cleaning',
+          templateJson: JSON.stringify({
+            totalCents: 4000,
+            payers: [{ personId: 'pX', cents: 4000 }],
+            split: { mode: 'equal', personIds: ['pP', 'pX'] },
+          }),
+          rrule: 'FREQ=WEEKLY',
+          startsOn: '2026-10-01',
+          endsOn: null,
+          exdates: null,
+          skipPublicHolidays: false,
+          autoPost: false,
+          horizonDays: 56,
+          generatedThrough: '2026-11-30',
+          nextRunAt: '2026-11-01T00:00:00.000Z',
+        },
       ],
       statements: more.statements ?? [],
       activity: more.activity ?? [],
@@ -149,18 +183,28 @@ function namingSammy(services: Fakes) {
 }
 
 let log: ReturnType<typeof vi.spyOn>
+let warn: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   log = vi.spyOn(console, 'log').mockImplementation(() => {})
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 afterEach(() => {
   // No personal data in logs: IDs and counts only.
-  for (const args of log.mock.calls) expect(String(args)).not.toMatch(/@|\d{6,}|Sam Lee|Sammy|Alex/)
+  for (const args of [...log.mock.calls, ...warn.mock.calls]) {
+    expect(String(args)).not.toMatch(/@|\d{6,}|Sam Lee|Sammy|Alex/)
+  }
   vi.restoreAllMocks()
 })
+
+/** The merges that stopped on an error: none, unless a test makes one. */
+function stopped() {
+  return warn.mock.calls.filter(([line]: unknown[]) => /stopped/.test(String(line)))
+}
 
 describe('POST /claim, merging a placeholder', () => {
   it('moves Sammy’s rows, shares and inputs to Sam, with every group’s balances the same', async () => {
     const services = house()
+    const reads = vi.spyOn(services.db, 'listRows')
     const before = { g1: nets(services, 'g1'), g2: nets(services, 'g2') }
     const { body } = await claim(services)
     // g2 isn't new to Sam, who was in it already.
@@ -194,6 +238,7 @@ describe('POST /claim, merging a placeholder', () => {
       ['m1', 'g1', 'pSam', 'active', '2026-09-01'],
       ['m2', 'g1', 'pX', 'active', '2026-09-01'],
       ['m4', 'g2', 'pSam', 'active', '2026-08-01'],
+      ['mMe', 'gMe', 'pSam', 'active', '2026-09-01'],
     ])
     expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u2', 'u1'])
     // The phone is Sam's now, verified; Sammy is kept, merged, and named nowhere else.
@@ -212,6 +257,20 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: [],
       schedules: [],
     })
+
+    // The schedule names Sam now; Sam's personal group was never searched.
+    expect(JSON.parse(services.db.rows('schedules')[0]?.templateJson as string).split).toEqual({
+      mode: 'equal',
+      personIds: ['pSam', 'pX'],
+    })
+    expect(
+      reads.mock.calls.some(
+        ([params]) =>
+          ['transactions', 'schedules'].includes(params.tableId) &&
+          JSON.stringify(params.queries).includes('gMe'),
+      ),
+    ).toBe(false)
+    expect(stopped()).toEqual([])
 
     // Finished: the next claim leaves Sammy alone.
     const writes = vi.spyOn(services.db, 'createOperations')
@@ -267,13 +326,13 @@ describe('POST /claim, merging a placeholder', () => {
       statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' }],
     })
     await claim(services)
-    // g2 is done; g1's shares and input wait, and so does the phone.
+    // g2 is done; g1's shares, input and schedule wait, and so does the phone.
     expect(namingSammy(services)).toEqual({
       identities: ['iPhone'],
       members: [],
       shares: ['s2'],
       transactions: ['t1'],
-      schedules: [],
+      schedules: ['sc1'],
     })
     await withTransaction(services.db, (tx) =>
       tx.write({
@@ -351,6 +410,38 @@ describe('POST /claim, merging a placeholder', () => {
       expect(services.db.rows('shares').filter((row) => row.transactionId === 't2')).toHaveLength(1)
     },
   )
+
+  it('still logs the user in, and joins their own rows, when a merge stops on an error', async () => {
+    const services = house({
+      // A row Sam was added to before signing up: the claim joins it whatever the merge does.
+      members: [placeholderRow('m9', 'g9', 'pSam', BEFORE, { displayName: 'Sam Lee' })],
+      groups: [group('g9')],
+    })
+    services.teams = new (
+      services.teams.constructor as new (
+        seed: object,
+      ) => typeof services.teams
+    )({
+      g1: ['u2'],
+      g2: ['u1'],
+      g9: [],
+    })
+    const read = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation((async (params) => {
+      if (params.tableId === 'schedules') throw new Error('Appwrite is down')
+      return read(params)
+    }) as typeof services.db.listRows)
+    const { status, body } = await claim(services)
+    expect(status).toBe(200)
+    expect(body).toEqual({ ok: true, data: { linkedGroupIds: expect.arrayContaining(['g9']) } })
+    expect(stopped()).toEqual([['merge into pSam stopped: Error']])
+    // The next claim carries on with the merge.
+    vi.mocked(services.db.listRows).mockRestore()
+    warn.mockClear()
+    await claim(services)
+    expect(namingSammy(services).identities).toEqual([])
+    expect(stopped()).toEqual([])
+  })
 
   it('ends the same way when two claims run at once', async () => {
     const services = house()

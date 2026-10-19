@@ -1,7 +1,7 @@
+import { MAX_OPS_PER_DB_TRANSACTION as MERGE_BATCH } from '@ledgerly/core/constants/limits'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MERGE_BATCH } from '../src/merge'
 import { moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
 import { beforeStaging, NOW } from './harness'
 
@@ -77,6 +77,7 @@ describe('moveInputs (step 3)', () => {
     expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
       rewritten: 2,
       voided: 0,
+      skipped: 0,
       putOff: [],
       done: true,
     })
@@ -146,6 +147,93 @@ describe('moveInputs (step 3)', () => {
     ])
   })
 
+  it('never voids a loan whose borrowers come from the default split', async () => {
+    // P lent 9 with no split, so everyone but P borrowed: U, and X and Y too.
+    const store = seed([
+      transaction('t1', { payers: [{ personId: 'pP', cents: 900 }] }, { kind: 'loan' }),
+      transaction(
+        't2',
+        { payers: [{ personId: 'pP', cents: 5000 }] },
+        { kind: 'loan', groupId: 'g1' },
+      ),
+    ])
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+      rewritten: 2,
+      voided: 0,
+    })
+    expect(store.rows('transactions').map((row) => row.status)).toEqual(['posted', 'posted'])
+    expect(input(store, 't1')).toEqual({ payers: [{ personId: 'pU', cents: 900 }] })
+  })
+
+  it('leaves a row it can’t rename as it is, says so by ID, and isn’t done', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    // P's and U's weights would add up past MAX_WEIGHT; the other input isn't JSON.
+    const heavy = transaction('t1', {
+      payers: [{ personId: 'pX', cents: 9000 }],
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'pP', weight: 6000 },
+          { personId: 'pU', weight: 6000 },
+          { personId: 'pX', weight: 1 },
+        ],
+      },
+    })
+    const broken = { ...transaction('t2', {}), inputJson: '{' }
+    const store = seed([heavy, broken, transaction('t3', EXPENSE)])
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+      rewritten: 1,
+      voided: 0,
+      skipped: 2,
+      putOff: [],
+      done: false,
+    })
+    const stored = Object.fromEntries(store.rows('transactions').map((row) => [row.$id, row]))
+    expect(stored.t1?.inputJson).toBe(heavy.inputJson)
+    expect(stored.t2?.inputJson).toBe('{')
+    expect(warn.mock.calls.map(([line]) => line)).toEqual([
+      'merge pP into pU left transaction t1 as it is',
+      'merge pP into pU left transaction t2 as it is',
+    ])
+  })
+
+  it('keeps the stored input’s key order, and voids as the void route does', async () => {
+    const stored = { note: 'First', split: { mode: 'equal', personIds: ['pP', 'pX'] } }
+    const store = seed(
+      [
+        transaction('t1', stored),
+        transaction(
+          't2',
+          { payment: { fromPersonId: 'pP', toPersonId: 'pU' } },
+          { kind: 'payment' },
+        ),
+      ],
+      { shares: [] },
+    )
+    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    expect(Object.keys(input(store, 't1'))).toEqual(['note', 'split'])
+    expect(store.rows('transactions')[1]).toMatchObject({ status: 'void', updatedBy: 'pU' })
+  })
+
+  it('reads on past a voided row at the end of a page', async () => {
+    // The 100th row of the first page is voided by the merge; the second page still reads.
+    const rows = Array.from({ length: 101 }, (_, n) =>
+      n === 99
+        ? transaction(
+            't099',
+            { payment: { fromPersonId: 'pP', toPersonId: 'pU' } },
+            { kind: 'payment' },
+          )
+        : transaction(`t${String(n).padStart(3, '0')}`, EXPENSE),
+    )
+    const store = seed(rows, { shares: [] })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+      rewritten: 100,
+      voided: 1,
+      done: true,
+    })
+  })
+
   it('puts off a group that has a statement being finalized, changing nothing', async () => {
     const store = seed([transaction('t1', EXPENSE)], {
       statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-09-01' }],
@@ -153,6 +241,7 @@ describe('moveInputs (step 3)', () => {
     expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
       rewritten: 0,
       voided: 0,
+      skipped: 0,
       putOff: ['g1'],
       done: false,
     })
@@ -183,11 +272,11 @@ describe('moveInputs (step 3)', () => {
     })
   })
 
-  it('reads every page, and keeps each batch within 90 writes, a long receipt included', async () => {
+  it('reads every page, and keeps each batch within 90 writes, a full receipt included', async () => {
     const rows = Array.from({ length: 120 }, (_, n) =>
       transaction(`t${String(n).padStart(3, '0')}`, EXPENSE),
     )
-    const items = Array.from({ length: 200 }, (_, n) => ({
+    const items = Array.from({ length: 30 }, (_, n) => ({
       $id: `i${String(n).padStart(3, '0')}`,
       transactionId: 't000',
       position: n,
@@ -218,6 +307,7 @@ describe('moveInputs (step 3)', () => {
     expect(await moveInputs(store, merge, ['g1'], NOW, 0)).toEqual({
       rewritten: 0,
       voided: 0,
+      skipped: 0,
       putOff: [],
       done: false,
     })
@@ -258,6 +348,7 @@ describe('moveTemplates (step 3)', () => {
     const store = seed([], { schedules: [schedule('sc1', RENT), other] })
     expect(await moveTemplates(store, merge, ['g1'], FAR)).toEqual({
       rewritten: 1,
+      skipped: 0,
       putOff: [],
       done: true,
     })
@@ -298,6 +389,7 @@ describe('moveTemplates (step 3)', () => {
     })
     expect(await moveTemplates(finalizing, merge, ['g1'], FAR)).toEqual({
       rewritten: 0,
+      skipped: 0,
       putOff: ['g1'],
       done: false,
     })
@@ -305,6 +397,7 @@ describe('moveTemplates (step 3)', () => {
     const late = seed([], { schedules: [schedule('sc1', RENT)] })
     expect(await moveTemplates(late, merge, ['g1'], 0)).toEqual({
       rewritten: 0,
+      skipped: 0,
       putOff: [],
       done: false,
     })

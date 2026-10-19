@@ -215,6 +215,23 @@ describe('mergeInput', () => {
     // A loan that names nobody (not one a client can send) isn't voided.
     const nobody: TransactionTemplate = {}
     expect(mergeInput(nobody, 'loan', merge).voided).toBe(false)
+    expect(mergeInput(nobody, 'payment', merge).voided).toBe(false)
+  })
+
+  it('never voids a loan whose borrowers or lender come from the default split', () => {
+    // No split: everyone but the lender borrows, X and Y included (ledger.md#default-split).
+    expect(mergeInput({ payers: [{ personId: 'P', cents: 900 }] }, 'loan', merge)).toEqual({
+      input: { payers: [{ personId: 'U', cents: 900 }] },
+      voided: false,
+    })
+    // No payers: whoever posts it lends.
+    expect(mergeInput({ split: { mode: 'equal', personIds: ['P'] } }, 'loan', merge).voided).toBe(
+      false,
+    )
+    // A payment's two sides are always stated; one from X still moves money.
+    expect(
+      mergeInput({ payment: { fromPersonId: 'P', toPersonId: 'X' } }, 'payment', merge).voided,
+    ).toBe(false)
   })
 
   it('gives a template the schema accepts', () => {

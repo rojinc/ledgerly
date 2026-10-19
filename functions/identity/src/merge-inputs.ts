@@ -1,3 +1,4 @@
+import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
 import type { Items, Schedules, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import { type Merge, mergeInput, mergeSplit } from '@ledgerly/core/identity/merge-input'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
@@ -6,24 +7,39 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { randomId } from '@ledgerly/server/identity/random-id'
-import { activityWrite, storedInputSchema } from '@ledgerly/server/ledger/transactions'
+import {
+  activityWrite,
+  listAll,
+  listShares,
+  Raced,
+  type StoredInput,
+  storedInputSchema,
+} from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
-import { Changed, Finalizing, isFinalizing, MERGE_BATCH } from './merge'
+import type { z } from 'zod'
+import { Finalizing, isFinalizing } from './merge'
 import { getRowOrNull, isAppwriteError } from './rows'
 
 // identity-and-invites.md#merging-two-persons, step 3, inputs. Logs hold IDs and counts only.
 
 /** Transactions read per page while looking for the ones that name P. */
-const PAGE = 50
-
-/** Item writes per rewrite, so one with its input write and the group's guard fits a batch. */
-const ITEMS_PER_REWRITE = MERGE_BATCH - 2
+const PAGE = 100
 
 /** Why the merge voids a payment or loan whose two sides are now both U. */
 export const VOID_REASON = 'Both sides are now the same person.'
 
-/** What became of the groups a call looked at. `done`: every one was read to the end. */
-export type InputsResult = { rewritten: number; voided: number; putOff: string[]; done: boolean }
+/**
+ * What became of the groups a call looked at. `skipped`: rows whose stored input can't be renamed
+ * (unreadable, or invalid once renamed), left as they are and logged by ID. `done`: every group
+ * was read to the end, with nothing put off or skipped.
+ */
+export type InputsResult = {
+  rewritten: number
+  voided: number
+  skipped: number
+  putOff: string[]
+  done: boolean
+}
 
 /** One transaction's change: the writes, and the rows to read again once they're staged. */
 type Rewrite = { row: Transactions; items: Items[]; writes: Write[]; voided: boolean }
@@ -43,7 +59,7 @@ export async function moveInputs(
   now: Date,
   deadline: number,
 ): Promise<InputsResult> {
-  const result: InputsResult = { rewritten: 0, voided: 0, putOff: [], done: true }
+  const result: InputsResult = { rewritten: 0, voided: 0, skipped: 0, putOff: [], done: true }
   for (const groupId of groupIds) {
     const outcome = await moveGroupInputs(db, merge, groupId, now, deadline, result)
     if (outcome === 'putOff') result.putOff.push(groupId)
@@ -52,7 +68,7 @@ export async function moveInputs(
       break
     }
   }
-  if (result.putOff.length > 0) result.done = false
+  if (result.putOff.length > 0 || result.skipped > 0) result.done = false
   return result
 }
 
@@ -67,20 +83,25 @@ async function moveGroupInputs(
   let cursor: string | undefined
   for (;;) {
     if (Date.now() >= deadline) return 'cutOff'
+    // Void rows are skipped below, not in the query, so the cursor row is always still there.
     const { rows } = await db.listRows<Transactions>({
       databaseId: DATABASE_ID,
       tableId: TABLES.transactions,
       queries: [
         Query.equal('groupId', groupId),
         Query.isNull('statementId'),
-        Query.notEqual('status', 'void'),
         Query.orderAsc('$id'),
         Query.limit(PAGE),
         ...(cursor === undefined ? [] : [Query.cursorAfter(cursor)]),
       ],
       total: false,
     })
-    const rewrites = await planRewrites(db, rows, merge, now)
+    const { rewrites, skipped } = await planRewrites(
+      db,
+      rows.filter((row) => row.status !== 'void'),
+      merge,
+      now,
+    )
     try {
       for (const batch of batches(rewrites)) {
         await runBatch(db, groupId, batch)
@@ -93,70 +114,127 @@ async function moveGroupInputs(
       if (error instanceof Finalizing) return 'putOff'
       // A row changed after it was read: read this page again. Rows already rewritten no
       // longer name P, so they're left alone.
-      if (error instanceof Changed || isAppwriteError(error, 409)) continue
+      if (error instanceof Raced || isAppwriteError(error, 409)) continue
       throw error
     }
+    for (const rowId of skipped) {
+      console.warn(`merge ${merge.from} into ${merge.into} left transaction ${rowId} as it is`)
+    }
+    result.skipped += skipped.length
     const last = rows.at(-1)
     if (!last || rows.length < PAGE) return 'done'
     cursor = last.$id
   }
 }
 
-/** The page's transactions whose input or items name P, with the writes that rename P. */
+/**
+ * The page's transactions whose input or items name P, with the writes that rename P, and the
+ * IDs of those it can't rename. A receipt has at most 30 items (`MAX_ITEMS_PER_TRANSACTION`), so
+ * one transaction's writes always fit a batch.
+ */
 async function planRewrites(
   db: Db,
   rows: readonly Transactions[],
   merge: Merge,
   now: Date,
-): Promise<Rewrite[]> {
-  const items = await listByTransaction<Items>(db, TABLES.items, rows)
+): Promise<{ rewrites: Rewrite[]; skipped: string[] }> {
+  const items =
+    rows.length === 0
+      ? []
+      : await listAll<Items>(db, TABLES.items, [
+          Query.equal(
+            'transactionId',
+            rows.map((row) => row.$id),
+          ),
+        ])
   const rewrites: Rewrite[] = []
+  const skipped: string[] = []
   for (const row of rows) {
-    const stored = storedInputSchema.parse(JSON.parse(row.inputJson))
-    const { input, voided } = mergeInput(stored, row.kind, merge)
-    if (voided) {
-      const shares = await listByTransaction<Shares>(db, TABLES.shares, [row])
-      rewrites.push({ row, items: [], writes: voidWrites(row, shares, merge.into, now), voided })
+    const input = renamed(row.inputJson, storedInputSchema, (raw) =>
+      mergeInput(raw as StoredInput, row.kind, merge),
+    )
+    if (!input) {
+      skipped.push(row.$id)
       continue
     }
-    const ownItems = items.filter((item) => item.transactionId === row.$id)
-    const changedItems = ownItems.flatMap((item) => {
-      const split = splitSpecSchema.parse(JSON.parse(item.splitJson))
-      const splitJson = JSON.stringify(mergeSplit(split, merge))
-      return splitJson === item.splitJson ? [] : [{ item, splitJson }]
-    })
-    const inputJson = JSON.stringify(input)
-    const inputChanged = inputJson !== JSON.stringify(stored)
-    if (!inputChanged && changedItems.length === 0) continue
-    // A long receipt's items go over several rewrites; the input goes with the first.
-    for (let start = 0; start === 0 || start < changedItems.length; start += ITEMS_PER_REWRITE) {
-      const part = changedItems.slice(start, start + ITEMS_PER_REWRITE)
+    if (input.voided) {
+      const shares = await listShares(db, row.$id)
       rewrites.push({
         row,
-        items: part.map(({ item }) => item),
-        writes: [
-          ...(inputChanged && start === 0
-            ? [
-                {
-                  action: 'update' as const,
-                  tableId: TABLES.transactions,
-                  rowId: row.$id,
-                  data: { inputJson },
-                },
-              ]
-            : []),
-          ...part.map(({ item, splitJson }) => ({
-            action: 'update' as const,
-            tableId: TABLES.items,
-            rowId: item.$id,
-            data: { splitJson },
-          })),
-        ],
-        voided: false,
+        items: [],
+        writes: voidWrites(row, shares, merge.into, now),
+        voided: true,
       })
+      continue
     }
+    const splits = items
+      .filter((item) => item.transactionId === row.$id)
+      .map((item) => ({
+        item,
+        split: renamed(item.splitJson, splitSpecSchema, (raw) => ({
+          input: mergeSplit(raw as z.infer<typeof splitSpecSchema>, merge),
+          voided: false,
+        })),
+      }))
+    if (splits.some(({ split }) => !split)) {
+      skipped.push(row.$id)
+      continue
+    }
+    const changed = splits.flatMap(({ item, split }) =>
+      split?.json === undefined ? [] : [{ item, splitJson: split.json }],
+    )
+    if (input.json === undefined && changed.length === 0) continue
+    rewrites.push({
+      row,
+      items: changed.map(({ item }) => item),
+      writes: [
+        ...(input.json === undefined
+          ? []
+          : [
+              {
+                action: 'update' as const,
+                tableId: TABLES.transactions,
+                rowId: row.$id,
+                data: { inputJson: input.json },
+              },
+            ]),
+        ...changed.map(({ item, splitJson }) => ({
+          action: 'update' as const,
+          tableId: TABLES.items,
+          rowId: item.$id,
+          data: { splitJson },
+        })),
+      ],
+      voided: false,
+    })
   }
-  return rewrites
+  return { rewrites, skipped }
+}
+
+/**
+ * Stored JSON with P renamed: `json` is the new text, undefined when nothing changed, and
+ * `voided` as `rename` says. The stored object is renamed as it is, so its keys keep their order.
+ * Undefined when the JSON can't be read, or is no longer valid once renamed (weights that add up
+ * past `MAX_WEIGHT`, say): nothing invalid is ever written.
+ */
+function renamed(
+  text: string,
+  schema: z.ZodType,
+  rename: (raw: unknown) => { input: unknown; voided: boolean },
+): { json?: string; voided: boolean } | undefined {
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch {
+    return undefined
+  }
+  if (!schema.safeParse(raw).success) return undefined
+  const { input, voided } = rename(raw)
+  // A voided row keeps its input, so only a rewrite has to be valid.
+  if (voided) return { voided }
+  if (!schema.safeParse(input).success) return undefined
+  const json = JSON.stringify(input)
+  return json === JSON.stringify(raw) ? { voided } : { json, voided }
 }
 
 /** As `POST /transactions/{id}/void` does it: the status and reason, no shares, an activity row. */
@@ -166,7 +244,7 @@ function voidWrites(row: Transactions, shares: Shares[], by: string, now: Date):
       action: 'update',
       tableId: TABLES.transactions,
       rowId: row.$id,
-      data: { status: 'void', voidReason: VOID_REASON },
+      data: { status: 'void', voidReason: VOID_REASON, updatedBy: by },
     },
     ...shares.map((share) => ({
       action: 'delete' as const,
@@ -187,13 +265,13 @@ function voidWrites(row: Transactions, shares: Shares[], by: string, now: Date):
   ]
 }
 
-/** Rewrites packed into batches of at most `MERGE_BATCH` writes, the group's guard included. */
+/** Rewrites packed into batches of at most 90 writes, the group's guard included. */
 function batches(rewrites: readonly Rewrite[]): Rewrite[][] {
   const result: Rewrite[][] = []
   let batch: Rewrite[] = []
   let size = 1
   for (const rewrite of rewrites) {
-    if (batch.length > 0 && size + rewrite.writes.length > MERGE_BATCH) {
+    if (batch.length > 0 && size + rewrite.writes.length > MAX_OPS_PER_DB_TRANSACTION) {
       result.push(batch)
       batch = []
       size = 1
@@ -241,39 +319,8 @@ async function runBatch(db: Db, groupId: string, batch: readonly Rewrite[]): Pro
       batch.every((rewrite) =>
         rewrite.items.every((item) => items.get(item.$id)?.splitJson === item.splitJson),
       )
-    if (!same) throw new Changed()
+    if (!same) throw new Raced()
   })
-}
-
-/** Rows of `tableId` whose `transactionId` is one of `rows`' (`idx_transactionId`). */
-async function listByTransaction<R extends Items | Shares>(
-  db: Db,
-  tableId: typeof TABLES.items | typeof TABLES.shares,
-  rows: readonly Transactions[],
-): Promise<R[]> {
-  if (rows.length === 0) return []
-  const found: R[] = []
-  let cursor: string | undefined
-  for (;;) {
-    const { rows: page } = await db.listRows<R>({
-      databaseId: DATABASE_ID,
-      tableId,
-      queries: [
-        Query.equal(
-          'transactionId',
-          rows.map((row) => row.$id),
-        ),
-        Query.orderAsc('$id'),
-        Query.limit(100),
-        ...(cursor === undefined ? [] : [Query.cursorAfter(cursor)]),
-      ],
-      total: false,
-    })
-    found.push(...page)
-    const last = page.at(-1)
-    if (!last || page.length < 100) return found
-    cursor = last.$id
-  }
 }
 
 /** The stored rows with these IDs, by ID: what's stored, not a transaction's view of it. */
@@ -292,19 +339,35 @@ async function listById<R extends Transactions | Items>(
   return new Map(rows.map((row) => [row.$id, row]))
 }
 
-/** The schedule columns an expansion, edit or end writes: any change means read it again. */
+/**
+ * The scheduler's guard columns (functions/scheduler's `guardSchedule`, which another function
+ * can't import): a change to any of them means the schedule is read again.
+ */
 const SCHEDULE_COLUMNS = [
+  'kind',
+  'description',
   'templateJson',
   'rrule',
   'startsOn',
   'endsOn',
   'exdates',
+  'skipPublicHolidays',
+  'autoPost',
+  'horizonDays',
   'generatedThrough',
   'nextRunAt',
 ] as const
 
-/** What became of the groups' schedules. `done`: every group was read to the end. */
-export type TemplatesResult = { rewritten: number; putOff: string[]; done: boolean }
+/**
+ * What became of the groups' schedules. `skipped`: templates that can't be renamed, left as they
+ * are and logged by ID. `done`: every group was read to the end, with nothing put off or skipped.
+ */
+export type TemplatesResult = {
+  rewritten: number
+  skipped: number
+  putOff: string[]
+  done: boolean
+}
 
 /**
  * Step 3, templates: P becomes U inside `schedules.templateJson` in `groupIds`
@@ -319,7 +382,7 @@ export async function moveTemplates(
   groupIds: readonly string[],
   deadline: number,
 ): Promise<TemplatesResult> {
-  const result: TemplatesResult = { rewritten: 0, putOff: [], done: true }
+  const result: TemplatesResult = { rewritten: 0, skipped: 0, putOff: [], done: true }
   for (const groupId of groupIds) {
     const outcome = await moveGroupTemplates(db, merge, groupId, deadline, result)
     if (outcome === 'putOff') result.putOff.push(groupId)
@@ -328,7 +391,7 @@ export async function moveTemplates(
       break
     }
   }
-  if (result.putOff.length > 0) result.done = false
+  if (result.putOff.length > 0 || result.skipped > 0) result.done = false
   return result
 }
 
@@ -354,8 +417,19 @@ async function moveGroupTemplates(
       total: false,
     })
     let changed = false
+    let skipped = 0
     for (const schedule of rows) {
-      const templateJson = renamedTemplate(schedule, merge)
+      const template = renamed(schedule.templateJson, transactionTemplateSchema, (raw) =>
+        mergeInput(raw as z.infer<typeof transactionTemplateSchema>, schedule.kind, merge),
+      )
+      if (!template) {
+        console.warn(
+          `merge ${merge.from} into ${merge.into} left schedule ${schedule.$id} as it is`,
+        )
+        skipped += 1
+        continue
+      }
+      const templateJson = template.json
       if (templateJson === undefined) continue
       if (Date.now() >= deadline) return 'cutOff'
       try {
@@ -363,24 +437,18 @@ async function moveGroupTemplates(
         result.rewritten += 1
       } catch (error) {
         if (error instanceof Finalizing) return 'putOff'
-        if (!(error instanceof Changed || isAppwriteError(error, 409))) throw error
+        if (!(error instanceof Raced || isAppwriteError(error, 409))) throw error
         // It changed after it was read: read this page again, as it is now.
         changed = true
         break
       }
     }
     if (changed) continue
+    result.skipped += skipped
     const last = rows.at(-1)
     if (!last || rows.length < PAGE) return 'done'
     cursor = last.$id
   }
-}
-
-/** The schedule's template with P renamed, or undefined when it doesn't name P. */
-function renamedTemplate(schedule: Schedules, merge: Merge): string | undefined {
-  const template = transactionTemplateSchema.parse(JSON.parse(schedule.templateJson))
-  const templateJson = JSON.stringify(mergeInput(template, schedule.kind, merge).input)
-  return templateJson === JSON.stringify(template) ? undefined : templateJson
 }
 
 /** One template: the group's guard and the finalizing check, then the schedule guard. */
@@ -408,6 +476,6 @@ async function rewriteTemplate(
     const same = SCHEDULE_COLUMNS.every(
       (column) => JSON.stringify(stored?.[column]) === JSON.stringify(schedule[column]),
     )
-    if (!stored || !same) throw new Changed()
+    if (!stored || !same) throw new Raced()
   })
 }

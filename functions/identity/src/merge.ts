@@ -1,3 +1,4 @@
+import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
 import type {
   Identities,
   Members,
@@ -11,15 +12,14 @@ import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import { Raced } from '@ledgerly/server/ledger/transactions'
 import { ID, Permission, Query, Role } from 'node-appwrite'
 import { getRowOrNull, isAppwriteError, tryAgain } from './rows'
 import type { Services } from './services'
 
 // identity-and-invites.md#merging-two-persons: placeholder P is merged into U in steps that are
-// each safe to repeat. Logs hold IDs and counts only (security-and-privacy.md).
-
-/** Writes per database transaction, guard writes included (step 3). */
-export const MERGE_BATCH = 90
+// each safe to repeat. Logs hold IDs and counts only (security-and-privacy.md). Every loop stops
+// once `deadline` (epoch ms) has passed, so a claim never runs into the function's timeout.
 
 /** Thrown inside a transaction when P turned out not to be U's to merge. */
 class NotOurs extends Error {}
@@ -41,9 +41,17 @@ export async function markMerged(db: Db, placeholderId: string, intoId: string):
         rowId: placeholderId,
         data: { mergedInto: intoId },
       })
-      // Stage, then check: read the stored row, not this transaction's view of it.
+      // Stage, then check: read the stored row, not this transaction's view of it. A claim for U
+      // that marked it first leaves it U's all the same.
       const current = await getRowOrNull<Persons>(db, TABLES.persons, placeholderId)
-      if (!current || current.userId || current.mergedInto) throw new NotOurs()
+      if (
+        !current ||
+        current.userId ||
+        current.deletedAt ||
+        (current.mergedInto && current.mergedInto !== intoId)
+      ) {
+        throw new NotOurs()
+      }
     })
     return true
   } catch (error) {
@@ -58,10 +66,10 @@ export async function markMerged(db: Db, placeholderId: string, intoId: string):
 }
 
 /**
- * What step 2 did: the kept groups (U left them on their own), and the groups U joined, where U
- * had no joined row before (`linkedGroupIds`).
+ * What step 2 did: the kept groups (U left them on their own), the groups U joined, where U had
+ * no joined row before (`linkedGroupIds`), and whether every row of P's was seen to.
  */
-export type MembersResult = { kept: Set<string>; joined: string[] }
+export type MembersResult = { kept: Set<string>; joined: string[]; done: boolean }
 
 /**
  * Step 2: P's member rows, one at a time (`idx_person_status`). U joins each of P's groups,
@@ -73,11 +81,13 @@ export async function moveMembers(
   userId: string,
   fromId: string,
   intoId: string,
+  deadline: number,
 ): Promise<MembersResult> {
   const { db } = services
   const kept = new Set<string>()
   const joined: string[] = []
   for (;;) {
+    if (Date.now() >= deadline) return { kept, joined, done: false }
     const { rows } = await db.listRows<Members>({
       databaseId: DATABASE_ID,
       tableId: TABLES.members,
@@ -89,7 +99,7 @@ export async function moveMembers(
       total: false,
     })
     const theirs = rows[0]
-    if (!theirs) return { kept, joined }
+    if (!theirs) return { kept, joined, done: true }
     const own = await memberOf(db, theirs.groupId, intoId)
     if (own && (await leftOnTheirOwn(db, own.groupId, intoId, own.$createdAt))) {
       kept.add(theirs.groupId)
@@ -116,8 +126,10 @@ async function memberOf(db: Db, groupId: string, personId: string): Promise<Memb
 /**
  * One of P's rows: U joins the team first ("already a member" counts as done), then in one
  * transaction U's own row is kept (with the earlier `joinedOn`) and P's deleted, or P's row is
- * repointed to U, with the status as in joining and `member.joined` by U. True if this call
- * moved it; false if a merge running at the same time did.
+ * repointed to U, with the status as in joining and `member.joined` by U. Each write carries a
+ * fresh `rev`, so it's a real change that guards the row (ledger.md#concurrency) even when
+ * nothing else on it changes. True if this call moved it; false if a merge running at the same
+ * time did.
  */
 async function moveMember(
   { db, teams, now }: Services,
@@ -139,7 +151,7 @@ async function moveMember(
                 action: 'update' as const,
                 tableId: TABLES.members,
                 rowId: own.$id,
-                data: { joinedOn: kept.joinedOn, status: statusOf(kept) },
+                data: { joinedOn: kept.joinedOn, status: statusOf(kept), rev: randomId() },
               },
               { action: 'delete' as const, tableId: TABLES.members, rowId: theirs.$id },
             ]
@@ -148,7 +160,7 @@ async function moveMember(
                 action: 'update' as const,
                 tableId: TABLES.members,
                 rowId: theirs.$id,
-                data: { personId: intoId, status: statusOf(kept) },
+                data: { personId: intoId, status: statusOf(kept), rev: randomId() },
               },
             ]),
       )
@@ -156,7 +168,7 @@ async function moveMember(
       const storedTheirs = await getRowOrNull<Members>(db, TABLES.members, theirs.$id)
       const storedOwn = own ? await getRowOrNull<Members>(db, TABLES.members, own.$id) : null
       if (!sameMember(storedTheirs, theirs) || (own && !sameMember(storedOwn, own))) {
-        throw new Changed()
+        throw new Raced()
       }
       await tx.write({
         action: 'create',
@@ -178,7 +190,7 @@ async function moveMember(
     if (!ours || ours.status === 'placeholder') await removeFromTeam(teams, theirs.groupId, userId)
     const current = await getRowOrNull<Members>(db, TABLES.members, theirs.$id)
     if (current?.personId === theirs.personId) {
-      throw error instanceof Changed || isAppwriteError(error, 409) ? tryAgain() : error
+      throw error instanceof Raced || isAppwriteError(error, 409) ? tryAgain() : error
     }
     // P's row is gone or U's now: a merge running at the same time moved it.
     return false
@@ -210,13 +222,19 @@ function sameMember(stored: Members | null, read: Members): boolean {
  * batch is staged, then read again, so one that changed meanwhile (another merge, say) is never
  * overwritten: the batch runs again from a fresh list. Returns how many moved.
  */
-export async function moveIdentities(db: Db, fromId: string, intoId: string): Promise<number> {
+export async function moveIdentities(
+  db: Db,
+  fromId: string,
+  intoId: string,
+  deadline: number,
+): Promise<number> {
   let moved = 0
   for (;;) {
+    if (Date.now() >= deadline) return moved
     const { rows } = await db.listRows<Identities>({
       databaseId: DATABASE_ID,
       tableId: TABLES.identities,
-      queries: [Query.equal('personId', fromId), Query.limit(MERGE_BATCH)],
+      queries: [Query.equal('personId', fromId), Query.limit(MAX_OPS_PER_DB_TRANSACTION)],
       total: false,
     })
     if (rows.length === 0) return moved
@@ -238,22 +256,19 @@ export async function moveIdentities(db: Db, fromId: string, intoId: string): Pr
           total: false,
         })
         if (current.length !== ids.length || current.some((row) => row.personId !== fromId)) {
-          throw new Changed()
+          throw new Raced()
         }
       })
       moved += ids.length
     } catch (error) {
       // A row changed before or after it was staged: list again.
-      if (!(error instanceof Changed || isAppwriteError(error, 409))) throw error
+      if (!(error instanceof Raced || isAppwriteError(error, 409))) throw error
     }
   }
 }
 
-/** Thrown inside a batch when a row it staged had changed. */
-export class Changed extends Error {}
-
 /** Shares moved per transaction: each may take two writes (combine), plus the group's guard. */
-const SHARES_PER_BATCH = Math.floor((MERGE_BATCH - 1) / 2)
+const SHARES_PER_BATCH = Math.floor((MAX_OPS_PER_DB_TRANSACTION - 1) / 2)
 
 /** What became of the groups whose shares a call looked at. `done`: P has none left there. */
 export type SharesResult = { moved: number; putOff: string[]; done: boolean }
@@ -293,7 +308,8 @@ export async function moveShares(
     })
     const groupId = rows[0]?.groupId
     if (groupId === undefined) return { moved, putOff, done: putOff.length === 0 }
-    const batch = await moveShareBatch(db, fromId, intoId, groupId)
+    const batch = await moveShareBatch(db, fromId, intoId, groupId, deadline)
+    if (batch === 'cutOff') return { moved, putOff, done: false }
     if (batch === 'putOff') {
       skip.add(groupId)
       putOff.push(groupId)
@@ -306,66 +322,24 @@ export async function moveShares(
 /** Thrown inside a batch when the group has a statement being finalized. */
 export class Finalizing extends Error {}
 
-/** One batch of P's shares in one group: the number moved, or `putOff` while it's finalizing. */
+/**
+ * One batch of P's shares in one group: the number moved, `putOff` while it's finalizing, or
+ * `cutOff` past the deadline. The group's guard is staged before the shares are read, so a share
+ * written meanwhile (another merge into U, a ledger edit) is either read here or fails this
+ * batch's commit: two merges can't each give U a share in one transaction (I-5).
+ */
 async function moveShareBatch(
   db: Db,
   fromId: string,
   intoId: string,
   groupId: string,
-): Promise<number | 'putOff'> {
+  deadline: number,
+): Promise<number | 'putOff' | 'cutOff'> {
   for (;;) {
-    const { rows: theirs } = await db.listRows<Shares>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.shares,
-      queries: [
-        Query.equal('groupId', groupId),
-        Query.equal('personId', fromId),
-        Query.limit(SHARES_PER_BATCH),
-      ],
-      total: false,
-    })
-    // Another merge of P moved them meanwhile.
-    if (theirs.length === 0) return 0
-    const transactionIds = theirs.map((share) => share.transactionId)
-    const { rows: ours } = await db.listRows<Shares>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.shares,
-      queries: [
-        Query.equal('transactionId', transactionIds),
-        Query.equal('personId', intoId),
-        Query.limit(transactionIds.length),
-      ],
-      total: false,
-    })
-    const oursByTransaction = new Map(ours.map((share) => [share.transactionId, share]))
-    const writes: Write[] = theirs.flatMap((share): Write[] => {
-      const own = oursByTransaction.get(share.transactionId)
-      if (!own) {
-        return [
-          {
-            action: 'update',
-            tableId: TABLES.shares,
-            rowId: share.$id,
-            data: { personId: intoId },
-          },
-        ]
-      }
-      return [
-        {
-          action: 'update',
-          tableId: TABLES.shares,
-          rowId: own.$id,
-          data: {
-            givenCents: own.givenCents + share.givenCents,
-            receivedCents: own.receivedCents + share.receivedCents,
-          },
-        },
-        { action: 'delete', tableId: TABLES.shares, rowId: share.$id },
-      ]
-    })
+    if (Date.now() >= deadline) return 'cutOff'
     try {
-      await withTransaction(db, async (tx) => {
-        // The guard first (ledger.md#concurrency), then the finalizing check.
+      return await withTransaction(db, async (tx) => {
+        // The guard first (ledger.md#concurrency), then the finalizing check, then the reads.
         await tx.write({
           action: 'update',
           tableId: TABLES.groups,
@@ -373,16 +347,64 @@ async function moveShareBatch(
           data: { rev: randomId() },
         })
         if (await isFinalizing(db, groupId)) throw new Finalizing()
-        await tx.write(...writes)
-        // Stage, then check: both sides as stored, so two merges can't add P's share twice.
-        if (!(await unchanged(db, [...theirs, ...ours]))) throw new Changed()
+        const { rows: theirs } = await db.listRows<Shares>({
+          databaseId: DATABASE_ID,
+          tableId: TABLES.shares,
+          queries: [
+            Query.equal('groupId', groupId),
+            Query.equal('personId', fromId),
+            Query.limit(SHARES_PER_BATCH),
+          ],
+          total: false,
+        })
+        // Another merge of P moved them meanwhile.
+        if (theirs.length === 0) return 0
+        const transactionIds = theirs.map((share) => share.transactionId)
+        const { rows: ours } = await db.listRows<Shares>({
+          databaseId: DATABASE_ID,
+          tableId: TABLES.shares,
+          queries: [
+            Query.equal('transactionId', transactionIds),
+            Query.equal('personId', intoId),
+            Query.limit(transactionIds.length),
+          ],
+          total: false,
+        })
+        await tx.write(...combined(theirs, ours, intoId))
+        // Stage, then check: both sides as stored, for a writer that doesn't write the guard.
+        if (!(await unchanged(db, [...theirs, ...ours]))) throw new Raced()
+        return theirs.length
       })
-      return theirs.length
     } catch (error) {
       if (error instanceof Finalizing) return 'putOff'
-      if (!(error instanceof Changed || isAppwriteError(error, 409))) throw error
+      if (!(error instanceof Raced || isAppwriteError(error, 409))) throw error
     }
   }
+}
+
+/** P's shares repointed to U, or added to U's own share in the same transaction (I-5). */
+function combined(theirs: readonly Shares[], ours: readonly Shares[], intoId: string): Write[] {
+  const oursByTransaction = new Map(ours.map((share) => [share.transactionId, share]))
+  return theirs.flatMap((share): Write[] => {
+    const own = oursByTransaction.get(share.transactionId)
+    if (!own) {
+      return [
+        { action: 'update', tableId: TABLES.shares, rowId: share.$id, data: { personId: intoId } },
+      ]
+    }
+    return [
+      {
+        action: 'update',
+        tableId: TABLES.shares,
+        rowId: own.$id,
+        data: {
+          givenCents: own.givenCents + share.givenCents,
+          receivedCents: own.receivedCents + share.receivedCents,
+        },
+      },
+      { action: 'delete', tableId: TABLES.shares, rowId: share.$id },
+    ]
+  })
 }
 
 /** Whether a statement of the group is `finalizing` (statements.md#2-finalize). */

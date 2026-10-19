@@ -1,4 +1,4 @@
-import type { Identities, Members, Persons } from '@ledgerly/core/generated/rows'
+import type { Groups, Identities, Members, Persons } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
@@ -50,18 +50,19 @@ async function runMerge(
 ): Promise<{ joined: string[]; finished: boolean }> {
   const { db, now } = services
   const merge = { from: fromId, into: intoId }
-  const members = await moveMembers(services, userId, fromId, intoId)
+  const members = await moveMembers(services, userId, fromId, intoId, deadline)
   // P's groups are U's now, so every group of U's but the kept ones may still name P.
   const groupIds = (await groupsOf(db, intoId)).filter((groupId) => !members.kept.has(groupId))
   // Templates first, so an expansion from now on names U.
   const templates = await moveTemplates(db, merge, groupIds, deadline)
   const inputs = await moveInputs(db, merge, groupIds, now, deadline)
   const shares = await moveShares(db, fromId, intoId, members.kept, deadline)
-  const counts = `${members.joined.length} groups joined, ${templates.rewritten + inputs.rewritten} inputs, ${inputs.voided} voided, ${shares.moved} shares`
-  if (templates.done && inputs.done && shares.done && Date.now() < deadline) {
-    const identities = await moveIdentities(db, fromId, intoId)
-    console.log(`merge ${fromId} into ${intoId} finished: ${counts}, ${identities} identities`)
-    return { joined: members.joined, finished: true }
+  const counts = `${members.joined.length} groups joined, ${templates.rewritten + inputs.rewritten} inputs, ${inputs.voided} voided, ${shares.moved} shares, ${templates.skipped + inputs.skipped} left as they are`
+  if (members.done && templates.done && inputs.done && shares.done && Date.now() < deadline) {
+    const identities = await moveIdentities(db, fromId, intoId, deadline)
+    console.log(`merge ${fromId} into ${intoId}: ${counts}, ${identities} identities`)
+    // Cut off partway, some identities are still P's, and the next claim moves the rest.
+    return { joined: members.joined, finished: !(await hasIdentity(db, fromId)) }
   }
   const putOff = new Set([...templates.putOff, ...inputs.putOff, ...shares.putOff])
   console.log(
@@ -103,7 +104,10 @@ async function hasIdentity(db: Db, personId: string): Promise<boolean> {
   return rows.length > 0
 }
 
-/** Every group U has a member row in (`idx_person_status`), archived ones too. */
+/**
+ * Every group U has a member row in (`idx_person_status`), archived ones too, but U's personal
+ * group: a placeholder is never in one (`add-member` refuses), so nothing there names P.
+ */
 async function groupsOf(db: Db, personId: string): Promise<string[]> {
   const groupIds: string[] = []
   let cursor: string | undefined
@@ -121,7 +125,25 @@ async function groupsOf(db: Db, personId: string): Promise<string[]> {
     })
     groupIds.push(...rows.map((row) => row.groupId))
     const last = rows.at(-1)
-    if (!last || rows.length < PAGE) return groupIds
+    if (!last || rows.length < PAGE) return notPersonal(db, groupIds)
     cursor = last.$id
   }
+}
+
+async function notPersonal(db: Db, groupIds: readonly string[]): Promise<string[]> {
+  const personal = new Set<string>()
+  for (let start = 0; start < groupIds.length; start += PAGE) {
+    const { rows } = await db.listRows<Groups>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.groups,
+      queries: [
+        Query.equal('$id', groupIds.slice(start, start + PAGE)),
+        Query.equal('type', 'personal'),
+        Query.limit(PAGE),
+      ],
+      total: false,
+    })
+    for (const row of rows) personal.add(row.$id)
+  }
+  return groupIds.filter((groupId) => !personal.has(groupId))
 }
