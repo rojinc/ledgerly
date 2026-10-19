@@ -8,7 +8,6 @@ import type {
   Transactions,
 } from '@ledgerly/core/generated/rows'
 import { finalizeStatementBodySchema } from '@ledgerly/core/schemas/statements'
-import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { checkSnapshot } from '@ledgerly/core/statements/snapshot'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -33,7 +32,7 @@ import {
   tryAgain,
   updateStatement,
 } from '../shared'
-import { computeSnapshot, sharesOf } from '../snapshot'
+import { computeSnapshot, sharesInGroup, sharesOf } from '../snapshot'
 import { sendInvoice } from './send'
 
 /**
@@ -216,7 +215,7 @@ async function lockedBalances(db: Db, groupId: string) {
     Query.isNotNull('statementId'),
   ])
   const shares = await sharesOf(db, locked)
-  return netsFromShares([...shares.values()].flat())
+  return sharesInGroup(db, groupId, [...shares.values()].flat())
 }
 
 /**

@@ -235,6 +235,53 @@ describe('POST /statements/{id}/finalize', () => {
     expect(errors).toEqual([])
   })
 
+  it('adds up when it runs between merge batches, before old shares are moved (#39)', async () => {
+    // Step 2 gave acme-old's member row to acme, but step 3 hasn't moved its shares yet: the
+    // locked September shift and the October one still name acme-old (statements.md rule 2).
+    const asOld = (part: ReturnType<typeof shift>) => ({
+      ...part,
+      shares: part.shares.map((row) =>
+        row.personId === 'acme' ? { ...row, personId: 'acme-old' } : row,
+      ),
+    })
+    const services = fakes(
+      rowsOf(
+        asOld(shift('s0', '2026-09-10', 120, { statementId: 'st-sep' })),
+        asOld(shift('s1', '2026-10-02', 240)),
+        payment('p1', '2026-10-15', 3000),
+        {
+          statements: [
+            statement('st-sep', {
+              periodStart: '2026-09-01',
+              periodEnd: '2026-09-30',
+              status: 'final',
+              snapshotJson: snapshotClosing(
+                { start: '2026-09-01', end: '2026-09-30' },
+                { 'acme-old': -5000, sam: 5000 },
+              ),
+            }),
+            statement('st1'),
+          ],
+        },
+      ),
+    )
+    await commitNow(services.db, [
+      op('persons', 'acme-old', { displayName: 'Acme', mergedInto: 'acme' }, 'create'),
+    ])
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.people).toMatchObject([
+      { personId: 'acme', openingCents: -5000, givenCents: 3000, closingCents: -12000 },
+      { personId: 'sam', openingCents: 5000, closingCents: 12000 },
+    ])
+    expect(snapshot.lines.find((line) => line.transactionId === 's1')?.shares).toEqual([
+      { personId: 'acme', givenCents: 0, receivedCents: 10000 },
+      { personId: 'sam', givenCents: 10000, receivedCents: 0 },
+    ])
+    expect(errors).toEqual([])
+  })
+
   it('unlocks everything and goes back to draft when the check fails', async () => {
     // September's final invoice says Acme owes $50.00, but no locked share backs that up.
     const services = fakes(

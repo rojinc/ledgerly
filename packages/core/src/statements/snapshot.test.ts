@@ -6,6 +6,7 @@ import {
   buildStatementSnapshot,
   checkSnapshot,
   mergedClosings,
+  mergedShares,
   type SnapshotInput,
 } from './snapshot'
 
@@ -359,5 +360,43 @@ describe('mergedClosings (statements.md#core-rules, rule 2)', () => {
     expect(mergedClosings(nets({ [personId]: -10, x: 10 }), inGroup, merged)).toEqual(
       nets({ [personId]: -10, x: 10 }),
     )
+  })
+})
+
+describe('mergedShares (statements.md#core-rules, rule 2)', () => {
+  const inGroup = new Set(['u', 'x', 'kept'])
+  const merged = new Map<string, string | null>([
+    ['p', 'u'],
+    ['kept', 'u'],
+  ])
+  const share = (personId: string, givenCents: number, receivedCents: number) => ({
+    personId,
+    givenCents,
+    receivedCents,
+  })
+
+  it('changes nothing when everyone has a member row', () => {
+    const shares = [share('u', 900, 300), share('x', 0, 600)]
+    expect(mergedShares(shares, inGroup, merged)).toEqual(shares)
+  })
+
+  it('counts a share a merge has not moved yet for the person it was merged into', () => {
+    expect(mergedShares([share('p', 900, 300), share('x', 0, 600)], inGroup, merged)).toEqual([
+      share('u', 900, 300),
+      share('x', 0, 600),
+    ])
+  })
+
+  it('combines two shares that then name the same person (I-5)', () => {
+    expect(
+      mergedShares([share('u', 900, 300), share('p', 0, 300), share('x', 0, 300)], inGroup, merged),
+    ).toEqual([share('u', 900, 600), share('x', 0, 300)])
+  })
+
+  it('keeps the share of a merged person who still has a member row', () => {
+    expect(mergedShares([share('kept', 50, 0), share('x', 0, 50)], inGroup, merged)).toEqual([
+      share('kept', 50, 0),
+      share('x', 0, 50),
+    ])
   })
 })
