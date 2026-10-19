@@ -116,7 +116,7 @@ Every function runs on `node-24`, the same Node as `.nvmrc`, CI and the build's 
 
 Each function runs from a bundle: `npm run build` writes `functions/<name>/dist/main.js` with esbuild, and the deployment uploads only `dist/` and `package.json` (`ignore: ["*", "!dist/", "!dist/**", "!package.json"]`, which also holds under strict `.gitignore` rules). Never add a `.gitignore` inside `functions/<name>/`: the CLI applies it on top of `ignore`, so one that lists `dist/` would leave the bundle out.
 
-- **The `statements` bundle carries font files** for the invoice PDF ([statements.md](../architecture/statements.md#invoice-pdf-layout-employer)). The build copies them into `functions/statements/dist/fonts/`, and fails if one is missing or its SHA-256 differs from the one in `scripts/build-functions.mjs`:
+- **The `statements` bundle carries font files** for the invoice PDF ([statements.md](../architecture/statements.md#invoice-pdf-layout-employer)). The build empties `functions/statements/dist/fonts/` and copies them in. It fails if one is missing or its SHA-256 differs from the one in `scripts/build-functions.mjs`, and the statements `GET /health` fails too when they aren't beside the bundle, so the build's `/health` check proves the path:
   - `NotoSansCJKsc-Regular.otf` (16.4 MB), committed under `packages/server/fonts/` with its licence, from notofonts/noto-cjk tag `Sans2.004`;
   - `NotoEmoji_400Regular.ttf` (0.9 MB), from the devDependency `@expo-google-fonts/noto-emoji`, pinned to `0.4.8`.
 

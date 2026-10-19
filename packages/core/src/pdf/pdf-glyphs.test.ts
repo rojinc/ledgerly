@@ -234,4 +234,17 @@ describe('fontRuns', () => {
   ])('splits %s by character', (_, text, expected) => {
     expect(fontRuns(text)).toEqual(expected)
   })
+
+  // The web app's draft page calls missingGlyphs() on every render (statement-page.tsx).
+  it('splits by code point where the browser has no Intl.Segmenter (Firefox before 125)', () => {
+    const segmenter = Intl.Segmenter
+    Object.assign(Intl, { Segmenter: undefined })
+    onTestFinished(() => {
+      Object.assign(Intl, { Segmenter: segmenter })
+    })
+    const text = 'ร้าน 张三 Thanks 😀 Ṣ'
+    expect(missingGlyphs(text)).toEqual(codePoints('ร้าน'))
+    expect(printable(text)).toBe('���� 张三 Thanks 😀 S\u{323}')
+    expect(fontRuns('张三 Pty Ltd')).toEqual(runs(['NotoSansCJK', '张三'], ['Roboto', ' Pty Ltd']))
+  })
 })

@@ -219,9 +219,6 @@ function joinsPrevious(codePoint: number): boolean {
   )
 }
 
-// Built on first use, like the tables, and kept: an invoice splits each text it prints.
-let graphemes: Intl.Segmenter | undefined
-
 /**
  * `text`, composed (NFC), as runs by font. Each grapheme cluster (what a reader sees as one
  * character) goes to the first font that has all of it: Roboto (which draws `ṣ` from its parts,
@@ -236,6 +233,19 @@ export function fontRuns(text: string): FontRun[] {
   return split(text).runs
 }
 
+// Built on first use, like the tables, and kept: an invoice splits each text it prints.
+let graphemes: Intl.Segmenter | undefined
+
+/**
+ * `text`'s grapheme clusters; by code point where the browser has no `Intl.Segmenter` (Firefox
+ * before 125), which marks the same characters, though an emoji sequence may split across fonts.
+ */
+function clusters(text: string): string[] {
+  if (typeof Intl.Segmenter !== 'function') return Array.from(text)
+  graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+  return Array.from(graphemes.segment(text), ({ segment }) => segment)
+}
+
 /** fontRuns(), and the code points it prints as U+FFFD. */
 function split(text: string): { runs: FontRun[]; missing: number[] } {
   const runs: FontRun[] = []
@@ -245,8 +255,7 @@ function split(text: string): { runs: FontRun[]; missing: number[] } {
     if (last?.font === font) last.text += text
     else runs.push({ font, text })
   }
-  graphemes ??= new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-  for (const { segment } of graphemes.segment(text.normalize('NFC'))) {
+  for (const segment of clusters(text.normalize('NFC'))) {
     const whole = firstFont(segment)
     if (whole) {
       add(whole)

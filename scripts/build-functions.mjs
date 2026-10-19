@@ -3,7 +3,7 @@
 // Usage: node scripts/build-functions.mjs [name ...] (default: all)
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { basename } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
@@ -74,6 +74,8 @@ function gitVersion() {
 }
 
 function copyFonts(name) {
+  // Emptied first, so a font renamed or removed isn't deployed stale.
+  rmSync(`${root}/functions/${name}/dist/fonts`, { recursive: true, force: true })
   for (const [source, sha256] of fonts[name] ?? []) {
     if (!existsSync(`${root}/${source}`)) throw new Error(`functions/${name}: ${source} is missing`)
     const content = readFileSync(`${root}/${source}`)
