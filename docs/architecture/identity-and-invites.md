@@ -25,7 +25,7 @@ Every email or phone number goes through `normalizeEmail()` or `normalizePhone()
 
 1. If a profile already exists for this user, skip to step 3, so an interrupted claim always gets finished.
 2. Otherwise, create the personal group's team and add the user to it ("already exists" counts as done). Like every team membership, it has no team role, never `owner`, so the user can't manage the team from the client. Then, in one database transaction:
-   - Find or create the user's **person**. If one of the user's verified emails or phones matches an identity row that points at a placeholder, reuse that person (see Claim). Placeholder identity rows are never `verified` themselves, so match on the key, not the flag. Set the person's `userId` and `claimedAt` (now).
+   - Find or create the user's **person**. If one of the user's verified emails or phones matches an identity row that points at a placeholder, reuse that person (see Claim). Placeholder identity rows are never `verified` themselves, so match on the key, not the flag. Set the person's `userId` and `claimedAt` (now), and delete the placeholder's identities whose key the user hasn't verified ([only verified keys move](#only-verified-keys-move)): the verified keys come from bootstrap's own read of the user, through the same `verifiedIdentities()` as Claim step 1.
    - Create the **profile** (row ID = user ID) with defaults: timezone from the browser, region and currency from the timezone. An Australian time zone gives its state (`Australia/Perth` → `AU-WA`); any other gives `AU-NSW`. The currency is `AUD`. The user can change all of them in their profile.
    - Create the **personal group** and the user's `admin` member row.
 
@@ -34,13 +34,13 @@ Every email or phone number goes through `normalizeEmail()` or `normalizePhone()
 
 ## Adding someone to a group
 
-`groups POST /groups/{id}/members` with `{ displayName, email?, phone? }`:
+`groups POST /groups/{id}/members` with `{ displayName, email?, phone? }` (and an employer or pair group's counterpart at `POST /groups`, the same way):
 
 1. Normalise the email and phone.
 2. Look up each identity key.
-   - **Found:** use that person.
+   - **Found:** use that person. Stage a guard write on that person's `rev`, then read the keys again: a key that moved to another person, or was removed, meanwhile (an adoption or a merge's step 1 writes the person) answers `CONFLICT`, and the add is tried again.
    - **Only one of two keys found:** use the found person and don't store the other key. Unverified data is never attached to an existing person, so a stranger's typo can't land on someone else.
-   - **Not found:** create a placeholder person plus unverified identity rows. Person IDs are random, with no timestamp ([data model](data-model.md#persons)), so a new person's ID doesn't show that the email or phone was unknown.
+   - **Not found:** create a placeholder person plus **one** unverified identity row: the email if one was given, otherwise the phone (none for a name alone). The other key is still validated but not stored, so a placeholder can only ever be claimed through one key ([only verified keys move](#only-verified-keys-move)). The add form says which key is used. Person IDs are random, with no timestamp ([data model](data-model.md#persons)), so a new person's ID doesn't show that the email or phone was unknown.
    - If the email and phone point at **two different persons**, use the email's person, whether or not either has an account. Do **not** merge: unverified data must never join two people.
 3. Create the `members` row. If one already exists for that person in this group, return `CONFLICT`.
 4. Set status `placeholder`, even if the person already has an account ([D-016](decisions.md)). The `groups` function never adds anyone except the group's creator to a team; people join themselves (see [Joining a group](#joining-a-group)).
@@ -51,7 +51,7 @@ Because of steps 2 and 4, the member row looks the same whether or not the perso
 Accepted risks, none of which shows whether someone has an account:
 
 - A person has the same ID in every group, so someone who shares a group with them can add a guessed email to another group and see whether the IDs match. `CONFLICT` on adding someone twice tells the same thing within one group.
-- An unknown email takes slightly longer to add than a known one (rows are created). Known emails include placeholders others added, so it shows only that someone has used the email before.
+- Known and unknown keys take different times to add: an unknown one creates rows, and a known one costs a guard write and a second lookup. Known keys include placeholders others added, and the guard runs the same way for placeholders and registered people, so it shows only that someone has used the key before.
 - An invite to an address that isn't the member's gets `VALIDATION_FAILED` ([invites](#invites), step 2), so an inviter can test guesses at a placeholder's email or phone, within the invite limits. It's the same kind of leak as `CONFLICT` above.
 
 ## Claim (linking records to a new account)
@@ -66,11 +66,25 @@ Claiming is what lets "Sam" see the $50 you lent them when Sam finally signs up.
 2. For each verified identity key:
    - **No identity row:** create one pointing at the user's person, with `verified = true`.
    - **Points at the user's own person:** set `verified = true`.
+   - **Points at a person being merged into the user's person** (that person's `mergedInto` is the user's person, mid-merge): skip it; the merge moves it to them last.
    - **Points at a placeholder person P:**
-     - If the user's person is brand new and has no data (bootstrap just made it), **adopt P**: set `P.userId` to the user and `P.claimedAt` to now, and use P as their person.
+     - If the user's person is brand new and has no data (bootstrap just made it), **adopt P**: in one database transaction, set `P.userId` to the user and `P.claimedAt` to now, and delete P's identities whose key the user hasn't verified ([below](#only-verified-keys-move)); then read P's stored row again and check it's still a placeholder. If another adoption or merge got there first, roll back and leave P alone, as merge step 1 does. Use P as their person.
      - Otherwise **merge P into the user's person** (next section).
 3. Join the user to every group where their person is still a `placeholder` member and the member row's `$createdAt` is strictly before the person's `claimedAt`. Those rows were added while the person had no account. Rows added later are left alone; the user joins those themselves ([Joining a group](#joining-a-group)). The rule reads only stored data, so a repeated or interrupted claim finishes the job. Functions never rewrite a member row's `$createdAt` and never delete and recreate a member row.
 4. Return the list of groups that were linked, so the app can say "We found 3 groups you were added to".
+
+### Only verified keys move
+
+A placeholder's identities were typed by whoever added it, and nobody has verified them. When a user claims placeholder P, by adopting it or merging it, **only the keys that user has verified move to their person**. P's other identities are deleted, in the same transaction that marks P: the adoption's (which sets `userId`) or the merge's step 1 (which sets `mergedInto`). So `resolvePerson()` can never follow one of them to the user, even mid-merge.
+
+- **A verified key** is the key of an email or phone that Appwrite Auth shows as verified on the user's own account (`emailVerification`, `phoneVerification`), as read in Claim step 1. The key the claim came through is always one of them.
+- **One typed key per placeholder.** Adding someone stores one key for a new placeholder ([adding someone](#adding-someone-to-a-group)), so the person who verifies that key is the only one who can claim it. With two keys, whoever verified *either* could take the placeholder, and with it the rows other groups had already added under the other key.
+- **Why both rules:** otherwise someone could add `{ email: victim@x, phone: <their own phone> }` to their own group, verify the phone, and claim: `email:victim@x` would then point at them, every group that later adds the victim would add them instead, and the victim could never claim the address. Or they could add `{ phone: <the victim's>, email: <one of their own> }`, wait for other groups to add the victim by phone, then sign up with the email and take those groups. With one key per placeholder and only verified keys moving, neither works: a later add of the victim's key finds no identity and makes a new placeholder.
+- **The trade-off:** a typed key the user hasn't verified is dropped, even when it really is theirs. A later add by that key makes a new placeholder, which is merged into them once they verify it ([#176](https://github.com/rojinc/ledgerly/issues/176) for phones).
+- **Logs:** a claim's deleted identities are logged as IDs and counts, never keys.
+- **Accepted risk, for later:** sign-in providers (Google, when OAuth comes) must be enabled only where they confirm the email is verified, or a provider account could claim someone's email.
+
+So every identity of a person with an account holds a key they verified.
 
 ## Joining a group
 
@@ -95,7 +109,7 @@ A merge happens when a verified identity shows that placeholder **P** is the sam
 
 Merges can touch many rows, more than one Appwrite transaction allows (100 operations on Free, 1,000 on Pro). So a merge runs in steps that are each safe to repeat:
 
-1. **Mark P.** Stage `P.mergedInto = U`, then read P's stored row again. If another adoption or merge got there first, leave P alone. From now on every function resolves P to U when it reads: `resolvePerson()` follows `mergedInto` to the end of the chain, so an email added for P mid-merge is added for U.
+1. **Mark P.** In one database transaction, stage `P.mergedInto = U` and the deletion of P's identities whose key U hasn't verified ([only verified keys move](#only-verified-keys-move)), then read P's stored row again. If another adoption or merge got there first, roll back and leave P alone. From now on every function resolves P to U when it reads: `resolvePerson()` follows `mergedInto` to the end of the chain, so an email added for P mid-merge is added for U.
 2. **P's member rows, one at a time.** P was a placeholder, so all its member rows were added while it had no account, and the merge joins U to each of those groups, except where U left on their own.
    - **A group U left on their own** (U's row there has U's own `member.left` as the newest of their `member.left` and `member.joined` rows): leaving on your own is final for that row ([leaving a group](permissions.md#leaving-a-group)). So U isn't added to the team, U's row isn't touched, no share moves to U, and P keeps its row and its shares there, as a placeholder with no identities. These are the merge's **kept groups**. Coming back after leaving stays unsupported, and a new invite can't help either: U's row blocks a second one (`uniq_group_person`).
    - **Every other group:**
@@ -108,8 +122,8 @@ Merges can touch many rows, more than one Appwrite transaction allows (100 opera
    - **Balances:** after the guard, a batch that changes a group's shares (repoints, combines, or deletes them with a void) reads that group's `balances` row and, if there is one, deletes it in the same transaction ([balances](ledger.md#balances)). `/balances` sums the shares until the nightly check builds the row again, so balances never show P's old figure under U's name. A row deleted meanwhile fails the batch, which runs again.
    - **Shares:** repoint `shares.personId` from P to U. If P and U have shares in the **same transaction**, combine them into one share (sum given and received) to keep [I-5](ledger.md#invariants). Both are staged, then read again, so two merges can't add P's share twice. This includes shares of locked transactions: the merge is the one writer allowed to change those, and only this way ([I-7](ledger.md#invariants)). No transaction's total changes, so every group still sums to 0 after each batch (I-1).
    - **Inputs:** P becomes U inside the stored inputs that name people: `transactions.inputJson` and `items.splitJson` of every transaction that **isn't void** (unposted ones, schedule occurrences included; posted ones, since an edit reads them again; and locked ones, since voiding their statement unlocks them), and `schedules.templateJson`. A locked row is renamed exactly as a posted one is, and nothing else on it changes ([I-7](ledger.md#invariants)): its total, status and `statementId` stay, and the rename changes no share, so a final statement's numbers don't move. A locked row the merge can't read (JSON it can't parse, or an input today's schema refuses) is logged by ID and left as it is. That row doesn't hold the merge open, and its group's inputs count as done, since nothing can change a locked row. A schedule's rewrite is staged with the scheduler's schedule guard (a write to the schedule row, then a check of the stored row), so an expansion in flight can't race it. Where U is already listed, the entries are added up: payer amounts, `exact` amounts, `percent` basis points and `weights` add; an `equal` split becomes `weights` (U 2, everyone else 1); a `days` split lists U once, since presence comes from U's kept member row. A `payment` or `loan` that isn't locked and whose two sides would both become U is voided instead, posted or not (its shares net to 0 for U either way). A locked one is never voided: a loan is renamed, and a payment keeps naming P, since a payment's two sides must differ. That payment doesn't hold the merge open. Each rewritten row is staged, then read again, so a row that was posted, edited, voided, locked or unlocked meanwhile makes the batch run again. One pure helper in `packages/core` does this rewrite.
-   - **Identities:** repoint `identities.personId` from P to U.
    - **Reminders:** repoint `reminders.toPersonId` from P to U, so the recipient limit counts the reminders P was sent toward U ([reminders](#reminders)).
+   - **Identities, last:** once nothing else outside the kept groups names P, repoint `identities.personId` from P to U. After step 1, only keys U verified are left, and at least one of them (the key the claim came through) points at P. So P still having an identity is what marks a merge unfinished.
    - Columns that only ever hold a person with an account (`createdBy`, `updatedBy`, `actorPersonId`, `invitedBy`, `ownerPersonId`, `reminders.sentBy`) can't name a placeholder, so they're left alone.
 4. **Finished.** P is never deleted. A merge is finished when nothing outside the kept groups still names P: no identity, member row, or share; no input or item split of a transaction that isn't void, locked ones included, apart from a locked payment between P and U and a locked row the merge can't read; no schedule template; and no reminder's `toPersonId`. A batch put off for a group (a `finalizing` statement, or the time budget) therefore keeps the merge unfinished, whatever order the batches ran in. Until then, `/claim` (for persons whose `mergedInto` is the caller's person, `idx_mergedInto`) and `identity`'s hourly job ([finishing merges](#finishing-merges)) carry on with it; after that, they leave P alone. Meanwhile the [nightly check](scheduling.md#step-6-nightly-check) counts P's shares as `merging`. `/claim` stops starting batches after a time budget well inside the function's timeout.
 
@@ -132,7 +146,7 @@ U didn't call it, but U started the merge by verifying the key, so finishing it 
 
 ## Invites
 
-An invite is a convenience: a link that tells someone they've been added and helps them sign up. Claiming works without one, as long as the person verifies the same email or phone.
+An invite is a convenience: a link that tells someone they've been added and helps them sign up. Claiming works without one, as long as the person verifies the key that was stored for them: the email, or the phone if no email was given ([adding someone](#adding-someone-to-a-group)).
 
 `identity POST /invites` with `{ groupId, memberId, email?, phone? }` (exactly one of email or phone):
 
@@ -219,7 +233,7 @@ Non-zero balances don't block it; the delete screen warns about them.
 2. Set `persons.deletedAt` and `displayName` "Former member", with a fresh `rev` (a [guard write](ledger.md#concurrency)). **This is the point of no return:** from here every step runs to the end, and none is undone. A call after this skips the checks (apart from the body) and carries on.
 3. Label the Appwrite user `deleted` (`users.updateLabels`), block them and delete their sessions, so an old JWT fails `account.get()` (`UNAUTHENTICATED`). A 404 counts as done.
 4. The groups, one at a time, as above.
-5. Only once **every** group is done: delete their identities, the invites they sent, the reminders they sent or were sent (`idx_sentBy_sentAt`, `idx_toPerson_sentAt`) and their profile.
+5. Only once **every** group is done: delete their identities, the identities of any person still being merged into them (`mergedInto` = theirs, `idx_mergedInto`: a merge moves identities last, so an unfinished one leaves their verified key there), the invites they sent, the reminders they sent or were sent (`idx_sentBy_sentAt`, `idx_toPerson_sentAt`) and their profile.
 6. Clear `persons.userId` and the row's `read("user:<userId>")` permission.
 7. Delete the Appwrite user (a 404 counts as done).
 
