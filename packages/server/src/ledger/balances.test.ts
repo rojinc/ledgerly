@@ -63,6 +63,15 @@ describe('balanceWrite', () => {
     ])
   })
 
+  it('deletes a row whose net would pass a safe integer', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const big = [{ personId: 'alice', netCents: Number.MAX_SAFE_INTEGER - 1, shares: 1 }]
+    const share = [{ personId: 'alice', givenCents: 3000, receivedCents: 0 }]
+    expect(await balanceWrite(db(JSON.stringify(big)), 'g1', [], share)).toEqual([
+      { action: 'delete', tableId: 'balances', rowId: 'g1' },
+    ])
+  })
+
   it('passes on a failed read', async () => {
     const broken = db()
     vi.spyOn(broken, 'getRow').mockRejectedValue(new Error('offline'))
