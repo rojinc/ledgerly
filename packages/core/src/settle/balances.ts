@@ -1,7 +1,7 @@
 import { LedgerError } from '../ledger/ledger-error'
 import type { BalancesPeople } from '../schemas/ledger'
 
-type ShareAmounts = { personId: string; givenCents: number; receivedCents: number }
+export type ShareAmounts = { personId: string; givenCents: number; receivedCents: number }
 
 /** A group's `balances` row built fresh from all its shares (data-model.md#balances). */
 export function balancesFromShares(shares: readonly ShareAmounts[]): BalancesPeople {

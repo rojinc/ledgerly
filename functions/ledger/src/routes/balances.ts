@@ -39,7 +39,9 @@ export const groupBalances = (services: ServicesFor) =>
       }
       // No row yet (not backfilled), or a row that's broken: the shares are the truth.
       if (row !== undefined) {
-        console.error(`balances: the row of group ${group.$id} can't be read or doesn't add up; summed the shares`)
+        console.error(
+          `balances: the row of group ${group.$id} can't be read or doesn't add up; summed the shares`,
+        )
       }
       return freshBalances(db, group)
     },

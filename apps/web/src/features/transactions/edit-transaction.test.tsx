@@ -856,7 +856,6 @@ describe('Edit a house expense (#202)', () => {
     ['a viewer', groceries, 'viewer', {}, false],
     ['a locked row', { ...groceries, statementId: 'st1' }, 'admin', {}, false],
     ['a void row', { ...groceries, status: 'void' }, 'admin', {}, false],
-    ['an itemised row', groceries, 'admin', { items: [{ $id: 'i1', transactionId: 't1' }] }, false],
     ['a paid house bill', { ...groceries, kind: 'bill' }, 'admin', {}, false],
     ['a house payment', { ...groceries, kind: 'payment' }, 'admin', {}, false],
     [
@@ -940,5 +939,249 @@ describe('Edit a house expense (#202)', () => {
       await screen.findByText('This entry can’t be changed here. Void it and add it again.'),
     ).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+
+  describe('itemised (#225)', () => {
+    const everyone = { mode: 'equal', personIds: ['pa', 'pc', 'pw'] }
+    type Item = { name: string; amountCents: number; category?: string; split: object }
+    // User flow 7 in this house: Sam pays; milk, bread and the discount for everyone, beer for Sam.
+    const FLOW_7: Item[] = [
+      { name: 'Milk', amountCents: 450, category: 'groceries', split: everyone },
+      { name: 'Bread', amountCents: 600, split: everyone },
+      { name: 'Beer', amountCents: 2000, split: { mode: 'equal', personIds: ['pw'] } },
+      { name: 'Discount', amountCents: -150, split: everyone },
+    ]
+    /** The `items` rows the ledger keeps (data-model.md#items), in `position` order. */
+    const itemRows = (items: readonly Item[], quantity = 1) =>
+      items.map(({ split, category, ...item }, position) => ({
+        $id: `i${position}`,
+        transactionId: 't1',
+        position,
+        quantity,
+        category: category ?? null,
+        splitJson: JSON.stringify(split),
+        ...item,
+      }))
+    const sum = (items: readonly Item[]) =>
+      items.reduce((total, item) => total + item.amountCents, 0)
+    const receipt = (items: readonly Item[], payers = [{ personId: 'pw', cents: sum(items) }]) =>
+      row(
+        { payers, note: 'Corner shop' },
+        { groupId: 'g3', description: 'Shop', category: 'groceries', totalCents: sum(items) },
+      )
+    const shop = receipt(FLOW_7)
+    const itemised = (
+      stored = shop,
+      items: readonly Item[] = FLOW_7,
+      role: Members['role'] = 'admin',
+    ) => house(stored, role, { items: itemRows(items) })
+
+    /** The ledger's answer to a PATCH with items: their rows, and the total they add up to. */
+    function savesItems(stored: Transactions) {
+      return (async (
+        _fn: string,
+        _method: string,
+        _path: string,
+        body: Record<string, unknown>,
+      ) => {
+        const { id, groupId, kind, date, description, category, items, ...input } = body
+        const sent = items as Item[]
+        return ok({
+          transaction: {
+            ...stored,
+            date,
+            description,
+            category: category ?? null,
+            totalCents: sum(sent),
+            inputJson: JSON.stringify(input),
+          },
+          shares: [],
+          items: itemRows(sent),
+        })
+      }) as never
+    }
+
+    const field = (label: string) => screen.getByLabelText(label) as HTMLInputElement
+    const forItem = (item: number, name: string) =>
+      within(screen.getByRole('group', { name: `Who item ${item} is for` })).getByRole('checkbox', {
+        name,
+      }) as HTMLInputElement
+
+    it('fills the items from their rows and sends them back exactly when saved unchanged', async () => {
+      itemised()
+      call.mockImplementation(savesItems(shop))
+      renderPage()
+      await openHouseForm()
+      // It stays itemised (decision 3).
+      expect(screen.queryByRole('checkbox', { name: 'Itemise this receipt' })).toBeNull()
+      expect(screen.queryByLabelText('Amount (AUD)')).toBeNull()
+      expect([1, 2, 3, 4].map((n) => field(`Item ${n} name`).value)).toEqual([
+        'Milk',
+        'Bread',
+        'Beer',
+        'Discount',
+      ])
+      // A discount reads back with its minus, Discount unticked (decision 1).
+      expect(field('Item 4 amount (AUD)').value).toBe('-1.50')
+      expect(field('Item 4 is a discount').checked).toBe(false)
+      expect((screen.getByLabelText('Item 1 category') as HTMLSelectElement).value).toBe(
+        'groceries',
+      )
+      expect(['Alice', 'Cara', 'Sam'].map((name) => forItem(3, name).checked)).toEqual([
+        false,
+        false,
+        true,
+      ])
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      expect(patched()).toStrictEqual({
+        id: 't1',
+        groupId: 'g3',
+        kind: 'expense',
+        date: '2026-10-18',
+        description: 'Shop',
+        category: 'groceries',
+        note: 'Corner shop',
+        payers: [{ personId: 'pw', cents: 2900 }],
+        items: FLOW_7,
+      })
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' })),
+      )
+    })
+
+    it('sends changed items, then shows them on the page', async () => {
+      itemised()
+      call.mockImplementation(savesItems(shop))
+      renderPage()
+      await openHouseForm()
+      // The milk isn't Alice's any more, the bread and the discount go, and eggs come in by
+      // shares.
+      fireEvent.click(forItem(1, 'Alice'))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove item 2' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Remove item 3' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Add item' }))
+      fireEvent.change(field('Item 3 name'), { target: { value: 'Eggs' } })
+      fireEvent.change(field('Item 3 amount (AUD)'), { target: { value: '6' } })
+      fireEvent.click(
+        within(screen.getByRole('group', { name: 'How to split item 3' })).getByRole('radio', {
+          name: 'By shares',
+        }),
+      )
+      fireEvent.change(field('Alice’s shares of item 3'), { target: { value: '1' } })
+      fireEvent.change(field('Cara’s shares of item 3'), { target: { value: '1' } })
+      fireEvent.change(field('Sam’s shares of item 3'), { target: { value: '2' } })
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      const sent = [
+        {
+          name: 'Milk',
+          amountCents: 450,
+          category: 'groceries',
+          split: { mode: 'equal', personIds: ['pc', 'pw'] },
+        },
+        FLOW_7[2],
+        {
+          name: 'Eggs',
+          amountCents: 600,
+          split: {
+            mode: 'weights',
+            weights: [
+              { personId: 'pa', weight: 1 },
+              { personId: 'pc', weight: 1 },
+              { personId: 'pw', weight: 2 },
+            ],
+          },
+        },
+      ]
+      expect(patched()).toMatchObject({ payers: [{ personId: 'pw', cents: 3050 }], items: sent })
+      expect(patched()).not.toHaveProperty('totalCents')
+      expect(patched()).not.toHaveProperty('split')
+      // The Items section and the Split row show what was saved.
+      const list = await screen.findByRole('region', { name: 'Items' })
+      expect(within(list).getByText(/^Eggs:/)).toBeTruthy()
+      expect(within(list).queryByText(/^Bread:/)).toBeNull()
+      expect(within(list).queryByText(/^Discount:/)).toBeNull()
+      expect(screen.getByText('Itemised (3 items)')).toBeTruthy()
+    })
+
+    it('refuses a discount that takes someone below 0 (I-4), as on create', async () => {
+      itemised()
+      renderPage()
+      await openHouseForm()
+      fireEvent.change(field('Item 4 amount (AUD)'), { target: { value: '-20' } })
+      expect(
+        await screen.findByText('A discount can’t make anyone’s part go below zero.'),
+      ).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(alerts().length).toBeGreaterThan(0))
+      expect(call).not.toHaveBeenCalled()
+    })
+
+    it('keeps a refund a refund (decision 4)', async () => {
+      const back: Item[] = [
+        {
+          name: 'Kettle back',
+          amountCents: -3000,
+          split: { mode: 'equal', personIds: ['pa', 'pw'] },
+        },
+      ]
+      const refund = receipt(back)
+      itemised(refund, back)
+      call.mockImplementation(savesItems(refund))
+      renderPage()
+      await openHouseForm()
+      expect((screen.getByLabelText('Refunded to') as HTMLSelectElement).value).toBe('pw')
+      expect(screen.queryByRole('checkbox', { name: 'Several people paid' })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      expect(patched()).toMatchObject({ payers: [{ personId: 'pw', cents: -3000 }], items: back })
+    })
+
+    it('keeps one Items heading per id, the form’s a level down', async () => {
+      itemised()
+      renderPage()
+      await openHouseForm()
+      expect(document.querySelectorAll('[id="items-heading"]')).toHaveLength(1)
+      const items = within(screen.getByRole('region', { name: 'Change this expense' }))
+      expect(items.getByRole('heading', { name: 'Items' }).tagName).toBe('H3')
+    })
+
+    it.each([
+      ['an admin', 'admin', true],
+      ['the member who added it', 'member', true],
+      ['a viewer', 'viewer', false],
+    ] as const)('%s: Edit shown is %s', async (_, role, shown) => {
+      itemised(shop, FLOW_7, role)
+      const { queryClient } = renderPage()
+      await settled(queryClient)
+      if (shown) expect(await screen.findByRole('button', { name: 'Edit' })).toBeTruthy()
+      else expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    })
+
+    it('offers no Edit when the items can’t be read, and says so', async () => {
+      itemised()
+      listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+        if (tableId === 'items') throw new Error('offline')
+        const rows = tableId === 'members' ? HOUSE_MEMBERS : []
+        return { total: rows.length, rows }
+      }) as never)
+      const { queryClient } = renderPage()
+      await settled(queryClient)
+      expect(await screen.findByText(/We couldn’t load this expense’s items/)).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+      // Not read as a plain expense meanwhile.
+      expect(screen.queryByText(/can’t be changed here/)).toBeNull()
+    })
+
+    it('says an item it can’t show can’t be changed here (decision 2)', async () => {
+      house(shop, 'admin', { items: itemRows(FLOW_7, 2) })
+      const { queryClient } = renderPage()
+      await settled(queryClient)
+      expect(
+        await screen.findByText('This entry can’t be changed here. Void it and add it again.'),
+      ).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    })
   })
 })
