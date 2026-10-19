@@ -304,13 +304,11 @@ A purged group's invoices go with it, so the delete screen tells users to export
 - **No new record names a deleted person where they had joined.** This applies in a group where their member row isn't `placeholder` (in practice the kept groups).
   - **The ledger refuses a write that would name them anew** ([functions API](functions-api.md#ledger), "Deleted people"): as a payer (one the server fills in included), in its split or the default split, in an item, or as one of a shift's two people.
   - **A record made before the deletion** keeps everyone it already named or gave a share, also through its default split or as a shift's employer. So it can still be corrected, posted and voided, and a timer can still be stopped.
-  - **The scheduler** refuses a template whose trial occurrence would name them. Step 2 doesn't post as a creator who has deleted their account ([scheduling](scheduling.md#step-2-auto-post)).
+  - **The scheduler** refuses a template whose trial occurrence would name them, and an edit of a schedule they created. Step 2 doesn't post an expense or bill they would pay as its schedule's creator ([scheduling](scheduling.md#step-2-auto-post)).
   - **Still allowed:** payments and adjustments that name them, so balances with a former member can still be settled.
   - **Who, not how much:** an edit can still change what someone already on a record pays or owes, as it can for any member.
   - Where they never joined, nothing changes, so the refusal can't show the deletion (D-016).
-  - **Schedules left running:** a schedule they didn't create, and whose template doesn't name them (`everyPersonId()`), isn't ended, even when its occurrences give them a share. Examples are a default split in a `pair` group, or a shift where they're the employer.
-    - Its occurrences made after the deletion are refused when they're posted, until an edit splits them between the others. Step 2 counts each one as failed, and step 3 still reminds about a shift or bill among them.
-    - The schedule can be ended or deleted, or edited to leave them out.
+  - **Schedules left running:** in a kept house, a schedule they didn't create, and whose template doesn't name them (`everyPersonId()`), keeps running. A template has no billing period, so its occurrences split by date, and the default split leaves them out after their `leftOn`. So only an occurrence made after the deletion and dated on or before their `leftOn` (the deletion day, usually) can give them a share. It's refused when posted, until an edit splits it between the others, and step 2 counts it as failed.
 - Accepted risk: with their identities deleted, adding that email to a group again makes a new placeholder instead of answering `CONFLICT`, and an invite to it goes to whoever holds the address now. An invite to their *old* placeholder row (in a group they never joined) with that email gets `VALIDATION_FAILED`, since the row's person is deleted.
 
 ## Privacy rules
