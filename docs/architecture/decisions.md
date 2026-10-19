@@ -119,7 +119,7 @@ Format: ID, date, status (`proposed`, `accepted`, `superseded by D-xxx`), decisi
 This refines [D-004](#d-004-one-appwrite-team-per-group-authority-lives-in-members): `placeholder` members now include registered people who haven't joined.
 **Trade-off:** A registered person added to a group sees only its name, type and whether it's archived (and, for a pair group, the other member's display name, so they can tell who added them; #145), as pending, until they join. The list-and-join routes are needed by M2 pair groups (#34), so they ship there. In M1 this rarely matters, because employers are usually placeholders.
 
-### D-018: Free at launch; one paid plan later, pulled from Stripe
+### D-019: Free at launch; one paid plan later, pulled from Stripe
 *2026-10-19 · proposed*
 
 **Decision:** Ledgerly launches free. When the owner decides to charge, it adds one paid plan through Stripe Checkout and the Customer Portal, as designed in [billing](billing.md): only some writes are gated, never reads; the payer is the account making the write; a downgrade deletes nothing. A `billing` function pulls the subscription state from Stripe (on return from Checkout, on request, and hourly after a period ends) instead of taking webhooks, so every function stays execute `users` only.

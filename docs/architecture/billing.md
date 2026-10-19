@@ -1,6 +1,6 @@
 # Billing
 
-How Ledgerly would charge for itself ([#55](https://github.com/rojinc/ledgerly/issues/55)). This is a **design on paper**: nothing here is built, and no Stripe account or key exists. The decision is [D-018](decisions.md#d-018-free-at-launch-one-paid-plan-later-pulled-from-stripe) (proposed). Prices, tax and whether to charge at all are the owner's ([D-015](decisions.md#d-015-the-lead-agent-runs-the-project-day-to-day)); they are listed under [owner questions](#owner-and-legal-questions) and not answered here.
+How Ledgerly would charge for itself ([#55](https://github.com/rojinc/ledgerly/issues/55)). This is a **design on paper**: nothing here is built, and no Stripe account or key exists. The decision is [D-019](decisions.md#d-019-free-at-launch-one-paid-plan-later-pulled-from-stripe) (proposed). Prices, tax and whether to charge at all are the owner's ([D-015](decisions.md#d-015-the-lead-agent-runs-the-project-day-to-day)); they are listed under [owner questions](#owner-and-legal-questions) and not answered here.
 
 Charging our own users for the app is not moving their money. [D-014](decisions.md#d-014-we-record-money-we-dont-move-it) still holds: users settle with each other outside the app, and Stripe only ever takes a payment for Ledgerly itself.
 
@@ -186,7 +186,7 @@ Listed, not answered (D-015, [#54](https://github.com/rojinc/ledgerly/issues/54)
 
 Only once the owner decides to charge. Each is one issue:
 
-1. **contract:** the `subscriptions` table (data-model.md, and its row in permissions.md's row-permission table), the `billing` routes, `PLAN_REQUIRED` in functions-api.md's codes and the gate list, `billing`'s rows in function settings and execute permissions, step 5 of the deletion order in identity-and-invites.md, the zod schemas, and D-018 accepted.
+1. **contract:** the `subscriptions` table (data-model.md, and its row in permissions.md's row-permission table), the `billing` routes, `PLAN_REQUIRED` in functions-api.md's codes and the gate list, `billing`'s rows in function settings and execute permissions, step 5 of the deletion order in identity-and-invites.md, the zod schemas, and D-019 accepted.
 2. **core:** `planOf` and `GATES` in `packages/core/src/billing/`, with full branch coverage.
 3. **server:** `requirePlan` and a small Stripe `fetch` client in `packages/server`.
 4. **fn billing:** `POST /checkout`, `/portal`, `/sync` and the hourly sync.
