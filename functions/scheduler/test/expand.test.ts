@@ -211,4 +211,12 @@ describe('nextRunAt', () => {
   ])('after %s in %s is 00:05 the next day there', (today, timeZone, expected) => {
     expect(nextRunAt(today as LocalDate, timeZone)).toBe(expected)
   })
+
+  it.each([
+    // Their clocks go from 00:00 straight to 01:00 on 6 September and 8 March.
+    ['2026-09-05', 'America/Santiago', '2026-09-06T04:05:00.000Z'],
+    ['2026-03-07', 'America/Havana', '2026-03-08T05:05:00.000Z'],
+  ])('after %s in %s, where midnight is skipped, is 01:05', (today, timeZone, expected) => {
+    expect(nextRunAt(today as LocalDate, timeZone)).toBe(expected)
+  })
 })
