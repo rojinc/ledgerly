@@ -13,7 +13,7 @@ export const NOW = new Date('2026-10-18T20:00:00.000Z')
 export const BEFORE = '2026-10-01T00:00:00.000Z'
 export const AFTER = '2026-10-19T00:00:00.000Z'
 export const TRY_AGAIN = 'Something else changed this at the same time. Try again.'
-export const APP_URL = 'https://app.example.com'
+export const APP_URL = 'https://app.example'
 
 type Seed = ConstructorParameters<typeof FakeDb>[0]
 
