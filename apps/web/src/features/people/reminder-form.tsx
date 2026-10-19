@@ -3,7 +3,7 @@ import { emailSchema } from '@ledgerly/core/schemas/common'
 import type { SendReminderResult } from '@ledgerly/core/schemas/identity'
 import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
-import { type FormEvent, type RefObject, useState } from 'react'
+import { type FormEvent, type RefObject, useRef, useState } from 'react'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
 import { useSwap } from '../../lib/use-swap'
@@ -80,6 +80,12 @@ function ReminderForm({
   const [fieldError, setFieldError] = useState('')
   const [failed, setFailed] = useState('')
   const [busy, setBusy] = useState(false)
+  const field = useRef<HTMLInputElement>(null)
+  // An error by the field isn't read out on its own: focus takes the reader there.
+  const fieldProblem = (message: string) => {
+    setFieldError(message)
+    field.current?.focus()
+  }
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
@@ -87,11 +93,11 @@ function ReminderForm({
     setFieldError('')
     setFailed('')
     if (email.trim() === '') {
-      setFieldError('Enter their email address')
+      fieldProblem('Enter their email address')
       return
     }
     if (!emailSchema.safeParse(email).success) {
-      setFieldError('Enter an email address like name@example.com')
+      fieldProblem('Enter an email address like name@example.com')
       return
     }
     setBusy(true)
@@ -106,7 +112,7 @@ function ReminderForm({
       return
     }
     const { code, message } = result.error
-    if (code === 'VALIDATION_FAILED') setFieldError(message)
+    if (code === 'VALIDATION_FAILED') fieldProblem(message)
     else if (code === 'RATE_LIMITED') setFailed(RATE_LIMITED)
     else if (code === 'FORBIDDEN') setFailed(UNVERIFIED)
     else {
@@ -134,6 +140,7 @@ function ReminderForm({
       {failed && <Alert variant="destructive">{failed}</Alert>}
       <TextField
         id="reminderEmail"
+        ref={field}
         type="email"
         autoComplete="off"
         label="Their email address"

@@ -189,7 +189,8 @@ function PairDetails({
       </section>
       {/* Only when they owe you: nothing else to remind about (F-63). */}
       {!group.archivedAt && mayAdd && (net ?? 0) > 0 && (
-        <ReminderSection group={group} name={name} />
+        // Keyed by group: another pair's page starts with its own form, ID and news.
+        <ReminderSection key={group.$id} group={group} name={name} />
       )}
       {group.archivedAt ? (
         <Message>{ARCHIVED_NOTICE}</Message>

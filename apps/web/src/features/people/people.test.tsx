@@ -1,6 +1,6 @@
 import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Query } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -546,6 +546,13 @@ describe('PeoplePage', () => {
 
 describe('PairPage: send a reminder (#266)', () => {
   const button = () => screen.queryByRole('button', { name: 'Send a reminder' })
+  // The news is in the status region, so it's read out.
+  const sentNews = () =>
+    waitFor(() =>
+      expect(
+        screen.getAllByRole('status').some((node) => node.textContent === 'Reminder sent.'),
+      ).toBe(true),
+    )
 
   async function openForm() {
     renderAt('/people/g1')
@@ -583,7 +590,7 @@ describe('PairPage: send a reminder (#266)', () => {
     )
     type('Their email address', 'sam@example.com')
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    expect(await screen.findByText('Reminder sent.')).toBeTruthy()
+    expect(await sentNews()).toBeTruthy()
     expect(call).toHaveBeenCalledWith('identity', 'POST', '/reminders', {
       id: expect.any(String),
       groupId: 'g1',
@@ -607,7 +614,7 @@ describe('PairPage: send a reminder (#266)', () => {
       'We couldn’t send the reminder. Try again later.',
     )
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
-    await screen.findByText('Reminder sent.')
+    await sentNews()
     fireEvent.click(screen.getByRole('button', { name: 'Send a reminder' }))
     // A new reminder: the last one's news goes.
     expect(screen.queryByText('Reminder sent.')).toBeNull()
@@ -633,6 +640,7 @@ describe('PairPage: send a reminder (#266)', () => {
       /^Verify your email address before sending reminders\. .*banner at the top of the page/,
     ],
     ['INTERNAL', 'Something went wrong.', 'alert', 'Something went wrong.'],
+    ['ARCHIVED', 'This group is archived.', 'alert', 'This group is archived.'],
     [
       'VALIDATION_FAILED',
       "That isn't an address this group has for them. Use one you added them with.",
@@ -653,6 +661,7 @@ describe('PairPage: send a reminder (#266)', () => {
         expect(input('Their email address').getAttribute('aria-invalid')).toBe('true'),
       )
       expect(document.getElementById('reminderEmail-error')?.textContent).toBe(shown)
+      expect(document.activeElement).toBe(input('Their email address'))
     }
     expect(screen.getByLabelText('Their email address')).toBeTruthy()
     expect(screen.queryByText('Reminder sent.')).toBeNull()
@@ -668,6 +677,7 @@ describe('PairPage: send a reminder (#266)', () => {
     expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
       'Enter their email address',
     )
+    expect(document.activeElement).toBe(input('Their email address'))
     type('Their email address', 'sam')
     fireEvent.click(screen.getByRole('button', { name: 'Send' }))
     expect(document.getElementById('reminderEmail-error')?.textContent).toBe(
@@ -683,7 +693,46 @@ describe('PairPage: send a reminder (#266)', () => {
     expect(call).toHaveBeenCalledTimes(1)
     expect(screen.getByLabelText('Their email address')).toBeTruthy()
     answer(ok({ sentAt: NOW.toISOString() }))
-    await screen.findByText('Reminder sent.')
+    await sentNews()
+  })
+
+  it('reloads the group when the reminder is refused as ARCHIVED', async () => {
+    mockGroup(5000)
+    mockRows()
+    call.mockResolvedValue({ ok: false, error: { code: 'ARCHIVED', message: 'Archived.' } })
+    const { queryClient } = renderAt('/people/g1')
+    const reload = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(await screen.findByRole('button', { name: 'Send a reminder' }))
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await screen.findByRole('alert')
+    expect(reload).toHaveBeenCalledWith({ queryKey: queryKeys.group('g1') })
+  })
+
+  it('is offered to a member too', async () => {
+    mockGroup(5000, {}, 'member')
+    mockRows()
+    renderAt('/people/g1')
+    expect(await screen.findByRole('button', { name: 'Send a reminder' })).toBeTruthy()
+  })
+
+  it('starts fresh on another pair’s page', async () => {
+    mockGroup(5000)
+    mockRows()
+    call.mockResolvedValue(ok({ sentAt: NOW.toISOString() }))
+    // g2 first, so its rows are cached and going back to it shows it at once, without loading.
+    mockGroup(5000, { $id: 'g2' })
+    const { router } = renderAt('/people/g2')
+    await screen.findByRole('button', { name: 'Send a reminder' })
+    mockGroup(5000)
+    await act(() => router.navigate('/people/g1'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Send a reminder' }))
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    await sentNews()
+    mockGroup(5000, { $id: 'g2' })
+    await act(() => router.navigate('/people/g2'))
+    expect(screen.queryByText('Reminder sent.')).toBeNull()
   })
 
   it('closes on Cancel, with focus back on the button', async () => {
