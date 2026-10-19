@@ -57,25 +57,31 @@ export function toBillBody(
 
 /** What a stored bill keeps that the form doesn't show, so a PATCH doesn't drop it. */
 export type StoredExtras = {
+  /** Who paid: without it, an edit would make the editor the payer (#44). */
+  payers?: TransactionTemplate['payers']
   split?: TransactionTemplate['split']
   note?: string
   period?: { periodStart?: string; periodEnd?: string }
 }
 
 /**
- * The split, note and billing period from a bill's `inputJson`, which the ledger stores without
- * the bill's status, due date or category (those are columns). Anything unreadable is left out.
+ * The payers, split, note and billing period from a bill's `inputJson`, which the ledger stores
+ * without the bill's status, due date or category (those are columns). Anything unreadable is left
+ * out.
  */
 export function storedExtras(inputJson: string): StoredExtras {
   try {
     const stored = JSON.parse(inputJson) as {
+      payers?: unknown
       split?: unknown
       note?: unknown
       bill?: { periodStart?: unknown; periodEnd?: unknown }
     } | null
+    const payers = transactionTemplateSchema.shape.payers.safeParse(stored?.payers)
     const split = transactionTemplateSchema.shape.split.safeParse(stored?.split)
     const { periodStart, periodEnd } = stored?.bill ?? {}
     return {
+      ...(payers.success && payers.data ? { payers: payers.data } : {}),
       ...(split.success && split.data ? { split: split.data } : {}),
       ...(typeof stored?.note === 'string' && stored.note !== '' ? { note: stored.note } : {}),
       ...(typeof periodStart === 'string' && typeof periodEnd === 'string'

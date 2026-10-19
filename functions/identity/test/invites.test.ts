@@ -292,6 +292,7 @@ describe('POST /invites', () => {
     services.sendEmail = async (email) => {
       storedAtSend = services.db.rows('invites').map((row) => row.tokenHash)
       services.sent.push(email)
+      return {}
     }
     await sends(services)
     expect(storedAtSend).toEqual([sha256(tokenOf(services.sent[0]))])
@@ -311,6 +312,7 @@ describe('POST /invites', () => {
 
     services.sendEmail = async (email) => {
       services.sent.push(email)
+      return {}
     }
     expect(await refused(services, TO_KIM)).toEqual({
       status: 429,

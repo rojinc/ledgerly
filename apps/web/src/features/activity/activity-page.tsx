@@ -123,7 +123,12 @@ function Feed({ group }: { group: Groups }) {
       <ul className="divide-y divide-border rounded-md border border-border">
         {entries.map((entry) => (
           <li key={entry.$id} className="flex flex-col gap-1 px-3 py-2">
-            <p className="break-words">{entry.summary}</p>
+            <p className="break-words">
+              {/* A member row names no one (#50): its person's current name comes first. */}
+              {entry.subjectPersonId
+                ? `${names.get(entry.subjectPersonId) ?? 'A former member'} ${entry.summary}`
+                : entry.summary}
+            </p>
             <p className="text-sm break-words text-muted-foreground">
               {/* No actor: a system job. No member row any more: removed from the group. */}
               {entry.actorPersonId

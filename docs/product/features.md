@@ -6,7 +6,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 
 | ID | Feature | Milestone |
 | --- | --- | --- |
-| F-01 | Sign up and log in with email + password or email code (OTP). Google sign-in later. | M0 |
+| F-01 | Sign up and log in with email + password or email code (OTP). Google sign-in later. Set a password on Profile (an account made with an email code has none) or change it with the current one. | M0 |
 | F-02 | Email verification. Required before you can invite people or claim records made with your email. | M0 |
 | F-03 | Profile: display name, timezone, holiday region (e.g. `AU-NSW`), default currency. | M1 |
 | F-04 | Business details printed on invoices: business name, ABN, address, contact email, bank details (account name, BSB, account number) and PayID. | M1 |
@@ -88,7 +88,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | --- | --- | --- |
 | F-80 | Summary email every week, fortnight or month (user setting). | M2 |
 | F-81 | Notifications for joined members: statement ready, bill due, shift to confirm, someone changed a transaction you're in. Being added to a group shows only in the app's pending list, never by email, so nobody can tell from it who has an account. | M2–M3 |
-| F-82 | Work-hours cap alert. The user enters their own limit per week or fortnight; no visa or award rules are built in. | M4 |
+| F-82 | Work-hours cap alert. The user enters their own limit per week or fortnight on Profile; no visa or award rules are built in. Today, Home and the shift form add up the posted and scheduled shifts that pay them (and, on Today, a running timer) against it, and say when they reach or pass it. It only warns, never blocks a save. | M4 |
 
 ## Later (not v1)
 

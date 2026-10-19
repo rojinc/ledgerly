@@ -248,6 +248,13 @@ describe('StatementsPage', () => {
     renderAt('/groups/g1/statements')
     expect(await screen.findByText(/No invoices yet/)).toBeTruthy()
   })
+
+  it('shows a balance due past the amount cap', async () => {
+    const big = snapshot({ invoice: { balanceDueCents: 20_000_000_000, paymentTermsDays: 14 } })
+    store(statement('s1', FINAL, big))
+    renderAt('/groups/g1/statements')
+    expect((await screen.findByRole('link')).textContent).toMatch(/200,000,000\.00$/)
+  })
 })
 
 describe('StatementPage: a draft', () => {
@@ -364,6 +371,38 @@ describe('StatementPage: a draft', () => {
     expect(pay.textContent).toBe(
       `How to payPayment terms: due on receipt. Please pay by ${formatDate('2026-11-17')}, with INV-0007 as the reference.`,
     )
+  })
+
+  it('shows an opening balance and balance due past the amount cap', async () => {
+    const people = snapshot().people.map((person) =>
+      person.personId === 'pw' ? { ...person, openingCents: 20_000_000_000 } : person,
+    )
+    const big = snapshot({
+      people,
+      invoice: { balanceDueCents: 20_000_011_500, paymentTermsDays: 14 },
+    })
+    store(statement('s1', FINAL, big))
+    renderAt('/groups/g1/statements/s1')
+    const opening = await screen.findByText('Opening balance (from the previous invoice)')
+    expect(opening.nextElementSibling?.textContent).toMatch(/200,000,000\.00$/)
+    expect(screen.getByText('Balance due').nextElementSibling?.textContent).toMatch(
+      /200,000,115\.00$/,
+    )
+  })
+
+  it.each([
+    ['a Chinese name', '张三 Pty Ltd', true],
+    ['a Latin one', 'Café Ngọc', false],
+  ])('warns when the PDF can’t show a character, for %s', async (_, name, warned) => {
+    const recipient = { personId: 'pe', name, emails: ['delivered@resend.dev'] }
+    store(statement('s1', {}, snapshot({ recipient })))
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/groups/g1/statements/s1')
+    await screen.findByRole('article', { name: 'Draft invoice' })
+    const warning = screen.queryByText(
+      'Some characters in this invoice can’t be shown in the PDF yet. They’ll print as �.',
+    )
+    expect(warning !== null).toBe(warned)
   })
 
   it('says when nothing is owed, or the employer is in credit', async () => {
@@ -736,6 +775,491 @@ describe('StatementPage: a final invoice', () => {
     await screen.findByRole('button', { name: 'Download PDF' })
     expect(screen.queryByRole('button', { name: /^Send/ })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Void…' })).toBeNull()
+  })
+})
+
+// A house of three, Alice (pa), Bob (pb) and Cara (pc), divides October (#166).
+function divideSnapshot(extra: object = {}): StatementSnapshot {
+  return {
+    version: 1,
+    group: {
+      id: 'g1',
+      name: 'The flat',
+      type: 'house',
+      currency: 'AUD',
+      timezone: 'Australia/Sydney',
+    },
+    period: { start: '2026-10-01', end: '2026-10-31' },
+    // Alice paid the rent; Bob the groceries. Closings add up to 0.
+    people: [
+      {
+        personId: 'pa',
+        name: 'Alice',
+        openingCents: 0,
+        givenCents: 150000,
+        receivedCents: 50900,
+        closingCents: 99100,
+      },
+      {
+        personId: 'pb',
+        name: 'Bob',
+        openingCents: -500,
+        givenCents: 2700,
+        receivedCents: 72339,
+        closingCents: -70139,
+      },
+      {
+        personId: 'pc',
+        name: 'Cara',
+        openingCents: 500,
+        givenCents: 0,
+        receivedCents: 29461,
+        closingCents: -28961,
+      },
+    ],
+    lines: [
+      {
+        transactionId: 't1',
+        date: '2026-10-01',
+        kind: 'bill',
+        description: 'Rent',
+        totalCents: 150000,
+        shares: [
+          { personId: 'pa', givenCents: 150000, receivedCents: 50000 },
+          { personId: 'pb', givenCents: 0, receivedCents: 70000 },
+          { personId: 'pc', givenCents: 0, receivedCents: 30000 },
+        ],
+      },
+      {
+        transactionId: 't2',
+        date: '2026-10-18',
+        kind: 'expense',
+        description: 'Groceries',
+        totalCents: 2700,
+        shares: [
+          { personId: 'pa', givenCents: 0, receivedCents: 900 },
+          { personId: 'pb', givenCents: 2700, receivedCents: 2339 },
+          { personId: 'pc', givenCents: 0, receivedCents: -539 },
+        ],
+      },
+    ],
+    transfers: [
+      { fromPersonId: 'pb', toPersonId: 'pa', cents: 70139 },
+      { fromPersonId: 'pc', toPersonId: 'pa', cents: 28961 },
+    ],
+    generatedAt: '2026-11-01T00:00:00.000Z',
+    ...extra,
+  } as unknown as StatementSnapshot
+}
+
+function divide(id: string, extra: Partial<Statements> = {}, snap = divideSnapshot()): Statements {
+  return statement(id, { type: 'divide', ...extra }, snap)
+}
+
+const FINAL_DIVIDE = { status: 'final', issuedOn: '2026-11-01', pdfFileId: 'd1' } as const
+
+describe('StatementPage: a monthly divide (#166)', () => {
+  beforeEach(() => {
+    mockGroup('admin', { type: 'house', name: 'The flat' })
+    call.mockImplementation(async (_fn, _method, path) =>
+      path.endsWith('/refresh') ? ok(stored.find((row) => path.includes(row.$id))) : ok({}),
+    )
+    createExecution.mockResolvedValue({ $id: 'e1' } as never)
+  })
+
+  it('shows a draft as its PDF lays it out: balances in words, transfers and each part', async () => {
+    store(divide('d1'))
+    renderAt('/groups/g1/statements/d1')
+    const article = await screen.findByRole('article', { name: 'Draft divide' })
+    const period = `${formatDate('2026-10-01')} – ${formatDate('2026-10-31')}`
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(`Divide for ${period}`)
+    expect(screen.getByRole('link', { name: 'All statements' })).toBeTruthy()
+    // Refreshed on open, as an invoice draft is.
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/d1/refresh', undefined),
+    )
+    const rows = within(article)
+      .getAllByRole('row')
+      .slice(1)
+      .map((row) => row.textContent)
+    expect(rows).toEqual([
+      expect.stringMatching(/^Alice.*0\.00.*1,500\.00.*509\.00.*991\.00is owed .*991\.00$/),
+      expect.stringMatching(/^Bob-.*5\.00.*27\.00.*723\.39-.*701\.39owes .*701\.39$/),
+      expect.stringMatching(/^Cara.*5\.00.*0\.00.*294\.61-.*289\.61owes .*289\.61$/),
+    ])
+    // The table scrolls inside its card, and can be reached by keyboard to do so.
+    const table = within(article).getByRole('region', { name: 'Balances table' })
+    expect(table.className).toContain('overflow-x-auto')
+    expect(table.getAttribute('tabindex')).toBe('0')
+    const transfers = within(article).getByRole('region', { name: 'To settle up' })
+    expect(
+      within(transfers)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual([
+      expect.stringMatching(/^Bob pays Alice .*701\.39$/),
+      expect.stringMatching(/^Cara pays Alice .*289\.61$/),
+    ])
+    const lines = within(article).getByRole('region', { name: 'Transactions' })
+    expect(within(lines).getByText(/^Bob: paid .*27\.00, share .*23\.39$/)).toBeTruthy()
+    expect(within(lines).getByText(/^Alice: paid .*1,500\.00, share .*500\.00$/)).toBeTruthy()
+  })
+
+  it('shows openings and closings past the amount cap', async () => {
+    const people = divideSnapshot().people.map((person) =>
+      person.personId === 'pa'
+        ? { ...person, openingCents: 20_000_000_000, closingCents: 20_000_099_100 }
+        : person,
+    )
+    store(divide('d1', FINAL_DIVIDE, divideSnapshot({ people })))
+    renderAt('/groups/g1/statements/d1')
+    const article = await screen.findByRole('article', { name: 'Divide' })
+    expect(within(article).getAllByRole('row')[1]?.textContent).toMatch(
+      /^Alice.*200,000,000\.00.*1,500\.00.*509\.00.*200,000,991\.00is owed .*200,000,991\.00$/,
+    )
+  })
+
+  it('says when someone in a transaction has no part of it', async () => {
+    const snap = divideSnapshot()
+    snap.lines[1]?.shares.push({ personId: 'pd', givenCents: 0, receivedCents: 0 })
+    store(divide('d1', FINAL_DIVIDE, snap))
+    renderAt('/groups/g1/statements/d1')
+    expect(await screen.findByText('Someone: no part')).toBeTruthy()
+  })
+
+  it('says everyone is settled when there are no transfers', async () => {
+    store(divide('d1', FINAL_DIVIDE, divideSnapshot({ transfers: [] })))
+    renderAt('/groups/g1/statements/d1')
+    expect(await screen.findByText('Everyone is settled up.')).toBeTruthy()
+    expect(screen.getByRole('article', { name: 'Divide' })).toBeTruthy()
+  })
+
+  async function openFinalize() {
+    store(divide('d1'))
+    const view = renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Finalize…' }))
+    expect(screen.getByRole('heading', { level: 2, name: 'Finalize this divide?' })).toBeTruthy()
+    return view
+  }
+
+  it('goes back to the list when another admin discarded the draft meanwhile', async () => {
+    getExecution.mockImplementation((async () => {
+      stored = []
+      getRow.mockRejectedValue(new AppwriteException('Row not found', 404, 'row_not_found'))
+      return { status: 'failed', responseStatusCode: 404, responseBody: '' }
+    }) as never)
+    const { router } = await openFinalize()
+    fireEvent.click(screen.getByRole('button', { name: 'Finalize only' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements'))
+    expect(await screen.findByText(/^The draft for .+ was discarded\.$/)).toBeTruthy()
+    expect(screen.queryByText(/Could not reach the server/)).toBeNull()
+  })
+
+  it.each([
+    ['Finalize and email everyone', true, 'Finalized and emailed to everyone.'],
+    ['Finalize only', false, 'Finalized.'],
+  ])('“%s” finalizes with { send: %s }', async (button, send, message) => {
+    getExecution.mockImplementation((async () => {
+      store(divide('d1', { ...FINAL_DIVIDE, sentAt: send ? '2026-11-01T01:00:00.000Z' : null }))
+      return { status: 'completed', responseStatusCode: 200, responseBody: '' }
+    }) as never)
+    await openFinalize()
+    fireEvent.click(screen.getByRole('button', { name: button }))
+    expect(await screen.findByText(message)).toBeTruthy()
+    expect(createExecution).toHaveBeenCalledWith({
+      functionId: 'statements',
+      body: JSON.stringify({ send }),
+      async: true,
+      xpath: '/statements/d1/finalize',
+      method: 'POST',
+    })
+  })
+
+  it('says when it was finalized but the emails failed', async () => {
+    getExecution.mockImplementation((async () => {
+      store(divide('d1', FINAL_DIVIDE))
+      return { status: 'failed', responseStatusCode: 500, responseBody: '' }
+    }) as never)
+    await openFinalize()
+    fireEvent.click(screen.getByRole('button', { name: 'Finalize and email everyone' }))
+    expect(
+      await screen.findByText(
+        'Finalized, but it wasn’t emailed: The server stopped with an error. Use Email everyone to try again.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it.each([
+    [
+      'a clash or an earlier draft (409, no body kept)',
+      { status: 'completed', responseStatusCode: 409, responseBody: '' },
+      'Finalize the earlier statement first. If there isn’t one, try again.',
+    ],
+    [
+      'a check that didn’t add up (500, no body kept, back at draft)',
+      { status: 'failed', responseStatusCode: 500, responseBody: '' },
+      'It didn’t add up, so it’s still a draft.',
+    ],
+    [
+      'a refusal never worded as an invoice',
+      { status: 'completed', responseStatusCode: 403, responseBody: '' },
+      'Only an admin can finalize this divide.',
+    ],
+    [
+      'a check that didn’t add up',
+      {
+        status: 'failed',
+        responseStatusCode: 500,
+        responseBody: JSON.stringify({
+          ok: false,
+          error: { code: 'INVARIANT_VIOLATION', message: 'A ledger invariant would break.' },
+        }),
+      },
+      'It didn’t add up, so it’s still a draft.',
+    ],
+  ])('words a refused finalize for %s', async (_case, run, message) => {
+    getExecution.mockResolvedValue(run as never)
+    await openFinalize()
+    fireEvent.click(screen.getByRole('button', { name: 'Finalize only' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(message)
+    expect(screen.getByRole('button', { name: 'Finalize only' })).toBeTruthy()
+  })
+
+  it('emails everyone with POST /send, then says when it was sent', async () => {
+    store(divide('d1', FINAL_DIVIDE))
+    call.mockResolvedValue(ok({ sentAt: '2026-11-01T14:00:00.000Z' }))
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Email everyone' }))
+    // 01:00 on the 2nd in Sydney, still the 1st in UTC.
+    expect(await screen.findByText(`Sent ${formatDate('2026-11-02')}.`)).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/d1/send', undefined)
+    expect(screen.getByRole('button', { name: 'Email everyone again' })).toBeTruthy()
+  })
+
+  it('shows the message when nobody can be emailed', async () => {
+    store(divide('d1', FINAL_DIVIDE))
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', message: 'Nobody in this house has a verified email.' },
+    })
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Email everyone' }))
+    expect(await screen.findByText('Nobody in this house has a verified email.')).toBeTruthy()
+  })
+
+  it('downloads the PDF as divide-<periodEnd>.pdf', async () => {
+    store(divide('d1', FINAL_DIVIDE))
+    clientCall.mockResolvedValue(new ArrayBuffer(8))
+    Object.assign(URL, { createObjectURL: vi.fn(() => 'blob:pdf'), revokeObjectURL: vi.fn() })
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Download PDF' }))
+    await waitFor(() => expect(click).toHaveBeenCalled())
+    expect((click.mock.contexts[0] as HTMLAnchorElement).download).toBe('divide-2026-10-31.pdf')
+  })
+
+  it('voids the latest final divide in its own words', async () => {
+    store(divide('d1', FINAL_DIVIDE))
+    call.mockResolvedValue(ok(divide('d1', { ...FINAL_DIVIDE, status: 'void' })))
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Void…' }))
+    expect(screen.getByRole('heading', { level: 2, name: 'Void this divide?' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'Rent was wrong' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Void divide' }))
+    expect(await screen.findByText('This divide is void.')).toBeTruthy()
+  })
+
+  it('shows drafts and finals to members and viewers, with the PDF but no admin buttons', async () => {
+    for (const role of ['member', 'viewer']) {
+      mockGroup(role, { type: 'house', name: 'The flat' })
+      store(divide('d1', FINAL_DIVIDE))
+      renderAt('/groups/g1/statements/d1')
+      expect(await screen.findByRole('button', { name: 'Download PDF' })).toBeTruthy()
+      await act(async () => {})
+      expect(screen.queryByRole('button', { name: /^Email everyone/ })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Void…' })).toBeNull()
+      cleanup()
+      store(divide('d2'))
+      renderAt('/groups/g1/statements/d2')
+      expect(await screen.findByRole('article', { name: 'Draft divide' })).toBeTruthy()
+      await act(async () => {})
+      expect(screen.queryByRole('button', { name: 'Finalize…' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Discard draft…' })).toBeNull()
+      cleanup()
+    }
+  })
+})
+
+describe('StatementPage: discard a draft (#166)', () => {
+  beforeEach(() => {
+    mockGroup('admin', { type: 'house', name: 'The flat' })
+  })
+
+  /** Refreshes answer with the stored draft; discard answers `discard`. */
+  function answer(discard: Result<unknown>) {
+    call.mockImplementation(async (_fn, _method, path) => {
+      if (path.endsWith('/refresh')) return ok(stored.find((row) => path.includes(row.$id)))
+      return discard
+    })
+  }
+
+  it('says the latest draft’s period goes on the next statement, discards it and goes back', async () => {
+    store(
+      divide('d1'),
+      divide('d0', { ...FINAL_DIVIDE, periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
+    )
+    answer(ok({}))
+    const { router, queryClient } = renderAt('/groups/g1/statements/d1')
+    const open = await screen.findByRole('button', { name: 'Discard draft…' })
+    fireEvent.click(open)
+    const period = `${formatDate('2026-10-01')} – ${formatDate('2026-10-31')}`
+    const heading = screen.getByRole('heading', {
+      level: 2,
+      name: `Discard the draft for ${period}?`,
+    })
+    expect(document.activeElement).toBe(heading)
+    expect(
+      screen.getByText(
+        `It’s deleted. Its transactions don’t change. This period, ${period}, will be included in the next statement.`,
+      ),
+    ).toBeTruthy()
+    store(divide('d0', { ...FINAL_DIVIDE, periodStart: '2026-09-01', periodEnd: '2026-09-30' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements'))
+    expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/d1/discard')
+    // Said in a status region that was already there, with focus on the heading.
+    const note = await screen.findByText(`The draft for ${period} was discarded.`)
+    expect(note.getAttribute('role')).toBe('status')
+    const list = screen.getByRole('heading', { level: 1 })
+    expect(list.textContent).toBe('Statements for The flat')
+    expect(document.activeElement).toBe(list)
+    // Cleared, so a reload doesn't say it again.
+    expect(router.state.location.state).toBeNull()
+    // The deleted row isn't kept, so nothing shows it again.
+    expect(queryClient.getQueryData(['statement', 'd1'])).toBeUndefined()
+  })
+
+  it('doesn’t say so for a draft that isn’t the latest, and Cancel puts focus back', async () => {
+    store(
+      divide('d1', { periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
+      divide('d2', { periodStart: '2026-10-01', periodEnd: '2026-10-31' }),
+    )
+    answer(ok({}))
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
+    expect(screen.getByText('It’s deleted. Its transactions don’t change.')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Discard draft…' }))
+  })
+
+  it('counts a later void statement too: a reissued draft isn’t the latest (statements.md#5)', async () => {
+    store(
+      divide('d1', { periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
+      divide('d2', { ...FINAL_DIVIDE, status: 'void' }),
+    )
+    answer(ok({}))
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
+    expect(screen.getByText('It’s deleted. Its transactions don’t change.')).toBeTruthy()
+  })
+
+  it('counts NOT_FOUND as done: an earlier try already discarded it', async () => {
+    store(divide('d1'))
+    answer({ ok: false, error: { code: 'NOT_FOUND', message: 'Not found.' } })
+    const { router } = renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements'))
+  })
+
+  it.each([
+    ['CONFLICT', 'finalizing', 'It’s being finalized. Finalize it again instead.'],
+    ['VALIDATION_FAILED', 'final', 'It’s final now, so it can’t be discarded.'],
+  ] as const)(
+    'shows %s on the page when the row changed meanwhile (%s), and stays',
+    async (code, status, message) => {
+      store(divide('d1'))
+      call.mockImplementation(async (_fn, _method, path) => {
+        if (path.endsWith('/refresh')) return ok(stored[0])
+        // Another admin got there first: reading it again finds it changed.
+        store(divide('d1', status === 'final' ? FINAL_DIVIDE : { status }))
+        return { ok: false, error: { code, message } }
+      })
+      const { router } = renderAt('/groups/g1/statements/d1')
+      fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }))
+      expect((await screen.findByRole('alert')).textContent).toBe(message)
+      // The panel goes with the draft; the message stays, and focus is on the page's heading.
+      await waitFor(() =>
+        expect(screen.queryByRole('heading', { name: /^Discard the draft/ })).toBeNull(),
+      )
+      expect(screen.getByRole('alert').textContent).toBe(message)
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+      expect(router.state.location.pathname).toBe('/groups/g1/statements/d1')
+    },
+  )
+
+  it('waits for the refresh on open before discarding', async () => {
+    store(divide('d1'))
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
+    const button = screen.getByRole('button', { name: 'Discard draft' })
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(button)
+    // A mutation starts on a later tick.
+    await act(async () => {})
+    expect(call.mock.calls.map(([, , path]) => path)).toEqual(['/statements/d1/refresh'])
+  })
+
+  it('offers no discard on a statement being finalized, or an invoice draft with a number', async () => {
+    store(divide('d1', { status: 'finalizing' }))
+    answer(ok({}))
+    renderAt('/groups/g1/statements/d1')
+    expect(await screen.findByRole('button', { name: 'Finalize…' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Discard draft…' })).toBeNull()
+    cleanup()
+    mockGroup('admin')
+    store(statement('s1', { number: 7 }))
+    renderAt('/groups/g1/statements/s1')
+    expect(await screen.findByRole('button', { name: 'Finalize…' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Discard draft…' })).toBeNull()
+  })
+
+  it('discards an invoice draft too', async () => {
+    mockGroup('admin')
+    store(statement('s1'))
+    answer(ok({}))
+    renderAt('/groups/g1/statements/s1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Discard draft…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Discard draft' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/s1/discard'),
+    )
+  })
+})
+
+describe('StatementsPage: a house', () => {
+  it('lists divides by period, with no balance due', async () => {
+    mockGroup('member', { type: 'house', name: 'The flat' })
+    store(
+      divide('d1', { periodStart: '2026-11-01', periodEnd: '2026-11-30' }),
+      divide('d0', FINAL_DIVIDE),
+    )
+    renderAt('/groups/g1/statements')
+    const links = await screen.findAllByRole('link')
+    expect(links.map((link) => link.textContent)).toEqual([
+      `Draft divide${formatDate('2026-11-01')} – ${formatDate('2026-11-30')} · Draft`,
+      `Divide${formatDate('2026-10-01')} – ${formatDate('2026-10-31')} · Final`,
+    ])
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Statements for The flat')
+  })
+
+  it('says when there are none yet', async () => {
+    mockGroup('member', { type: 'house', name: 'The flat' })
+    store()
+    renderAt('/groups/g1/statements')
+    expect(await screen.findByText(/^No statements yet/)).toBeTruthy()
   })
 })
 

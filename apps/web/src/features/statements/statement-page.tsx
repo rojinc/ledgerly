@@ -1,18 +1,24 @@
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
+import { missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
+import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
-import { flushSync } from 'react-dom'
-import { Link, useParams } from 'react-router'
+import { Link, useNavigate, useParams } from 'react-router'
+import { useSwap } from '../../lib/use-swap'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroup, useMyMember } from '../groups/use-groups'
+import { DivideView } from './divide-view'
 import { readSnapshot } from './invoice-sections'
-import { formatDate, InvoiceView } from './invoice-view'
+import { formatDate, InvoiceView, lineText } from './invoice-view'
 import { STATUS_LABEL } from './statements-page'
 import {
   downloadPdf,
+  type FinalizeResult,
+  StatementGone,
+  useDiscardStatement,
   useFinalizeStatement,
   useRefreshStatement,
   useSendStatement,
@@ -32,30 +38,42 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
   )
 }
 
-/**
- * Shows a panel in place of the button that opened it, with focus on the panel's heading, and
- * puts focus back on the button when it closes: the focused element unmounts either way.
- */
-function useSwap() {
-  const [opened, setOpened] = useState(false)
-  const trigger = useRef<HTMLButtonElement>(null)
-  const heading = useRef<HTMLHeadingElement>(null)
-  return {
-    opened,
-    trigger,
-    heading,
-    open: () => {
-      flushSync(() => setOpened(true))
-      heading.current?.focus()
-    },
-    close: () => {
-      flushSync(() => setOpened(false))
-      trigger.current?.focus()
-    },
-  }
+/** A statement's dates in words: `1 Oct 2026 – 31 Oct 2026`. */
+function periodText(statement: Pick<Statements, 'periodStart' | 'periodEnd'>): string {
+  return `${formatDate(statement.periodStart)} – ${formatDate(statement.periodEnd)}`
 }
 
-/** `/groups/{groupId}/statements/{id}`: review a draft, finalize and send it, or the PDF (#32). */
+/**
+ * Whether the invoice PDF will print any of the snapshot's text as � (#269): the issuer's
+ * business details, the recipient and the lines, as packages/server/src/pdf/invoice-pdf.ts
+ * prints them.
+ */
+function unprintable({ issuer, recipient, lines }: StatementSnapshot): boolean {
+  const business = issuer?.business
+  return [
+    business?.businessName ?? issuer?.name,
+    business?.address,
+    business?.email,
+    business?.phone,
+    business?.bank?.accountName,
+    business?.payId,
+    business?.invoiceNotes,
+    recipient?.name,
+    ...(recipient?.emails ?? []),
+    ...lines.map(lineText),
+  ].some((text) => text !== undefined && missingGlyphs(text).length > 0)
+}
+
+/** An invoice by its number; a divide, which never has one, by its period (#166). */
+function title(statement: Statements): string {
+  if (statement.type === 'divide') return `Divide for ${periodText(statement)}`
+  return statement.displayNumber ?? 'Draft invoice'
+}
+
+/**
+ * `/groups/{groupId}/statements/{id}`: review a draft, finalize and send it, or the PDF (#32);
+ * an invoice or a house's divide (#166).
+ */
 export function StatementPage() {
   const { groupId = '', statementId = '' } = useParams()
   const statement = useStatement(statementId)
@@ -64,19 +82,19 @@ export function StatementPage() {
   return (
     <div className="flex flex-col gap-6">
       <Link to={`/groups/${groupId}/statements`} className="text-sm underline underline-offset-4">
-        All invoices
+        {statement.data?.type === 'divide' ? 'All statements' : 'All invoices'}
       </Link>
       <h1
         ref={heading}
         tabIndex={-1}
         className="min-w-0 text-2xl font-semibold break-words outline-none"
       >
-        {statement.data ? (statement.data.displayNumber ?? 'Draft invoice') : 'Invoice'}
+        {statement.data ? title(statement.data) : 'Statement'}
       </h1>
       {statement.data ? (
         <Details row={statement.data} onDone={() => heading.current?.focus()} />
       ) : statement.isError ? (
-        <Message alert>We couldn’t load this invoice. Reload the page to try again.</Message>
+        <Message alert>We couldn’t load this statement. Reload the page to try again.</Message>
       ) : (
         <Message>Loading…</Message>
       )}
@@ -92,6 +110,8 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
   const all = useStatements(row.groupId)
   const refresh = useRefreshStatement(row.$id)
   const [done, setDone] = useState('')
+  // A refusal from a panel that may be gone by now (the row changed): it's said here instead.
+  const [refused, setRefused] = useState('')
 
   // statements.md#1: a draft is worked out again each time it's opened, once: React runs effects
   // twice in development, and two refreshes at once clash (CONFLICT). Not in an archived group,
@@ -107,6 +127,7 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
   }, [canRefresh, refreshDraft, row.$id])
 
   const snapshot = readSnapshot(row.snapshotJson)
+  const divide = row.type === 'divide'
   const isAdmin = member.data?.role === 'admin'
   const open = isAdmin && group.data !== undefined && !group.data.archivedAt
   const unfinished = row.status === 'draft' || row.status === 'finalizing'
@@ -122,8 +143,17 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
   const latestFinal = all.data
     ?.filter((statement) => statement.status === 'final')
     .sort((a, b) => (a.periodEnd < b.periodEnd ? 1 : -1))[0]
+  // statements.md#5: discarding the group's latest draft rolls its period into the next one.
+  const latest = all.data?.every(
+    (statement) => statement.$id === row.$id || statement.periodEnd < row.periodEnd,
+  )
   const finish = (message: string) => {
+    setRefused('')
     setDone(message)
+    onDone()
+  }
+  const refuse = (message: string) => {
+    setRefused(message)
     onDone()
   }
 
@@ -137,10 +167,16 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       <p role="status" className="text-sm break-words empty:hidden">
         {done}
       </p>
+      {refused && <Message alert>{refused}</Message>}
       {isDraft && refresh.isPending && <Message>Updating from your latest entries…</Message>}
       {isDraft && refresh.isError && (
         <Message alert>
           We couldn’t update this draft, so it may be out of date. {refresh.error.message}
+        </Message>
+      )}
+      {isDraft && !divide && snapshot && unprintable(snapshot) && (
+        <Message>
+          Some characters in this invoice can’t be shown in the PDF yet. They’ll print as �.
         </Message>
       )}
       {open && row.status === 'finalizing' && (
@@ -150,7 +186,7 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       )}
       {open && unfinished && earlier && (
         <Message>
-          Finalize the earlier invoice first:{' '}
+          Finalize the earlier {divide ? 'statement' : 'invoice'} first:{' '}
           <Link
             to={`/groups/${row.groupId}/statements/${earlier.$id}`}
             className="underline underline-offset-4"
@@ -162,18 +198,27 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       {open && unfinished && all.data && !earlier && (
         <Finalize statement={row} refreshing={refresh.isPending} onFinish={finish} />
       )}
-      {(row.status === 'final' || row.status === 'void') && (
+      {/* An invoice draft with a number can't be discarded (statements.md#5): it's refused. */}
+      {open && isDraft && row.number === null && all.data && latest !== undefined && (
+        <Discard statement={row} latest={latest} busy={refresh.isPending} onRefused={refuse} />
+      )}
+      {(row.status === 'final' || row.status === 'void') && group.data && (
         <FinalActions
           statement={row}
+          group={group.data}
           admin={open && row.status === 'final'}
           latest={latestFinal?.$id === row.$id}
           onFinish={finish}
         />
       )}
       {snapshot ? (
-        <InvoiceView statement={row} snapshot={snapshot} />
+        divide ? (
+          <DivideView statement={row} snapshot={snapshot} />
+        ) : (
+          <InvoiceView statement={row} snapshot={snapshot} />
+        )
       ) : (
-        <Message alert>This invoice can’t be shown. Reload the page to try again.</Message>
+        <Message alert>This statement can’t be shown. Reload the page to try again.</Message>
       )}
     </>
   )
@@ -182,6 +227,23 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
 /** The day it was sent, in the group's time zone. */
 function sentOn(sentAt: string, group: Groups): string {
   return formatDate(localToday(group.timezone, new Date(sentAt)))
+}
+
+/**
+ * A divide's refused finalize in its own words (#166); an invoice keeps the server's. An async
+ * execution usually keeps no body, so its status code stands in for the code: a 409 back at
+ * `draft` is most likely an earlier statement or a clash (it says to try again), and a 500 back
+ * at `draft` is finalize step 5's failed check (statements.md#2).
+ */
+function divideRefused({ statement, code, status }: FinalizeResult): string | undefined {
+  if (statement.status !== 'draft') return undefined
+  if (code === 'CONFLICT' || (!code && status === 409)) {
+    return 'Finalize the earlier statement first. If there isn’t one, try again.'
+  }
+  if (code === 'INVARIANT_VIOLATION' || (!code && status === 500)) {
+    return 'It didn’t add up, so it’s still a draft.'
+  }
+  return undefined
 }
 
 function Finalize({
@@ -194,8 +256,10 @@ function Finalize({
   onFinish: (message: string) => void
 }) {
   const finalize = useFinalizeStatement(statement)
+  const navigate = useNavigate()
   const swap = useSwap()
   const [error, setError] = useState('')
+  const divide = statement.type === 'divide'
   const recipients = readSnapshot(statement.snapshotJson)?.recipient?.emails ?? []
   // Not while the draft is still being refreshed: what's reviewed is what's finalized.
   const busy = finalize.isPending || refreshing
@@ -203,19 +267,38 @@ function Finalize({
     if (busy) return
     setError('')
     finalize.mutate(send, {
-      onSuccess: ({ statement: row, error: failed }) => {
+      onSuccess: (result) => {
+        const { statement: row, error: failed } = result
         if (row.status !== 'final') {
-          setError(failed ?? 'It wasn’t finalized. Try again.')
+          setError((divide && divideRefused(result)) || failed || 'It wasn’t finalized. Try again.')
           return
         }
         const notSent = send && !row.sentAt
+        if (divide) {
+          onFinish(
+            notSent
+              ? `Finalized, but it wasn’t emailed${failed ? `: ${failed}` : '.'} Use Email everyone to try again.`
+              : `Finalized${send ? ' and emailed to everyone' : ''}.${failed ? ` ${failed}` : ''}`,
+          )
+          return
+        }
         onFinish(
           notSent
             ? `Finalized as ${row.displayNumber}, but it wasn’t sent${failed ? `: ${failed}` : '.'} Use Send to try again.`
             : `Finalized as ${row.displayNumber}${send ? ' and sent' : ''}.${failed ? ` ${failed}` : ''}`,
         )
       },
-      onError: (thrown) => setError(thrown.message),
+      onError: (thrown) => {
+        // Another admin discarded it: the list says so.
+        if (thrown instanceof StatementGone) {
+          navigate(`/groups/${statement.groupId}/statements`, {
+            replace: true,
+            state: { discarded: periodText(statement) },
+          })
+          return
+        }
+        setError(thrown.message)
+      },
     })
   }
 
@@ -224,6 +307,47 @@ function Finalize({
       <Button ref={swap.trigger} className="self-start" onClick={swap.open}>
         Finalize…
       </Button>
+    )
+  }
+  if (divide) {
+    return (
+      <section
+        aria-labelledby="finalize-heading"
+        className="flex flex-col gap-3 rounded-md border border-border p-4"
+      >
+        <h2
+          id="finalize-heading"
+          ref={swap.heading}
+          tabIndex={-1}
+          className="font-medium outline-none"
+        >
+          Finalize this divide?
+        </h2>
+        <p className="text-sm">
+          This locks every transaction on it and makes the PDF. A final divide never changes: a
+          mistake found later is fixed on the next one.
+        </p>
+        <p className="text-sm">
+          Emailing sends each housemate their own balance, with the PDF attached.
+        </p>
+        {finalize.isPending && <Message>Finalizing… This can take up to a minute.</Message>}
+        {error && <Message alert>{error}</Message>}
+        <div className="flex flex-wrap gap-3">
+          <Button aria-disabled={busy} onClick={() => run(true)}>
+            Finalize and email everyone
+          </Button>
+          <Button variant="outline" aria-disabled={busy} onClick={() => run(false)}>
+            Finalize only
+          </Button>
+          <Button
+            variant="ghost"
+            aria-disabled={finalize.isPending}
+            onClick={() => !finalize.isPending && swap.close()}
+          >
+            Cancel
+          </Button>
+        </div>
+      </section>
     )
   }
   return (
@@ -280,16 +404,26 @@ function Finalize({
 
 function FinalActions({
   statement,
+  group,
   admin,
   latest,
   onFinish,
 }: {
   statement: Statements
+  group: Groups
   admin: boolean
   latest: boolean
   onFinish: (message: string) => void
 }) {
   const send = useSendStatement(statement)
+  const divide = statement.type === 'divide'
+  const sendLabel = divide
+    ? statement.sentAt
+      ? 'Email everyone again'
+      : 'Email everyone'
+    : statement.sentAt
+      ? 'Send again'
+      : 'Send'
   const [downloading, setDownloading] = useState(false)
   const [downloadError, setDownloadError] = useState('')
   const swap = useSwap()
@@ -318,7 +452,7 @@ function FinalActions({
             aria-disabled={send.isPending}
             onClick={() => !send.isPending && send.mutate()}
           >
-            {send.isPending ? 'Sending…' : statement.sentAt ? 'Send again' : 'Send'}
+            {send.isPending ? 'Sending…' : sendLabel}
           </Button>
         )}
         {admin && latest && !swap.opened && (
@@ -329,7 +463,10 @@ function FinalActions({
       </div>
       {downloadError && <Message alert>{downloadError}</Message>}
       {send.isError && <Message alert>{send.error.message}</Message>}
-      {send.isSuccess && <Message>Sent.</Message>}
+      {/* Mounted from the start, so the news is read out. */}
+      <p role="status" className="text-sm break-words text-muted-foreground empty:hidden">
+        {send.isSuccess ? (divide ? `Sent ${sentOn(send.data.sentAt, group)}.` : 'Sent.') : ''}
+      </p>
       {/* Gone once it's void, with the Void… button it replaced. */}
       {admin && latest && swap.opened && (
         <VoidStatement
@@ -355,6 +492,8 @@ function VoidStatement({
   onFinish: (message: string) => void
 }) {
   const voidStatement = useVoidStatement(statement.$id)
+  const divide = statement.type === 'divide'
+  const name = statement.displayNumber ?? 'this divide'
   const [reason, setReason] = useState('')
   const [error, setError] = useState('')
   return (
@@ -372,16 +511,17 @@ function VoidStatement({
         setError('')
         voidStatement.mutate(
           { reason: reason.trim() },
-          { onSuccess: () => onFinish(`${statement.displayNumber} is void.`) },
+          { onSuccess: () => onFinish(divide ? 'This divide is void.' : `${name} is void.`) },
         )
       }}
     >
       <h2 id="void-heading" ref={heading} tabIndex={-1} className="font-medium outline-none">
-        Void {statement.displayNumber}?
+        Void {name}?
       </h2>
       <p className="text-sm">
-        Its transactions unlock, so they go on the next invoice. It keeps its number, and the PDF
-        stays for your records.
+        {divide
+          ? 'Its transactions unlock, so they go on the next divide. The PDF stays for your records.'
+          : 'Its transactions unlock, so they go on the next invoice. It keeps its number, and the PDF stays for your records.'}
       </p>
       <TextField
         id="voidReason"
@@ -394,7 +534,7 @@ function VoidStatement({
       {voidStatement.isError && <Message alert>{voidStatement.error.message}</Message>}
       <div className="flex flex-wrap gap-3">
         <Button type="submit" aria-disabled={voidStatement.isPending}>
-          {voidStatement.isPending ? 'Voiding…' : 'Void invoice'}
+          {voidStatement.isPending ? 'Voiding…' : divide ? 'Void divide' : 'Void invoice'}
         </Button>
         <Button
           variant="ghost"
@@ -405,5 +545,80 @@ function VoidStatement({
         </Button>
       </div>
     </form>
+  )
+}
+
+/**
+ * Deletes a draft, invoice or divide, after confirming (statements.md#5), then goes back to the
+ * list. On the group's latest draft, its period rolls into the next statement.
+ */
+function Discard({
+  statement,
+  latest,
+  busy,
+  onRefused,
+}: {
+  statement: Statements
+  latest: boolean
+  busy: boolean
+  onRefused: (message: string) => void
+}) {
+  const discard = useDiscardStatement(statement)
+  const navigate = useNavigate()
+  const swap = useSwap()
+  const period = periodText(statement)
+  if (!swap.opened) {
+    return (
+      <Button ref={swap.trigger} variant="outline" className="self-start" onClick={swap.open}>
+        Discard draft…
+      </Button>
+    )
+  }
+  return (
+    <section
+      aria-labelledby="discard-heading"
+      className="flex flex-col gap-3 rounded-md border border-border p-4"
+    >
+      <h2
+        id="discard-heading"
+        ref={swap.heading}
+        tabIndex={-1}
+        className="font-medium outline-none"
+      >
+        Discard the draft for {period}?
+      </h2>
+      <p className="text-sm">
+        It’s deleted. Its transactions don’t change.
+        {latest && ` This period, ${period}, will be included in the next statement.`}
+      </p>
+      <div className="flex flex-wrap gap-3">
+        <Button
+          // Not while the draft is being refreshed: the refresh would find it gone.
+          aria-disabled={discard.isPending || busy}
+          onClick={() => {
+            if (discard.isPending || busy) return
+            discard.mutate(undefined, {
+              onSuccess: () =>
+                navigate(`/groups/${statement.groupId}/statements`, {
+                  replace: true,
+                  state: { discarded: period },
+                }),
+              // Refused only in a race (now final, finalizing or numbered): the row is read
+              // again, which can take this panel away, so the page says it.
+              onError: (error) => onRefused(error.message),
+            })
+          }}
+        >
+          {discard.isPending ? 'Discarding…' : 'Discard draft'}
+        </Button>
+        <Button
+          variant="ghost"
+          aria-disabled={discard.isPending}
+          onClick={() => !discard.isPending && swap.close()}
+        >
+          Cancel
+        </Button>
+      </div>
+    </section>
   )
 }

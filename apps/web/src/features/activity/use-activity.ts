@@ -7,10 +7,10 @@ import { queryKeys } from '../../lib/query-keys'
 /** Appwrite's limit for one page (scaling.md). */
 export const ACTIVITY_PAGE = 100
 /** Only what an entry shows: never `changesJson`, which can hold person IDs and stored input. */
-const COLUMNS = ['$id', 'actorPersonId', 'transactionId', 'summary', 'at']
+const COLUMNS = ['$id', 'actorPersonId', 'subjectPersonId', 'transactionId', 'summary', 'at']
 export type ActivityEntry = Pick<
   Activity,
-  '$id' | 'actorPersonId' | 'transactionId' | 'summary' | 'at'
+  '$id' | 'actorPersonId' | 'subjectPersonId' | 'transactionId' | 'summary' | 'at'
 >
 
 /**

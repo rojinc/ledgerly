@@ -24,13 +24,13 @@ import { finalizeStatement } from './finalize'
 // group's finalize: what's left waits an hour.
 const BUDGET_MS = 180_000
 
-/** Another run drafted this group's period first. */
+/** Another run drafted this group's period first, or a discard moved its start. */
 class AlreadyDrafted extends Error {}
 
 /**
- * The statements job (cron `15 * * * *`, statements.md#1-draft): drafts the statement of every
- * employer group whose `nextCloseAt` has passed. House divides come with #46. The due groups
- * are listed first, so a group that fails every time never keeps the others waiting.
+ * The statements job (every 60 minutes, statements.md#1-draft): drafts the statement of every
+ * employer and house group whose `nextCloseAt` has passed: an invoice or a divide. The due
+ * groups are listed first, so a group that fails every time never keeps the others waiting.
  */
 export async function draftDueStatements(
   services: Services,
@@ -38,7 +38,7 @@ export async function draftDueStatements(
   const started = Date.now()
   const due = await listAll<Groups>(services.db, TABLES.groups, [
     Query.lessThanEqual('nextCloseAt', services.now.toISOString()),
-    Query.equal('type', 'employer'),
+    Query.equal('type', ['employer', 'house']),
     Query.isNull('archivedAt'),
   ])
   let drafted = 0
@@ -59,8 +59,8 @@ export async function draftDueStatements(
 /**
  * In one database transaction: the draft, with its snapshot, and the group's next close. A run
  * that races another fails here, because the group row changed (statements.md#1-draft). Then
- * the admins are emailed. False if another run drafted it first, or a statement already
- * reaches the period's end.
+ * the admins are emailed. False if another run drafted it first, a statement already reaches
+ * the period's end, or it's an empty divide.
  */
 async function draftFor(
   services: Services,
@@ -69,6 +69,12 @@ async function draftFor(
   const { db, now } = services
   const period = await closingPeriodOf(db, group)
   const { snapshot } = await computeSnapshot(db, group, period, now)
+  // statements.md#1-draft: nothing happened and nobody owes anything, so no divide and no
+  // email. nextCloseAt still moves, and the next divide covers this period too.
+  const empty =
+    snapshot.group.type === 'house' &&
+    snapshot.lines.length === 0 &&
+    snapshot.people.every((person) => person.openingCents === 0)
   const statementId = ID.unique()
   let reached = false
   try {
@@ -83,11 +89,15 @@ async function draftFor(
       // nextCloseAt; an archive cleared it.
       const current = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
       if (current?.nextCloseAt !== group.nextCloseAt) throw new AlreadyDrafted()
+      // A discard of the latest statement that committed after the period was read moves its
+      // start back (statements.md#5-discard). One that commits later fails a commit: it writes
+      // the group row too.
+      if ((await closingPeriodOf(db, group)).start !== period.start) throw new AlreadyDrafted()
       // A statement made before reissue had its guards can already cover this period: a draft
       // on top of it could never be finalized. Only nextCloseAt moves on, and the period's
       // transactions land on the next statement. Data made since can't get here.
       reached = await reachesEnd(db, group.$id, period.end)
-      if (reached) return
+      if (reached || empty) return
       await tx.write(
         {
           action: 'create',
@@ -119,19 +129,18 @@ async function draftFor(
     if (error instanceof AlreadyDrafted || isAppwriteError(error, 409)) return false
     throw error
   }
-  if (reached) return false
+  if (reached || empty) return false
   try {
     await emailAdmins(services, group, statementId, period)
   } catch (error) {
     // The draft is made; the email is a courtesy, even when it can't be built at all.
     console.error(`statements: ready email failed for statement ${statementId}: ${describe(error)}`)
   }
-  if (autoFinalizes(group)) {
-    const draft = await db.getRow<Statements>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.statements,
-      rowId: statementId,
-    })
+  // An admin may have discarded the new draft already.
+  const draft = autoFinalizes(group)
+    ? await getRowOrNull<Statements>(db, TABLES.statements, statementId)
+    : null
+  if (draft) {
     try {
       // No actor: the job finalizes it. Sending stays the admin's call.
       await finalizeStatement(services, group, draft, null, false)

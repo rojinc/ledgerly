@@ -1,6 +1,6 @@
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import { type TransactionInput, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
@@ -18,6 +18,7 @@ import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { centsToText } from '../groups/employer-form'
 import { useBalances, useGroup, useMyMember } from '../groups/use-groups'
 import { KIND_LABEL, STATUS_LABEL } from '../transactions/history-page'
+import type { EntryEdit } from '../transactions/new-transaction-page'
 import {
   LedgerError,
   useCreateTransaction,
@@ -35,6 +36,7 @@ import {
   type PairPeople,
   toEntryBody,
 } from './pair-values'
+import { ReminderSection } from './reminder-form'
 
 const ENTRY_TYPES: { value: EntryType; label: (name: string) => string }[] = [
   { value: 'lent', label: (name) => `I lent ${name} money` },
@@ -185,6 +187,11 @@ function PairDetails({
           </Button>
         )}
       </section>
+      {/* Only when they owe you: nothing else to remind about (F-63). */}
+      {!group.archivedAt && mayAdd && (net ?? 0) > 0 && (
+        // Keyed by group: another pair's page starts with its own form, ID and news.
+        <ReminderSection key={group.$id} group={group} personId={people.me} name={name} />
+      )}
       {group.archivedAt ? (
         <Message>{ARCHIVED_NOTICE}</Message>
       ) : (
@@ -196,22 +203,37 @@ function PairDetails({
   )
 }
 
-function EntryForm({
+/** Changing a posted entry (#184): as the employer form's, with this form's values. */
+export type PairEdit = Omit<EntryEdit, 'values'> & { values: EntryValues }
+
+/**
+ * The entry form (#34): a new entry, or a posted one being changed. On a change the kind stays:
+ * a loan switches between lent and borrowed, and a repayment stays one.
+ */
+export function EntryForm({
   group,
   people,
   name,
   net,
+  edit,
 }: {
   group: Groups
   people: PairPeople
   name: string
+  /** The viewer's balance, which a new entry's repayment starts from. */
   net: number
+  edit?: PairEdit
 }) {
   const create = useCreateTransaction()
+  const editing = edit !== undefined
   const queryClient = useQueryClient()
   // One ID per entry, so a retry after an error can't add it twice; a new one once it's saved.
-  const [id, setId] = useState(() => ID.unique())
+  // A change keeps the row's.
+  const [id, setId] = useState(() => edit?.row.$id ?? ID.unique())
   const [saved, setSaved] = useState(false)
+  const types = edit
+    ? ENTRY_TYPES.filter((entry) => (entry.value === 'repaid') === (edit.row.kind === 'payment'))
+    : ENTRY_TYPES
   const toBody = (values: EntryValues) =>
     toEntryBody(values, { id, groupId: group.$id }, group.currency, people)
   const defaults = (): EntryValues => ({
@@ -224,24 +246,35 @@ function EntryForm({
   })
   const form = useForm<EntryValues, unknown, TransactionInput>({
     resolver: entryResolver(toBody, group.currency),
-    defaultValues: defaults(),
+    defaultValues: edit?.values ?? defaults(),
   })
   const { errors, isSubmitting } = form.formState
-  // The balance moves after each entry: who owes, and so who repays, may change with it.
+  // The balance moves after each entry: who owes, and so who repays, may change with it. A
+  // change keeps who repaid as stored.
   useEffect(() => {
-    if (!form.getFieldState('from').isDirty) form.setValue('from', debtor(net))
-  }, [form, net])
+    if (!editing && !form.getFieldState('from').isDirty) form.setValue('from', debtor(net))
+  }, [form, net, editing])
   const [type, from, amount] = form.watch(['type', 'from', 'amount'])
   const owed = owedBy(from, net)
   const typed = cents(amount, group.currency)
   // Prefilled from the balance until the amount is typed in, so part repayments work.
   const prefill = (nextFrom: EntryValues['from']) => {
-    if (form.getFieldState('amount').isDirty) return
+    if (edit || form.getFieldState('amount').isDirty) return
     const due = owedBy(nextFrom, net)
     form.setValue('amount', due > 0 ? centsToText(due, group.currency) : '')
   }
 
   const submit = form.handleSubmit(async (body) => {
+    if (edit) {
+      try {
+        // Saving it unchanged is fine: the function answers with the row as it is.
+        await edit.save(body)
+        edit.onDone()
+      } catch (error) {
+        form.setError('root', { message: (error as Error).message })
+      }
+      return
+    }
     try {
       await create.mutateAsync(body)
       setId(ID.unique())
@@ -279,11 +312,17 @@ function EntryForm({
         else void submit(event)
       }}
     >
-      <h2 className="font-medium">Record</h2>
+      {edit ? (
+        <h2 id="edit-heading" ref={edit.heading} tabIndex={-1} className="font-medium outline-none">
+          Change this entry
+        </h2>
+      ) : (
+        <h2 className="font-medium">Record</h2>
+      )}
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
       <fieldset className="flex flex-col gap-2">
         <legend className="mb-1 text-sm font-medium">What happened?</legend>
-        {ENTRY_TYPES.map((entry) => (
+        {types.map((entry) => (
           <label key={entry.value} className="flex items-center gap-2 text-sm">
             <input
               type="radio"
@@ -318,11 +357,11 @@ function EntryForm({
         {...form.register('amount', { onChange: () => setSaved(false) })}
       />
       {/* A warning, not an error: paying back more just turns the balance the other way. */}
-      {type === 'repaid' && Number.isInteger(typed) && typed > owed && (
+      {!edit && type === 'repaid' && Number.isInteger(typed) && typed > owed && (
         <p role="status" className="text-sm text-muted-foreground">
           {owed === 0
             ? `Nothing is owed that way right now, so this will be owed the other way.`
-            : `That’s more than ${from === 'them' ? `${name} owes you` : `you owe ${name}`} (${formatMoney(owed, group.currency)}). The rest will be owed the other way.`}
+            : `That’s more than ${from === 'them' ? `${name} owes you` : `you owe ${name}`} (${formatNet(owed, group.currency)}). The rest will be owed the other way.`}
         </p>
       )}
       <TextField
@@ -342,8 +381,21 @@ function EntryForm({
       <TextField id="note" label="Note (optional)" error={errors.note} {...form.register('note')} />
       <div className="flex items-center gap-3">
         <Button type="submit" aria-disabled={isSubmitting}>
-          {isSubmitting ? 'Saving…' : 'Add'}
+          {isSubmitting ? 'Saving…' : edit ? 'Save' : 'Add'}
         </Button>
+        {edit && (
+          // Not while saving: the save would still land, after the form had gone.
+          <Button
+            type="button"
+            variant="outline"
+            aria-disabled={isSubmitting}
+            onClick={() => {
+              if (!form.formState.isSubmitting) edit.onDone()
+            }}
+          >
+            Cancel
+          </Button>
+        )}
         {saved && (
           <p role="status" className="text-sm text-muted-foreground">
             Added.

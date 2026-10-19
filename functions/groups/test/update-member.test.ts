@@ -46,6 +46,11 @@ function changesOf(services: Fakes) {
   return services.db.rows('activity').map((row) => JSON.parse(String(row.changesJson)))
 }
 
+/** Who each activity row is about, and what it says about them. */
+function summariesOf(services: Fakes) {
+  return services.db.rows('activity').map((row) => [row.subjectPersonId, row.summary])
+}
+
 describe('PATCH /groups/{id}/members/{memberId}', () => {
   it('changes the fields given, and records only what changed', async () => {
     const services = house()
@@ -67,16 +72,39 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
         groupId: 'g1',
         actorPersonId: 'p1',
         action: 'member.updated',
-        summary: "Alex's membership was changed",
+        subjectPersonId: 'p2',
+        summary: 'was renamed and moved in on 2026-08-15',
         at: NOW.toISOString(),
       }),
     ])
+    // Never the name, old or new: the summary says they were renamed.
     expect(changesOf(services)).toEqual([
-      {
-        before: { displayName: 'Member m2', joinedOn: '2026-09-01' },
-        after: { displayName: 'Alex', joinedOn: '2026-08-15' },
-      },
+      { before: { joinedOn: '2026-09-01' }, after: { joinedOn: '2026-08-15' } },
     ])
+  })
+
+  it.each([
+    [{ displayName: 'Alex' }, 'was renamed'],
+    [{ role: 'admin' }, 'was made an admin'],
+    [{ joinedOn: '2026-08-15' }, 'moved in on 2026-08-15'],
+    // Moving out makes them a viewer, which the summary doesn't repeat.
+    [{ leftOn: '2026-10-19' }, 'moved out on 2026-10-19'],
+    [
+      { displayName: 'Alex', joinedOn: '2026-08-15', role: 'viewer' },
+      'was renamed, moved in on 2026-08-15 and was made a viewer',
+    ],
+  ])('says what %j changed, about their person, with no name', async (body, summary) => {
+    const services = house()
+    await patch(services, 'm2', body)
+    expect(summariesOf(services)).toEqual([['p2', summary]])
+  })
+
+  it('stores no changes for a rename alone, which only the summary says', async () => {
+    const services = house()
+    await patch(services, 'm2', { displayName: 'Alex' })
+    const activity = services.db.rows('activity')
+    expect(activity).toEqual([expect.objectContaining({ summary: 'was renamed' })])
+    expect(activity[0]?.changesJson ?? null).toBeNull()
   })
 
   it('writes nothing when nothing changes', async () => {
@@ -126,6 +154,7 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
     expect(changesOf(services)).toEqual([
       { before: { role: 'admin', leftOn: null }, after: { role: 'viewer', leftOn: '2026-10-19' } },
     ])
+    expect(summariesOf(services)).toEqual([['p9', 'moved out on 2026-10-19']])
   })
 
   it('refuses any role but viewer when moving someone out', async () => {
@@ -143,21 +172,6 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
     expect(await patch(services, 'm6', { leftOn: '2026-10-19', role: 'viewer' })).toMatchObject({
       role: 'viewer',
     })
-  })
-
-  it('refuses leftOn: null until moving back in is built (#169), and writes nothing', async () => {
-    const services = house()
-    expect(await patchFails(services, 'm2', { leftOn: null })).toEqual({
-      status: 400,
-      code: 'VALIDATION_FAILED',
-      message: 'Moving someone back in is not available yet.',
-    })
-    expect(services.db.rows('members').find((row) => row.$id === 'm2')).toMatchObject({
-      status: 'active',
-      role: 'member',
-      leftOn: null,
-    })
-    expect(changesOf(services)).toEqual([])
   })
 
   it('checks the date order against the stored dates too', async () => {
@@ -293,5 +307,166 @@ describe('PATCH /groups/{id}/members/{memberId}', () => {
       message: TRY_AGAIN,
     })
     expect(services.db.rows('activity')).toEqual([])
+  })
+})
+
+const MEMBER_CREATED = '2026-09-01T00:00:00.000Z'
+
+/** Their own member.left or member.joined row in g1, at `at`. */
+function own(action: 'member.left' | 'member.joined', at: string, personId = 'p4') {
+  return {
+    $id: `a-${action}-${at}`,
+    $createdAt: at,
+    at,
+    groupId: 'g1',
+    actorPersonId: personId,
+    action,
+    transactionId: null,
+    summary: 'Member m4',
+    changesJson: null,
+  }
+}
+
+/** House g1: m1 u1 admin; m4 u4 moved out on 10-10, still in the team; m3 a placeholder who moved out. */
+function movedOut({ team = ['u1', 'u4'], activity = [] as ReturnType<typeof own>[] } = {}) {
+  return fakes(
+    {
+      groups: [group('g1', 'house')],
+      persons: [person(1), person(4), placeholder('pX')],
+      members: [
+        member('m1', 'g1', 'p1', 'admin', 'active'),
+        member('m4', 'g1', 'p4', 'viewer', 'left', {
+          leftOn: '2026-10-10',
+          $createdAt: MEMBER_CREATED,
+        }),
+        member('m3', 'g1', 'pX', 'viewer', 'placeholder', { leftOn: '2026-10-10' }),
+      ],
+      activity,
+    },
+    { g1: team },
+  )
+}
+
+const LEFT_ON_THEIR_OWN = {
+  status: 400,
+  code: 'VALIDATION_FAILED',
+  message: "They left this group on their own, so they can't be moved back in.",
+}
+
+describe('PATCH /groups/{id}/members/{memberId} with leftOn: null (moving back in)', () => {
+  it('makes someone who moved out active again, still a viewer, with one activity row', async () => {
+    const services = movedOut()
+    expect(await patch(services, 'm4', { leftOn: null })).toMatchObject({
+      status: 'active',
+      role: 'viewer',
+      leftOn: null,
+    })
+    expect(changesOf(services)).toEqual([
+      {
+        before: { status: 'left', leftOn: '2026-10-10' },
+        after: { status: 'active', leftOn: null },
+      },
+    ])
+    expect(summariesOf(services)).toEqual([['p4', 'moved back in']])
+    expect(services.teams.members('g1')?.map((m) => m.userId)).toEqual(['u1', 'u4'])
+  })
+
+  it('takes a role in the same request', async () => {
+    const services = movedOut()
+    expect(await patch(services, 'm4', { leftOn: null, role: 'member' })).toMatchObject({
+      status: 'active',
+      role: 'member',
+    })
+    expect(summariesOf(services)).toEqual([['p4', 'moved back in and was made a member']])
+  })
+
+  it('counts a member.joined after an earlier member.left as a fresh membership', async () => {
+    const services = movedOut({
+      activity: [
+        own('member.left', '2026-09-10T00:00:00.000Z'),
+        own('member.joined', '2026-09-20T00:00:00.000Z'),
+      ],
+    })
+    expect(await patch(services, 'm4', { leftOn: null })).toMatchObject({ status: 'active' })
+  })
+
+  it.each([
+    [
+      'out of the team after their own leave',
+      ['u1'],
+      [own('member.left', '2026-10-12T00:00:00.000Z')],
+    ],
+    ['out of the team with no member.left row', ['u1'], []],
+    [
+      'still in the team, their own leave cut off before the team step',
+      ['u1', 'u4'],
+      [own('member.left', '2026-10-12T00:00:00.000Z')],
+    ],
+  ])('refuses someone %s, and writes nothing', async (_, team, activity) => {
+    const services = movedOut({ team, activity })
+    expect(await patchFails(services, 'm4', { leftOn: null })).toEqual(LEFT_ON_THEIR_OWN)
+    expect(services.db.rows('members')[1]).toMatchObject({ status: 'left', leftOn: '2026-10-10' })
+    expect(services.db.rows('activity')).toHaveLength(activity.length)
+  })
+
+  it('refuses a person with no account', async () => {
+    const services = movedOut()
+    await updateRow(services.db, 'persons', 'p4', { userId: null })
+    expect(await patchFails(services, 'm4', { leftOn: null })).toEqual(LEFT_ON_THEIR_OWN)
+  })
+
+  it("clears a placeholder's leftOn and keeps it a placeholder", async () => {
+    const services = movedOut()
+    expect(await patch(services, 'm3', { leftOn: null })).toMatchObject({
+      status: 'placeholder',
+      role: 'viewer',
+      leftOn: null,
+    })
+    expect(changesOf(services)).toEqual([
+      { before: { leftOn: '2026-10-10' }, after: { leftOn: null } },
+    ])
+  })
+
+  it('changes nothing for someone with no leftOn, so a retry is safe', async () => {
+    const services = house()
+    expect(await patch(services, 'm2', { leftOn: null })).toMatchObject({
+      status: 'active',
+      leftOn: null,
+    })
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('refuses anyone but an admin, and answers NOT_A_MEMBER to an outsider', async () => {
+    const services = movedOut()
+    expect(await patchFails(services, 'm4', { leftOn: null }, 'u4')).toMatchObject({
+      status: 403,
+      code: 'FORBIDDEN',
+    })
+    expect(await patchFails(services, 'm4', { leftOn: null }, 'u9')).toMatchObject({
+      code: 'NOT_A_MEMBER',
+    })
+  })
+
+  it.each([
+    [
+      'before it is staged',
+      (services: Fakes, leave: () => Promise<unknown>) => beforeStaging(services.db, 1, leave),
+    ],
+    [
+      'after it is staged',
+      (services: Fakes, leave: () => Promise<unknown>) => beforeCommit(services.db, leave),
+    ],
+  ])('answers CONFLICT when they leave on their own %s, then refuses', async (_, when) => {
+    const services = movedOut()
+    when(services, () => ok(services, 'POST', '/groups/g1/leave', undefined, 'u4'))
+    expect(await patchFails(services, 'm4', { leftOn: null })).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('members')[1]).toMatchObject({ status: 'left', leftOn: '2026-10-10' })
+    expect(services.teams.members('g1')?.map((m) => m.userId)).toEqual(['u1'])
+    vi.restoreAllMocks()
+    expect(await patchFails(services, 'm4', { leftOn: null })).toEqual(LEFT_ON_THEIR_OWN)
   })
 })

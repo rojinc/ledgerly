@@ -1,6 +1,6 @@
 # Functions API
 
-Every write goes through one of five Appwrite Functions. This page is the **contract** between frontend and backend: routes, payloads, responses and errors. The zod schemas in `packages/core/src/schemas/` are the code version of this page, and the response types sit next to them (`TransactionView`, `Balances`, `BootstrapResult` and so on), so functions and the web app share one copy. Change both in the same `contract` PR.
+Every write goes through one of six Appwrite Functions. This page is the **contract** between frontend and backend: routes, payloads, responses and errors. The zod schemas in `packages/core/src/schemas/` are the code version of this page, and the response types sit next to them (`TransactionView`, `Balances`, `BootstrapResult` and so on), so functions and the web app share one copy. Change both in the same `contract` PR.
 
 ## Calling a function
 
@@ -35,11 +35,11 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, another request changed the same rows at the same time (try again) |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
-| `RATE_LIMITED` | 429 | Too many invites |
+| `RATE_LIMITED` | 429 | Too many invites or reminders |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |
 
@@ -47,6 +47,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 
 - Creating something takes a **client-generated `id`** (`ID.unique()`). If a row with that ID exists **with the same content**, the function returns it with 200. If the content differs, it returns `CONFLICT`. So the app can safely retry after a timeout or a lost connection.
 - Updates are naturally idempotent: the same body twice gives the same result.
+- **Exception:** `identity POST /reminders` answers any body with a used `id`, from the same sender in the same group, with the stored `{ sentAt }`. It sends the email again under the same key only while that key is live (under 23 hours) and the address and balance checks pass again ([reminders](identity-and-invites.md#reminders), step 3).
 
 ## Shared types
 
@@ -84,7 +85,7 @@ type TransactionInput = {
     startTime?: string          // 'HH:mm', for display
     endTime?: string
   }
-  bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate } // dueOn required when status is 'due'; schedule templates leave it out
+  bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate } // dueOn required when status is 'due'; a schedule template is { status: 'due' } with no dueOn or period
   payment?: { fromPersonId: string; toPersonId: string }
   adjustment?: { shares: { personId: string; givenCents: number; receivedCents: number }[]; reason: string }
   receiptFileIds?: string[]     // at most 10, each once; a PATCH without it keeps the stored list
@@ -107,8 +108,8 @@ Each route parses its body with its schema from `packages/core/src/schemas/` bef
 - **Amounts** are integer cents, at most `MAX_AMOUNT_CENTS` in size, and so are computed totals: a shift's `minutes × rateCents / 60` and the sum of the `items`. Rates are ≥ 0. A shift's `minutes` and `breakMinutes` are at most 1440 (one day).
 - **People:** a list names each person at most once, and a transaction names at most 15 people in all.
 - **Kinds:** `shift`, `bill`, `payment` and `adjustment` are required for their own kind and rejected on any other. `payers` and `split` are for expense, bill and loan; `items` (1–30) for expense and bill; a `days` split for bills only. `totalCents` is required unless the kind is `shift` (where it is computed, so it is rejected) or there are `items`. A payment's `fromPersonId` and `toPersonId` must be different people. Sums against the total (payers, `exact` splits, items) and the sign rules are ledger rules, checked by `buildShares()`.
-- **Bills** (one-off transactions, not schedule templates): a `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`.
-- **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it.
+- **Bills:** a one-off `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`. A schedule's bill template has status `due` and no `dueOn`, `periodStart`, `periodEnd` or `days` split ([scheduling](scheduling.md#what-a-schedule-is)).
+- **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it, and so is a schedule's `startsOn` at most 31 days before today on `POST /schedules` and on a `PATCH` that changes it, so a mistyped year can't make years of past occurrences.
 - **Lists:** at most 10 `receiptFileIds`, each at most once (the ledger function checks each file), and 366 `exdates`. Schedule templates have no `receiptFileIds`.
 - **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365. `region` must be a country or state the public holiday library knows (`publicHolidayChecker`), checked by the function on create and `PATCH`.
 - **Business details:** `abn` (11), `bsb` (6) and `accountNumber` (up to 12) are stored as digits only. Spaces and dashes are dropped.
@@ -139,15 +140,17 @@ What every write does, in **one TablesDB transaction**:
 3. Write the transaction row, replace its items and shares, and append an `activity` row.
 4. Commit. On conflict, retry once from step 1.
 
-On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use.
+On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use. The scheduler's `PATCH /schedules/{id}`, `/end` and `DELETE` do the same for a schedule's group.
 
-`/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
+`/balances` is a function, not a client-side sum, so the `balances` cache changes no client. It reads the group's `balances` row ([ledger](ledger.md#balances)): one read. A group with no row, or whose row can't be read, fails `balancesPeopleSchema` or has nets that don't add up to 0 (each logged as an error), is summed from its shares, reading again until the group's `rev` is the same before and after. The response is the same either way, and a sum that doesn't add up to 0 is `INVARIANT_VIOLATION`.
 
 - `people` has one entry per person with shares in the group, sorted by `personId`. Anyone else is at 0.
 - It reads the shares a page at a time, then the group row again. Every write of shares writes a fresh `rev` to the group row ([concurrency](ledger.md#concurrency)). So if `rev` changed, or a page's cursor row was deleted, a write committed during the read, and it reads again. After 3 reads like that, it gives `CONFLICT`.
 - A whole read whose shares don't add up to 0 gives `INVARIANT_VIOLATION`.
 
-A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
+A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `remindedAt`, so the new date gets its own reminder. An auto-post occurrence cleared this way is one step 2 posts again: on its new date, or at the next hourly run if that date has passed, unless step 2's rules hold it back (a date before the day it was made, or more than 7 days ago; [auto-post](scheduling.md#step-2-auto-post)).
+
+**Deleted people.** `POST /transactions`, `PATCH` and `/post` refuse, with `VALIDATION_FAILED`, an input whose people (`everyPersonId()`: payers, the split, items) include a person with `deletedAt` whom the stored input didn't already name, **in a group where that person's member row isn't `placeholder`**. Payments and adjustments are exempt, so balances with a former member can still be settled. Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). The scheduler's `POST` and `PATCH /schedules` apply the same rule to the template, and `PATCH` checks the whole template, people the stored one named included: deleting an account ends the schedules that name them, and an edit could start one again.
 
 **Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
 
@@ -157,7 +160,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 - Every write that attaches a file (`POST /transactions`, `PATCH` and `/receipts`) checks it and limits it to the group's team first ([permissions](permissions.md#storage)). The check runs after step 1's membership, role, archived and locked checks, so a caller those checks refuse never changes a file.
 - A `PATCH` body without `receiptFileIds` keeps the stored list, so edit forms that don't show receipts don't drop them. `[]` clears it.
-- Taking a file off a list doesn't delete it or change its permissions; the scheduler's clean-up ([#163](https://github.com/rojinc/ledgerly/issues/163)) deletes files no transaction lists. The same file may be on two transactions of one group.
+- Taking a file off a list doesn't delete it or change its permissions. Once no transaction lists it, the scheduler deletes it 24 hours later ([step 5](scheduling.md#step-5-receipt-clean-up)); putting it back on a transaction before then keeps it. A file the scheduler has started deleting is refused like a missing one. The same file may be on two transactions of one group.
 
 ## groups
 
@@ -182,14 +185,18 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /bootstrap` | `{ timezone }` | `{ profile, personId, personalGroupId, linkedGroupIds }` | the user; idempotent |
-| `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency? }` | `profile` | the user |
+| `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency?, hoursCap? }` | `profile` | the user |
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
+| `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
+| `POST /` | the Appwrite user, as the event sends it | `{}` | only an [event run](permissions.md#function-side-checks) of `users.*.update.password` or `users.*.recovery.*.update`; a signed-in call gets `FORBIDDEN` ([password notice](identity-and-invites.md#password-notice)) |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
-`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole.
+`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
+
+`POST /` reads only the user ID, from the event's name in `x-appwrite-event` or else the body's `$id`. It never logs or stores the body (Appwrite's user model can carry the password hash), and answers `{}` to an event run whether it sent an email or not (a failed send fails the run).
 
 `linkedGroupIds` (`/bootstrap`, `/claim`) lists only the groups joined in that call, so after a retry it leaves out groups an earlier, interrupted call already joined.
 
@@ -200,14 +207,36 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 
 Details: [People, identity and invites](identity-and-invites.md).
 
+## account
+
+Deleting an account ([#50](https://github.com/rojinc/ledgerly/issues/50)). A function of its own, so `identity` never holds `users.write` or file access.
+
+| Route | Body | Returns | Who |
+| --- | --- | --- | --- |
+| `POST /delete` | `{ confirm: 'DELETE' }` | `{ deletedAt, finished }` | the user, signed in within the last 10 minutes |
+
+Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), skipping any started in the last minute. A person calling `POST /` gets `FORBIDDEN`.
+
+**`POST /delete`** deletes the caller's account ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). It is synchronous and works for up to 20 seconds; `finished: false` means the hourly job deletes the rest. Refusals change nothing, and are checked in this order:
+
+| Code | When |
+| --- | --- |
+| `VALIDATION_FAILED` | The body isn't `{ confirm: 'DELETE' }` |
+| `FORBIDDEN`, `details: { reason: 'reauth' }` | The caller's session (from the JWT's session ID, loaded with `users.listSessions`) was created more than `REAUTH_WINDOW_MINUTES` (10) ago, or can't be found. The app asks them to sign in again and retries. |
+| `FORBIDDEN`, `details: { reason: 'recent_password_change' }` | The user's `passwordUpdate` is less than `RECENT_PASSWORD_CHANGE_HOURS` (24) old. The app says when they can try again. |
+| `CONFLICT` | They have a timer running in a group that isn't archived |
+| `VALIDATION_FAILED`, `details: { groupIds }` | They're the only joined admin of a house that isn't archived and has another `active` member. Here `details` names the houses, not schema issues. |
+
+A call after `deletedAt` is set skips the checks (apart from the body) and carries on, since the account is already going. The caller's sessions are deleted right after, so a retry from the app gets `UNAUTHENTICATED`. That doesn't prove the deletion finished: the app asks the user to sign in again, which fails once their account is gone. The types are `deleteAccountBodySchema`, `DeleteAccountResult` and `DeleteAccountRefusal` in `packages/core/src/schemas/identity.ts`.
+
 ## scheduler
 
-Cron: `5 * * * *`, sent as `POST /` with the `schedule` trigger. A person calling `POST /` gets `FORBIDDEN`, and a call without a JWT `UNAUTHENTICATED`. HTTP routes:
+Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger. A person calling `POST /` gets `FORBIDDEN`, and a call without a JWT `UNAUTHENTICATED`. HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /schedules` | `ScheduleInput` | `{ schedule, created: number }` | admin; house members for their own |
-| `PATCH /schedules/{id}` | `ScheduleInput` (same `id`) | `{ schedule, created, removed }` | creator or admin |
+| `PATCH /schedules/{id}` | `ScheduleInput` (same `id`) | `{ schedule, created, updated, removed }` | creator or admin |
 | `POST /schedules/{id}/end` | `{ endsOn: LocalDate }` | `{ schedule, removed }` | creator or admin |
 | `DELETE /schedules/{id}` | none | `{}` | creator or admin; no posted occurrences |
 | `POST /schedules/preview` | `ScheduleInput` without `id` + `{ count?: number }` (1–100, default 10) | `{ dates: LocalDate[], skipped: { date, reason: 'exdate' \| 'holiday' }[] }` | any member; not in an archived group |
@@ -233,7 +262,7 @@ Details: [Scheduling](scheduling.md).
 
 ## statements
 
-Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP routes:
+Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
@@ -242,9 +271,12 @@ Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP rou
 | `POST /statements/{id}/finalize` | `{ send: boolean }` | `statement` (call **async**) | admin |
 | `POST /statements/{id}/send` | none | `{ sentAt }` | admin; final only |
 | `POST /statements/{id}/void` | `{ reason }` | `statement` | admin; latest final only |
+| `POST /statements/{id}/discard` | none (`emptyBodySchema`) | `{}` | admin; drafts only |
 | `POST /statements/reissue` | `{ groupId, periodStart, periodEnd }` | `statement` (draft) | admin |
 
-On the four `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
+On the five `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
+
+`/discard` deletes the draft ([§5](statements.md#5-discard-post-statementsiddiscard)), so calling it again gets `NOT_FOUND`. The app treats that as done.
 
 Details: [Statements and invoices](statements.md).
 

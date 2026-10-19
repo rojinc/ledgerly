@@ -1,6 +1,6 @@
 import { clientFromRequest, type Db } from '@ledgerly/server/appwrite/client'
 import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
-import { type Email, sendEmail } from '@ledgerly/server/email/send-email'
+import { sendEmail } from '@ledgerly/server/email/send-email'
 import type { RouteContext } from '@ledgerly/server/http/create-handler'
 import { type Models, Teams, Users } from 'node-appwrite'
 
@@ -20,9 +20,9 @@ export type Services = {
   db: Db
   teams: TeamsApi
   users: UsersApi
-  sendEmail: (email: Email) => Promise<unknown>
   now: Date
-  /** The web app's address, for links in emails (environments-and-deploys.md: `APP_URL`). */
+  sendEmail: typeof sendEmail
+  /** The web app's address, for links in emails (invites and reminders) (environments-and-deploys.md: `APP_URL`). */
   appUrl: string
 }
 
@@ -33,8 +33,8 @@ export function servicesFromRequest(ctx: Pick<RouteContext, 'db' | 'headers'>): 
     db: ctx.db,
     teams: new Teams(client),
     users: new Users(client),
-    sendEmail,
     now: new Date(),
+    sendEmail,
     appUrl: process.env.APP_URL ?? '',
   }
 }

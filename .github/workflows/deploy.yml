@@ -1,0 +1,195 @@
+name: Deploy
+
+# Every push to main deploys to ledgerly-dev, the one Appwrite project, which has real users.
+# "Run workflow" redeploys main's latest commit; only a person runs it, never an agent
+# (AGENTS.md, docs/engineering/environments-and-deploys.md#cicd-github-actions).
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time, and never cancelled half-way through a push.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# An explicit bash adds `-o pipefail`, so a failing command before a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # The API key is passed only to the steps that need it, never to npm or the build.
+    env:
+      CONFIG: appwrite.config.json
+      APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+      PROJECT_ID: ${{ secrets.APPWRITE_DEV_PROJECT_ID }}
+    steps:
+      # Until the owner adds the secrets (#3), a deploy is skipped with a warning. One with only
+      # some of them fails instead.
+      - name: Check the secrets
+        id: secrets
+        env:
+          API_KEY: ${{ secrets.APPWRITE_DEV_API_KEY }}
+        run: |
+          if [ -n "$APPWRITE_ENDPOINT" ] && [ -n "$PROJECT_ID" ] && [ -n "$API_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$APPWRITE_ENDPOINT$PROJECT_ID$API_KEY" ]; then
+            echo "::error::Only some of the APPWRITE_* deploy secrets are set."
+            exit 1
+          else
+            echo "::warning::Deploy skipped: the APPWRITE_* secrets aren't set yet (#3)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+          # Main's latest commit, rather than the run's own: deploying an older one would drop
+          # newer columns (`push table --force`). Without `ref`, checkout resets origin/main to
+          # the run's commit.
+          ref: main
+          # Every branch, so the run's own commit is here to compare with.
+          fetch-depth: 0
+
+      - name: Check main's latest commit
+        id: latest
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::Deploy only from main, not $GITHUB_REF."
+            exit 1
+          fi
+          latest=$(git rev-parse HEAD)
+          if [ "$latest" != "$GITHUB_SHA" ]; then
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" "$latest"; then
+              echo "::error::This run's commit (${GITHUB_SHA:0:7}) isn't in the history of main's latest (${latest:0:7}). Nothing was deployed. Run Deploy on main."
+              exit 1
+            fi
+            # This run's steps come from its own deploy.yml, so it must still be the latest's.
+            if ! git diff --quiet "$GITHUB_SHA" "$latest" -- .github/workflows/deploy.yml; then
+              echo "::error::deploy.yml changed between this run's commit (${GITHUB_SHA:0:7}) and main's latest (${latest:0:7}), so this run can't deploy it. Nothing was deployed. Run Deploy on main."
+              exit 1
+            fi
+            echo "::notice::Deploying main's latest commit, ${latest:0:7}, in place of ${GITHUB_SHA:0:7}."
+          fi
+          echo "deploy=true" >> "$GITHUB_OUTPUT"
+
+      # The CLI takes the endpoint from APPWRITE_ENDPOINT over the config file's, and the config
+      # file names the project, so this is the only check that the secrets and the file agree.
+      - name: Check the config matches the secrets
+        if: steps.latest.outputs.deploy == 'true'
+        run: |
+          node -e '
+            const { CONFIG, APPWRITE_ENDPOINT, PROJECT_ID } = process.env
+            const config = require("./" + CONFIG)
+            if (config.endpoint !== APPWRITE_ENDPOINT || config.projectId !== PROJECT_ID) {
+              console.error("::error::" + CONFIG + " names another project or endpoint than the secrets.")
+              process.exit(1)
+            }
+          '
+
+      - uses: actions/setup-node@v6
+        if: steps.latest.outputs.deploy == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - if: steps.latest.outputs.deploy == 'true'
+        run: npm ci
+
+      # Builds the function bundles, and the web app for this project.
+      - if: steps.latest.outputs.deploy == 'true'
+        run: npm run build
+        env:
+          VITE_APPWRITE_ENDPOINT: ${{ env.APPWRITE_ENDPOINT }}
+          VITE_APPWRITE_PROJECT_ID: ${{ env.PROJECT_ID }}
+
+      # The table plan and the greps below match this version's output. Before changing the pin,
+      # re-test them against a stub (environments-and-deploys.md#schema-changes-that-lose-data).
+      - name: Install the Appwrite CLI
+        if: steps.latest.outputs.deploy == 'true'
+        run: npm install --global appwrite-cli@28.7.0
+
+      - name: Push tables, buckets, functions and the web site
+        if: steps.latest.outputs.deploy == 'true'
+        env:
+          API_KEY: ${{ secrets.APPWRITE_DEV_API_KEY }}
+        run: |
+          appwrite client --endpoint "$APPWRITE_ENDPOINT" --project-id "$PROJECT_ID" --key "$API_KEY"
+
+          # `push table --force` deletes and recreates a column or index whose type, orders or
+          # encryption changed, and deletes columns, indexes, tables and databases missing from
+          # the config, without asking: data that's gone for good. So the plan comes first, and
+          # anything that would delete or recreate stops the deploy before it's applied.
+          plan="$RUNNER_TEMP/table-plan.log"
+          if ! python3 -I scripts/appwrite-table-plan.py "$plan" \
+            appwrite push table --all --config-file "$CONFIG"; then
+            echo "::error::The table plan failed or timed out, so it can't show every change. Nothing destructive was applied."
+            exit 1
+          fi
+          if grep -qE '\b(recreating|deleting)\b|\(deleted locally\)' "$plan"; then
+            echo "::error::appwrite push table would delete or recreate a table, column, index or database, losing its data. Nothing destructive was applied. See environments-and-deploys.md#schema-changes-that-lose-data."
+            exit 1
+          fi
+          # A changed table or database setting, or a new database, stops the CLI before it
+          # compares columns.
+          if grep -qE 'Skipping push action' "$plan"; then
+            echo "::error::The table plan stopped early, so it can't show every change. Nothing destructive was applied."
+            exit 1
+          fi
+
+          # CLI 28.7.0 ignores a failed "list tables" request, so one failed request in the plan
+          # hides a table the push would then delete. So the server's tables are listed here too,
+          # and must be exactly the config's (the plan has already created any new ones).
+          if ! remote=$(appwrite tablesdb list-tables --database-id main --limit 100 --json); then
+            echo "::error::Couldn't list the server's tables. Nothing destructive was applied."
+            exit 1
+          fi
+          REMOTE="$remote" node -e '
+            const config = require("./" + process.env.CONFIG)
+            const local = require("./" + config.includes.tables).map((table) => table.$id)
+            const { total = 0, tables = [] } = JSON.parse(process.env.REMOTE)
+            const remote = tables.map((table) => table.$id)
+            const differ = [
+              ...remote.filter((id) => !local.includes(id)).map((id) => id + " (only on the server)"),
+              ...local.filter((id) => !remote.includes(id)).map((id) => id + " (only in the config)"),
+            ]
+            if (total !== remote.length || differ.length > 0) {
+              // Past one page, a table on the next page would look like "only in the config".
+              console.error("::error::The tables on the server differ from the config: " +
+                (total !== remote.length ? "more than " + remote.length + " tables" : differ.join(", ")) +
+                ". Nothing destructive was applied. See environments-and-deploys.md#schema-changes-that-lose-data.")
+              process.exit(1)
+            }
+          '
+
+          log="$RUNNER_TEMP/push.log"
+          push() {
+            appwrite push "$@" --all --force --config-file "$CONFIG" 2>&1 | tee "$log"
+            # The CLI can exit 0 after a failure ("✗ Error: …", or "Deployed 4 of 5 functions
+            # … 1 failed."), or after skipping a resource that lacks a setting ("Skipping it:
+            # set …", with --all), so read what it printed too.
+            if grep -qE '✗|Deployed [0-9]+ of [0-9]+ .* failed|Skipping it:' "$log"; then
+              echo "::error::appwrite push $1 failed."
+              exit 1
+            fi
+            # A table push that deleted something after all (the server changed since the
+            # checks). Only the table push: function and site build logs can say "deleting".
+            if [ "$1" = table ] &&
+              grep -qE '\b(recreating|deleting)\b|\(deleted locally\)|Deleting (attribute|index|table|database) ' "$log"; then
+              echo "::error::appwrite push table deleted or recreated something. See environments-and-deploys.md#schema-changes-that-lose-data."
+              exit 1
+            fi
+          }
+          push table
+          push bucket
+          push function
+          push site

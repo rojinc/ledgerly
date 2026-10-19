@@ -38,8 +38,9 @@ const SYSTEM_COLUMNS = new Set(['$id', '$createdAt', '$updatedAt', '$sequence'])
  * In-memory TablesDB for tests, with the tables, columns and unique indexes of
  * appwrite/tables.json. Reads take the same `Query` strings as Appwrite, and see a
  * transaction's staged writes when given its `transactionId`. Written rows must use known
- * columns and fill the required ones. Transactions apply all or nothing on commit, and fail
- * with 409 when a staged row changed after it was staged, as on Appwrite. Not modelled:
+ * columns and fill the required ones. Staging an update or delete of a row that isn't there
+ * fails with 404. Transactions apply all or nothing on commit, and fail with 409 when a staged
+ * row changed after it was staged, as on Appwrite. Not modelled:
  * column types and sizes, and permissions. Seed rows are not checked and may set `$createdAt`.
  */
 export class FakeDb implements Db {
@@ -146,12 +147,29 @@ export class FakeDb implements Db {
     operations?: object[]
   }): Promise<Models.Transaction> {
     const transaction = this.pendingTransaction(params.transactionId)
-    for (const operation of (params.operations ?? []) as Operation[]) {
+    const operations = (params.operations ?? []) as Operation[]
+    // Staging an update of a row that isn't there, as this transaction sees it, fails at once
+    // with 404 (checked on ledgerly-dev, #238). A delete, and staging nothing of the request,
+    // are assumed to work the same way.
+    const exists = new Map<string, boolean>()
+    const there = ({ tableId, rowId }: Operation) =>
+      exists.get(`${tableId}/${rowId}`) ?? this.tables.get(tableId)?.has(rowId) ?? false
+    const replay = ({ action, tableId, rowId }: Operation) => {
+      if (action !== 'update') exists.set(`${tableId}/${rowId}`, action !== 'delete')
+    }
+    for (const operation of transaction.staged) replay(operation)
+    for (const operation of operations) {
       if (!['create', 'update', 'upsert', 'delete'].includes(operation.action)) {
         throw new Error(`FakeDb does not support the "${operation.action}" operation`)
       }
       checkDatabase(operation.databaseId)
       checkTable(operation.tableId)
+      if ((operation.action === 'update' || operation.action === 'delete') && !there(operation)) {
+        throw rowNotFound(operation.tableId, operation.rowId)
+      }
+      replay(operation)
+    }
+    for (const operation of operations) {
       const seen = this.version(operation.tableId, operation.rowId)
       // Through JSON, as the SDK sends it, so `undefined` keys are dropped.
       transaction.staged.push({ ...(JSON.parse(JSON.stringify(operation)) as Operation), seen })

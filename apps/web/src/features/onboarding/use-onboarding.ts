@@ -11,11 +11,12 @@ const firstEntryKey = (groupIds: readonly string[]) => ['firstEntry', ...groupId
 
 /**
  * Whether any of the groups has a transaction, in any status: one read of at most one ID, on
- * `transactions.idx_group_date`. True once the user has recorded something, and the guide is done.
- * Not read while `enabled` is false, such as when the guide is hidden. Read once per Home visit
- * and never kept: a cached "no entry" would show the guide again after the first one.
+ * `transactions.idx_group_date`. True once the user has recorded something, and the guide is done:
+ * that's remembered on this device, so later visits don't read again. Not read while `enabled` is
+ * false. Read once per Home visit and never kept: a cached "no entry" would show the guide again
+ * after the first one.
  */
-export function useHasEntry(groupIds: string[], enabled: boolean) {
+export function useHasEntry(userId: string, groupIds: string[], enabled: boolean) {
   return useQuery({
     queryKey: firstEntryKey(groupIds),
     enabled: enabled && groupIds.length > 0,
@@ -32,27 +33,39 @@ export function useHasEntry(groupIds: string[], enabled: boolean) {
           Query.limit(1),
         ],
       })
-      return rows.length > 0
+      if (rows.length === 0) return false
+      store(doneKey(userId))
+      return true
     },
   })
 }
 
 const hiddenKey = (userId: string) => `ledgerly:onboarding-hidden:${userId}`
+const doneKey = (userId: string) => `ledgerly:onboarding-done:${userId}`
 
-/** Whether this user hid the guide on this device. Storage that can't be read hides nothing. */
-export function isHidden(userId: string): boolean {
+/** Whether this device holds the key. Storage that can't be read holds nothing. */
+function stored(key: string): boolean {
   try {
-    return localStorage.getItem(hiddenKey(userId)) !== null
+    return localStorage.getItem(key) !== null
   } catch {
     return false
   }
 }
 
-/** Hides the guide for this user on this device. Blocked storage just shows it next visit. */
-export function storeHidden(userId: string): void {
+/** Keeps the key on this device. Blocked storage keeps nothing: the next visit asks again. */
+function store(key: string): void {
   try {
-    localStorage.setItem(hiddenKey(userId), '1')
+    localStorage.setItem(key, '1')
   } catch {
-    // Nothing to do: the guide hides for now, and shows again next visit.
+    // Nothing to do: it holds for now, and the next visit works it out again.
   }
 }
+
+/** Whether this user hid the guide on this device. */
+export const isHidden = (userId: string) => stored(hiddenKey(userId))
+
+/** Hides the guide for this user on this device. */
+export const storeHidden = (userId: string) => store(hiddenKey(userId))
+
+/** Whether this device already saw an entry of this user's: the guide is done for good. */
+export const isDone = (userId: string) => stored(doneKey(userId))

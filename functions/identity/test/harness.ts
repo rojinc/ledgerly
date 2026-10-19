@@ -48,10 +48,11 @@ export function fakes(
     db: new FakeDb(seed),
     teams: new FakeTeams(options.teams),
     users: { get: async () => user },
-    sendEmail: async (email) => {
+    // A mock, so tests can read its calls, that also records each email in `sent`.
+    sendEmail: vi.fn(async (email: Email) => {
       sent.push(email)
       return { id: `email-${sent.length}` }
-    },
+    }),
     now: NOW,
     appUrl: APP_URL,
     account: user,

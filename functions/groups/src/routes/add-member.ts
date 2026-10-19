@@ -2,18 +2,20 @@ import type { Members } from '@ledgerly/core/generated/rows'
 import { addMemberBodySchema } from '@ledgerly/core/schemas/groups'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Tx, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { type PersonInput, resolvePerson } from '@ledgerly/server/identity/resolve-person'
+import type { PersonInput } from '@ledgerly/server/identity/resolve-person'
 import { ID, Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
   activityWrite,
+  aRole,
   conflictAsTryAgain,
   findFirst,
   invalid,
   parseBody,
+  resolveGuarded,
   teamRead,
   today,
 } from '../shared'
@@ -45,16 +47,18 @@ export async function addMember(
   }
 
   const memberId = ID.unique()
+  const newRole = role ?? 'member'
   await conflictAsTryAgain(() =>
     withTransaction(db, async (tx) => {
-      const resolved = await resolveOrInvalid(db, input, group.region, tx.id)
+      const resolved = await resolveOrInvalid(tx, db, input, group.region)
       const existing = await findFirst<Members>(db, TABLES.members, [
         Query.equal('groupId', groupId),
         Query.equal('personId', resolved.personId),
       ])
       if (existing) throw new AppError('CONFLICT', 'This person is already in the group.')
-      // Another request adding the same person, or the same new email, at the same time
-      // fails this commit on a unique index (uniq_group_person, identities.key): CONFLICT.
+      // Another request adding the same person, or the same new key, at the same time fails
+      // this commit on a unique index (uniq_group_person, identities.key), and a claim of the
+      // person found fails it on their guarded row: CONFLICT.
       await tx.write(
         ...resolved.writes,
         {
@@ -65,15 +69,18 @@ export async function addMember(
             groupId,
             personId: resolved.personId,
             displayName: input.displayName,
-            role: role ?? 'member',
+            role: newRole,
             status: 'placeholder',
             joinedOn: joinedOn ?? today(group, now),
             leftOn: null,
           },
           permissions: teamRead(groupId),
         },
-        // The name the group uses, never the email or phone (security-and-privacy.md).
-        activityWrite(groupId, caller.$id, 'member.added', `${input.displayName} was added`, now),
+        // No name, email or phone (security-and-privacy.md): the app shows the name the group
+        // uses, from subjectPersonId.
+        activityWrite(groupId, caller.$id, 'member.added', `was added as ${aRole(newRole)}`, now, {
+          subjectPersonId: resolved.personId,
+        }),
       )
     }),
   )
@@ -81,9 +88,9 @@ export async function addMember(
 }
 
 // resolvePerson throws a RangeError, with a fixed message, for an email or phone it can't use.
-async function resolveOrInvalid(db: Db, input: PersonInput, region: string, transactionId: string) {
+async function resolveOrInvalid(tx: Tx, db: Db, input: PersonInput, region: string) {
   try {
-    return await resolvePerson(db, input, region, transactionId)
+    return await resolveGuarded(tx, db, input, region)
   } catch (error) {
     if (error instanceof RangeError) throw invalid(error.message)
     throw error

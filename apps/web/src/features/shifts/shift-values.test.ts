@@ -43,6 +43,10 @@ describe('shift times', () => {
     expect(parseHours('7:3')).toBeUndefined()
     expect(parseHours('7:03')).toBe(423)
     expect(parseHours('7.555')).toBeUndefined()
+    // A fortnight's limit has 3 digits (#53).
+    expect(parseHours('168')).toBe(10080)
+    expect(parseHours('336:00')).toBe(20160)
+    expect(parseHours('1000')).toBeUndefined()
     expect(parseHours('-1')).toBeUndefined()
     expect(parseHours('seven')).toBeUndefined()
   })
