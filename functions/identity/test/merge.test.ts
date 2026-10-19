@@ -2,6 +2,7 @@ import { MAX_OPS_PER_DB_TRANSACTION as MERGE_BATCH } from '@ledgerly/core/consta
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { markMerged, moveIdentities, moveMembers, moveReminders, moveShares } from '../src/merge'
 import {
@@ -690,6 +691,66 @@ describe('moveMembers (step 2)', () => {
       done: false,
     })
     expect(members(services)).toEqual([['m1', 'g1', 'pP', 'placeholder', '2026-09-01']])
+  })
+
+  // #334: an account deletion purging a group deletes its team first and its rows last.
+  describe('a group whose team a purge deleted', () => {
+    const gone = () => new AppwriteException('Team not found', 404, 'team_not_found')
+
+    function purging(failOn: (teamId: string, call: number) => Error | undefined) {
+      const services = setUp({
+        persons: [U, P],
+        members: [
+          placeholderRow('m1', 'g1', 'pP', CREATED),
+          placeholderRow('m2', 'g2', 'pP', CREATED),
+        ],
+      } as Parameters<typeof fakes>[0])
+      const add = services.teams.createMembership.bind(services.teams)
+      let calls = 0
+      vi.spyOn(services.teams, 'createMembership').mockImplementation(async (params) => {
+        const failure = failOn(params.teamId, ++calls)
+        if (failure) throw failure
+        return (await add(params)) as never
+      })
+      return services
+    }
+
+    it('is put off, with nothing written there, while the other groups go on', async () => {
+      const services = purging((teamId) => (teamId === 'g1' ? gone() : undefined))
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
+        kept: new Set(),
+        joined: ['g2'],
+        putOff: ['g1'],
+        done: false,
+      })
+      expect(members(services)).toEqual([
+        ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],
+        ['m2', 'g2', 'pU', 'active', '2026-09-01'],
+      ])
+      expect(joinedRows(services).map(([groupId]) => groupId)).toEqual(['g2'])
+    })
+
+    it('leaves the row moved, but not a group U joined, when the team goes just after the commit', async () => {
+      // g1's add before the commit works; the one after it finds the team gone.
+      const services = purging((teamId, call) =>
+        teamId === 'g1' && call === 2 ? gone() : undefined,
+      )
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
+        kept: new Set(),
+        joined: ['g2'],
+        putOff: [],
+        done: true,
+      })
+      // The purge deletes g1's row with the others.
+      expect(members(services)[0]).toEqual(['m1', 'g1', 'pU', 'active', '2026-09-01'])
+    })
+
+    it('still stops on any other team error', async () => {
+      const services = purging(() => new AppwriteException('User not found', 404, 'user_not_found'))
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).rejects.toThrow(
+        'User not found',
+      )
+    })
   })
 
   describe('a group with a statement being finalized waits whole', () => {

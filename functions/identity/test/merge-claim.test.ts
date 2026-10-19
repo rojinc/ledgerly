@@ -1,4 +1,5 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { finishMerges } from '../src/run-merge'
 import { account, BEFORE, beforeCommit, call, type Fakes, fakes, placeholderRow } from './harness'
@@ -493,6 +494,53 @@ describe('POST /claim, merging a placeholder', () => {
       reminders: [],
     })
     expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
+  })
+
+  // #334: an account deletion purging a group deletes its team first and its rows last.
+  it('puts off a group a purge is deleting, merges the others, and finishes once its rows go', async () => {
+    const services = house()
+    const add = services.teams.createMembership.bind(services.teams)
+    vi.spyOn(services.teams, 'createMembership').mockImplementation(async (params) => {
+      if (params.teamId === 'g1')
+        throw new AppwriteException('Team not found', 404, 'team_not_found')
+      return (await add(params)) as never
+    })
+    expect((await claim(services)).body).toEqual({ ok: true, data: { linkedGroupIds: [] } })
+    expect(stopped()).toEqual([])
+    // g2 is done. g1 waits whole, and so does the phone.
+    expect(namingSammy(services)).toEqual({
+      identities: ['iPhone'],
+      members: ['m1'],
+      shares: ['s2'],
+      transactions: ['t1'],
+      schedules: ['sc1'],
+      reminders: [],
+    })
+    // The purge reaches g1's rows.
+    await withTransaction(services.db, (tx) =>
+      tx.write(
+        ...(
+          [
+            ['members', 'm1'],
+            ['members', 'm2'],
+            ['shares', 's1'],
+            ['shares', 's2'],
+            ['transactions', 't1'],
+            ['schedules', 'sc1'],
+            ['reminders', 'rToSammy'],
+          ] as const
+        ).map(([tableId, rowId]) => ({ action: 'delete' as const, tableId, rowId })),
+      ),
+    )
+    expect((await claim(services)).body).toEqual({ ok: true, data: { linkedGroupIds: [] } })
+    expect(namingSammy(services)).toEqual({
+      identities: [],
+      members: [],
+      shares: [],
+      transactions: [],
+      schedules: [],
+      reminders: [],
+    })
   })
 
   it('moves no share in a group whose inputs it put off, even once the finalize ends', async () => {

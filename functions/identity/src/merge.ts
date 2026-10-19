@@ -18,7 +18,7 @@ import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { listAll, Raced } from '@ledgerly/server/ledger/transactions'
-import { ID, Permission, Query, Role } from 'node-appwrite'
+import { AppwriteException, ID, Permission, Query, Role } from 'node-appwrite'
 import { getRowOrNull, isAppwriteError, tryAgain, typedKeyDeletes } from './rows'
 import type { Services } from './services'
 
@@ -220,7 +220,7 @@ export async function moveMembers(
         result.joined.push(groupId)
       }
     } catch (error) {
-      if (!(error instanceof Finalizing)) throw error
+      if (!(error instanceof Finalizing || error instanceof TeamGone)) throw error
       result.putOff.push(groupId)
     }
   }
@@ -267,7 +267,7 @@ async function moveMember(
   own: Members | undefined,
   intoId: string,
 ): Promise<boolean> {
-  await addToTeam(teams, theirs.groupId, userId)
+  if (!(await joinTeam(teams, theirs.groupId, userId))) throw new TeamGone()
   const kept = own
     ? { ...own, joinedOn: theirs.joinedOn < own.joinedOn ? theirs.joinedOn : own.joinedOn }
     : { ...theirs, personId: intoId }
@@ -339,13 +339,28 @@ async function moveMember(
   }
   // As in joinGroup: a parallel failure may have taken back the membership just before this
   // commit, and the row is joined now. Read it again after: a leave of U's own that landed since
-  // takes the membership away for good.
-  await addToTeam(teams, theirs.groupId, userId)
+  // takes the membership away for good. A team gone by now leaves the row moved, for the purge
+  // to delete with the others, and the group not one U joined.
+  if (!(await joinTeam(teams, theirs.groupId, userId))) return false
   if (!(await joinedHere(db, theirs.groupId, intoId))) {
     await removeFromTeam(teams, theirs.groupId, userId)
     return false
   }
   return true
+}
+
+/**
+ * Adds the user to the group's team; false if the team is gone: an account deletion is purging
+ * the group, its rows last (#334, as join-group.ts does for a claim).
+ */
+async function joinTeam(teams: Services['teams'], groupId: string, userId: string) {
+  try {
+    await addToTeam(teams, groupId, userId)
+    return true
+  } catch (error) {
+    if (error instanceof AppwriteException && error.type === 'team_not_found') return false
+    throw error
+  }
 }
 
 /** Whether the person has a joined row in the group (`active` or `left`) they didn't leave on their own. */
@@ -485,6 +500,9 @@ export async function moveShares(
 
 /** Thrown inside a batch when the group has a statement being finalized. */
 export class Finalizing extends Error {}
+
+/** Thrown in step 2 when the group's team is gone: the group is put off until the purge ends. */
+class TeamGone extends Error {}
 
 /** Thrown inside a share batch when U has no joined row in the group any more. */
 class Unjoined extends Error {}
