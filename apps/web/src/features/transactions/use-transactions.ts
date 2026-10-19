@@ -173,6 +173,32 @@ export function useCreateTransaction() {
   })
 }
 
+/** Refusals that mean the row, its group or the caller's role changed meanwhile. */
+export const CHANGED_MEANWHILE: readonly ErrorCode[] = ['LOCKED', 'ARCHIVED', 'FORBIDDEN']
+
+/**
+ * `PATCH /transactions/{id}` (#184). After a `CHANGED_MEANWHILE` refusal (a final statement, an
+ * archive, a new role), read the row, the group and the members again, so the page shows them
+ * as they are now.
+ */
+export function useUpdateTransaction(id: string, groupId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: TransactionInput) =>
+      ledger<TransactionView>('PATCH', `/transactions/${id}`, body),
+    onSuccess: (view) => refresh(queryClient, view),
+    onError: (error) => {
+      if (error instanceof LedgerError && CHANGED_MEANWHILE.includes(error.code)) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.transaction(id), exact: true })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.group(groupId) })
+        // The caller's own row (`useMyMember`) and everyone's.
+        void queryClient.invalidateQueries({ queryKey: ['member', groupId] })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.members(groupId) })
+      }
+    },
+  })
+}
+
 /** `POST /transactions/{id}/void`, shown as void at once and put back if it fails. */
 export function useVoidTransaction(id: string) {
   const queryClient = useQueryClient()
