@@ -173,8 +173,8 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 | `POST /groups/{id}/archive` | none | `group` | admin |
 | `POST /groups/{id}/members` | `{ displayName, email?, phone?, role?, joinedOn? }` | `member` | admin (house: member too) |
 | `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn?: LocalDate \| null }` | `member` | admin; `leftOn: null` moves someone who moved out back in ([leaving](permissions.md#leaving-a-group)) |
-| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares, aren't named in an unposted transaction or a schedule template, and didn't create a schedule whose template names no payers (`VALIDATION_FAILED`); not while a merge into them is open in the group (`CONFLICT`). Also removes any team membership. |
-| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0, they aren't the last joined admin and no merge into them is open in the group (`CONFLICT`), except a retry of their own leave cut off before the team step, which finishes anyway ([leaving](permissions.md#leaving-a-group)). Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
+| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares, aren't named in an unposted transaction or a schedule template, and didn't create a schedule whose template names no payers (`VALIDATION_FAILED`); not while a person merged into them still has shares there, or is named in an unposted transaction or template there, with that merge open in the group (`CONFLICT`, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)). Also removes any team membership. |
+| `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0, they aren't the last joined admin and no person merged into them still has shares there with that merge open in the group (`CONFLICT`), except a retry of their own leave cut off before the team step, which finishes anyway ([leaving](permissions.md#leaving-a-group)). Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. Removing one with `DELETE /groups/{id}/members/{memberId}` also returns `VALIDATION_FAILED`; archive the group instead. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
 
@@ -193,10 +193,14 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
-| `POST /` | the Appwrite user, as the event sends it | `{}` | only an [event run](permissions.md#function-side-checks) of `users.*.update.password` or `users.*.recovery.*.update`; a signed-in call gets `FORBIDDEN` ([password notice](identity-and-invites.md#password-notice)) |
+| `POST /` | the Appwrite user, as the event sends it; none for a scheduled run | `{}`; a scheduled run returns `{ unfinished, finished, skipped, cutOff }` | only `identity`'s own runs, below; a signed-in call gets `FORBIDDEN` |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
-Hourly (`interval: 60`), sent as `POST /` with the `schedule` trigger: it carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`. A person calling `POST /` gets `FORBIDDEN`.
+**`POST /` is one route for two kinds of run**, and it dispatches on the kind:
+- a [scheduled run](permissions.md#function-side-checks) (`ctx.scheduled`), every 60 minutes (`interval: 60`), carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`;
+- an [event run](permissions.md#function-side-checks) (`ctx.event`) of `users.*.update.password` or `users.*.recovery.*.update` sends the [password notice](identity-and-invites.md#password-notice).
+
+A person calling `POST /` gets `FORBIDDEN`, and any other call without a JWT `UNAUTHENTICATED`.
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
 
