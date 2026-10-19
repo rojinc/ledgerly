@@ -49,9 +49,19 @@ group('logProblem', () => {
   })
 
   it('writes `invalid` for a value passed as an ID that isn’t one', () => {
-    logProblem('draft_failed', { groupId: 'sam@example.com', statementId: 'Sam Smith' })
+    logProblem('draft_failed', {
+      groupId: 'sam@example.com',
+      statementId: 'Sam Smith',
+      transactionId: '+61412345678',
+    })
     expect(lines()).toEqual([
-      { fn: 'unknown', event: 'draft_failed', groupId: 'invalid', statementId: 'invalid' },
+      {
+        fn: 'unknown',
+        event: 'draft_failed',
+        groupId: 'invalid',
+        statementId: 'invalid',
+        transactionId: 'invalid',
+      },
     ])
   })
 

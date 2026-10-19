@@ -2,6 +2,7 @@ import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { closeAtFor } from '@ledgerly/core/dates/time-zone'
 import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   afterLatestFinalRead,
@@ -207,6 +208,28 @@ describe('the statements job (POST /, cron)', () => {
         event: 'ready_email_failed',
         statementId: expect.any(String),
         cause: 'RangeError',
+      },
+    ])
+  })
+
+  it('logs IDs only when the auto-finalize fails, and leaves it for an admin to resume', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-02', 60)),
+      groups: [job({ autoFinalize: true })],
+    })
+    vi.spyOn(services.files, 'upload').mockRejectedValue(
+      new AppwriteException('Storage is down for Sam', 503, 'general_unknown'),
+    )
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    const [draft] = services.db.rows('statements')
+    // Stopped at step 7: finalize resumes it when called again (statements.md#2-finalize).
+    expect(draft?.status).toBe('finalizing')
+    expect(errors.map((line) => JSON.parse(line))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'auto_finalize_failed',
+        statementId: draft?.$id,
+        cause: 'AppwriteException 503 general_unknown',
       },
     ])
   })
