@@ -77,10 +77,10 @@ export async function claim(
   // A merge that fails is left for the next claim, so it never stops a login.
   const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
     console.warn(`merge into ${person.$id} stopped: ${errorName(error)}`)
-    return { joined: [], finished: 0 }
+    return { joined: [], finished: [] }
   })
   // A finished merge moved P's identities here, the claimed one too: it's verified now.
-  if (merges.finished > 0) await claimIdentities(services, person.$id, identities)
+  if (merges.finished.length > 0) await claimIdentities(services, person.$id, identities)
   const linked = new Set(merges.joined)
   for (const member of await rowsToJoin(services.db, person)) {
     if (await joinGroup(services, userId, person.$id, member)) linked.add(member.groupId)

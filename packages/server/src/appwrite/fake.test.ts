@@ -132,6 +132,14 @@ describe('FakeDb reads', () => {
       db.listRows({ ...DB, queries: [Query.contains('description', 'rent')] }),
     ).rejects.toThrow('FakeDb does not support the "contains" query')
   })
+
+  it('refuses an `equal` with no values, as Appwrite does', async () => {
+    const db = transactions()
+    await expect(db.listRows({ ...DB, queries: [Query.equal('$id', [])] })).rejects.toMatchObject({
+      code: 400,
+      type: 'general_query_invalid',
+    })
+  })
 })
 
 const AT = '2026-10-18T00:00:00.000Z'

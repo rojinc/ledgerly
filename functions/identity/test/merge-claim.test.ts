@@ -806,7 +806,7 @@ describe('POST /claim, merging a placeholder', () => {
     )
     expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
       joined: [],
-      finished: 0,
+      finished: [],
     })
     // Sammy's rows stay Sammy's, and Sam was taken out of g1's team again.
     expect(services.db.rows('members').find((row) => row.$id === 'm1')?.personId).toBe('pP')
@@ -839,7 +839,7 @@ describe('POST /claim, merging a placeholder', () => {
     // Tried again, the merge stops before it joins anything.
     expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
       joined: [],
-      finished: 0,
+      finished: [],
     })
     expect(services.db.rows('members').filter((row) => row.personId === 'pP')).toHaveLength(2)
   })
@@ -857,7 +857,7 @@ describe('POST /claim, merging a placeholder', () => {
       )
       expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
         joined: [],
-        finished: 0,
+        finished: [],
       })
       expect(namingSammy(services).members).toEqual(['m1', 'm3'])
     }

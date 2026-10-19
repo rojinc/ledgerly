@@ -109,6 +109,14 @@ export class FakeDb implements Db {
           break
         default:
           checkQueryColumn(params.tableId, attribute)
+          // As Appwrite does: its query validator refuses an `equal` with no values.
+          if (method === 'equal' && values.length === 0) {
+            throw new AppwriteException(
+              'Invalid query: Equal queries require at least one value.',
+              400,
+              'general_query_invalid',
+            )
+          }
           rows = rows.filter((row) => matches(row[attribute], method, values))
       }
     }

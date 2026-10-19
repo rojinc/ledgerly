@@ -1,3 +1,4 @@
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { account, BEFORE, call, type Fakes, fakes, placeholderRow } from './harness'
@@ -41,14 +42,55 @@ function seeded(more: Record<string, object[]> = {}): Fakes {
     {
       persons: [SAM, SAMMY, ...(more.persons ?? [])],
       identities: [PHONE, ...(more.identities ?? [])],
-      groups: [GROUP],
+      groups: [GROUP, ...(more.groups ?? [])],
       members: [placeholderRow('m1', 'g1', 'pP', BEFORE), ...(more.members ?? [])],
+      statements: more.statements ?? [],
     } as Parameters<typeof fakes>[0],
-    { teams: { g1: [] } },
+    { teams: { g1: [], g2: [] } },
   )
   // Sam's account has verified the phone the claim came through.
   services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
   return services
+}
+
+/**
+ * Sammy's twin pP2, also merged into Sam, whose group g2 has a statement being finalized: step 2
+ * puts g2 off, so that merge can't finish this run whatever the time.
+ */
+const PUT_OFF = {
+  persons: [{ ...SAMMY, $id: 'pP2', mergeGroupIds: ['g2'] }],
+  identities: [
+    { ...PHONE, $id: 'iP2', key: 'email:twin@example.com', type: 'email', personId: 'pP2' },
+  ],
+  groups: [{ ...GROUP, $id: 'g2' }],
+  members: [placeholderRow('m2', 'g2', 'pP2', BEFORE)],
+  statements: [{ $id: 'st1', groupId: 'g2', status: 'finalizing', periodStart: '2026-10-01' }],
+}
+
+/** Date.now() as `clock.now`, which a test moves past the run's budget when it likes. */
+function stoppedClock() {
+  const clock = { now: Date.now() }
+  vi.spyOn(Date, 'now').mockImplementation(() => clock.now)
+  return {
+    clock,
+    outOfTime: () => {
+      clock.now += 60_000
+    },
+  }
+}
+
+/** Runs `then` once, right after the first `listRows` of `tableId` returns. */
+function afterFirstRead(services: Fakes, tableId: string, then: () => unknown) {
+  const list = services.db.listRows.bind(services.db)
+  let done = false
+  vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+    const result = await list(params)
+    if (!done && params.tableId === tableId) {
+      done = true
+      await then()
+    }
+    return result
+  })
 }
 
 /** A scheduled run, as Appwrite sends it: no JWT, the `schedule` trigger. */
@@ -86,9 +128,18 @@ describe('POST / (the hourly run)', () => {
     expect(services.db.rows('members')[0]).toMatchObject({ personId: 'pSam', status: 'active' })
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
     expect(log).toHaveBeenCalledWith(
-      'identity: merges 1 unfinished, 1 finished, 0 skipped, 0 cut off',
+      'identity: merges 1 unfinished, 1 finished, 0 skipped, 0 cut off (mergedInto rows read: 1)',
     )
     // Finished: the next run finds nothing.
+    expect((await hourly(services)).body).toEqual({
+      ok: true,
+      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0 },
+    })
+  })
+
+  it('with no merged persons, reads nothing more and counts nothing', async () => {
+    // Appwrite refuses an `equal` with no values, so the identities read must not run.
+    const services = fakes({ persons: [SAM] } as Parameters<typeof fakes>[0])
     expect((await hourly(services)).body).toEqual({
       ok: true,
       data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0 },
@@ -110,10 +161,15 @@ describe('POST / (the hourly run)', () => {
 
   it('skips a U being deleted, or with no account, and never starts a merge', async () => {
     for (const into of [{ deletedAt: '2026-10-18T00:00:00.000Z' }, { userId: null }]) {
+      // Two merges into that U, both skipped.
+      const twin = { ...SAMMY, $id: 'pP2', mergeGroupIds: [] }
       const services = fakes(
         {
-          persons: [{ ...SAM, ...into }, SAMMY],
-          identities: [PHONE],
+          persons: [{ ...SAM, ...into }, SAMMY, twin],
+          identities: [
+            PHONE,
+            { ...PHONE, $id: 'iP2', key: 'email:twin@x.test', type: 'email', personId: 'pP2' },
+          ],
           groups: [GROUP],
           members: [placeholderRow('m1', 'g1', 'pP', BEFORE)],
         } as Parameters<typeof fakes>[0],
@@ -121,9 +177,10 @@ describe('POST / (the hourly run)', () => {
       )
       expect((await hourly(services)).body).toEqual({
         ok: true,
-        data: { unfinished: 1, finished: 0, skipped: 1, cutOff: 0 },
+        data: { unfinished: 2, finished: 0, skipped: 2, cutOff: 0 },
       })
       expect(identity(services, 'iPhone')?.personId).toBe('pP')
+      expect(identity(services, 'iP2')?.personId).toBe('pP2')
       expect(services.db.rows('members')[0]?.personId).toBe('pP')
     }
   })
@@ -150,16 +207,131 @@ describe('POST / (the hourly run)', () => {
 
   it('counts merges the budget cut off, and the next run carries them on', async () => {
     const services = seeded()
-    const start = Date.now()
-    // Out of time once the merges are found.
-    let reads = 0
-    vi.spyOn(Date, 'now').mockImplementation(() => (++reads > 3 ? start + 60_000 : start))
+    const { outOfTime } = stoppedClock()
+    // Out of time once the walk has found the merges.
+    afterFirstRead(services, 'identities', outOfTime)
     expect((await hourly(services)).body).toEqual({
       ok: true,
       data: { unfinished: 1, finished: 0, skipped: 0, cutOff: 1 },
     })
+    expect(identity(services, 'iPhone')?.personId).toBe('pP')
     vi.mocked(Date.now).mockRestore()
+    vi.mocked(services.db.listRows).mockRestore()
     expect((await hourly(services)).body).toMatchObject({ ok: true, data: { finished: 1 } })
+  })
+
+  it('stops the walk at the budget, and counts only the merges it found', async () => {
+    // 101 unfinished merges into Sam, so the walk takes two pages of persons.
+    const ids = Array.from({ length: 101 }, (_, n) => String(n).padStart(3, '0'))
+    const services = seeded({
+      persons: ids.map((n) => ({ ...SAMMY, $id: `pM${n}`, mergeGroupIds: [] })),
+      identities: ids.map((n) => ({
+        ...PHONE,
+        $id: `iM${n}`,
+        key: `email:m${n}@example.com`,
+        type: 'email',
+        personId: `pM${n}`,
+      })),
+    })
+    const { outOfTime } = stoppedClock()
+    afterFirstRead(services, 'persons', outOfTime)
+    // The first page: pM000 to pM099 (pP sorts after them). The walk stops before the second.
+    expect((await hourly(services)).body).toEqual({
+      ok: true,
+      data: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100 },
+    })
+    expect(log).toHaveBeenCalledWith(
+      'identity: merges 100 unfinished, 0 finished, 0 skipped, 100 cut off (mergedInto rows read: 100)',
+    )
+  })
+
+  it('doesn’t count a merge put off with time left as cut off, and waits to verify U’s keys', async () => {
+    const services = seeded(PUT_OFF)
+    expect((await hourly(services)).body).toEqual({
+      ok: true,
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0 },
+    })
+    // Sammy's merge finished and moved the phone, but Sam's other merge is still open.
+    expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: false })
+    expect(identity(services, 'iP2')?.personId).toBe('pP2')
+  })
+
+  it('counts as cut off only the merges the budget stopped', async () => {
+    const services = seeded({ ...PUT_OFF, statements: [] })
+    const { outOfTime } = stoppedClock()
+    // Out of time as soon as Sammy's merge has moved the phone, its last step.
+    const commit = services.db.updateTransaction.bind(services.db)
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      const result = await commit(params)
+      if (identity(services, 'iPhone')?.personId === 'pSam') outOfTime()
+      return result
+    })
+    expect((await hourly(services)).body).toEqual({
+      ok: true,
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 1 },
+    })
+  })
+
+  it('leaves a merge marked during the run to the next run’s count', async () => {
+    const services = seeded(PUT_OFF)
+    // pNew is merged into Sam after the walk; this run's carry-on finishes it anyway.
+    afterFirstRead(services, 'identities', () =>
+      withTransaction(services.db, (tx) =>
+        tx.write(
+          {
+            action: 'create',
+            tableId: 'persons',
+            rowId: 'pNew',
+            data: { displayName: 'New', mergedInto: 'pSam', mergeGroupIds: [] },
+          },
+          {
+            action: 'create',
+            tableId: 'identities',
+            rowId: 'iNew',
+            data: { key: 'email:new@example.com', type: 'email', personId: 'pNew' },
+          },
+        ),
+      ),
+    )
+    // The walk found Sammy's merge, which finished, and pP2's, put off; pNew's isn't counted.
+    expect((await hourly(services)).body).toEqual({
+      ok: true,
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0 },
+    })
+    expect(identity(services, 'iNew')?.personId).toBe('pSam')
+  })
+
+  it('leaves out a P marked as merged that has an account, or was deleted', async () => {
+    const services = seeded({
+      persons: [
+        { ...SAMMY, $id: 'pAcc', userId: 'u9' },
+        { ...SAMMY, $id: 'pDel', deletedAt: '2026-10-18T00:00:00.000Z' },
+      ],
+      identities: [
+        { ...PHONE, $id: 'iAcc', key: 'email:acc@example.com', type: 'email', personId: 'pAcc' },
+        { ...PHONE, $id: 'iDel', key: 'email:del@example.com', type: 'email', personId: 'pDel' },
+      ],
+    })
+    expect((await hourly(services)).body).toEqual({
+      ok: true,
+      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0 },
+    })
+    // So Sam's merges count as finished, and the moved phone is verified.
+    expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
+    expect(identity(services, 'iAcc')?.personId).toBe('pAcc')
+  })
+
+  it('never marks verified a key of U’s account that sits on someone else’s person', async () => {
+    // Sam's verified email is a key of Pat, a placeholder nobody has merged.
+    const services = seeded({
+      persons: [{ ...SAMMY, $id: 'pPat', mergedInto: null, mergeGroupIds: [] }],
+      identities: [
+        { ...PHONE, $id: 'iPat', key: 'email:sam@example.com', type: 'email', personId: 'pPat' },
+      ],
+    })
+    expect((await hourly(services)).body).toMatchObject({ ok: true, data: { finished: 1 } })
+    expect(identity(services, 'iPat')).toMatchObject({ personId: 'pPat', verified: false })
+    expect(services.db.rows('persons').find((row) => row.$id === 'pPat')?.mergedInto).toBeNull()
   })
 
   it('leaves the keys alone for a user who is gone or labelled deleted, and finishes anyway', async () => {
@@ -178,7 +350,32 @@ describe('POST / (the hourly run)', () => {
     expect(warn).not.toHaveBeenCalled()
   })
 
-  it('goes on to the next U when one U’s merges stop on an error', async () => {
+  it('goes on to the next U when one U’s person row can’t be read', async () => {
+    const ALEX = { ...SAM, $id: 'pAlex', userId: 'u2', displayName: 'Alex' }
+    const ALEXS = { ...SAMMY, $id: 'pA2', mergedInto: 'pAlex', mergeGroupIds: [] }
+    const services = seeded({
+      persons: [ALEX, ALEXS],
+      identities: [
+        { ...PHONE, $id: 'iAlex', key: 'email:alex@example.com', type: 'email', personId: 'pA2' },
+      ],
+    })
+    const get = services.db.getRow.bind(services.db)
+    vi.spyOn(services.db, 'getRow').mockImplementation(async (params) => {
+      if (params.tableId === 'persons' && params.rowId === 'pSam') {
+        throw new AppwriteException('Server error', 500, 'general_unknown')
+      }
+      return get(params)
+    })
+    expect((await hourly(services)).body).toMatchObject({
+      ok: true,
+      data: { unfinished: 2, finished: 1 },
+    })
+    expect(warn).toHaveBeenCalledWith('identity: merges into pSam stopped: AppwriteException')
+    expect(identity(services, 'iAlex')?.personId).toBe('pAlex')
+    expect(identity(services, 'iPhone')?.personId).toBe('pP')
+  })
+
+  it('goes on to the next U when reading one U’s user fails', async () => {
     const ALEX = { ...SAM, $id: 'pAlex', userId: 'u2', displayName: 'Alex' }
     const ALEXS = { ...SAMMY, $id: 'pA2', mergedInto: 'pAlex', mergeGroupIds: [] }
     const services = seeded({

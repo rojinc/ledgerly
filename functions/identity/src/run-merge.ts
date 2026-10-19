@@ -22,7 +22,7 @@ export const MERGE_BUDGET_MS = 9_000
 const PAGE = 100
 
 /** What the merges did: the groups U joined, and how many merges finished. */
-export type MergesResult = { joined: string[]; finished: number }
+export type MergesResult = { joined: string[]; finished: string[] }
 
 /**
  * Carries on with every merge into U (`idx_mergedInto`) that isn't finished, until `deadline`
@@ -36,7 +36,7 @@ export async function finishMerges(
   intoId: string,
   deadline: number,
 ): Promise<MergesResult> {
-  const result: MergesResult = { joined: [], finished: 0 }
+  const result: MergesResult = { joined: [], finished: [] }
   for (const placeholder of await mergedInto(services.db, intoId)) {
     if (Date.now() >= deadline) break
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
@@ -44,7 +44,7 @@ export async function finishMerges(
     if (!(await hasIdentity(services.db, placeholder.$id))) continue
     const { joined, finished } = await runMerge(services, userId, placeholder, intoId, deadline)
     result.joined.push(...joined)
-    if (finished) result.finished += 1
+    if (finished) result.finished.push(placeholder.$id)
   }
   return result
 }
