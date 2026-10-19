@@ -1,16 +1,28 @@
 import { compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Persons, Schedules, Statements } from '@ledgerly/core/generated/rows'
+import type {
+  Groups,
+  Members,
+  Persons,
+  Schedules,
+  Statements,
+  Transactions,
+} from '@ledgerly/core/generated/rows'
 import { everyPersonId, type TransactionTemplate } from '@ledgerly/core/schemas/ledger'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { isInTeam, othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
+import { othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { guardGroup, Raced } from '@ledgerly/server/ledger/transactions'
-import { endScheduleOn, laterOf } from '@ledgerly/server/scheduler/end-schedule'
+import {
+  deleteScheduleRows,
+  endScheduleOn,
+  hasOccurrence,
+  laterOf,
+} from '@ledgerly/server/scheduler/end-schedule'
 import { ID, Permission, Query, Role } from 'node-appwrite'
 import { FORMER_MEMBER, getRowOrNull, isAppwriteError } from './rows'
 import type { Services } from './services'
@@ -68,23 +80,18 @@ async function leaveGroup(
     if (others === null) return false
     const group = await getRowOrNull<Groups>(db, TABLES.groups, member.groupId)
     if (!group) return false
-    // Their own member.left since deletedAt: the keep's transaction is done.
-    if (
-      member.status === 'left' &&
-      (await leftOnTheirOwn(db, group.$id, person.$id, person.deletedAt))
-    ) {
-      if (!(await isInTeam(teams, group.$id, userId))) return true
-    } else {
+    if (!(await isKept(db, person, member))) {
       // Nobody else is in the team, as in their personal group: it's purged (#50 PR-2), so
       // until then it waits, untouched.
       if (!others) return false
       await keep(services, person, member, group)
     }
-    // Then, in this order: their schedules, the archive (ending a schedule in an archived group
-    // is refused), and leaving the team last, so a crash before it leaves the group to be
-    // finished, never with its schedules still running.
+    // Then, in this order, on every run once the keep is done (each is safe to repeat): their
+    // schedules, the archive (ending a schedule in an archived group is refused), and leaving
+    // the team last, so a crash before it leaves the group to be finished, never with its
+    // schedules still running.
     if (!group.archivedAt) {
-      await endSchedules(services, person.$id, group)
+      if (!(await endSchedules(services, person.$id, group))) return false
       if (!(await hasJoinedAdmin(db, group.$id))) await archive(services, person.$id, group)
     }
     await removeFromTeam(teams, group.$id, userId)
@@ -93,6 +100,18 @@ async function leaveGroup(
     if (error instanceof Raced || isAppwriteError(error, 409)) return false
     throw error
   }
+}
+
+// Whether the keep's transaction is done: the row shows its own write, and their own member.left
+// is dated on or after deletedAt. A row they left on their own, before or after step 2, still
+// has their name, so it gets the keep.
+async function isKept(db: Db, person: Deleting, member: Members): Promise<boolean> {
+  return (
+    member.status === 'left' &&
+    member.displayName === FORMER_MEMBER &&
+    member.role === 'viewer' &&
+    (await leftOnTheirOwn(db, member.groupId, person.$id, person.deletedAt))
+  )
 }
 
 // The keep's transaction, with a fresh group `rev`: their member row becomes "Former member",
@@ -152,19 +171,45 @@ async function keep(
 }
 
 // The schedules in the group that they created, or whose template names them, end on the
-// earlier of their stored end and today, so no new occurrence names a deleted person.
-async function endSchedules({ db, now }: Services, personId: string, group: Groups): Promise<void> {
+// earlier of their stored end and today, so no new occurrence names a deleted person. One that
+// hasn't started and has nothing posted is deleted instead, as it would otherwise end before
+// it starts. False when the time budget runs out first.
+async function endSchedules(
+  { db, now, outOfTime }: Services,
+  personId: string,
+  group: Groups,
+): Promise<boolean> {
   const today = localToday(group.timezone, now)
   // idx_groupId
   const schedules = await allRows<Schedules>(db, TABLES.schedules, [
     Query.equal('groupId', group.$id),
   ])
   for (const schedule of schedules) {
-    const template = JSON.parse(schedule.templateJson) as TransactionTemplate
-    if (schedule.createdBy !== personId && !everyPersonId(template).includes(personId)) continue
+    if (outOfTime()) return false
+    if (schedule.createdBy !== personId && !namedIn(schedule).includes(personId)) continue
+    if (
+      compareDates(schedule.startsOn as LocalDate, today) > 0 &&
+      !(await hasOccurrence(db, schedule.$id, [Query.equal('status', 'posted')]))
+    ) {
+      await deleteScheduleRows(db, group, schedule.$id)
+      continue
+    }
     const storedEnd = schedule.endsOn as LocalDate | null
     const endsOn = storedEnd && compareDates(storedEnd, today) < 0 ? storedEnd : today
     await endScheduleOn(db, group, schedule, endsOn, now)
+  }
+  return true
+}
+
+// The persons a schedule's template names, read as the scheduler reads it (not re-validated, so
+// a template an older schema allowed still counts). One that can't be read names nobody, so the
+// schedule is still ended if they created it, and one bad row doesn't stop every run.
+function namedIn(schedule: Schedules): string[] {
+  try {
+    return everyPersonId(JSON.parse(schedule.templateJson) as TransactionTemplate)
+  } catch {
+    console.error(`account: schedule ${schedule.$id} has a template that can't be read`)
+    return []
   }
 }
 
@@ -186,8 +231,10 @@ async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
 }
 
 // Archives the group, with a group.archived row by them, as an admin's archive writes, so the
-// others see why. One archived meanwhile, or with a statement being finalized, throws `Raced`:
-// the group is left for the next run, which finds it archived, or waits until the finalize ends.
+// others see why. One archived meanwhile, with a statement being finalized, or with a timer
+// someone else started still running (it couldn't be stopped once archived) throws `Raced`: the
+// group is left for the next run, which finds it archived, or waits until the finalize ends or
+// the timer stops.
 async function archive({ db, now }: Services, personId: string, group: Groups): Promise<void> {
   await withTransaction(db, async (tx) => {
     await tx.write({
@@ -200,7 +247,13 @@ async function archive({ db, now }: Services, personId: string, group: Groups): 
     // Stage, then check: finalize step 1 stages the group row in the transaction that sets
     // `finalizing` (statements.md#2-finalize-post-statementsidfinalize).
     const current = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
-    if (current?.archivedAt || (await isFinalizing(db, group.$id))) throw new Raced()
+    if (
+      current?.archivedAt ||
+      (await isFinalizing(db, group.$id)) ||
+      (await othersTimerRunning(db, group.$id, personId))
+    ) {
+      throw new Raced()
+    }
     await tx.write({
       action: 'create',
       tableId: TABLES.activity,
@@ -223,6 +276,25 @@ async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
     databaseId: DATABASE_ID,
     tableId: TABLES.statements,
     queries: [Query.equal('groupId', groupId), Query.equal('status', 'finalizing'), Query.limit(1)],
+    total: false,
+  })
+  return rows.length > 0
+}
+
+// Whether a timer that someone else started is running in the group (`idx_group_status_date`).
+// A timer start guards the group row, so one that commits after this read fails the archive's
+// commit, as in `groups POST /groups/{id}/archive`. Their own doesn't count: step 1 refused one,
+// so it can only have started in the moment before step 2.
+async function othersTimerRunning(db: Db, groupId: string, personId: string): Promise<boolean> {
+  const { rows } = await db.listRows<Transactions>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.transactions,
+    queries: [
+      Query.equal('groupId', groupId),
+      Query.equal('status', 'running'),
+      Query.notEqual('createdBy', personId),
+      Query.limit(1),
+    ],
     total: false,
   })
   return rows.length > 0
