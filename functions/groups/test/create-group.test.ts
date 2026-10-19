@@ -186,6 +186,29 @@ describe('POST /groups', () => {
     ])
   })
 
+  it('keeps one key for a new counterpart, the email', async () => {
+    const services = setUp()
+    const counterpart = { displayName: 'Boss', email: 'boss@example.com', phone: '0412345678' }
+    await ok<CreateGroupResult>(services, 'POST', '/groups', { ...EMPLOYER, counterpart })
+    expect(services.db.rows('identities')).toEqual([
+      expect.objectContaining({ key: 'email:boss@example.com' }),
+    ])
+  })
+
+  it('answers CONFLICT when a claim of a registered counterpart commits meanwhile', async () => {
+    const services = fakes({
+      persons: [person(1), person(2)],
+      profiles: [profile(1)],
+      identities: [identity('i2', 'email:boss@example.com', 'p2')],
+    })
+    beforeCommit(services.db, () => updateRow(services.db, 'persons', 'p2', { mergedInto: 'p1' }))
+    expect(await failure(services, 'POST', '/groups', EMPLOYER)).toMatchObject({
+      status: 409,
+      code: 'CONFLICT',
+    })
+    expect(services.db.rows('groups')).toEqual([])
+  })
+
   it('starts with the period that contains a future anchor', async () => {
     const services = setUp()
     const { group: created } = await ok<CreateGroupResult>(services, 'POST', '/groups', {

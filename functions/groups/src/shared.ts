@@ -8,6 +8,11 @@ import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tab
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import {
+  type PersonInput,
+  type ResolvedPerson,
+  resolvePerson,
+} from '@ledgerly/server/identity/resolve-person'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
 
 // Small helpers shared by the groups routes. identity has copies of the first few
@@ -37,6 +42,34 @@ export function invalid(message: string): AppError {
 /** A write clashed with another request's; the app can simply send it again. */
 export function tryAgain(): AppError {
   return new AppError('CONFLICT', 'Something else changed this at the same time. Try again.')
+}
+
+/**
+ * `resolvePerson` in `tx`, for an add (identity-and-invites.md#adding-someone-to-a-group): a
+ * person it finds gets a guard write on `persons.rev`, then the keys are read again. A claim
+ * that adopts or merges that person writes their row too, so one that commits after the guard
+ * fails this commit, and one that committed before it took the key, which the second read
+ * sees. Either way the add answers CONFLICT, and trying again finds who the key belongs to now.
+ * Throws resolvePerson's RangeError for an invalid email or phone.
+ */
+export async function resolveGuarded(
+  tx: Tx,
+  db: Db,
+  input: PersonInput,
+  region: string,
+): Promise<ResolvedPerson> {
+  const resolved = await resolvePerson(db, input, region, tx.id)
+  // A new placeholder needs none: another add of the same key fails on identities.key.
+  if (resolved.writes.length > 0) return resolved
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: resolved.personId,
+    data: { rev: randomId() },
+  })
+  const again = await resolvePerson(db, input, region, tx.id)
+  if (again.personId !== resolved.personId) throw tryAgain()
+  return resolved
 }
 
 export function isAppwriteError(error: unknown, code: number): boolean {
