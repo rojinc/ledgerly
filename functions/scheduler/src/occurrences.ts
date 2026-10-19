@@ -200,8 +200,10 @@ export async function generateOccurrences(
       : { generatedThrough: laterOf(compareDates(reached, to) < 0 ? reached : to, after) }
     await withTransaction(db, async (tx) => {
       await guardSchedule(tx, db, seen, progress)
-      if (batch.length === 0) return
+      // A batch that only saves its progress too: its dates came from the group's time zone and
+      // region. `batchesOf` counts the group row's write in every batch.
       await guardGroupAndMembers(tx, db, group, ledger, people)
+      if (batch.length === 0) return
       await tx.write(...batch.flatMap((step) => stepWrites(schedule, step)))
       await requireUnchanged(db, batch)
     })

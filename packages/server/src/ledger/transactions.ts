@@ -357,8 +357,8 @@ export async function guardGroupAndMembers(
 
 /**
  * Guards the group row (ledger.md#concurrency), with any other guard writes in `also`: stages a
- * fresh `rev` on it, then checks the currency, archive date, time zone and settings the route
- * read are still the same.
+ * fresh `rev` on it, then checks the currency, archive date, time zone, settings and region the
+ * route read are still the same.
  */
 export async function guardGroup(
   tx: Tx,
@@ -378,10 +378,11 @@ export async function guardGroup(
       tableId: TABLES.groups,
       rowId: group.$id,
     })
-    // Everything the route read from the group: the plan used its time zone and settings.
-    const changed = (['currency', 'archivedAt', 'timezone', 'settingsJson'] as const).some(
-      (column) => staged[column] !== group[column],
-    )
+    // Everything the route read from the group: the plan used its time zone and settings, and
+    // the scheduler's expansion its region's public holidays.
+    const changed = (
+      ['currency', 'archivedAt', 'timezone', 'settingsJson', 'region'] as const
+    ).some((column) => staged[column] !== group[column])
     if (changed) throw new Raced()
   })
 }
