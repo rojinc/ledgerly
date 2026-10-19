@@ -38,6 +38,15 @@ describe('toCsv', () => {
       'ok=1',
     ])
     expect(lines(toCsv(['v'], [[{ money: '-12.30' }]]))).toEqual(['v', '-12.30'])
+    // Spaces before, a leading line feed, and full-width forms.
+    expect(
+      lines(
+        toCsv(
+          ['v'],
+          [[' =1'], ['\u00a0+1'], ['\nx'], ['＝1'], ['＋1'], ['－1'], ['＠x'], ['a =1']],
+        ),
+      ),
+    ).toEqual(['v', "' =1", "'\u00a0+1", `"'\nx"`, "'＝1", "'＋1", "'－1", "'＠x", 'a =1'])
   })
 })
 

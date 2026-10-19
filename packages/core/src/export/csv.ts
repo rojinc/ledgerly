@@ -8,8 +8,9 @@ import type { BusinessDetails } from '../schemas/identity'
 /** A cell: text as typed, or an amount, which is never treated as a formula. */
 type Cell = string | { money: string }
 
-// A spreadsheet runs a cell starting with one of these as a formula.
-const FORMULA = /^[=+\-@\t\r]/
+// A spreadsheet runs a cell starting with one of these as a formula, full-width forms included,
+// and some importers trim leading spaces first.
+const FORMULA = /^[\s\u00a0\u3000]*[=+\-@\uff1d\uff0b\uff0d\uff20]|^[\t\r\n]/
 // RFC 4180: these make a field need quotes.
 const SPECIAL = /[",\r\n]/
 
@@ -19,7 +20,7 @@ function field(cell: Cell): string {
 }
 
 /**
- * RFC 4180 CSV with a UTF-8 byte order mark and CRLF line ends. A text cell that would start a
+ * RFC 4180 CSV with a UTF-8 byte order mark and CRLF line ends. A text cell that could start a
  * formula gets a leading `'`; an amount never does.
  */
 export function toCsv(header: readonly string[], rows: readonly (readonly Cell[])[]): string {
