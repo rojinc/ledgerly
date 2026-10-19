@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   archiveJob,
   BUSINESS,
+  beforeStaging,
   commitNow,
   expectHiddenFromDan,
   failure,
@@ -12,6 +13,7 @@ import {
   leftOnTheirOwn,
   member,
   ok,
+  op,
   payment,
   rowsOf,
   shift,
@@ -241,6 +243,20 @@ describe('POST /statements/{id}/refresh', () => {
     expect(services.db.rows('statements')[0]).toMatchObject({
       status: 'finalizing',
       snapshotJson: '{}',
+    })
+  })
+
+  it('answers CONFLICT when the statement is deleted before its write is staged, then NOT_FOUND (#238)', async () => {
+    const services = fakes({ statements: [statement('st1')] })
+    // Appwrite refuses to stage an update of a row deleted since it was read (#238).
+    beforeStaging(services.db, [op('statements', 'st1', {}, 'delete')])
+    expect(await failure(services, 'POST', '/statements/st1/refresh')).toMatchObject({
+      status: 409,
+      code: 'CONFLICT',
+    })
+    expect(await failure(services, 'POST', '/statements/st1/refresh')).toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
     })
   })
 
