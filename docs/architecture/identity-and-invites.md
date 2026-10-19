@@ -171,7 +171,7 @@ The response and the email are the same whether the recipient is a placeholder w
 
 When an account's password is set for the first time or changed, the account's verified email gets a notice, so a stolen session that sets a password is noticed ([#236](https://github.com/rojinc/ledgerly/issues/236)). It goes with the 24-hour [deletion refusal](#refusals).
 
-The `identity` function subscribes to the Appwrite event `users.*.update.password`. Appwrite runs it as `POST /`, an [event run](permissions.md#function-side-checks), with the event's name in `x-appwrite-event` and the user as the body:
+The `identity` function subscribes to two Appwrite events: `users.*.update.password` (a password set or changed while signed in) and `users.*.recovery.*.update` (a [recovery](https://github.com/rojinc/ledgerly/issues/290) reset). A reset fires only the second, and Appwrite matches event names exactly (Appwrite 1.8.1, `account.php` and `Workers/Functions.php`). **It never subscribes to `users.*.recovery.*.create`, `users.*.recovery.*` or `users.*`:** the create event's payload carries the recovery secret in plain text. Appwrite runs it as `POST /`, an [event run](permissions.md#function-side-checks), with the event's name in `x-appwrite-event` and the user (or, for a reset, the spent token) as the body:
 
 1. **Who:** a signed-in call gets `FORBIDDEN`. Any other call without a JWT gets `UNAUTHENTICATED` before the route, as for a missing JWT.
 2. **The user:** it takes only the user ID: from the event's name (`users.<userId>.…`), or, if that names none, the body's `$id`. Then it reads the user again with `users.get`. It trusts nothing else in the body, and never logs or stores it. Reading the ID from the name also fits a recovery event, whose body is a token, not a user.
@@ -187,7 +187,7 @@ A forged or replayed call can do nothing new: at worst it asks again, within the
 - A notice to the old address when the email or phone changes is #268.
 - **A first password set through an email or phone change.** Appwrite may set a first password through an email or phone change on an account that has none (made with an email code). That fires only `users.*.update.email` or `.phone`, so no notice goes. #268's notice to the old address covers that path; the 24-hour deletion refusal holds either way, since `passwordUpdate` is set.
 - A send that fails (a Resend outage, say) isn't retried: Appwrite doesn't run an event again. The run logs `failed`.
-- After the deploy, the lead checks on `ledgerly-dev` that setting a first password and a recovery reset both fire the event, with the user ID in `x-appwrite-event`. If the reset doesn't, the recovery event is added here.
+- After the deploy, the lead checks on `ledgerly-dev` that setting a first password fires `users.<id>.update.password` and a recovery reset fires `users.<id>.recovery.<tokenId>.update`, each with the user ID in `x-appwrite-event`.
 
 ## Deleting an account (M4)
 

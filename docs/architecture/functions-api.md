@@ -191,7 +191,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
-| `POST /` | the Appwrite user, as the event sends it | `{}` | only an [event run](permissions.md#function-side-checks) of `users.*.update.password`; a signed-in call gets `FORBIDDEN` ([password notice](identity-and-invites.md#password-notice)) |
+| `POST /` | the Appwrite user, as the event sends it | `{}` | only an [event run](permissions.md#function-side-checks) of `users.*.update.password` or `users.*.recovery.*.update`; a signed-in call gets `FORBIDDEN` ([password notice](identity-and-invites.md#password-notice)) |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
