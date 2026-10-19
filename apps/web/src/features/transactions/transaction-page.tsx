@@ -1,7 +1,8 @@
-import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import { type ReactNode, useState } from 'react'
 import { Link, useParams } from 'react-router'
+import { useSwap } from '../../lib/use-swap'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -9,9 +10,20 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useGroupName } from '../groups/use-group-name'
 import { useGroup, useMyMember } from '../groups/use-groups'
+import { EntryForm as PairEntryForm } from '../people/pair-page'
+import { toPairValues } from '../people/pair-values'
 import { ReceiptsSection } from '../receipts/receipts-section'
 import { KIND_LABEL, STATUS_LABEL } from './history-page'
-import { useMembers, useShares, useTransaction, useVoidTransaction } from './use-transactions'
+import { EntryForm } from './new-transaction-page'
+import { toEntryValues } from './presets'
+import {
+  employerPeople,
+  useHasItems,
+  useMembers,
+  useShares,
+  useTransaction,
+  useVoidTransaction,
+} from './use-transactions'
 
 function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
   return (
@@ -118,6 +130,7 @@ function Details({ row }: { row: Transactions }) {
   const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
   const locked = row.statementId !== null
   const archived = group.data.archivedAt !== null
+  const open = mayChange && !locked && !archived
   const { note, shift, splitText } = storedParts(row.inputJson)
 
   return (
@@ -203,12 +216,107 @@ function Details({ row }: { row: Transactions }) {
       <ReceiptsSection
         row={row}
         group={group.data}
-        mayChange={mayChange && !locked && !archived && !['void', 'running'].includes(row.status)}
+        mayChange={open && !['void', 'running'].includes(row.status)}
       />
-      {mayChange && !locked && !archived && row.status !== 'void' && (
+      {open && <Change row={row} group={group.data} members={members.data} personId={personId} />}
+      {open && row.status !== 'void' && (
         <VoidForm voidRow={voidRow} reason={reason} onReason={setReason} />
       )}
     </>
+  )
+}
+
+/**
+ * How the row is changed, for someone who may change it (#184): a posted employer or lend &
+ * borrow entry here, with the form it was made with; a personal bill or a shift on its own page.
+ */
+function Change({
+  row,
+  group,
+  members,
+  personId,
+}: {
+  row: Transactions
+  group: Groups
+  members: Members[] | undefined
+  personId: string
+}) {
+  // The bill page changes a due bill only, and the shift page a scheduled or posted shift.
+  if (row.kind === 'bill' && group.type === 'personal' && row.status === 'due') {
+    return (
+      <Link to={`/bills/${row.$id}`} className="self-start underline underline-offset-4">
+        Change this bill
+      </Link>
+    )
+  }
+  if (row.kind === 'shift' && (row.status === 'scheduled' || row.status === 'posted')) {
+    return (
+      <Link to={`/shifts/${row.$id}`} className="self-start underline underline-offset-4">
+        Change this shift
+      </Link>
+    )
+  }
+  // A scheduled or due row stores no payer, so only a posted one has a choice to show.
+  if (row.status !== 'posted') return null
+  // As on create, only the worker changes an employer entry: the presets are worded from their side.
+  const employer =
+    group.type === 'employer' &&
+    group.ownerPersonId === personId &&
+    (row.kind === 'expense' || row.kind === 'payment')
+  const pair = group.type === 'pair' && (row.kind === 'loan' || row.kind === 'payment')
+  if (!employer && !pair) return null
+  return <EditEntry row={row} group={group} members={members} personId={personId} />
+}
+
+const UNMATCHED = 'This entry can’t be changed here. Void it and add it again.'
+
+/** Edit, swapping in the entry's form. Itemised rows (#42) get none yet. */
+function EditEntry({
+  row,
+  group,
+  members,
+  personId,
+}: {
+  row: Transactions
+  group: Groups
+  members: Members[] | undefined
+  personId: string
+}) {
+  const swap = useSwap()
+  const items = useHasItems(row.$id)
+  if (!members || items.data !== false) return null
+  let form: ReactNode
+  if (group.type === 'employer') {
+    const people = employerPeople(group, members)
+    const values = people && toEntryValues(row, people, group.currency)
+    if (!people || !values) return <Message>{UNMATCHED}</Message>
+    form = (
+      <EntryForm
+        group={group}
+        people={people}
+        edit={{ row, values, heading: swap.heading, onDone: swap.close }}
+      />
+    )
+  } else {
+    const them = members.find((member) => member.personId !== personId)
+    const people = them && { me: personId, them: them.personId }
+    const values = people && toPairValues(row, people, group.currency)
+    if (!them || !people || !values) return <Message>{UNMATCHED}</Message>
+    form = (
+      <PairEntryForm
+        group={group}
+        people={people}
+        name={them.displayName}
+        edit={{ row, values, heading: swap.heading, onDone: swap.close }}
+      />
+    )
+  }
+  return swap.opened ? (
+    <div className="flex flex-col gap-3 border-t border-border pt-4">{form}</div>
+  ) : (
+    <Button ref={swap.trigger} variant="outline" className="self-start" onClick={swap.open}>
+      Edit
+    </Button>
   )
 }
 

@@ -1,0 +1,583 @@
+import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { createMemoryRouter, RouterProvider } from 'react-router'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { callFunction, type Result } from '../../lib/api'
+import { tablesDB } from '../../lib/appwrite'
+import { useGroup, useMyMember } from '../groups/use-groups'
+import { transactionRoutes } from './routes'
+
+// #184: changing a posted employer or lend & borrow entry from `/transactions/{id}`.
+
+vi.mock('../../lib/appwrite', () => ({
+  DATABASE_ID: 'main',
+  tablesDB: { listRows: vi.fn(), getRow: vi.fn() },
+}))
+vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
+vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
+// The viewer's person: the worker, Sam.
+let mockPersonId = 'pw'
+vi.mock('../auth/use-bootstrap', () => ({
+  useBootstrap: () => ({ data: { personId: mockPersonId } }),
+}))
+vi.mock('../groups/use-groups', () => ({
+  useGroups: vi.fn(),
+  useGroup: vi.fn(),
+  useMyMember: vi.fn(),
+  useBalances: vi.fn(),
+}))
+
+const listRows = vi.mocked(tablesDB.listRows)
+const getRow = vi.mocked(tablesDB.getRow)
+const call = vi.mocked(callFunction)
+
+const acme = {
+  $id: 'g1',
+  type: 'employer',
+  name: 'Acme',
+  ownerPersonId: 'pw',
+  currency: 'AUD',
+  timezone: 'Australia/Sydney',
+  archivedAt: null,
+} as Groups
+
+const pair = { ...acme, $id: 'g2', type: 'pair', name: 'Fran' } as Groups
+
+const EMPLOYER_MEMBERS = [
+  { $id: 'm1', groupId: 'g1', personId: 'pw', displayName: 'Sam', role: 'admin' },
+  { $id: 'm2', groupId: 'g1', personId: 'pe', displayName: 'Acme', role: 'viewer' },
+] as Members[]
+
+const PAIR_MEMBERS = [
+  { $id: 'm3', groupId: 'g2', personId: 'pw', displayName: 'Sam', role: 'admin' },
+  { $id: 'm4', groupId: 'g2', personId: 'pf', displayName: 'Fran', role: 'admin' },
+] as Members[]
+
+/** A posted row, its stored input as the ledger keeps it. */
+function row(input: object, extra: Partial<Transactions> = {}): Transactions {
+  return {
+    $id: 't1',
+    groupId: 'g1',
+    kind: 'expense',
+    status: 'posted',
+    date: '2026-10-18',
+    description: 'Supplies',
+    category: 'work',
+    totalCents: 4000,
+    inputJson: JSON.stringify(input),
+    statementId: null,
+    voidReason: null,
+    createdBy: 'pw',
+    ...extra,
+  } as Transactions
+}
+
+/** The PATCH body that sends `stored` back unchanged: the row's columns and its stored input. */
+function sameBody(stored: Transactions) {
+  return {
+    id: stored.$id,
+    groupId: stored.groupId,
+    kind: stored.kind,
+    date: stored.date,
+    description: stored.description,
+    totalCents: stored.totalCents,
+    ...(stored.category ? { category: stored.category } : {}),
+    ...JSON.parse(stored.inputJson),
+  }
+}
+
+function mock(
+  stored: Transactions,
+  {
+    group = acme,
+    role = 'admin',
+    members = EMPLOYER_MEMBERS,
+    items = [],
+  }: { group?: Groups; role?: Members['role']; members?: Members[]; items?: object[] } = {},
+) {
+  vi.mocked(useGroup).mockReturnValue({ data: group, isError: false } as never)
+  vi.mocked(useMyMember).mockReturnValue({ data: { role }, isError: false } as never)
+  getRow.mockResolvedValue(stored as never)
+  listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+    const rows = tableId === 'members' ? members : tableId === 'items' ? items : []
+    return { total: rows.length, rows }
+  }) as never)
+}
+
+function renderPage() {
+  const router = createMemoryRouter([transactionRoutes, { path: '*', element: null }], {
+    initialEntries: ['/transactions/t1'],
+  })
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RouterProvider router={router} />
+    </QueryClientProvider>,
+  )
+  return { queryClient }
+}
+
+function ok(data: unknown): Result<unknown> {
+  return { ok: true, data }
+}
+
+/** The last PATCH body sent. */
+function patched() {
+  const last = call.mock.calls.at(-1)
+  expect(last?.slice(0, 3)).toEqual(['ledger', 'PATCH', '/transactions/t1'])
+  return last?.[3]
+}
+
+/** Opens the form and waits for focus on its heading. */
+async function openForm() {
+  fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+  const heading = screen.getByRole('heading', { name: 'Change this entry' })
+  expect(document.activeElement).toBe(heading)
+  return heading
+}
+
+/** Waits until the page knows whether the row is itemised, so no Edit is the answer. */
+async function settled(queryClient: QueryClient) {
+  await screen.findByText('Group')
+  await waitFor(() =>
+    expect(queryClient.getQueryState(['transaction', 't1', 'items'])?.status ?? 'none').not.toBe(
+      'pending',
+    ),
+  )
+}
+
+beforeEach(() => {
+  mockPersonId = 'pw'
+})
+
+afterEach(() => {
+  cleanup()
+  vi.resetAllMocks()
+})
+
+const RADIO = {
+  reimbursable: 'I paid for them (reimbursable)',
+  onTheirCard: 'Bought on their card, for work',
+  personalOnTheirCard: 'Personal, on their card / cash advance',
+  paymentReceived: 'Payment received',
+}
+
+describe('TransactionPage, an employer entry', () => {
+  const note = { note: 'From the hardware shop' }
+  it.each([
+    [
+      'reimbursable',
+      row({
+        payers: [{ personId: 'pw', cents: 4000 }],
+        split: { mode: 'equal', personIds: ['pe'] },
+        ...note,
+      }),
+    ],
+    [
+      'onTheirCard',
+      row({
+        payers: [{ personId: 'pe', cents: 4000 }],
+        split: { mode: 'equal', personIds: ['pe'] },
+      }),
+    ],
+    [
+      'personalOnTheirCard',
+      row(
+        {
+          payers: [{ personId: 'pe', cents: 4000 }],
+          split: { mode: 'equal', personIds: ['pw'] },
+          ...note,
+        },
+        { category: null },
+      ),
+    ],
+    [
+      'paymentReceived',
+      row(
+        { payment: { fromPersonId: 'pe', toPersonId: 'pw' } },
+        { kind: 'payment', category: null, description: 'October pay' },
+      ),
+    ],
+  ] as const)('opens %s as stored, saves it unchanged, then a new amount', async (type, stored) => {
+    mock(stored)
+    call.mockImplementation(async (_fn, _method, _path, body) =>
+      ok({
+        transaction: { ...stored, totalCents: (body as { totalCents: number }).totalCents },
+        shares: [],
+      }),
+    )
+    renderPage()
+    await openForm()
+    expect(
+      (
+        screen.getByRole('radio', {
+          name: (name: string) => name.startsWith(RADIO[type]),
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true)
+    // Only choices of the row's kind.
+    const offered = screen.getAllByRole('radio').map((radio) => (radio as HTMLInputElement).value)
+    expect(offered).toEqual(
+      type === 'paymentReceived'
+        ? ['paymentReceived']
+        : ['reimbursable', 'onTheirCard', 'personalOnTheirCard'],
+    )
+    expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('40.00')
+    expect((screen.getByLabelText('Date') as HTMLInputElement).value).toBe('2026-10-18')
+    expect((screen.getByLabelText('Note (optional)') as HTMLInputElement).value).toBe(
+      'note' in JSON.parse(stored.inputJson) ? 'From the hardware shop' : '',
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(patched()).toStrictEqual(sameBody(stored))
+    // It closes with no error, and focus goes back to Edit.
+    const edit = await screen.findByRole('button', { name: 'Edit' })
+    await waitFor(() => expect(document.activeElement).toBe(edit))
+    expect(screen.queryByRole('alert')).toBeNull()
+
+    await openForm()
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '55.10' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    const before = sameBody(stored)
+    expect(patched()).toStrictEqual({
+      ...before,
+      totalCents: 5510,
+      ...(before.payers ? { payers: [{ ...before.payers[0], cents: 5510 }] } : {}),
+    })
+    // The page shows the saved row.
+    expect(await screen.findByText(/^A?\$55\.10$/)).toBeTruthy()
+  })
+
+  const reimbursable = row({
+    payers: [{ personId: 'pw', cents: 4000 }],
+    split: { mode: 'equal', personIds: ['pe'] },
+  })
+
+  it('switches between the expense presets, sending the new payers and split', async () => {
+    mock(reimbursable)
+    call.mockResolvedValue(ok({ transaction: reimbursable, shares: [] }))
+    renderPage()
+    await openForm()
+    fireEvent.click(
+      screen.getByRole('radio', { name: (name: string) => name.startsWith(RADIO.onTheirCard) }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalled())
+    expect(patched()).toMatchObject({
+      kind: 'expense',
+      payers: [{ personId: 'pe', cents: 4000 }],
+      split: { mode: 'equal', personIds: ['pe'] },
+    })
+  })
+
+  it('refreshes the shares, balances, history and calendar after a save', async () => {
+    mock(reimbursable)
+    const shares = [{ $id: 's9', personId: 'pw', givenCents: 4000, receivedCents: 0 }]
+    call.mockResolvedValue(ok({ transaction: reimbursable, shares }))
+    const { queryClient } = renderPage()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['balances', 'g1'] }))
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['history', 'g1'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] })
+    expect(queryClient.getQueryData(['transaction', 't1', 'shares'])).toEqual(shares)
+  })
+
+  it('closes on Cancel with nothing sent, and focus back on Edit', async () => {
+    mock(reimbursable)
+    renderPage()
+    await openForm()
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('heading', { name: 'Change this entry' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }))
+    expect(call).not.toHaveBeenCalled()
+    // Opened again, it starts from the row.
+    await openForm()
+    expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('40.00')
+  })
+
+  it.each([
+    ['LOCKED', 'It’s on a final invoice.', 'It’s on a final invoice.'],
+    [
+      'ARCHIVED',
+      'Archived.',
+      'This group has been archived, so it can’t be changed any more. Reload the page to see it as it is now.',
+    ],
+    ['FORBIDDEN', 'Only an admin can change this.', 'Only an admin can change this.'],
+    ['CONFLICT', 'It changed meanwhile.', 'It changed meanwhile.'],
+    ['NOT_FOUND', 'Not found.', 'Not found.'],
+    ['VALIDATION_FAILED', 'The date is too far ahead.', 'The date is too far ahead.'],
+  ] as const)('shows %s in plain words next to the form', async (code, message, shown) => {
+    mock(reimbursable)
+    call.mockResolvedValue({ ok: false, error: { code, message } })
+    const { queryClient } = renderPage()
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(shown)
+    // The form stays open, so nothing typed is lost.
+    expect(screen.getByRole('heading', { name: 'Change this entry' })).toBeTruthy()
+    // The first three read the row and its group again.
+    const reread = ['LOCKED', 'ARCHIVED', 'FORBIDDEN'].includes(code)
+    expect(invalidate).toHaveBeenCalledTimes(reread ? 2 : 0)
+    if (reread) {
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 't1'], exact: true })
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g1'] })
+    }
+  })
+
+  it('says so, with no Edit, for a stored input that matches no choice', async () => {
+    mock(
+      row({
+        payers: [
+          { personId: 'pw', cents: 2000 },
+          { personId: 'pe', cents: 2000 },
+        ],
+        split: { mode: 'equal', personIds: ['pe'] },
+      }),
+    )
+    renderPage()
+    expect(
+      await screen.findByText('This entry can’t be changed here. Void it and add it again.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+})
+
+describe('TransactionPage, a lend & borrow entry', () => {
+  const lent = row(
+    { payers: [{ personId: 'pw', cents: 4000 }], split: { mode: 'equal', personIds: ['pf'] } },
+    { groupId: 'g2', kind: 'loan', category: null, description: 'Lent' },
+  )
+  const borrowed = row(
+    {
+      payers: [{ personId: 'pf', cents: 4000 }],
+      split: { mode: 'equal', personIds: ['pw'] },
+      note: 'Until Friday',
+    },
+    { groupId: 'g2', kind: 'loan', category: null, description: 'Rent', createdBy: 'pf' },
+  )
+  const repaidByMe = row(
+    { payment: { fromPersonId: 'pw', toPersonId: 'pf' } },
+    { groupId: 'g2', kind: 'payment', category: null, description: 'Repaid' },
+  )
+  const repaidByThem = row(
+    { payment: { fromPersonId: 'pf', toPersonId: 'pw' } },
+    { groupId: 'g2', kind: 'payment', category: null, description: 'Repaid' },
+  )
+  const pairOptions = { group: pair, members: PAIR_MEMBERS }
+
+  it.each([
+    ['lent', lent, 'I lent Fran money', undefined],
+    ['borrowed', borrowed, 'I borrowed from Fran', undefined],
+    ['repaid by me', repaidByMe, 'Money was paid back', 'me'],
+    ['repaid by them', repaidByThem, 'Money was paid back', 'them'],
+  ] as const)(
+    'opens %s as stored, saves it unchanged, then a new amount',
+    async (_, stored, radio, from) => {
+      mock(stored, pairOptions)
+      call.mockImplementation(async (_fn, _method, _path, body) =>
+        ok({
+          transaction: { ...stored, totalCents: (body as { totalCents: number }).totalCents },
+          shares: [],
+        }),
+      )
+      renderPage()
+      await openForm()
+      expect((screen.getByRole('radio', { name: radio }) as HTMLInputElement).checked).toBe(true)
+      const offered = screen.getAllByRole('radio').map((input) => (input as HTMLInputElement).value)
+      expect(offered).toEqual(stored.kind === 'payment' ? ['repaid'] : ['lent', 'borrowed'])
+      if (from) {
+        expect((screen.getByLabelText('Who paid back?') as HTMLSelectElement).value).toBe(from)
+      }
+      // A change starts from the row, not from the balance.
+      expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('40.00')
+
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      expect(patched()).toStrictEqual(sameBody(stored))
+      const edit = await screen.findByRole('button', { name: 'Edit' })
+      await waitFor(() => expect(document.activeElement).toBe(edit))
+
+      await openForm()
+      fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '0.99' } })
+      // No warning about paying back more than is owed: the balance already counts this entry.
+      expect(screen.queryByText(/owed the other way/)).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+      const before = sameBody(stored)
+      expect(patched()).toStrictEqual({
+        ...before,
+        totalCents: 99,
+        ...(before.payers ? { payers: [{ ...before.payers[0], cents: 99 }] } : {}),
+      })
+    },
+  )
+
+  it('switches a loan between lent and borrowed, and who repaid', async () => {
+    mock(lent, pairOptions)
+    call.mockResolvedValue(ok({ transaction: lent, shares: [] }))
+    renderPage()
+    await openForm()
+    fireEvent.click(screen.getByRole('radio', { name: 'I borrowed from Fran' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalled())
+    expect(patched()).toMatchObject({
+      payers: [{ personId: 'pf', cents: 4000 }],
+      split: { mode: 'equal', personIds: ['pw'] },
+    })
+    cleanup()
+    call.mockReset()
+    mock(repaidByMe, pairOptions)
+    call.mockResolvedValue(ok({ transaction: repaidByMe, shares: [] }))
+    renderPage()
+    await openForm()
+    fireEvent.change(screen.getByLabelText('Who paid back?'), { target: { value: 'them' } })
+    // A change keeps the amount as stored, whoever repaid.
+    expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('40.00')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalled())
+    expect(patched()).toMatchObject({ payment: { fromPersonId: 'pf', toPersonId: 'pw' } })
+  })
+
+  it('shows a refusal as the function words it, never as a possible duplicate', async () => {
+    mock(lent, pairOptions)
+    call.mockResolvedValue({ ok: false, error: { code: 'CONFLICT', message: 'It changed.' } })
+    renderPage()
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('It changed.')
+  })
+
+  it('closes on Cancel, with focus back on Edit', async () => {
+    mock(lent, pairOptions)
+    renderPage()
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }))
+    expect(call).not.toHaveBeenCalled()
+  })
+})
+
+describe('TransactionPage, who sees Edit', () => {
+  const reimbursable = row({
+    payers: [{ personId: 'pw', cents: 4000 }],
+    split: { mode: 'equal', personIds: ['pe'] },
+  })
+  const lent = row(
+    { payers: [{ personId: 'pw', cents: 4000 }], split: { mode: 'equal', personIds: ['pf'] } },
+    { groupId: 'g2', kind: 'loan', category: null },
+  )
+  const house = { ...acme, $id: 'g3', type: 'house', name: 'The flat' } as Groups
+
+  it.each([
+    ['an admin', reimbursable, {}, true],
+    ['a member who added it', lent, { group: pair, members: PAIR_MEMBERS, role: 'member' }, true],
+    [
+      'a member who didn’t add it',
+      { ...lent, createdBy: 'pf' },
+      { group: pair, members: PAIR_MEMBERS, role: 'member' },
+      false,
+    ],
+    ['a viewer', lent, { group: pair, members: PAIR_MEMBERS, role: 'viewer' }, false],
+    ['a locked row', { ...reimbursable, statementId: 'st1' }, {}, false],
+    [
+      'an archived group',
+      reimbursable,
+      { group: { ...acme, archivedAt: '2026-10-01T00:00:00Z' } },
+      false,
+    ],
+    ['a void row', { ...reimbursable, status: 'void' }, {}, false],
+    ['a scheduled row', { ...reimbursable, status: 'scheduled' }, {}, false],
+    ['a due row', { ...lent, status: 'due' }, { group: pair, members: PAIR_MEMBERS }, false],
+    ['an itemised row', reimbursable, { items: [{ $id: 'i1', transactionId: 't1' }] }, false],
+    ['a house expense (part 2)', { ...reimbursable, groupId: 'g3' }, { group: house }, false],
+    ['a loan in an employer group', { ...lent, groupId: 'g1' }, {}, false],
+    [
+      'an expense in a pair group',
+      { ...reimbursable, groupId: 'g2' },
+      { group: pair, members: PAIR_MEMBERS },
+      false,
+    ],
+  ] as const)('%s: %s', async (_, stored, options, shown) => {
+    mock(stored as Transactions, options as Parameters<typeof mock>[1])
+    const { queryClient } = renderPage()
+    await settled(queryClient)
+    if (shown) expect(await screen.findByRole('button', { name: 'Edit' })).toBeTruthy()
+    else expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    // Nothing that can't be changed says to void it.
+    expect(screen.queryByText(/can’t be changed here/)).toBeNull()
+  })
+
+  it('offers an employer entry to the worker only, whose side its choices are worded from', async () => {
+    mockPersonId = 'pe'
+    mock(reimbursable)
+    const { queryClient } = renderPage()
+    await settled(queryClient)
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    // Void stays, by the creator-or-admin rule.
+    expect(screen.getByRole('button', { name: 'Void' })).toBeTruthy()
+  })
+
+  it('runs no items query for a row it can’t change', async () => {
+    mock({ ...reimbursable, status: 'void' })
+    renderPage()
+    await screen.findByText('Group')
+    expect(
+      listRows.mock.calls.some(
+        ([params]) => (params as unknown as { tableId: string }).tableId === 'items',
+      ),
+    ).toBe(false)
+  })
+})
+
+describe('TransactionPage, bills and shifts', () => {
+  const personal = { ...acme, $id: 'g4', type: 'personal', name: 'Me' } as Groups
+  const bill = row({}, { groupId: 'g4', kind: 'bill', status: 'due', description: 'Power' })
+  const shift = row({ shift: { minutes: 480, rateCents: 2500 } }, { kind: 'shift', category: null })
+
+  it('links a due personal bill and a shift to their own pages', async () => {
+    mock(bill, { group: personal })
+    renderPage()
+    expect(
+      (await screen.findByRole('link', { name: 'Change this bill' })).getAttribute('href'),
+    ).toBe('/bills/t1')
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    cleanup()
+    for (const status of ['scheduled', 'posted'] as const) {
+      mock({ ...shift, status })
+      renderPage()
+      expect(
+        (await screen.findByRole('link', { name: 'Change this shift' })).getAttribute('href'),
+      ).toBe('/shifts/t1')
+      cleanup()
+    }
+  })
+
+  it.each([
+    ['a paid bill', { ...bill, status: 'posted' }, personal, 'admin'],
+    ['a bill outside a personal group', { ...bill, groupId: 'g1' }, acme, 'admin'],
+    ['a running shift', { ...shift, status: 'running' }, acme, 'admin'],
+    ['a void shift', { ...shift, status: 'void' }, acme, 'admin'],
+    ['a locked shift', { ...shift, statementId: 'st1' }, acme, 'admin'],
+    ['a shift, to a viewer', shift, acme, 'viewer'],
+    [
+      'a bill in an archived group',
+      bill,
+      { ...personal, archivedAt: '2026-10-01T00:00:00Z' },
+      'admin',
+    ],
+  ] as const)('links nothing for %s', async (_, stored, group, role) => {
+    mock(stored as Transactions, { group, role })
+    renderPage()
+    const details = await screen.findByText('Group')
+    expect(details).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /^Change this/ })).toBeNull()
+    expect(within(document.body).queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+})

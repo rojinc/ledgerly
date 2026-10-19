@@ -1,4 +1,5 @@
 import type { Category } from '@ledgerly/core/constants/categories'
+import type { Transactions } from '@ledgerly/core/generated/rows'
 import { parseMoney } from '@ledgerly/core/money/format'
 import type { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
@@ -111,4 +112,70 @@ export function toEntryBody(
     payers: [{ personId: payer, cents: totalCents }],
     split: { mode: 'equal', personIds: [forWhom] },
   }
+}
+
+/** The parts of a stored input (`transactions.inputJson`) an entry's choice comes from. */
+type StoredEntry = {
+  payers?: { personId: string; cents: number }[]
+  split?: { mode?: string; personIds?: string[] }
+  payment?: { fromPersonId: string; toPersonId: string }
+  note?: string
+}
+
+/** The stored input, or an empty one when it can't be read. */
+export function readStored(inputJson: string): StoredEntry {
+  try {
+    const stored = JSON.parse(inputJson) as StoredEntry | null
+    return stored && typeof stored === 'object' ? stored : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * The entry form's values for a posted employer entry (#184), or undefined when its stored input
+ * matches none of the choices: then it can't be changed here, since guessing would rewrite who
+ * paid. `toEntryBody()` of the result gives the stored input back.
+ */
+export function toEntryValues(
+  row: Pick<
+    Transactions,
+    'kind' | 'totalCents' | 'date' | 'description' | 'category' | 'inputJson'
+  >,
+  { worker, employer }: EmployerPeople,
+  currency: string,
+): EntryValues | undefined {
+  const stored = readStored(row.inputJson)
+  const type = entryType(row.kind, row.totalCents, stored, { worker, employer })
+  if (!type) return undefined
+  return {
+    type,
+    amount: centsToText(row.totalCents, currency),
+    date: row.date,
+    description: row.description,
+    category: type === 'paymentReceived' ? '' : ((row.category ?? '') as Category | ''),
+    note: typeof stored.note === 'string' ? stored.note : '',
+  }
+}
+
+function entryType(
+  kind: Transactions['kind'],
+  totalCents: number,
+  { payers, split, payment }: StoredEntry,
+  { worker, employer }: EmployerPeople,
+): EntryType | undefined {
+  if (kind === 'payment') {
+    return payment?.fromPersonId === employer && payment.toPersonId === worker
+      ? 'paymentReceived'
+      : undefined
+  }
+  if (kind !== 'expense' || payers?.length !== 1 || payers[0]?.cents !== totalCents)
+    return undefined
+  if (split?.mode !== 'equal' || split.personIds?.length !== 1) return undefined
+  const paidBy = payers[0].personId
+  const forWhom = split.personIds[0]
+  if (paidBy === worker && forWhom === employer) return 'reimbursable'
+  if (paidBy === employer && forWhom === employer) return 'onTheirCard'
+  if (paidBy === employer && forWhom === worker) return 'personalOnTheirCard'
+  return undefined
 }

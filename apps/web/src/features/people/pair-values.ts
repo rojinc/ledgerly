@@ -1,7 +1,10 @@
+import type { Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney, parseMoney } from '@ledgerly/core/money/format'
 import type { createGroupBodySchema } from '@ledgerly/core/schemas/groups'
 import type { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
+import { centsToText } from '../groups/employer-form'
+import { readStored } from '../transactions/presets'
 
 /** The new lend & borrow form's fields, all as typed. */
 export type PairValues = { name: string; email: string; phone: string; currency: string }
@@ -84,6 +87,45 @@ export function toEntryBody(
     kind: 'loan',
     payers: [{ personId: lender, cents: totalCents }],
     split: { mode: 'equal', personIds: [borrower] },
+  }
+}
+
+/**
+ * The entry form's values for a posted pair entry (#184), or undefined when its stored input
+ * matches none of the choices. `toEntryBody()` of the result gives the stored input back.
+ */
+export function toPairValues(
+  row: Pick<Transactions, 'kind' | 'totalCents' | 'date' | 'description' | 'inputJson'>,
+  { me, them }: PairPeople,
+  currency: string,
+): EntryValues | undefined {
+  const { payers, split, payment, note } = readStored(row.inputJson)
+  let choice: Pick<EntryValues, 'type' | 'from'> | undefined
+  if (row.kind === 'payment') {
+    if (payment?.fromPersonId === me && payment.toPersonId === them) {
+      choice = { type: 'repaid', from: 'me' }
+    } else if (payment?.fromPersonId === them && payment.toPersonId === me) {
+      choice = { type: 'repaid', from: 'them' }
+    }
+  } else if (
+    row.kind === 'loan' &&
+    payers?.length === 1 &&
+    payers[0]?.cents === row.totalCents &&
+    split?.mode === 'equal' &&
+    split.personIds?.length === 1
+  ) {
+    const lender = payers[0].personId
+    const borrower = split.personIds[0]
+    if (lender === me && borrower === them) choice = { type: 'lent', from: 'them' }
+    else if (lender === them && borrower === me) choice = { type: 'borrowed', from: 'them' }
+  }
+  if (!choice) return undefined
+  return {
+    ...choice,
+    amount: centsToText(row.totalCents, currency),
+    date: row.date,
+    description: row.description,
+    note: typeof note === 'string' ? note : '',
   }
 }
 

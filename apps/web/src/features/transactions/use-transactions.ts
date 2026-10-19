@@ -1,5 +1,5 @@
 import type { Category } from '@ledgerly/core/constants/categories'
-import type { Groups, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Members, Shares, Transactions } from '@ledgerly/core/generated/rows'
 import type {
   TransactionInput,
   TransactionView,
@@ -153,6 +153,44 @@ export function useCreateTransaction() {
   return useMutation({
     mutationFn: (body: TransactionInput) => ledger<TransactionView>('POST', '/transactions', body),
     onSuccess: (view) => refresh(queryClient, view),
+  })
+}
+
+/**
+ * `PATCH /transactions/{id}` (#184). After LOCKED, ARCHIVED or FORBIDDEN the row or its group
+ * changed meanwhile (a final statement, an archive, a new role): read them again, so the page
+ * shows it as it is now.
+ */
+export function useUpdateTransaction(id: string, groupId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: TransactionInput) =>
+      ledger<TransactionView>('PATCH', `/transactions/${id}`, body),
+    onSuccess: (view) => refresh(queryClient, view),
+    onError: (error) => {
+      if (
+        error instanceof LedgerError &&
+        ['LOCKED', 'ARCHIVED', 'FORBIDDEN'].includes(error.code)
+      ) {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.transaction(id), exact: true })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.group(groupId) })
+      }
+    },
+  })
+}
+
+/** Whether a transaction has items (`items.idx_transaction_position`): an itemised receipt (#42). */
+export function useHasItems(id: string) {
+  return useQuery({
+    queryKey: queryKeys.transactionItems(id),
+    queryFn: async () => {
+      const { rows } = await tablesDB.listRows<Items>({
+        databaseId: DATABASE_ID,
+        tableId: 'items',
+        queries: [Query.equal('transactionId', id), Query.limit(1)],
+      })
+      return rows.length > 0
+    },
   })
 }
 
