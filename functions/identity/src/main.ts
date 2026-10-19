@@ -7,6 +7,7 @@ import {
 } from '@ledgerly/server/http/create-handler'
 import { bootstrap } from './routes/bootstrap'
 import { postClaim } from './routes/claim'
+import { createInvite } from './routes/invites'
 import { joinPendingGroup, listPendingGroups } from './routes/pending-groups'
 import { updateProfile } from './routes/profile'
 import { type Services, servicesFromRequest } from './services'
@@ -28,6 +29,9 @@ export function identityRoutes(
     ),
     route('POST', '/claim', async (ctx) =>
       postClaim(services(ctx), requireUser(ctx.userId), ctx.body),
+    ),
+    route('POST', '/invites', async (ctx) =>
+      createInvite(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
     route('GET', '/groups/pending', async (ctx) =>
       listPendingGroups(services(ctx), requireUser(ctx.userId)),

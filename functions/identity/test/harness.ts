@@ -2,6 +2,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import type { Email } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { vi } from 'vitest'
 import { identityRoutes } from '../src/main'
@@ -12,10 +13,17 @@ export const NOW = new Date('2026-10-18T20:00:00.000Z')
 export const BEFORE = '2026-10-01T00:00:00.000Z'
 export const AFTER = '2026-10-19T00:00:00.000Z'
 export const TRY_AGAIN = 'Something else changed this at the same time. Try again.'
+export const APP_URL = 'https://app.example.com'
 
 type Seed = ConstructorParameters<typeof FakeDb>[0]
 
-export type Fakes = Services & { db: FakeDb; teams: FakeTeams; account: AccountUser }
+/** `sent` holds every email the fake `sendEmail` was given, in order. */
+export type Fakes = Services & {
+  db: FakeDb
+  teams: FakeTeams
+  account: AccountUser
+  sent: Email[]
+}
 
 /** An account with a verified email and nothing else, as `users.get` returns it. */
 export function account(overrides: Partial<AccountUser> = {}): AccountUser {
@@ -35,12 +43,19 @@ export function fakes(
   options: { account?: AccountUser; teams?: Record<string, string[]> } = {},
 ): Fakes {
   const user = options.account ?? account()
+  const sent: Email[] = []
   return {
     db: new FakeDb(seed),
     teams: new FakeTeams(options.teams),
     users: { get: async () => user },
+    sendEmail: async (email) => {
+      sent.push(email)
+      return { id: `email-${sent.length}` }
+    },
     now: NOW,
+    appUrl: APP_URL,
     account: user,
+    sent,
   }
 }
 

@@ -132,6 +132,27 @@ export function timerRunningEmail(input: {
   )
 }
 
+/**
+ * To a placeholder member, from someone in their group (identity-and-invites.md#invites). It
+ * names the inviter, as the group calls them, and the group, and nothing else: no amounts. The
+ * group is named as a label, since a pair group's name is what its creator calls the person
+ * being invited. `url` carries the token in its fragment, which browsers never send to a server.
+ */
+export function inviteEmail(input: {
+  inviterName: string
+  groupName: string
+  url: string
+}): EmailContent {
+  return message(
+    `${input.inviterName} invited you to a group on Ledgerly`,
+    [
+      `${input.inviterName} added you to the group “${input.groupName}” on Ledgerly and invited you to join.`,
+      "If you weren't expecting this, you can ignore this email.",
+    ],
+    { label: 'Accept the invite', url: input.url },
+  )
+}
+
 // The same paragraphs as HTML and as plain text. Names are user-typed, so HTML escapes
 // everything, and the subject is kept to one line. No images, so no tracking pixels
 // (security-and-privacy.md).

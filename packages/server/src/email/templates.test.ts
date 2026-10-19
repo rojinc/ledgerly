@@ -2,6 +2,7 @@ import { type LocalDate, parseLocalDate } from '@ledgerly/core/dates/local-date'
 import { describe, expect, it } from 'vitest'
 import {
   type EmailContent,
+  inviteEmail,
   invoiceEmail,
   shiftToConfirmEmail,
   statementReadyEmail,
@@ -212,6 +213,49 @@ describe('timerRunningEmail', () => {
     '2026-10-16T10:00:00.000',
   ])('refuses %j', (startedAt) => {
     expect(() => timer(startedAt)).toThrow('startedAt must be an ISO date and time')
+  })
+})
+
+describe('inviteEmail', () => {
+  const LINK = 'https://app.example/invite#Qx3_kz-9AbCdEfGhIjKlMnOpQrStUvWxYz0123456789'
+
+  it('names the inviter and the group, and links to the invite', () => {
+    const content = inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: LINK })
+    expectWellFormed(content)
+    expect(content.subject).toBe('Ann Cho invited you to a group on Ledgerly')
+    expect(content.text).toContain(
+      'Ann Cho added you to the group “Flat 2” on Ledgerly and invited you to join.',
+    )
+    expect(content.text).toContain(`Accept the invite: ${LINK}`)
+    expect(content.html).toContain(`<a href="${LINK}">Accept the invite</a>`)
+  })
+
+  it('holds no amounts', () => {
+    const content = inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: LINK })
+    for (const part of [content.subject, content.text, content.html]) {
+      expect(part).not.toMatch(/\$|AUD|\d[\d,]*\.\d{2}\b|\bcents?\b|\bowe/i)
+    }
+  })
+
+  it('escapes the names in the HTML and keeps the subject on one line', () => {
+    const content = inviteEmail({
+      inviterName: `<b>Ann & "Jo"</b>\r\nBcc: x@example.com`,
+      groupName: `Tom's <i>Flat</i>`,
+      url: LINK,
+    })
+    expect(content.subject).toBe(
+      '<b>Ann & "Jo"</b> Bcc: x@example.com invited you to a group on Ledgerly',
+    )
+    expect(content.html).toContain(
+      '&lt;b&gt;Ann &amp; &quot;Jo&quot;&lt;/b&gt;\r\nBcc: x@example.com added you to the group “Tom&#39;s &lt;i&gt;Flat&lt;/i&gt;”',
+    )
+    expect(content.html).not.toMatch(/<b>|<i>/)
+  })
+
+  it('refuses a link that is not http(s), such as one without APP_URL', () => {
+    expect(() =>
+      inviteEmail({ inviterName: 'Ann Cho', groupName: 'Flat 2', url: '/invite#token' }),
+    ).toThrow('Email links must be http(s)')
   })
 })
 

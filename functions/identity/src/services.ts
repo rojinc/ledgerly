@@ -1,5 +1,6 @@
 import { clientFromRequest, type Db } from '@ledgerly/server/appwrite/client'
 import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
+import { type Email, sendEmail } from '@ledgerly/server/email/send-email'
 import type { RouteContext } from '@ledgerly/server/http/create-handler'
 import { type Models, Teams, Users } from 'node-appwrite'
 
@@ -14,11 +15,26 @@ export interface UsersApi {
   get(params: { userId: string }): Promise<AccountUser>
 }
 
-/** What the routes work with, so tests can pass FakeDb, FakeTeams and a fixed clock. */
-export type Services = { db: Db; teams: TeamsApi; users: UsersApi; now: Date }
+/** What the routes work with, so tests can pass FakeDb, FakeTeams, fake email and a fixed clock. */
+export type Services = {
+  db: Db
+  teams: TeamsApi
+  users: UsersApi
+  sendEmail: (email: Email) => Promise<unknown>
+  now: Date
+  /** The web app's address, for links in emails (environments-and-deploys.md: `APP_URL`). */
+  appUrl: string
+}
 
 /** The real services for one request, with the per-execution API key. */
 export function servicesFromRequest(ctx: Pick<RouteContext, 'db' | 'headers'>): Services {
   const client = clientFromRequest(ctx.headers)
-  return { db: ctx.db, teams: new Teams(client), users: new Users(client), now: new Date() }
+  return {
+    db: ctx.db,
+    teams: new Teams(client),
+    users: new Users(client),
+    sendEmail,
+    now: new Date(),
+    appUrl: process.env.APP_URL ?? '',
+  }
 }
