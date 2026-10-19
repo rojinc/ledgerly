@@ -6,7 +6,7 @@ import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
-import { type ReactNode, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
@@ -77,6 +77,8 @@ export function NewShiftPage() {
       .catch(() => {
         throw error
       })
+    // Only the shift this visit sent: the caller's own, in a shift's shape.
+    if (row.createdBy !== personId || row.kind !== 'shift') throw error
     queryClient.setQueryData(queryKeys.transaction(id), row)
     // The lost answer's refresh never ran.
     markStale(queryClient, row.groupId)
@@ -162,7 +164,15 @@ const STATUS: Record<Transactions['status'], string> = {
 export function ShiftPage() {
   const id = useParams().shiftId ?? ''
   const transaction = useTransaction(id)
-  const alreadySaved = (useLocation().state as { alreadySaved?: boolean } | null)?.alreadySaved
+  const location = useLocation()
+  const navigate = useNavigate()
+  // Shown on this visit only: the history entry's state is cleared, so a reload doesn't repeat it.
+  const [alreadySaved] = useState(
+    () => (location.state as { alreadySaved?: boolean } | null)?.alreadySaved,
+  )
+  useEffect(() => {
+    if (location.state) navigate('.', { replace: true, state: null })
+  }, [location.state, navigate])
   // Confirm and Void go away once the shift changes: focus moves here, and the status line below
   // reads out the new status.
   const heading = useRef<HTMLHeadingElement>(null)
@@ -312,7 +322,8 @@ function ShiftSummary({
           </dd>
         </>
       )}
-      {!running && (
+      {/* A void shift pays nothing. */}
+      {!running && row.status !== 'void' && (
         <>
           <dt className="text-muted-foreground">Pay</dt>
           <dd>{money(row.totalCents)}</dd>
@@ -335,10 +346,12 @@ function ConfirmShift({
     <div className="flex flex-col items-start gap-2">
       <Button
         onClick={() => {
+          if (confirm.isPending || dirty) return
           onConfirm()
           confirm.mutate()
         }}
-        disabled={confirm.isPending || dirty}
+        // aria-disabled, not disabled: a disabled button loses focus.
+        aria-disabled={confirm.isPending || dirty}
         aria-describedby={dirty ? 'confirm-hint' : undefined}
       >
         Confirm as worked
@@ -371,6 +384,7 @@ function VoidShift({
       className="flex flex-col gap-3 border-t border-border pt-4"
       onSubmit={(event) => {
         event.preventDefault()
+        if (voidShift.isPending) return
         if (reason.trim() === '') {
           setError('Say why, for example “Didn’t go”.')
           return
@@ -389,7 +403,12 @@ function VoidShift({
         error={error ? { type: 'validate', message: error } : undefined}
       />
       {voidShift.isError && <Message alert>{voidShift.error.message}</Message>}
-      <Button type="submit" variant="outline" className="self-start" disabled={voidShift.isPending}>
+      <Button
+        type="submit"
+        variant="outline"
+        className="self-start"
+        aria-disabled={voidShift.isPending}
+      >
         Void shift
       </Button>
     </form>

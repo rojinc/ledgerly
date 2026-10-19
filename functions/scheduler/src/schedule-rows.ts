@@ -87,9 +87,5 @@ export function checkTemplate(
   schedule: ScheduleTemplate & Pick<Schedules, 'startsOn'>,
   ledger: Ledger,
 ): string[] {
-  // Like POST /transactions until receipts have their Storage check.
-  if (JSON.parse(schedule.templateJson).receiptFileIds?.length) {
-    throw new AppError('VALIDATION_FAILED', "Receipts aren't supported yet.")
-  }
   return planOccurrence(schedule, schedule.startsOn as LocalDate, ledger).planned.people
 }

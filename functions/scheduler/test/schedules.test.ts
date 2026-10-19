@@ -276,15 +276,16 @@ describe('POST /schedules', () => {
       status: 400,
       code: 'VALIDATION_FAILED',
     })
-    const receipts = { ...rent, template: { ...rent.template, receiptFileIds: ['file1'] } }
-    expect(await failure(services, 'POST', '/schedules', { body: receipts })).toEqual({
-      status: 400,
-      code: 'VALIDATION_FAILED',
-    })
+    // A template has no receipts, not even an empty list (functions-api.md#scheduler).
+    for (const receiptFileIds of [['file1'], []]) {
+      const receipts = { ...rent, template: { ...rent.template, receiptFileIds } }
+      expect(await failure(services, 'POST', '/schedules', { body: receipts })).toEqual({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+      })
+    }
     expect(services.db.rows('schedules')).toEqual([])
     expect(services.db.rows('transactions')).toEqual([])
-    const none = { ...rent, template: { ...rent.template, receiptFileIds: [] } }
-    expect((await create(services, none)).created).toBe(2)
   })
 
   it('is for admins, and in a house for members too', async () => {
