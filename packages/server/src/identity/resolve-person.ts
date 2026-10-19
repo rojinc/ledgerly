@@ -13,9 +13,9 @@ export type ResolvedPerson = { personId: string; writes: Write[] }
 
 /**
  * identity-and-invites.md#adding-someone-to-a-group, step 2: the person an email or phone
- * belongs to, or a new placeholder with unverified identity rows. `region` is the default
- * country for a phone typed without one. Throws a RangeError for an invalid email or phone,
- * which the route turns into VALIDATION_FAILED.
+ * belongs to, or a new placeholder with at most one unverified identity row. `region` is the
+ * default country for a phone typed without one. Throws a RangeError for an invalid email or
+ * phone, which the route turns into VALIDATION_FAILED.
  *
  * It only reads: stage `writes` in the caller's transaction, and pass that transaction's ID to
  * see rows it already staged. If another request creates the same identity key first, the
@@ -53,7 +53,9 @@ export async function resolvePerson(
       return { personId: await mergedTarget(db, rows[0].personId, transactionId), writes: [] }
     }
   }
-  // A placeholder has no permissions (server only) and a random ID (data-model.md#persons).
+  // A placeholder has no permissions (server only) and a random ID (data-model.md#persons). It
+  // keeps one key, the email if there is one: whoever verifies a placeholder's key claims it,
+  // so a second key would let the person who typed one claim what is added later by the other.
   const personId = randomId()
   const writes: Write[] = [
     {
@@ -63,7 +65,7 @@ export async function resolvePerson(
       data: { displayName: input.displayName },
       permissions: [],
     },
-    ...identities.map(
+    ...identities.slice(0, 1).map(
       ({ type, key }): Write => ({
         action: 'create',
         tableId: TABLES.identities,

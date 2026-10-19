@@ -41,6 +41,8 @@ export function fakes(
     teams: new FakeTeams(options.teams),
     users: { get: async () => user },
     now: NOW,
+    sendEmail: vi.fn(async () => ({ id: 'email-1' })),
+    appUrl: 'https://app.example',
     account: user,
   }
 }

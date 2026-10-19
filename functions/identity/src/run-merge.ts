@@ -4,6 +4,7 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
 import {
   IntoDeleted,
+  intoDeleted,
   memberOf,
   moveIdentities,
   moveMembers,
@@ -42,28 +43,19 @@ export async function finishMerges(
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
     if (placeholder.userId || placeholder.deletedAt) continue
     if (!(await hasIdentity(services.db, placeholder.$id))) continue
-    const { joined, finished } = await runMerge(services, userId, placeholder, intoId, deadline)
-    result.joined.push(...joined)
-    if (finished) result.finished.push(placeholder.$id)
+    try {
+      // A deletion ends every merge into U (step 2), one with only unguarded writes left too.
+      if (await intoDeleted(services.db, intoId)) throw new IntoDeleted()
+      const { joined, finished } = await runSteps(services, userId, placeholder, intoId, deadline)
+      result.joined.push(...joined)
+      if (finished) result.finished.push(placeholder.$id)
+    } catch (error) {
+      if (!(error instanceof IntoDeleted)) throw error
+      console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
+      break
+    }
   }
   return result
-}
-
-/** `runSteps`, stopped when U's account is being deleted: deletion ends that merge (step 5). */
-async function runMerge(
-  services: Services,
-  userId: string,
-  placeholder: Persons,
-  intoId: string,
-  deadline: number,
-): Promise<{ joined: string[]; finished: boolean }> {
-  try {
-    return await runSteps(services, userId, placeholder, intoId, deadline)
-  } catch (error) {
-    if (!(error instanceof IntoDeleted)) throw error
-    console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
-    return { joined: [], finished: false }
-  }
 }
 
 /**
@@ -87,10 +79,17 @@ async function runSteps(
   const putOff = new Set<string>()
   const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
   let done = true
-  // Only P's groups can name P; never U's others, so a merge costs what P had. They're walked in
-  // the order step 1 listed them, so a later claim finishes a part-done group before it starts
-  // another. P's member rows count too, in case an add landed outside the list.
-  const groupIds = new Set([...(placeholder.mergeGroupIds ?? []), ...(await groupsOf(db, fromId))])
+  // Only P's groups can name P; never U's others, so a merge costs what P had. A group P has no
+  // row in any more comes first: step 2 is done there, so it may be part done, and a later claim
+  // finishes it before starting another, even after one was put off. Then the rest, in the order
+  // step 1 listed them. P's member rows count too, in case an add landed outside the list.
+  const listed = placeholder.mergeGroupIds ?? []
+  const own = await groupsOf(db, fromId)
+  const groupIds = new Set([
+    ...listed.filter((groupId) => !own.includes(groupId)),
+    ...listed,
+    ...own,
+  ])
   for (const groupId of groupIds) {
     if (Date.now() >= deadline) {
       done = false

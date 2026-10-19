@@ -5,7 +5,7 @@ import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { IntoDeleted, moveShares } from '../src/merge'
+import { guardInto, IntoDeleted, moveShares } from '../src/merge'
 import { moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
 import { beforeStaging, NOW } from './harness'
 
@@ -180,94 +180,106 @@ describe('moveInputs (step 3)', () => {
     })
   })
 
-  it('writes out an item split the merge would change, so an edit after it keeps every net', async () => {
-    // X paid 1.00 of milk, split equally by A, P and U: A 34, P 33, U 33.
-    const store = seed(
-      [transaction('t1', { payers: [{ personId: 'pX', cents: 100 }] }, { totalCents: 100 })],
-      {
-        items: [
-          {
-            $id: 'i1',
-            transactionId: 't1',
-            position: 0,
-            name: 'Milk',
-            quantity: 1,
-            amountCents: 100,
-            category: null,
-            splitJson: JSON.stringify({ mode: 'equal', personIds: ['pA', 'pP', 'pU'] }),
-          },
+  it.each([
+    ['posted', null],
+    ['locked', 'st1'],
+  ])(
+    'writes out an item split the merge would change in a %s row, so an edit after it keeps every net',
+    async (_, statementId) => {
+      // X paid 1.00 of milk, split equally by A, P and U: A 34, P 33, U 33.
+      const store = seed(
+        [
+          transaction(
+            't1',
+            { payers: [{ personId: 'pX', cents: 100 }] },
+            { totalCents: 100, statementId },
+          ),
         ],
-        shares: [
-          {
-            $id: 's1',
-            transactionId: 't1',
+        {
+          items: [
+            {
+              $id: 'i1',
+              transactionId: 't1',
+              position: 0,
+              name: 'Milk',
+              quantity: 1,
+              amountCents: 100,
+              category: null,
+              splitJson: JSON.stringify({ mode: 'equal', personIds: ['pA', 'pP', 'pU'] }),
+            },
+          ],
+          shares: [
+            {
+              $id: 's1',
+              transactionId: 't1',
+              groupId: 'g1',
+              personId: 'pX',
+              givenCents: 100,
+              receivedCents: 0,
+            },
+            {
+              $id: 's2',
+              transactionId: 't1',
+              groupId: 'g1',
+              personId: 'pA',
+              givenCents: 0,
+              receivedCents: 34,
+            },
+            {
+              $id: 's3',
+              transactionId: 't1',
+              groupId: 'g1',
+              personId: 'pP',
+              givenCents: 0,
+              receivedCents: 33,
+            },
+            {
+              $id: 's4',
+              transactionId: 't1',
+              groupId: 'g1',
+              personId: 'pU',
+              givenCents: 0,
+              receivedCents: 33,
+            },
+          ],
+          members: ['pA', 'pU', 'pX'].map((personId) => ({
+            $id: `m${personId}`,
             groupId: 'g1',
-            personId: 'pX',
-            givenCents: 100,
-            receivedCents: 0,
-          },
-          {
-            $id: 's2',
-            transactionId: 't1',
-            groupId: 'g1',
-            personId: 'pA',
-            givenCents: 0,
-            receivedCents: 34,
-          },
-          {
-            $id: 's3',
-            transactionId: 't1',
-            groupId: 'g1',
-            personId: 'pP',
-            givenCents: 0,
-            receivedCents: 33,
-          },
-          {
-            $id: 's4',
-            transactionId: 't1',
-            groupId: 'g1',
-            personId: 'pU',
-            givenCents: 0,
-            receivedCents: 33,
-          },
+            personId,
+            status: 'active',
+            joinedOn: '2026-01-01',
+            leftOn: null,
+          })),
+        },
+      )
+      await moveInputs(store, merge, ['g1'], NOW, FAR)
+      await moveShares(store, 'pP', 'pU', ['g1'], FAR)
+      // As weights A 1, U 2, A would get 33.
+      const split = JSON.parse(store.rows('items')[0]?.splitJson as string)
+      expect(split).toEqual({
+        mode: 'exact',
+        amounts: [
+          { personId: 'pA', cents: 34 },
+          { personId: 'pU', cents: 66 },
         ],
-        members: ['pA', 'pU', 'pX'].map((personId) => ({
-          $id: `m${personId}`,
-          groupId: 'g1',
-          personId,
-          status: 'active',
-          joinedOn: '2026-01-01',
-          leftOn: null,
-        })),
-      },
-    )
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
-    await moveShares(store, 'pP', 'pU', ['g1'], FAR)
-    // As weights A 1, U 2, A would get 33.
-    const split = JSON.parse(store.rows('items')[0]?.splitJson as string)
-    expect(split).toEqual({
-      mode: 'exact',
-      amounts: [
-        { personId: 'pA', cents: 34 },
-        { personId: 'pU', cents: 66 },
-      ],
-    })
-    const members = ['pA', 'pU', 'pX'].map((personId) => ({
-      personId,
-      joinedOn: '2026-01-01' as LocalDate,
-      leftOn: null,
-    }))
-    const replanned = buildShares(
-      {
-        ...input(store, 't1'),
-        kind: 'expense',
-        date: '2026-10-01' as LocalDate,
-        items: [{ name: 'Milk', amountCents: 100, split }],
-      },
-      { groupType: 'house', ownerPersonId: 'pX', callerPersonId: 'pX', members },
-    ).shares
-    expect(netsFromShares(replanned)).toEqual(netsFromShares(store.rows('shares') as never))
-  })
+      })
+      const members = ['pA', 'pU', 'pX'].map((personId) => ({
+        personId,
+        joinedOn: '2026-01-01' as LocalDate,
+        leftOn: null,
+      }))
+      const replanned = buildShares(
+        {
+          ...input(store, 't1'),
+          kind: 'expense',
+          date: '2026-10-01' as LocalDate,
+          items: [{ name: 'Milk', amountCents: 100, split }],
+        },
+        { groupType: 'house', ownerPersonId: 'pX', callerPersonId: 'pX', members },
+      ).shares
+      expect(netsFromShares(replanned)).toEqual(netsFromShares(store.rows('shares') as never))
+    },
+  )
 
   it('voids a payment or loan whose two sides are now both U, as the ledger voids one', async () => {
     const store = seed(
@@ -706,6 +718,35 @@ describe('moveInputs (step 3)', () => {
     expect(store.rows('transactions')[0]).toMatchObject({ status: 'void', statementId: null })
   })
 
+  it('reads a row again when a finalize locked it after it was read, and renames it instead of voiding it', async () => {
+    // U lent to P: unlocked, it's U to U and voided; once a finalize locks it, it's renamed.
+    const loan = transaction(
+      't1',
+      { payers: [{ personId: 'pU', cents: 9000 }], split: { mode: 'equal', personIds: ['pP'] } },
+      { kind: 'loan' },
+    )
+    const store = seed([loan])
+    beforeStaging(
+      store,
+      (operations) => operations.includes(VOID_REASON),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { statementId: 'st1' },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+      rewritten: 1,
+      voided: 0,
+    })
+    expect(store.rows('transactions')[0]).toMatchObject({ status: 'posted', statementId: 'st1' })
+    expect(input(store, 't1').split).toEqual({ mode: 'equal', personIds: ['pU'] })
+  })
+
   it('never voids a locked payment or loan: the loan is renamed, the payment left', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const loan = transaction(
@@ -936,6 +977,38 @@ describe('moveInputs (step 3)', () => {
     expect(input(store, 't1')).toEqual(EXPENSE)
   })
 
+  it('renames nothing into U when the deletion commits just before U’s guard is staged', async () => {
+    const store = seed([transaction('t1', EXPENSE)])
+    // Appwrite fails a commit only for changes made after staging, so the guard reads U again.
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"tableId":"persons"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pU',
+            data: { deletedAt: '2026-10-18T00:00:00.000Z' },
+          }),
+        ),
+    )
+    await expect(moveInputs(store, merge, ['g1'], NOW, FAR)).rejects.toBeInstanceOf(IntoDeleted)
+    expect(input(store, 't1')).toEqual(EXPENSE)
+  })
+
+  it('treats U’s row being gone as a deletion, rather than as a race to run again', async () => {
+    const store = seed([transaction('t1', EXPENSE)], { persons: [] })
+    // A race would run the batch again until the deadline.
+    await expect(moveInputs(store, merge, ['g1'], NOW, Date.now() + 1_000)).rejects.toBeInstanceOf(
+      IntoDeleted,
+    )
+    await expect(withTransaction(store, (tx) => guardInto(tx, store, 'pU'))).rejects.toBeInstanceOf(
+      IntoDeleted,
+    )
+    expect(input(store, 't1')).toEqual(EXPENSE)
+  })
+
   it('starts nothing once the deadline has passed, and says it isn’t done', async () => {
     const store = seed([transaction('t1', EXPENSE)])
     expect(await moveInputs(store, merge, ['g1'], NOW, 0)).toEqual({
@@ -994,6 +1067,23 @@ describe('moveTemplates (step 3)', () => {
     })
     expect(store.rows('schedules')[1]?.templateJson).toBe(other.templateJson)
     expect(store.rows('groups')[0]?.rev).not.toBe('r0')
+  })
+
+  it('renames no template into a person whose account is being deleted (#246)', async () => {
+    const store = seed([], {
+      schedules: [schedule('sc1', RENT)],
+      persons: [
+        {
+          $id: 'pU',
+          userId: 'uU',
+          displayName: 'U',
+          mergedInto: null,
+          deletedAt: '2026-10-18T00:00:00.000Z',
+        },
+      ],
+    })
+    await expect(moveTemplates(store, merge, ['g1'], FAR)).rejects.toBeInstanceOf(IntoDeleted)
+    expect(template(store, 'sc1')).toEqual(RENT)
   })
 
   it('runs again when an expansion moved the schedule on after it was read', async () => {
