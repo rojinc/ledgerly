@@ -1355,6 +1355,12 @@
         "type": "key",
         "columns": ["toPersonId", "sentAt"],
         "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_groupId",
+        "type": "key",
+        "columns": ["groupId"],
+        "orders": ["ASC"]
       }
     ]
   }

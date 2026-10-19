@@ -325,7 +325,7 @@ One row per reminder sent ([reminders](identity-and-invites.md#reminders), F-63)
 | `sentAt` | datetime | |
 
 The address typed and the amount are **not stored**: the limits count by person, and the address is already an identity row.
-Indexes: `idx_sentBy_sentAt (sentBy, sentAt)`, `idx_toPerson_sentAt (toPersonId, sentAt)`.
+Indexes: `idx_sentBy_sentAt (sentBy, sentAt)`, `idx_toPerson_sentAt (toPersonId, sentAt)`, `idx_groupId (groupId)` (for a purge).
 Permissions: none (server only). Deleted with either person's account, and with a purged group ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
 
 ## Storage buckets
