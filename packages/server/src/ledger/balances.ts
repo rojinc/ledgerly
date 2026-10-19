@@ -1,13 +1,11 @@
 import type { Balances } from '@ledgerly/core/generated/rows'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
 import { type BalancesPeople, balancesPeopleSchema } from '@ledgerly/core/schemas/ledger'
-import { applyShares } from '@ledgerly/core/settle/balances'
+import { applyShares, type ShareAmounts } from '@ledgerly/core/settle/balances'
 import { AppwriteException } from 'node-appwrite'
 import type { Db } from '../appwrite/client'
 import { DATABASE_ID, TABLES } from '../appwrite/tables'
 import type { Write } from '../appwrite/transaction'
-
-type ShareAmounts = { personId: string; givenCents: number; receivedCents: number }
 
 /**
  * The group's `balances` row as people (data-model.md#balances): undefined when it hasn't been
