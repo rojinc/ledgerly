@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
 import { account } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
+import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useAllBalances } from '../dashboard/use-dashboard'
 import { useGroups } from '../groups/use-groups'
@@ -14,7 +15,7 @@ import { DeleteAccountPage } from './delete-account-page'
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../../lib/appwrite', () => ({ account: { deleteSession: vi.fn() } }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: vi.fn() }))
-vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'p1' } }) }))
+vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: vi.fn() }))
 vi.mock('../groups/use-groups', () => ({ useGroups: vi.fn() }))
 vi.mock('../dashboard/use-dashboard', () => ({ useAllBalances: vi.fn() }))
 // Pair names have their own tests (#145).
@@ -28,12 +29,21 @@ const deleteSession = vi.mocked(account.deleteSession)
 const flat = { $id: 'g1', name: 'Flat 2/14', type: 'house' } as Groups
 const cafe = { $id: 'g2', name: 'Acme Cafe', type: 'employer' } as Groups
 
+// A group whose balance can't be read.
+let failing = ''
+
 function balances(nets: Record<string, number>) {
   vi.mocked(useAllBalances).mockImplementation(
     (groups: Groups[]) =>
-      groups.map((group) => ({
-        data: { people: [{ personId: 'p1', netCents: nets[group.$id] ?? 0 }], transfers: [] },
-      })) as never,
+      groups.map((group) =>
+        group.$id === failing
+          ? { data: undefined, isPending: false, isError: true }
+          : {
+              data: { people: [{ personId: 'p1', netCents: nets[group.$id] ?? 0 }], transfers: [] },
+              isPending: false,
+              isError: false,
+            },
+      ) as never,
   )
 }
 
@@ -68,6 +78,8 @@ const submit = () =>
 beforeEach(() => {
   vi.mocked(useCurrentUser).mockReturnValue({ data: { $id: 'u1' }, isPending: false } as never)
   vi.mocked(useGroups).mockReturnValue({ data: [flat, cafe] } as never)
+  vi.mocked(useBootstrap).mockReturnValue({ data: { personId: 'p1' }, isError: false } as never)
+  failing = ''
   balances({})
   deleteSession.mockResolvedValue({} as never)
 })
@@ -82,7 +94,9 @@ describe('DeleteAccountPage', () => {
     renderPage()
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Delete your account')
     expect(screen.getByRole('region', { name: 'What’s deleted' })).toBeTruthy()
-    expect(screen.getByRole('region', { name: 'What stays' }).textContent).toMatch(/Former member/)
+    expect(
+      screen.getByRole('region', { name: 'What stays, in groups shared with others' }).textContent,
+    ).toMatch(/Former member/)
     expect(screen.getByRole('link', { name: 'export your data' }).getAttribute('href')).toBe(
       '/export',
     )
@@ -104,6 +118,75 @@ describe('DeleteAccountPage', () => {
     const region = screen.getByRole('region', { name: 'Balances not settled' })
     expect(region.textContent).toMatch(/Acme Cafe/)
     expect(region.textContent).not.toMatch(/Flat/)
+  })
+
+  it('names groups whose balance can’t be checked', () => {
+    failing = 'g1'
+    renderPage()
+    const region = screen.getByRole('region', { name: 'Balances not settled' })
+    expect(region.textContent).toMatch(/couldn’t check your balance in these groups:Flat 2\/14/)
+  })
+
+  it('waits for the account and balances before it can delete', () => {
+    vi.mocked(useBootstrap).mockReturnValue({ data: undefined, isError: false } as never)
+    renderPage()
+    expect(screen.getByText('Checking your balances…')).toBeTruthy()
+    confirm()
+    const button = screen.getByRole('button', { name: 'Delete my account' })
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    expect(
+      document.getElementById(button.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toBe('This waits until your balances are checked.')
+    submit()
+    expect(call).not.toHaveBeenCalled()
+    cleanup()
+    vi.mocked(useAllBalances).mockReturnValue([{ isPending: true }, { isPending: true }] as never)
+    vi.mocked(useBootstrap).mockReturnValue({ data: { personId: 'p1' }, isError: false } as never)
+    renderPage()
+    expect(screen.getByText('Checking your balances…')).toBeTruthy()
+  })
+
+  it('says when the account or groups can’t be checked', () => {
+    vi.mocked(useBootstrap).mockReturnValue({ data: undefined, isError: true } as never)
+    renderPage()
+    expect(screen.getByRole('alert').textContent).toMatch(/couldn’t check your groups and balances/)
+  })
+
+  it('explains the button until DELETE is typed, and deletes on Enter', async () => {
+    call.mockResolvedValue({
+      ok: true,
+      data: { deletedAt: '2026-10-19T08:30:00.000Z', finished: true },
+    })
+    renderPage()
+    const button = screen.getByRole('button', { name: 'Delete my account' })
+    expect(
+      document.getElementById(button.getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toBe('Type DELETE above first.')
+    confirm()
+    expect(button.hasAttribute('aria-describedby')).toBe(false)
+    fireEvent.submit(
+      screen.getByLabelText('Type DELETE to confirm').closest('form') as HTMLFormElement,
+    )
+    expect(await screen.findByRole('heading', { name: 'Your account was deleted' })).toBeTruthy()
+  })
+
+  it('can’t be left while the deletion is on its way', async () => {
+    let answer!: (result: Result<unknown>) => void
+    call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    const { router } = renderPage()
+    confirm()
+    submit()
+    await screen.findByRole('button', { name: 'Deleting…' })
+    expect(screen.queryByRole('link', { name: 'Back to your profile' })).toBeNull()
+    expect(screen.getByText('Deleting your account…')).toBeTruthy()
+    await act(async () => {
+      await router.navigate('/profile')
+    })
+    expect(router.state.location.pathname).toBe('/account/delete')
+    await act(async () =>
+      answer({ ok: true, data: { deletedAt: '2026-10-19T08:30:00.000Z', finished: true } }),
+    )
+    expect(screen.getByRole('heading', { name: 'Your account was deleted' })).toBeTruthy()
   })
 
   it('shows no balance warning when everything is settled', () => {
@@ -186,22 +269,57 @@ describe('DeleteAccountPage', () => {
   it('still goes to sign in when signing out fails', async () => {
     deleteSession.mockRejectedValue(new Error('no session'))
     call.mockResolvedValue(refused('UNAUTHENTICATED', 'No signed-in user'))
-    const { router } = renderPage()
+    const { router, queryClient } = renderPage()
+    queryClient.setQueryData(queryKeys.currentUser, { $id: 'u1' })
     confirm()
     submit()
     expect((await screen.findByRole('alert')).textContent).toMatch(
       /We couldn’t confirm the deletion/,
     )
+    // Maybe deleted: the account's cached rows go at once; the user stays so this screen stays.
+    expect(queryClient.getQueryData(['kept'])).toBeUndefined()
+    expect(queryClient.getQueryData(queryKeys.currentUser)).toEqual({ $id: 'u1' })
     fireEvent.click(screen.getByRole('button', { name: 'Sign in again' }))
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'))
   })
 
-  it('says when the password changed too recently', async () => {
+  it('says when the password changed too recently, and when to try again', async () => {
+    vi.mocked(useCurrentUser).mockReturnValue({
+      data: { $id: 'u1', passwordUpdate: '2026-10-19T08:00:00.000Z' },
+      isPending: false,
+    } as never)
     call.mockResolvedValue(refused('FORBIDDEN', 'Too soon', { reason: 'recent_password_change' }))
     renderPage()
     confirm()
     submit()
-    expect((await screen.findByRole('alert')).textContent).toMatch(/in the last 24 hours/)
+    const at = new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(Date.parse('2026-10-20T08:00:00.000Z'))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      `Your password was set or changed in the last 24 hours. For your safety, you can delete your account from ${at}.`,
+    )
+    expect(screen.queryByRole('button', { name: 'Sign in again' })).toBeNull()
+  })
+
+  it('says a day after the change when the change time isn’t known', async () => {
+    call.mockResolvedValue(refused('FORBIDDEN', 'Too soon', { reason: 'recent_password_change' }))
+    renderPage()
+    confirm()
+    submit()
+    expect((await screen.findByRole('alert')).textContent).toMatch(/a day after that change\.$/)
+  })
+
+  it('shows a FORBIDDEN with another reason, or none, as the function words it', async () => {
+    call
+      .mockResolvedValueOnce(refused('FORBIDDEN', 'Not allowed', { reason: 'other' }))
+      .mockResolvedValueOnce(refused('FORBIDDEN', 'Not allowed either'))
+    renderPage()
+    confirm()
+    submit()
+    expect((await screen.findByRole('alert')).textContent).toBe('Not allowed')
+    submit()
+    await waitFor(() => expect(screen.getByRole('alert').textContent).toBe('Not allowed either'))
     expect(screen.queryByRole('button', { name: 'Sign in again' })).toBeNull()
   })
 
