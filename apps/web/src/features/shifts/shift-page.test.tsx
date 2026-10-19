@@ -616,6 +616,57 @@ describe('ShiftPage', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
+  /** The summary's terms and what each says. */
+  function summary(): Record<string, string> {
+    const terms = [...document.querySelectorAll('dt')]
+    return Object.fromEntries(
+      terms.map((term) => [term.textContent, term.nextElementSibling?.textContent ?? '']),
+    )
+  }
+
+  it.each<[string, Members['role'], Partial<Transactions>]>([
+    ['a viewer', 'viewer', {}],
+    ['a locked shift', 'admin', { statementId: 's1' }],
+    ['a void shift', 'admin', { status: 'void', voidReason: 'Sick' }],
+  ])('shows %s’s date, times, break, hours and pay (#147 O4)', async (_, role, extra) => {
+    mockGroup(acme, role)
+    mockRow(shiftRow(extra))
+    renderAt('/shifts/t1')
+    await screen.findByText('Date')
+    expect(summary()).toEqual({
+      Date: '2026-10-15',
+      Times: '09:00–17:30',
+      Break: '30 min',
+      Hours: expect.stringMatching(/^8 h 0 min at .*25\.50 an hour$/),
+      Pay: expect.stringMatching(/204\.00$/),
+    })
+  })
+
+  it('shows hours with no times for a shift stored as hours (#147 O4)', async () => {
+    mockGroup(acme, 'viewer')
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: { minutes: 450, rateCents: 2550 } }) }))
+    renderAt('/shifts/t1')
+    await screen.findByText('Date')
+    expect(Object.keys(summary())).toEqual(['Date', 'Hours', 'Pay'])
+    expect(summary().Hours).toMatch(/^7 h 30 min at /)
+  })
+
+  it('shows when a running timer started, in the group’s time zone, and no pay (#147 O4)', async () => {
+    mockRow(shiftRow({ status: 'running', startedAt: '2026-10-18T21:00:00.000Z' }))
+    renderAt('/shifts/t1')
+    await screen.findByText('Date')
+    expect(Object.keys(summary())).toEqual(['Date', 'Started'])
+    // 08:00 in Sydney.
+    expect(summary().Started).toMatch(/^0?8:00/)
+  })
+
+  it('shows no summary beside the form', async () => {
+    mockRow(shiftRow())
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    expect(screen.queryByText('Pay')).toBeNull()
+  })
+
   it('is read-only when it is on a final invoice', async () => {
     mockRow(shiftRow({ statementId: 's1' }))
     renderAt('/shifts/t1')

@@ -1,6 +1,7 @@
 import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import { formatMoney } from '@ledgerly/core/money/format'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { useQueryClient } from '@tanstack/react-query'
@@ -214,6 +215,7 @@ function ShiftDetails({ row, onAction }: { row: Transactions; onAction: () => vo
   const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
   const locked = row.statementId !== null
   const open = mayChange && !locked && !group.data.archivedAt
+  const editable = shift && open && (row.status === 'scheduled' || row.status === 'posted')
   return (
     <>
       <Message>
@@ -228,7 +230,8 @@ function ShiftDetails({ row, onAction }: { row: Transactions; onAction: () => vo
       {open && row.status === 'scheduled' && (
         <ConfirmShift confirm={confirm} dirty={dirty} onConfirm={onAction} />
       )}
-      {shift && open && (row.status === 'scheduled' || row.status === 'posted') && (
+      {!editable && <ShiftSummary row={row} shift={shift} group={group.data} />}
+      {editable && (
         <ShiftForm
           // A new status starts the form again from the stored shift, so it never shows pay
           // that wasn't recorded.
@@ -252,6 +255,68 @@ function ShiftDetails({ row, onAction }: { row: Transactions; onAction: () => vo
         <VoidShift voidShift={voidShift} reason={reason} onReason={setReason} onVoid={onAction} />
       )}
     </>
+  )
+}
+
+/** What a shift that can't be changed here records: its date, time worked and pay. */
+function ShiftSummary({
+  row,
+  shift,
+  group,
+}: {
+  row: Transactions
+  shift: ReturnType<typeof storedShift>
+  group: Groups
+}) {
+  const money = (cents: number) => formatMoney(cents, group.currency)
+  // A running timer has no end, time worked or pay yet: only when it started.
+  const running = row.status === 'running'
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+      <dt className="text-muted-foreground">Date</dt>
+      <dd>{row.date}</dd>
+      {running && row.startedAt && (
+        <>
+          <dt className="text-muted-foreground">Started</dt>
+          <dd>
+            {new Intl.DateTimeFormat(undefined, {
+              hour: 'numeric',
+              minute: '2-digit',
+              timeZone: group.timezone,
+            }).format(Date.parse(row.startedAt))}
+          </dd>
+        </>
+      )}
+      {!running && shift?.startTime && shift.endTime && (
+        <>
+          <dt className="text-muted-foreground">Times</dt>
+          <dd>
+            {shift.startTime}–{shift.endTime}
+          </dd>
+        </>
+      )}
+      {!running && shift?.breakMinutes !== undefined && (
+        <>
+          <dt className="text-muted-foreground">Break</dt>
+          <dd>{shift.breakMinutes} min</dd>
+        </>
+      )}
+      {!running && shift && (
+        <>
+          <dt className="text-muted-foreground">Hours</dt>
+          <dd>
+            {Math.floor(shift.minutes / 60)} h {shift.minutes % 60} min at {money(shift.rateCents)}{' '}
+            an hour
+          </dd>
+        </>
+      )}
+      {!running && (
+        <>
+          <dt className="text-muted-foreground">Pay</dt>
+          <dd>{money(row.totalCents)}</dd>
+        </>
+      )}
+    </dl>
   )
 }
 
