@@ -120,4 +120,33 @@ describe('resolvePerson', () => {
       new RangeError('Not a valid phone number'),
     )
   })
+
+  it('follows mergedInto to the end of the chain, so an email added mid-merge adds U', async () => {
+    const store = new FakeDb({
+      persons: [
+        { $id: 'pOld', displayName: 'Sam', userId: null, mergedInto: 'pMid' },
+        { $id: 'pMid', displayName: 'Sam', userId: null, mergedInto: 'pSam' },
+        { $id: 'pSam', displayName: 'Sam Lee', userId: 'uSam', mergedInto: null },
+      ],
+      identities: [{ $id: 'i1', key: 'email:sam@example.com', type: 'email', personId: 'pOld' }],
+    })
+    expect(
+      await resolvePerson(store, { displayName: 'Sam', email: 'sam@example.com' }, 'AU-NSW'),
+    ).toEqual({ personId: 'pSam', writes: [] })
+  })
+
+  it('reads the chain in the caller’s transaction, and refuses a broken loop', async () => {
+    const store = new FakeDb({
+      persons: [
+        { $id: 'pA', displayName: 'A', userId: null, mergedInto: 'pB' },
+        { $id: 'pB', displayName: 'B', userId: null, mergedInto: 'pA' },
+      ],
+      identities: [{ $id: 'i1', key: 'email:a@example.com', type: 'email', personId: 'pA' }],
+    })
+    await expect(
+      withTransaction(store, (tx) =>
+        resolvePerson(store, { displayName: 'A', email: 'a@example.com' }, 'AU-NSW', tx.id),
+      ),
+    ).rejects.toThrow('A person was merged too many times in a row')
+  })
 })
