@@ -3,9 +3,9 @@ import { isLocalDate, type LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { buildShares, type Share } from '@ledgerly/core/ledger/build-shares'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
-import { parseMoney } from '@ledgerly/core/money/format'
 import type { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
+import { cents } from './presets'
 
 /** The house expense form's fields, as typed (#180). */
 export type HouseExpenseValues = {
@@ -30,14 +30,6 @@ export function livesThere(member: Dates, date: string): boolean {
 /** Who is ticked by default for an expense on `date`: everyone living there then. */
 export function defaultTicks(members: readonly (Dates & { personId: string })[], date: string) {
   return members.filter((member) => livesThere(member, date)).map((member) => member.personId)
-}
-
-function cents(text: string, currency: string): number {
-  try {
-    return parseMoney(text.trim(), currency)
-  } catch {
-    return Number.NaN
-  }
 }
 
 /**

@@ -12,10 +12,16 @@ import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
-import { centsToText } from '../groups/employer-form'
 import { useGroups, useMyMember } from '../groups/use-groups'
 import { HouseExpenseForm } from './house-expense-form'
-import { type EmployerPeople, ENTRY_TYPES, type EntryValues, toEntryBody } from './presets'
+import {
+  amountError,
+  amountExample,
+  type EmployerPeople,
+  ENTRY_TYPES,
+  type EntryValues,
+  toEntryBody,
+} from './presets'
 import { employerPeople, LedgerError, useCreateTransaction, useMembers } from './use-transactions'
 
 // The body's fields, as the form names them.
@@ -25,11 +31,6 @@ const ERROR_FIELD: Record<string, keyof EntryValues> = {
   description: 'description',
   category: 'category',
   note: 'note',
-}
-
-/** An amount as typed in this currency: `40.50`, or `4050` for one without cents. */
-function amountExample(currency: string): string {
-  return centsToText(4050, currency)
 }
 
 /** Schema errors on the fields the form shows, in plain words. */
@@ -45,11 +46,13 @@ function entryResolver(
     const add = (field: keyof EntryValues, message: string) => {
       if (!errors[field]) errors[field] = { type: 'validate', message }
     }
-    const total = toBody(values).totalCents
-    if (values.amount.trim() === '') add('amount', 'Required')
-    else if (get(found, 'totalCents') || Number.isNaN(total)) {
-      add('amount', `Enter an amount like ${amountExample(currency)}`)
-    } else if (typeof total === 'number' && total <= 0) add('amount', 'Enter an amount above 0')
+    const amount = amountError(
+      values.amount,
+      toBody(values).totalCents,
+      Boolean(get(found, 'totalCents')),
+      currency,
+    )
+    if (amount) add('amount', amount)
     for (const [path, field] of Object.entries(ERROR_FIELD)) {
       const message = get(found, path)?.message as string | undefined
       if (message) add(field, message)

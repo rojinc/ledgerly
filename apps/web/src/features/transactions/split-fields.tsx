@@ -55,13 +55,16 @@ export function SplitBetweenField({
       {members.map((member) => {
         const away = !livesThere(member, date)
         const hint = `splitBetween-${member.personId}-hint`
+        // On each box too: focus goes to the first one after a refused Add.
+        const describedBy = [away && hint, error && 'splitBetween-error'].filter(Boolean).join(' ')
         return (
           <label key={member.personId} className="flex items-start gap-2 text-sm">
             <input
               type="checkbox"
               value={member.personId}
               className="mt-1"
-              aria-describedby={away ? hint : undefined}
+              aria-invalid={Boolean(error)}
+              aria-describedby={describedBy || undefined}
               {...field}
             />
             <span className="min-w-0 break-words">

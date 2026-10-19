@@ -478,6 +478,69 @@ describe('NewTransactionPage, house expense', () => {
     expect(call).not.toHaveBeenCalled()
   })
 
+  it('allows 15 people, payer included, and refuses a 16th', async () => {
+    const others = Array.from({ length: 15 }, (_, n) =>
+      housemate(`p${String(n).padStart(2, '0')}`, `Person ${n}`, '2026-01-01'),
+    )
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open([housemate('alice', 'Alice', '2026-01-01'), ...others])
+    // Alice pays but isn't in the split: still 16 people.
+    fireEvent.click(screen.getByLabelText('Alice'))
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('At most 15 people can be in one expense.')).toBeTruthy()
+    // Said once: the preview doesn't add core's wording of the same rule.
+    expect(screen.queryByRole('region', { name: 'Each person’s part' })).toBeNull()
+    expect(screen.queryByText(/per transaction/)).toBeNull()
+    fireEvent.click(screen.getByLabelText('Person 0'))
+    expect(await screen.findByRole('region', { name: 'Each person’s part' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(
+      (call.mock.calls[0]?.[3] as { split: { personIds: string[] } }).split.personIds,
+    ).toHaveLength(14)
+  })
+
+  it('sends a list for a house of one', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open([housemate('alice', 'Alice', '2026-01-01')])
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      split: { mode: 'equal', personIds: ['alice'] },
+    })
+  })
+
+  it('offers everyone as the payer, and the ticks still follow the date after a payer change', async () => {
+    await open()
+    const payer = screen.getByLabelText('Paid by')
+    expect(
+      within(payer)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Alice', 'Bob', 'Cara', 'Dan'])
+    fireEvent.change(payer, { target: { value: 'dan' } })
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-09-15' } })
+    await waitFor(() =>
+      expect((screen.getByLabelText(/^Dan/) as HTMLInputElement).checked).toBe(true),
+    )
+  })
+
+  it('ties the empty-split error to each box, and clears it once the date ticks someone', async () => {
+    // Everyone moves in tomorrow, so today ticks nobody.
+    await open([housemate('alice', 'Alice', '2026-10-20'), housemate('bob', 'Bob', '2026-10-20')])
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    const message = await screen.findByText('Tick at least one person to split it between.')
+    const alice = screen.getByLabelText(/^Alice/)
+    expect(alice.getAttribute('aria-invalid')).toBe('true')
+    expect(alice.getAttribute('aria-describedby')).toBe(`splitBetween-alice-hint ${message.id}`)
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-20' } })
+    await waitFor(() =>
+      expect(screen.queryByText('Tick at least one person to split it between.')).toBeNull(),
+    )
+    expect(alice.getAttribute('aria-invalid')).toBe('false')
+    expect(call).not.toHaveBeenCalled()
+  })
+
   it('shows the ledger’s own refusal from core, and sends nothing', async () => {
     // The viewer's member row is missing from the list (removed meanwhile), so they can't pay.
     mockPersonId = 'zed'
@@ -489,6 +552,8 @@ describe('NewTransactionPage, house expense', () => {
     expect((await screen.findByRole('alert')).textContent).toBe(
       'Only members of the group can be in a transaction',
     )
+    // Shown above the form now, so the preview no longer repeats it.
+    expect(screen.getAllByText('Only members of the group can be in a transaction')).toHaveLength(1)
     expect(call).not.toHaveBeenCalled()
   })
 

@@ -1,5 +1,6 @@
 import { CATEGORIES } from '@ledgerly/core/constants/categories'
 import { MAX_PEOPLE_PER_TRANSACTION } from '@ledgerly/core/constants/limits'
+import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { type TransactionInput, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
@@ -11,13 +12,13 @@ import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
-import { centsToText } from '../groups/employer-form'
 import {
   defaultTicks,
   type HouseExpenseValues,
   previewShares,
   toHouseExpenseBody,
 } from './house-expense'
+import { amountError, amountExample } from './presets'
 import { PaidByField, SharePreview, SplitBetweenField } from './split-fields'
 import { LedgerError, useCreateTransaction } from './use-transactions'
 
@@ -53,12 +54,13 @@ function houseExpenseResolver(
       if (!errors[field]) errors[field] = { type: 'validate', message }
     }
     const body = toBody(values)
-    if (values.amount.trim() === '') add('amount', 'Required')
-    else if (get(found, 'totalCents') || Number.isNaN(body.totalCents)) {
-      add('amount', `Enter an amount like ${centsToText(4050, currency)}`)
-    } else if (typeof body.totalCents === 'number' && body.totalCents <= 0) {
-      add('amount', 'Enter an amount above 0')
-    }
+    const amount = amountError(
+      values.amount,
+      body.totalCents,
+      Boolean(get(found, 'totalCents')),
+      currency,
+    )
+    if (amount) add('amount', amount)
     if (values.splitBetween.length === 0) {
       add('splitBetween', 'Tick at least one person to split it between.')
     } else if (new Set([values.paidBy, ...values.splitBetween]).size > MAX_PEOPLE_PER_TRANSACTION) {
@@ -124,16 +126,25 @@ export function HouseExpenseForm({
   const handTicked = useRef(false)
   const { date } = values
   useEffect(() => {
-    if (!handTicked.current) form.setValue('splitBetween', defaultTicks(members, date))
+    if (handTicked.current) return
+    form.setValue('splitBetween', defaultTicks(members, date), {
+      // After a refused submit, an error on the ticks goes once the date ticks someone.
+      shouldValidate: form.formState.isSubmitted,
+    })
   }, [date, members, form])
   const split = form.register('splitBetween')
 
+  // Worked out only once the form's own checks would pass, so a rule isn't said twice.
   const body = toBody(values)
-  const ready =
+  const people = new Set([values.paidBy, ...values.splitBetween]).size
+  const shares =
     Number.isInteger(body.totalCents) &&
     (body.totalCents ?? 0) > 0 &&
     values.splitBetween.length > 0 &&
-    /^\d{4}-\d{2}-\d{2}$/.test(values.date)
+    people <= MAX_PEOPLE_PER_TRANSACTION &&
+    isLocalDate(values.date)
+      ? preview(body)
+      : undefined
 
   return (
     <form
@@ -166,7 +177,7 @@ export function HouseExpenseForm({
         id="amount"
         inputMode="decimal"
         label={`Amount (${group.currency})`}
-        hint={`For example ${centsToText(4050, group.currency)}.`}
+        hint={`For example ${amountExample(group.currency)}.`}
         error={errors.amount}
         {...form.register('amount')}
       />
@@ -213,7 +224,10 @@ export function HouseExpenseForm({
         error={errors.splitBetween as FieldError | undefined}
       />
       <SharePreview
-        preview={ready ? preview(body) : undefined}
+        // A refusal already shown above the form, after Add, isn't repeated here.
+        preview={
+          shares && 'error' in shares && shares.error === errors.root?.message ? undefined : shares
+        }
         members={members}
         currency={group.currency}
       />
