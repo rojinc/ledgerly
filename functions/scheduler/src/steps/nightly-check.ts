@@ -127,7 +127,9 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
     counts.repaired += 1
   }
   if (services.outOfTime()) return cutOff()
-  counts.removed += await reconcileTeam(services, groupId, memberships, whole.members, report)
+  if (!(await reconcileTeam(services, groupId, memberships, whole.members, counts, report))) {
+    return cutOff()
+  }
 
   if (await setNextCheck(db, groupId, tomorrow)) {
     counts.checked += 1
@@ -294,54 +296,52 @@ async function rebuildBalances(db: Db, groupId: string): Promise<boolean> {
 
 /**
  * Removes each team membership over an hour old that no joined member row backs: no `active` or
- * `left` row for the user's person, or only one they left on their own. It reads the rows again
- * just before removing. Returns how many it removed; one already gone counts as removed.
+ * `left` row for any of the user's persons, or only ones they left on their own. It reads the rows
+ * again just before removing. Counts each one in `counts.removed` as it goes; one already gone
+ * counts as removed. False when the budget ran out first: the rest wait for the next check.
  */
 async function reconcileTeam(
-  { db, teams, now }: Services,
+  { db, teams, now, outOfTime }: Services,
   groupId: string,
   memberships: readonly Membership[],
   members: readonly Members[],
+  counts: CheckCounts,
   report: (finding: string) => void,
-): Promise<number> {
+): Promise<boolean> {
   const old = memberships.filter(
     (membership) => now.getTime() - Date.parse(membership.$createdAt) > MEMBERSHIP_GRACE_MS,
   )
-  if (old.length === 0) return 0
-  const personOf = await personsOf(
+  if (old.length === 0) return true
+  const personsOf = await personsByUser(
     db,
     old.map((membership) => membership.userId),
   )
-  let removed = 0
   for (const membership of old) {
-    if (await backed(db, groupId, personOf.get(membership.userId)?.personId, members)) continue
+    if (await kept(db, groupId, personsOf.get(membership.userId) ?? [], members)) continue
+    if (outOfTime()) return false
     // Again, just before removing: a join that has landed since keeps it.
-    if (await joinedNow(db, groupId, membership.userId)) continue
+    if (await keptNow(db, groupId, membership.userId)) continue
     try {
       await teams.deleteMembership({ teamId: groupId, membershipId: membership.$id })
     } catch (error) {
       if (!(error instanceof AppwriteException && error.code === 404)) throw error
     }
-    // A join or a merge that landed while it was removed gets it back.
-    if (await joinedNow(db, groupId, membership.userId)) {
+    // A join or a merge that landed, or an account deletion that started, while it was removed
+    // gets it back.
+    if (await keptNow(db, groupId, membership.userId)) {
       await addToTeam(teams, groupId, membership.userId)
       continue
     }
-    removed += 1
+    counts.removed += 1
     report(`removed team membership ${membership.$id}`)
   }
-  return removed
+  return true
 }
 
-/**
- * Whether the user's person, read again now, has a joined row in the group, or is being deleted:
- * account deletion leaves the team as its own last step for each group, and decides a rerun from
- * it (identity-and-invites.md#deleting-an-account-m4).
- */
-async function joinedNow(db: Db, groupId: string, userId: string): Promise<boolean> {
-  const person = (await personsOf(db, [userId])).get(userId)
-  if (person?.deletedAt) return true
-  return backed(db, groupId, person?.personId, await memberRows(db, groupId, person?.personId))
+/** Whether the membership stays, with the user's persons and their member rows read again now. */
+async function keptNow(db: Db, groupId: string, userId: string): Promise<boolean> {
+  const persons = (await personsByUser(db, [userId])).get(userId) ?? []
+  return kept(db, groupId, persons, await memberRows(db, groupId, persons))
 }
 
 type Membership = Pick<Models.Membership, '$id' | 'userId' | '$createdAt'>
@@ -367,42 +367,50 @@ async function membershipsOf(
   }
 }
 
-type Person = { personId: string; deletedAt: string | null }
-
-/** Each user's person, by user ID (idx_userId). */
-async function personsOf(db: Db, userIds: readonly string[]): Promise<Map<string, Person>> {
-  const personOf = new Map<string, Person>()
+/** Each user's persons, by user ID (idx_userId, which isn't unique). */
+async function personsByUser(db: Db, userIds: readonly string[]): Promise<Map<string, Persons[]>> {
+  const personsOf = new Map<string, Persons[]>()
   for (let start = 0; start < userIds.length; start += PAGE) {
     const rows = await allRows<Persons>(db, TABLES.persons, [
       Query.equal('userId', userIds.slice(start, start + PAGE)),
     ])
     for (const row of rows) {
-      if (row.userId) personOf.set(row.userId, { personId: row.$id, deletedAt: row.deletedAt })
+      if (row.userId) personsOf.set(row.userId, [...(personsOf.get(row.userId) ?? []), row])
     }
   }
-  return personOf
+  return personsOf
 }
 
 async function memberRows(
   db: Db,
   groupId: string,
-  personId: string | undefined,
+  persons: readonly Persons[],
 ): Promise<Members[]> {
-  if (personId === undefined) return []
+  if (persons.length === 0) return []
   return allRows<Members>(db, TABLES.members, [
     Query.equal('groupId', groupId),
-    Query.equal('personId', personId),
+    Query.equal(
+      'personId',
+      persons.map((person) => person.$id),
+    ),
   ])
 }
 
-/** Whether the person has a joined row in the group that they didn't leave on their own. */
-async function backed(
+/**
+ * Whether the membership stays: one of the user's persons is being deleted (account deletion
+ * leaves the team as its own last step for each group, and decides a rerun from it,
+ * identity-and-invites.md#deleting-an-account-m4), or has a joined row in the group that they
+ * didn't leave on their own. Any one of them keeps it.
+ */
+async function kept(
   db: Db,
   groupId: string,
-  personId: string | undefined,
+  persons: readonly Persons[],
   members: readonly Members[],
 ): Promise<boolean> {
-  for (const row of members.filter((member) => member.personId === personId)) {
+  if (persons.some((person) => person.deletedAt)) return true
+  const personIds = new Set(persons.map((person) => person.$id))
+  for (const row of members.filter((member) => personIds.has(member.personId))) {
     if (row.status === 'active') return true
     if (
       row.status === 'left' &&

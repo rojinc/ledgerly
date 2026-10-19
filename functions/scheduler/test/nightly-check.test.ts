@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { nightlyCheck } from '../src/steps/nightly-check'
 import { call, type Fakes, fakes, group, member, NOW, person } from './harness'
@@ -77,6 +78,13 @@ const ROW = [
   { personId: 'pSam', netCents: 3000, shares: 1 },
 ]
 
+const MEMBERS = [
+  member('elm', 'pSam'),
+  member('elm', 'pAlex', { role: 'member' }),
+  member('elm', 'pPat', { status: 'placeholder' }),
+  member('elm', 'pLee', { role: 'viewer', status: 'left', leftOn: '2026-09-30' }),
+]
+
 /**
  * Elm St, a Sydney house: Sam (u1) and Alex (u2) live there, Pat is a placeholder, and Lee (u3)
  * moved out. Each of them has a team membership but Pat. `extra` adds rows by table.
@@ -99,12 +107,7 @@ function seeded(extra: Record<string, object[]> = {}, teams: Record<string, stri
           rev: 'r0',
         }),
       ],
-      members: [
-        member('elm', 'pSam'),
-        member('elm', 'pAlex', { role: 'member' }),
-        member('elm', 'pPat', { status: 'placeholder' }),
-        member('elm', 'pLee', { role: 'viewer', status: 'left', leftOn: '2026-09-30' }),
-      ],
+      members: MEMBERS,
       transactions,
       shares,
       ...extra,
@@ -409,60 +412,50 @@ describe('step 6: nightly check', () => {
   })
 
   describe('the team', () => {
+    // Pat, the placeholder, has an account now.
+    const PAT_SIGNED_UP = [
+      person('pSam', 'u1'),
+      person('pAlex', 'u2'),
+      person('pPat', 'u9'),
+      person('pLee', 'u3'),
+    ]
+    const userIds = (services: Fakes, groupId = 'elm') =>
+      services.teams.members(groupId)?.map((membership) => membership.userId)
+
     it('removes a membership that no joined member row backs, and logs only its ID', async () => {
-      // Pat, a placeholder with an account now, got a membership: a join that stopped halfway.
-      const services = seeded(
-        {
-          persons: [
-            person('pSam', 'u1'),
-            person('pAlex', 'u2'),
-            person('pPat', 'u9'),
-            person('pLee', 'u3'),
-          ],
-        },
-        { elm: ['u1', 'u2', 'u3', 'u9'] },
-      )
-      const stale = (await services.teams.listMemberships({ teamId: 'elm' })).memberships.find(
-        (membership) => membership.userId === 'u9',
-      )
+      // Pat got a membership: a join that stopped halfway.
+      const services = seeded({ persons: PAT_SIGNED_UP }, { elm: ['u1', 'u2', 'u3', 'u9'] })
+      const stale = services.teams.members('elm')?.find((membership) => membership.userId === 'u9')
       expect(await nightlyCheck(services)).toMatchObject({ removed: 1, findings: 1 })
-      const left = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
-      expect(left.map((membership) => membership.userId)).toEqual(['u1', 'u2', 'u3'])
+      expect(userIds(services)).toEqual(['u1', 'u2', 'u3'])
       expect(logged()).toEqual([
         `scheduler: nightly check of group elm: removed team membership ${stale?.$id}`,
       ])
     })
 
-    it('keeps one under an hour old, and one whose join lands before it is removed', async () => {
-      const services = seeded({
-        persons: [
-          person('pSam', 'u1'),
-          person('pAlex', 'u2'),
-          person('pPat', 'u9'),
-          person('pLee', 'u3'),
-        ],
-      })
-      // Just now: joining adds the membership before the member row.
-      await services.teams.createMembership({ teamId: 'elm', userId: 'u9', roles: [] })
-      expect((await nightlyCheck(services)).removed).toBe(0)
+    it('keeps a membership up to an hour old, and removes one older', async () => {
+      for (const [minutes, removed] of [
+        [59, 0],
+        [61, 1],
+      ] as const) {
+        const services = seeded({ persons: PAT_SIGNED_UP })
+        // Joining adds the membership before the member row.
+        vi.setSystemTime(new Date(NOW.getTime() - minutes * 60 * 1000))
+        await services.teams.createMembership({ teamId: 'elm', userId: 'u9', roles: [] })
+        vi.setSystemTime(NOW)
+        expect([minutes, (await nightlyCheck(services)).removed]).toEqual([minutes, removed])
+      }
+    })
 
-      // An hour later, Pat's join lands just as the check reads again.
-      vi.setSystemTime(new Date(NOW.getTime() + 2 * HOUR))
-      services.now = new Date(NOW.getTime() + 2 * HOUR)
-      await withTransaction(services.db, (tx) =>
-        tx.write({
-          action: 'update',
-          tableId: 'groups',
-          rowId: 'elm',
-          data: { nextCheckAt: null },
-        }),
-      )
+    it('never removes one whose join lands after the group is read', async () => {
+      const services = seeded({ persons: PAT_SIGNED_UP }, { elm: ['u1', 'u2', 'u3', 'u9'] })
+      const remove = vi.spyOn(services.teams, 'deleteMembership')
       const list = services.db.listRows.bind(services.db)
+      let joined = false
       vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
-        if (
-          params.tableId === 'members' &&
-          params.queries?.some((query) => query.includes('pPat'))
-        ) {
+        // Pat's join commits as the check looks up the team's persons.
+        if (!joined && params.tableId === 'persons') {
+          joined = true
           await withTransaction(services.db, (tx) =>
             tx.write({
               action: 'update',
@@ -475,6 +468,8 @@ describe('step 6: nightly check', () => {
         return list(params)
       })
       expect((await nightlyCheck(services)).removed).toBe(0)
+      expect(remove).not.toHaveBeenCalled()
+      expect(userIds(services)).toContain('u9')
     })
 
     it('keeps someone who moved out, and removes someone who left on their own', async () => {
@@ -505,8 +500,7 @@ describe('step 6: nightly check', () => {
         ],
       })
       expect((await nightlyCheck(services)).removed).toBe(1)
-      const left = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
-      expect(left.map((membership) => membership.userId)).toEqual(['u1', 'u3'])
+      expect(userIds(services)).toEqual(['u1', 'u3'])
     })
 
     it('leaves alone the membership of someone whose account is being deleted', async () => {
@@ -523,38 +517,71 @@ describe('step 6: nightly check', () => {
         { elm: ['u1', 'u2', 'u3', 'u9'] },
       )
       expect((await nightlyCheck(services)).removed).toBe(0)
-      const memberships = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
-      expect(memberships.map((membership) => membership.userId)).toContain('u9')
+      expect(userIds(services)).toContain('u9')
     })
 
-    it('puts a membership back when a join lands while it is removed', async () => {
+    it('keeps one that any of the user’s persons keeps', async () => {
+      // idx_userId isn't unique: a second person with the same user ID, read after the first.
+      for (const [persons, team] of [
+        // Alex's other person has no member row here.
+        [
+          [...PAT_SIGNED_UP, person('pAlex2', 'u2')],
+          ['u1', 'u2', 'u3'],
+        ],
+        // One of Pat's persons is being deleted.
+        [
+          [{ ...person('pPat0', 'u9'), deletedAt: '2026-10-18T19:00:00.000Z' }, ...PAT_SIGNED_UP],
+          ['u1', 'u2', 'u3', 'u9'],
+        ],
+      ] as const) {
+        const services = seeded({ persons: [...persons] }, { elm: [...team] })
+        expect((await nightlyCheck(services)).removed).toBe(0)
+        expect(userIds(services)).toEqual(team)
+      }
+    })
+
+    it('counts only the member rows in this group', async () => {
+      // Pat joined Oak Rd, and is still a placeholder in Elm St.
       const services = seeded(
-        {
-          persons: [
-            person('pSam', 'u1'),
-            person('pAlex', 'u2'),
-            person('pPat', 'u9'),
-            person('pLee', 'u3'),
-          ],
-        },
+        { persons: PAT_SIGNED_UP, members: [...MEMBERS, member('oak', 'pPat')] },
         { elm: ['u1', 'u2', 'u3', 'u9'] },
       )
-      const remove = services.teams.deleteMembership.bind(services.teams)
-      vi.spyOn(services.teams, 'deleteMembership').mockImplementation(async (params) => {
+      expect((await nightlyCheck(services)).removed).toBe(1)
+      expect(userIds(services)).toEqual(['u1', 'u2', 'u3'])
+    })
+
+    it('puts a membership back when a join or a deletion lands while it is removed', async () => {
+      for (const [tableId, rowId, data] of [
         // Pat's join commits just as the membership goes.
-        await withTransaction(services.db, (tx) =>
-          tx.write({
-            action: 'update',
-            tableId: 'members',
-            rowId: 'elm-pPat',
-            data: { status: 'active' },
-          }),
-        )
-        return (await remove(params)) as object
-      })
-      expect(await nightlyCheck(services)).toMatchObject({ removed: 0, findings: 0 })
-      const memberships = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
-      expect(memberships.map((membership) => membership.userId)).toContain('u9')
+        ['members', 'elm-pPat', { status: 'active' }],
+        // Or Pat's account deletion starts.
+        ['persons', 'pPat', { deletedAt: '2026-10-18T20:00:00.000Z' }],
+      ] as const) {
+        const services = seeded({ persons: PAT_SIGNED_UP }, { elm: ['u1', 'u2', 'u3', 'u9'] })
+        const remove = services.teams.deleteMembership.bind(services.teams)
+        vi.spyOn(services.teams, 'deleteMembership').mockImplementation(async (params) => {
+          await withTransaction(services.db, (tx) =>
+            tx.write({ action: 'update', tableId, rowId, data }),
+          )
+          return (await remove(params)) as object
+        })
+        expect(await nightlyCheck(services)).toMatchObject({ removed: 0, findings: 0 })
+        expect(userIds(services)).toContain('u9')
+      }
+    })
+
+    it('reads every page of the team', async () => {
+      const services = seeded()
+      // 100 joins under way, then a stale membership past the first page.
+      for (let index = 0; index < 100; index++) {
+        await services.teams.createMembership({ teamId: 'elm', userId: `new${index}`, roles: [] })
+      }
+      vi.setSystemTime(new Date(NOW.getTime() - 2 * HOUR))
+      await services.teams.createMembership({ teamId: 'elm', userId: 'u9', roles: [] })
+      vi.setSystemTime(NOW)
+      expect((await nightlyCheck(services)).removed).toBe(1)
+      expect(userIds(services)).toHaveLength(103)
+      expect(userIds(services)).not.toContain('u9')
     })
 
     it('counts a membership already gone as removed', async () => {
@@ -568,9 +595,39 @@ describe('step 6: nightly check', () => {
       expect((await nightlyCheck(services)).removed).toBe(1)
     })
 
+    it('counts the memberships it removed before a failure', async () => {
+      const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u8', 'u9'] })
+      const last = services.teams.members('elm')?.[4]?.$id
+      const remove = services.teams.deleteMembership.bind(services.teams)
+      vi.spyOn(services.teams, 'deleteMembership').mockImplementation(async (params) => {
+        // u8's goes, then Teams fails on u9's.
+        if (params.membershipId === last) {
+          throw new AppwriteException('Server error', 500, 'general_unknown')
+        }
+        return (await remove(params)) as object
+      })
+      expect(await nightlyCheck(services)).toMatchObject({ checked: 0, removed: 1, failed: 1 })
+      expect(userIds(services)).toEqual(['u1', 'u2', 'u3', 'u9'])
+    })
+
+    it('leaves the stale memberships after the budget runs out for the next check', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u8', 'u9'] })
+      const remove = vi.spyOn(services.teams, 'deleteMembership')
+      // Out of time once u8's membership is removed.
+      services.outOfTime = () => remove.mock.calls.length > 0
+      expect(await nightlyCheck(services)).toMatchObject({ checked: 0, cutOff: 1, removed: 1 })
+      expect(userIds(services)).toEqual(['u1', 'u2', 'u3', 'u9'])
+      expect(groupRow(services).nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
+      expect(warn).toHaveBeenLastCalledWith(
+        'scheduler: nightly check of group elm cut off by the budget',
+      )
+    })
+
     it('is never removed by a route that people call', async () => {
       const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u9'] })
       const remove = vi.spyOn(services.teams, 'deleteMembership')
+      const add = vi.spyOn(services.teams, 'createMembership')
       const body = {
         id: 'groceriesElm00000001',
         groupId: 'elm',
@@ -595,6 +652,7 @@ describe('step 6: nightly check', () => {
         expect([method, url, sent]).toMatchObject([method, url, { ok: true }])
       }
       expect(remove).not.toHaveBeenCalled()
+      expect(add).not.toHaveBeenCalled()
     })
   })
 })
@@ -607,9 +665,9 @@ describe('the team writes (teams.write)', () => {
       file.endsWith('.ts'),
     )
     const text = (file: string) => readFileSync(new URL(file, src), 'utf8')
-    expect(files.filter((file) => /\.deleteMembership\(|addToTeam\(/.test(text(file)))).toEqual([
-      'steps/nightly-check.ts',
-    ])
+    const writes =
+      /\b(createMembership|deleteMembership|updateMembership|addToTeam|removeFromTeam|ensureTeam)\(/
+    expect(files.filter((file) => writes.test(text(file)))).toEqual(['steps/nightly-check.ts'])
     expect(files.filter((file) => /from '[./]+(steps\/)?nightly-check'/.test(text(file)))).toEqual([
       'routes/run.ts',
     ])
