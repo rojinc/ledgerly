@@ -100,4 +100,22 @@ describe('useSortedByName', () => {
     // The rows read the members; sorting reads no more.
     expect(listRows).toHaveBeenCalledTimes(1)
   })
+
+  it('leaves the members query able to reload after the list renders again', async () => {
+    listRows.mockResolvedValue({ total: MEMBERS.length, rows: MEMBERS } as never)
+    const queryClient = new QueryClient()
+    const groups = [{ $id: 'g1', type: 'pair' as const, name: 'Sam' }]
+    const page = () => (
+      <QueryClientProvider client={queryClient}>
+        <SortedNames groups={[...groups]} />
+      </QueryClientProvider>
+    )
+    const { rerender } = render(page())
+    await waitFor(() => expect(screen.getByRole('listitem').textContent).toBe('Alex'))
+    // The sort's observer now has the last word on the shared query's options.
+    rerender(page())
+    await act(() => queryClient.invalidateQueries({ queryKey: ['members', 'g1'] }))
+    await waitFor(() => expect(listRows).toHaveBeenCalledTimes(2))
+    expect(queryClient.getQueryState(['members', 'g1'])?.status).toBe('success')
+  })
 })

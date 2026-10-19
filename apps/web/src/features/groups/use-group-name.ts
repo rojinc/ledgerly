@@ -1,5 +1,5 @@
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
-import { skipToken, useQueries } from '@tanstack/react-query'
+import { useQueries } from '@tanstack/react-query'
 import { queryKeys } from '../../lib/query-keys'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
@@ -47,7 +47,9 @@ export function useSortedByName<T extends Named>(groups: T[]): T[] {
   const members = useQueries({
     queries: pairs.map((group) => ({
       queryKey: queryKeys.members(group.$id),
-      queryFn: skipToken,
+      // Watches the rows' members query without fetching. No queryFn: one here (even skipToken)
+      // would replace the rows' on the shared query, and a later invalidation couldn't refetch.
+      enabled: false,
     })),
   })
   const membersOf = new Map(
