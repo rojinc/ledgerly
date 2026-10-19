@@ -72,6 +72,16 @@ describe('POST /transactions', () => {
     expect(rows.activity(db)).toHaveLength(1)
   })
 
+  it('stores a description folded to one line, and gives a retry of it the same row (#346)', async () => {
+    const db = seed()
+    const body = expense({ description: ' Groceries\n\u202eand\tmilk ' })
+    const first = await call(db, 'POST', '/transactions', body)
+    expect(rows.transactions(db)[0]?.description).toBe('Groceries and milk')
+    const again = await call(db, 'POST', '/transactions', body)
+    expect(again.status).toBe(200)
+    expect(again.body.data).toEqual(first.body.data)
+  })
+
   it('refuses the same id with different content as CONFLICT', async () => {
     const db = seed()
     await call(db, 'POST', '/transactions', expense())
