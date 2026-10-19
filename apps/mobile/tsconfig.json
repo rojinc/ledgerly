@@ -1,0 +1,11 @@
+{
+  // With ".json": Vitest's transform can't find "expo/tsconfig.base" without it.
+  "extends": "expo/tsconfig.base.json",
+  "compilerOptions": {
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "verbatimModuleSyntax": true,
+    // ES2023 Intl formatting of exact decimal strings (core's money/format.ts).
+    "lib": ["DOM", "ES2023"]
+  }
+}

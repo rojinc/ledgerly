@@ -1,0 +1,71 @@
+{
+  "localToday Sydney, last second of 3 Oct": {
+    "value": "2026-10-03"
+  },
+  "localToday Sydney, first second of 4 Oct": {
+    "value": "2026-10-04"
+  },
+  "localToday New York, last second of 7 Mar": {
+    "value": "2026-03-07"
+  },
+  "localToday New York, first second of 8 Mar (DST day)": {
+    "value": "2026-03-08"
+  },
+  "localTimeToUtc Sydney 06:00, day before DST": {
+    "value": "2026-10-02T20:00:00.000Z"
+  },
+  "localTimeToUtc Sydney 06:00, DST day": {
+    "value": "2026-10-03T19:00:00.000Z"
+  },
+  "localTimeToUtc New York 06:00, DST day": {
+    "value": "2026-03-08T10:00:00.000Z"
+  },
+  "localTimeToUtc New York 01:00, end of DST": {
+    "value": "2026-11-01T05:00:00.000Z"
+  },
+  "closeAtFor Sydney, period ending 3 Oct": {
+    "value": "2026-10-03T19:00:00.000Z"
+  },
+  "closeAtFor New York, period ending 31 Oct": {
+    "value": "2026-11-01T11:00:00.000Z"
+  },
+  "formatMoney AUD": {
+    "value": "$1,234.56"
+  },
+  "formatMoney JPY": {
+    "value": "JPY 1,234"
+  },
+  "formatNet AUD, negative": {
+    "value": "-$12.30"
+  },
+  "zod accepts a timer start": {
+    "value": true
+  },
+  "zod refuses fractional cents": {
+    "value": false
+  },
+  "rrule: Thursdays in Oct 2026": {
+    "value": ["2026-10-01", "2026-10-08", "2026-10-15", "2026-10-22", "2026-10-29"]
+  },
+  "AU-NSW public holidays 2027": {
+    "value": [
+      "2027-01-01",
+      "2027-01-26",
+      "2027-03-26",
+      "2027-03-27",
+      "2027-03-28",
+      "2027-03-29",
+      "2027-04-25",
+      "2027-04-26",
+      "2027-06-14",
+      "2027-10-04",
+      "2027-12-25",
+      "2027-12-26",
+      "2027-12-27",
+      "2027-12-28"
+    ]
+  },
+  "normalizePhone AU mobile": {
+    "value": "+61491570156"
+  }
+}
