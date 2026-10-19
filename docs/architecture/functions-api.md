@@ -155,7 +155,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 **Receipts.** `POST /transactions/{id}/receipts` sets the transaction's receipt list and changes nothing else. It rebuilds no shares or items, and writes one `transaction.updated` activity row; sending the stored list again, in the same order, writes nothing. Otherwise its rules are `PATCH`'s: status `scheduled`, `due` or `posted`, `LOCKED` and `ARCHIVED` as for `PATCH`, `NOT_FOUND` for non-members, and it sets `overridden` on a schedule occurrence.
 
-- Every write that attaches a file (`POST /transactions`, `PATCH` and `/receipts`) checks it and limits it to the group's team first ([permissions](permissions.md#storage)). The check runs after step 1's membership, role, archived and locked checks, so a refused caller never changes a file.
+- Every write that attaches a file (`POST /transactions`, `PATCH` and `/receipts`) checks it and limits it to the group's team first ([permissions](permissions.md#storage)). The check runs after step 1's membership, role, archived and locked checks, so a caller those checks refuse never changes a file.
 - A `PATCH` body without `receiptFileIds` keeps the stored list, so edit forms that don't show receipts don't drop them. `[]` clears it.
 - Taking a file off a list doesn't delete it or change its permissions; the scheduler's clean-up ([#163](https://github.com/rojinc/ledgerly/issues/163)) deletes files no transaction lists. The same file may be on two transactions of one group.
 
