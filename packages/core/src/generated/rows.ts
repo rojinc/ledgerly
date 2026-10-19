@@ -113,6 +113,7 @@ export type Persons = Models.Row & {
     claimedAt: string | null;
     mergedInto: string | null;
     deletedAt: string | null;
+    rev: string | null;
 }
 
 export type Identities = Models.Row & {

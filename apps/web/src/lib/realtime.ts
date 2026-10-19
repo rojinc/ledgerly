@@ -153,7 +153,10 @@ export function useRealtimeSync() {
       // ends the old session's auth on it, and drops a subscription whose connect failed, which
       // unsubscribe can't reach and the SDK would keep retrying.
       setTimeout(() => {
-        if (mounted === 0) void realtime.disconnect().catch(() => undefined)
+        if (mounted !== 0) return
+        // The next sign-in's first open is a first connection, not a reconnect.
+        opens = 0
+        void realtime.disconnect().catch(() => undefined)
       }, 0)
     }
   }, [queryClient])
