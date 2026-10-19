@@ -41,9 +41,12 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 - **One deploy at a time,** and a running one is never cancelled.
 - **Every run deploys `main`'s latest commit, never an older one.** `push table --force` makes the database match the commit's `tables.json`, so deploying an older commit would drop columns added since, with their data.
-  - **A run for an older commit** (or a re-run of an old run) deploys `main`'s latest instead, with a notice naming both commits. The checkout step names `ref: main` for this: without it, `actions/checkout` resets `origin/main` to the run's own commit, so the run can't see anything newer.
+  - **A run for an older commit** (or a re-run of one made after #298) deploys `main`'s latest instead, with a notice naming both commits. The checkout step names `ref: main` for this: without it, `actions/checkout` resets `origin/main` to the run's own commit, so the run can't see anything newer.
   - **Why it doesn't skip:** merges that land together can leave an older commit's run as the only one that survives, since `concurrency` keeps one pending run and cancels the rest. A skip would leave `main`'s latest undeployed.
-  - **One exception:** a run's steps come from its own commit. So if `main`'s latest changed `deploy.yml` or the plan script, that run fails without deploying, and a person runs **Deploy** on `main`.
+  - **Two exceptions,** where the run fails without deploying and a person runs **Deploy** on `main`:
+    - A run's steps come from its own `deploy.yml`, so the run fails if `deploy.yml` changed between its commit and `main`'s latest.
+    - The run's commit isn't in the history of `main`'s latest.
+  - **Never re-run a Deploy run from before #298.** Its steps don't check out `main`, so it deploys its own, older commit. Runs #1–#16 also have no table plan, so a re-run would push their `tables.json` with `--force` and delete newer tables. For example, `reminders` would go, with its data. Use **Run workflow** on `main` instead.
   - **A run on another branch** fails.
   - **To undo a change,** revert it on `main`.
 - **A table push stops before it deletes or recreates anything the checks can see.** The plan, and then a check that the server has exactly the config's tables, come first; either one stops the deploy ([schema changes that lose data](#schema-changes-that-lose-data)). A change made on the server in the seconds between the checks and the push isn't caught before it's applied, only reported after.

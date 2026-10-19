@@ -52,14 +52,11 @@ jobs:
         if: steps.secrets.outputs.ready == 'true'
         with:
           persist-credentials: false
-          # `push table --force` makes the database match the commit's tables.json, so deploying
-          # an older commit (re-running an old run) would drop columns added since, with their
-          # data. So every run checks out and deploys main's latest commit, never the run's own:
-          # merges that land together can leave an older commit's run as the one that survives
-          # (`concurrency` keeps one pending run). Without `ref`, checkout resets origin/main to
-          # the run's commit, so nothing after it could see main's latest.
+          # Main's latest commit, rather than the run's own: deploying an older one would drop
+          # newer columns (`push table --force`). Without `ref`, checkout resets origin/main to
+          # the run's commit.
           ref: main
-          # All of main's history, so the run's commit can be compared with the latest.
+          # Every branch, so the run's own commit is here to compare with.
           fetch-depth: 0
 
       - name: Check main's latest commit
@@ -72,10 +69,13 @@ jobs:
           fi
           latest=$(git rev-parse HEAD)
           if [ "$latest" != "$GITHUB_SHA" ]; then
-            # This run's steps come from its own commit and read the plan script's output, so
-            # neither may have changed since.
-            if ! git diff --quiet "$GITHUB_SHA" "$latest" -- .github/workflows/deploy.yml scripts/appwrite-table-plan.py; then
-              echo "::error::main's latest commit (${latest:0:7}) changed the deploy itself, so this run for ${GITHUB_SHA:0:7} can't deploy it. Nothing was deployed. Run Deploy on main."
+            if ! git merge-base --is-ancestor "$GITHUB_SHA" "$latest"; then
+              echo "::error::This run's commit (${GITHUB_SHA:0:7}) isn't in the history of main's latest (${latest:0:7}). Nothing was deployed. Run Deploy on main."
+              exit 1
+            fi
+            # This run's steps come from its own deploy.yml, so it must still be the latest's.
+            if ! git diff --quiet "$GITHUB_SHA" "$latest" -- .github/workflows/deploy.yml; then
+              echo "::error::deploy.yml changed between this run's commit (${GITHUB_SHA:0:7}) and main's latest (${latest:0:7}), so this run can't deploy it. Nothing was deployed. Run Deploy on main."
               exit 1
             fi
             echo "::notice::Deploying main's latest commit, ${latest:0:7}, in place of ${GITHUB_SHA:0:7}."
