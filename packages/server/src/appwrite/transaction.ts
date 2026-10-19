@@ -60,7 +60,11 @@ export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): 
         `A transaction holds at most ${MAX_OPS_PER_DB_TRANSACTION} writes, got ${requested}`,
       )
     }
-    await db.createOperations({ transactionId, operations: writes.map(toOperation) })
+    try {
+      await db.createOperations({ transactionId, operations: writes.map(toOperation) })
+    } catch (error) {
+      throw asConflict(error)
+    }
     staged += writes.length
   }
   const tx: Tx = {
@@ -118,14 +122,24 @@ async function commit(db: Db, transactionId: string): Promise<void> {
   try {
     await db.updateTransaction({ transactionId, commit: true })
   } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404 && ROW_GONE.includes(error.type)) {
-      throw new AppwriteException(error.message, 409, 'transaction_conflict')
-    }
-    throw error
+    throw asConflict(error)
   }
 }
 
 const ROW_GONE = ['row_not_found', 'document_not_found']
+
+/**
+ * A 404 for a row that's gone, as a 409. Appwrite gives it when a staged row was deleted before
+ * the commit (#105), and when an update or delete is staged for a row deleted since the route
+ * read it, at staging (#238). Both are the race a 409 is, so a route retries and then answers
+ * its own NOT_FOUND if the row is really gone.
+ */
+function asConflict(error: unknown): unknown {
+  if (error instanceof AppwriteException && error.code === 404 && ROW_GONE.includes(error.type)) {
+    return new AppwriteException(error.message, 409, 'transaction_conflict')
+  }
+  return error
+}
 
 /**
  * Commits `writes` in batches of MAX_OPS_PER_DB_TRANSACTION, one transaction each. Only for
