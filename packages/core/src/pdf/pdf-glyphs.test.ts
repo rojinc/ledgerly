@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest'
-import { missingGlyphs, printable } from './pdf-glyphs'
+import {
+  CJK_RANGES,
+  EMOJI_RANGES,
+  fontRuns,
+  missingGlyphs,
+  type PdfFont,
+  printable,
+} from './pdf-glyphs'
 
 const codePoints = (text: string) => Array.from(text, (char) => char.codePointAt(0))
 
@@ -72,5 +79,73 @@ describe('missingGlyphs and printable', () => {
 
   it('counts each time a character occurs', () => {
     expect(missingGlyphs('张张 and 张')).toEqual([0x5f20, 0x5f20, 0x5f20])
+  })
+})
+
+describe('the Noto tables', () => {
+  // The sizes #270 measured from each font file's cmap. A server test checks the tables against
+  // the files once they are in the repo.
+  it.each([
+    ['CJK_RANGES', CJK_RANGES, 2032, 44810],
+    ['EMOJI_RANGES', EMOJI_RANGES, 162, 1512],
+  ])('%s is in order, without overlaps, as measured', (_, ranges, rangeCount, codePointCount) => {
+    let previousTo = -2
+    const outOfOrder = ranges.filter(([from, to]) => {
+      // Ranges that touch would be one range.
+      const inOrder = previousTo + 1 < from && from <= to && to <= 0x10ffff
+      previousTo = to
+      return !inOrder
+    })
+    expect(outOfOrder).toEqual([])
+    expect(ranges).toHaveLength(rangeCount)
+    expect(ranges.reduce((sum, [from, to]) => sum + to - from + 1, 0)).toBe(codePointCount)
+  })
+})
+
+describe('fontRuns', () => {
+  const runs = (...pairs: [PdfFont, string][]) => pairs.map(([font, text]) => ({ font, text }))
+
+  it.each([
+    ['Chinese', '张三 Pty Ltd', runs(['NotoSansCJK', '张三'], ['Roboto', ' Pty Ltd'])],
+    ['Japanese', '山田太郎（カタカナ）', runs(['NotoSansCJK', '山田太郎（カタカナ）'])],
+    ['Korean', '김민준 Café', runs(['NotoSansCJK', '김민준'], ['Roboto', ' Café'])],
+    ['an emoji', 'Thanks 😀', runs(['Roboto', 'Thanks '], ['NotoEmoji', '😀'])],
+    // Neighbours in the same font are one run, � included.
+    [
+      'runs of each font',
+      '😀👍 ok, 张 🎉ร้าน',
+      runs(
+        ['NotoEmoji', '😀👍'],
+        ['Roboto', ' ok, '],
+        ['NotoSansCJK', '张'],
+        ['Roboto', ' '],
+        ['NotoEmoji', '🎉'],
+        ['Roboto', '����'],
+      ),
+    ],
+    // No font has Thai: each character becomes � in Roboto, as printable() gives it.
+    ['Thai', 'ร้าน Ltd', runs(['Roboto', '���� Ltd'])],
+    // Composed first: が typed as か + U+3099.
+    ['decomposed kana', 'が'.normalize('NFD'), runs(['NotoSansCJK', 'が'])],
+    ['nothing', '', []],
+  ])('splits %s', (_, text, expected) => {
+    expect(fontRuns(text)).toEqual(expected)
+  })
+
+  // Only Noto Emoji has U+200D and U+FE0F, and no font lists U+E0100, but each changes the
+  // character before it, so it goes to that character's font.
+  const family = '👨\u{200D}👩\u{200D}👧'
+  it.each([
+    ['a joined emoji', `Hi ${family}`, runs(['Roboto', 'Hi '], ['NotoEmoji', family])],
+    [
+      'VS16 on an emoji',
+      'I ❤\u{FE0F} it',
+      runs(['Roboto', 'I '], ['NotoEmoji', '❤\u{FE0F}'], ['Roboto', ' it']),
+    ],
+    ['VS16 on a Roboto letter', '©\u{FE0F} Ltd', runs(['Roboto', '©\u{FE0F} Ltd'])],
+    ['an ideographic variation', '葛\u{E0100}城', runs(['NotoSansCJK', '葛\u{E0100}城'])],
+    ['VS16 on a character no font has', 'ร\u{FE0F}', runs(['Roboto', '�\u{FE0F}'])],
+  ])('keeps %s with the character before it', (_, text, expected) => {
+    expect(fontRuns(text)).toEqual(expected)
   })
 })

@@ -2,6 +2,8 @@
 // bundles, and pdfmake leaves out a character its font can't draw without any error (#103). So
 // every text it prints goes through printable(), and a missing character shows as a visible �.
 
+import { NOTO_EMOJI_PACKED, NOTO_SANS_CJK_PACKED } from './pdf-glyphs-noto'
+
 /**
  * The code points that both bundled Roboto weights (regular and medium) can draw, as inclusive
  * ranges in order: Latin with accents (Vietnamese too), Greek, Cyrillic, punctuation, common
@@ -138,4 +140,71 @@ export function missingGlyphs(text: string): number[] {
  */
 export function printable(text: string): string {
   return Array.from(text.normalize('NFC'), (char) => drawn(char) ?? '�').join('')
+}
+
+/** A table from pdf-glyphs-noto.ts as inclusive ranges in order, the form of ROBOTO_RANGES. */
+function unpack(packed: string): readonly (readonly [from: number, to: number])[] {
+  let to = -1
+  return packed
+    .trim()
+    .split(/\s+/)
+    .map((range) => {
+      const [gap, length] = range.split(',').map((n) => Number.parseInt(n, 36)) as [number, number]
+      const from = to + 1 + gap
+      to = from + length
+      return [from, to] as const
+    })
+}
+
+/** What Noto Sans CJK SC (regular) can draw: Chinese, Japanese and Korean. */
+export const CJK_RANGES = unpack(NOTO_SANS_CJK_PACKED)
+
+/** What Noto Emoji (regular, monochrome) can draw. */
+export const EMOJI_RANGES = unpack(NOTO_EMOJI_PACKED)
+
+/** The invoice PDF's fonts, by their pdfmake font names. */
+export type PdfFont = 'Roboto' | 'NotoSansCJK' | 'NotoEmoji'
+
+type FontRun = { font: PdfFont; text: string }
+
+// simple: a scan, about 4 µs for a Korean letter near the end of CJK_RANGES (10,000 in 42 ms);
+// binary search if a profile ever shows it.
+function within(ranges: readonly (readonly [number, number])[], codePoint: number): boolean {
+  return ranges.some(([from, to]) => from <= codePoint && codePoint <= to)
+}
+
+function fontOf(codePoint: number): PdfFont | undefined {
+  if (drawable(codePoint)) return 'Roboto'
+  if (within(CJK_RANGES, codePoint)) return 'NotoSansCJK'
+  if (within(EMOJI_RANGES, codePoint)) return 'NotoEmoji'
+  return undefined
+}
+
+// A zero-width joiner or a variation selector changes how the character before it is drawn, so
+// it has to go to the same font.
+function joinsPrevious(codePoint: number): boolean {
+  return (
+    codePoint === 0x200d ||
+    (0xfe00 <= codePoint && codePoint <= 0xfe0f) ||
+    (0xe0100 <= codePoint && codePoint <= 0xe01ef)
+  )
+}
+
+/**
+ * `text`, composed (NFC), as runs of the first font that can draw each character: Roboto, then
+ * Noto Sans CJK, then Noto Emoji. `张三 Pty Ltd` → NotoSansCJK `张三`, Roboto ` Pty Ltd`. A
+ * character no font has becomes U+FFFD in a Roboto run. A zero-width joiner (U+200D) or variation
+ * selector (U+FE00–U+FE0F, U+E0100–U+E01EF) stays in the run of the character before it.
+ */
+export function fontRuns(text: string): FontRun[] {
+  const runs: FontRun[] = []
+  for (const char of text.normalize('NFC')) {
+    const codePoint = char.codePointAt(0) as number
+    const last = runs.at(-1)
+    const font = last && joinsPrevious(codePoint) ? last.font : fontOf(codePoint)
+    const run: FontRun = font ? { font, text: char } : { font: 'Roboto', text: '�' }
+    if (last?.font === run.font) last.text += run.text
+    else runs.push(run)
+  }
+  return runs
 }
