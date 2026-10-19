@@ -13,6 +13,7 @@ import { createInvite } from './routes/invites'
 import { joinPendingGroup, listPendingGroups } from './routes/pending-groups'
 import { updateProfile } from './routes/profile'
 import { sendReminder } from './routes/reminders'
+import { run } from './routes/run'
 import { type Services, servicesFromRequest } from './services'
 
 // The commit this bundle was built from (scripts/build-functions.mjs).
@@ -24,12 +25,21 @@ export function identityRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
-    // identity-and-invites.md#password-notice and #email-and-phone-change-notice: the
-    // users.*.update.password, users.*.recovery.*.update, users.*.update.email and
-    // users.*.update.phone events.
-    route('POST', '/', async (ctx) => eventRun(services(ctx), ctx.event, ctx.headers, ctx.body), {
-      event: true,
-    }),
+    // One route for every run that comes with no caller: the hourly schedule finishes merges
+    // (identity-and-invites.md#finishing-merges), and the users.*.update.password,
+    // users.*.recovery.*.update, users.*.update.email and users.*.update.phone events send the
+    // password and change notices (#password-notice, #email-and-phone-change-notice). A signed-in
+    // call gets FORBIDDEN; one with neither a JWT nor a trigger gets createHandler's
+    // UNAUTHENTICATED first.
+    route(
+      'POST',
+      '/',
+      async (ctx) =>
+        ctx.scheduled
+          ? run(ctx.scheduled, () => services(ctx))
+          : eventRun(services(ctx), ctx.event, ctx.headers, ctx.body),
+      { event: true },
+    ),
     route('POST', '/bootstrap', async (ctx) =>
       bootstrap(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
