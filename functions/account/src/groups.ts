@@ -86,12 +86,12 @@ async function leaveGroup(
       if (!others) return false
       await keep(services, person, member, group)
     }
-    // Then, in this order, on every run once the keep is done (each is safe to repeat): their
+    // Then, in this order, on every run once the keep is done (each is safe to repeat): the
     // schedules, the archive (ending a schedule in an archived group is refused), and leaving
     // the team last, so a crash before it leaves the group to be finished, never with its
     // schedules still running.
     if (!group.archivedAt) {
-      if (!(await endSchedules(services, person.$id, group))) return false
+      if (!(await endSchedules(services, person, group))) return false
       if (!(await hasJoinedAdmin(db, group.$id))) await archive(services, person.$id, group)
     }
     await removeFromTeam(teams, group.$id, userId)
@@ -171,27 +171,35 @@ async function keep(
 }
 
 // The schedules in the group that they created, or whose template names them, and in a `pair`
-// or `employer` group every schedule, end on the earlier of their stored end and today, so no
-// new occurrence names a deleted person. One that hasn't started and has nothing posted is
-// deleted instead, as it would otherwise end before it starts. False when the time budget runs
-// out first.
+// or `employer` group every schedule made before the deletion, end on the earlier of their
+// stored end and today, so no new occurrence names a deleted person. One that hasn't started
+// and has nothing posted is deleted instead, as it would otherwise end before it starts. False
+// when the time budget runs out first.
 async function endSchedules(
   { db, now, outOfTime }: Services,
-  personId: string,
+  person: Deleting,
   group: Groups,
 ): Promise<boolean> {
   const today = localToday(group.timezone, now)
-  // There, a schedule the other side made can give them a share without naming them (the
-  // default split, or a shift's employer), and the ledger refuses its occurrences once they're
-  // posted (identity-and-invites.md#after-deletion, a lead decision on #320).
+  // In those groups, a schedule the other side made can give them a share without naming them
+  // (the default split, or a shift's employer), which no new record may do
+  // (identity-and-invites.md#after-deletion, a lead decision on #320). Only one made before the
+  // deletion: a later one is held to that rule when it is made, and a rerun must decide as the
+  // first run did. Appwrite writes `+00:00`, so the times are compared parsed.
   const every = group.type === 'pair' || group.type === 'employer'
+  const deletedAt = Date.parse(person.deletedAt)
   // idx_groupId
   const schedules = await allRows<Schedules>(db, TABLES.schedules, [
     Query.equal('groupId', group.$id),
   ])
   for (const schedule of schedules) {
     if (outOfTime()) return false
-    if (!every && schedule.createdBy !== personId && !namedIn(schedule).includes(personId)) {
+    const before = Date.parse(schedule.$createdAt) <= deletedAt
+    if (
+      !(every && before) &&
+      schedule.createdBy !== person.$id &&
+      !namedIn(schedule).includes(person.$id)
+    ) {
       continue
     }
     const storedEnd = schedule.endsOn as LocalDate | null
