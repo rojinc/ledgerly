@@ -118,16 +118,21 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
 }
 
 // pdfmake drops the part of a row it may not break that doesn't fit on one page, so rows are
-// kept whole only while every one surely fits: at most this many wrapped lines (about 700 pt of
-// a page), counting a line per 10 characters, which no name or description at 10 pt beats in
-// any of the PDF's fonts (Noto Sans CJK, the widest, fits about 17 a line). Its lines are about
-// 24% taller, which the 15-person cap on a line's shares (MAX_PEOPLE_PER_TRANSACTION) leaves
-// room for.
+// kept whole only while every one surely fits: at most this many wrapped lines of Roboto's
+// height (about 700 pt of a page), counting a line per 10 characters, which no name or
+// description at 10 pt beats in any of the PDF's fonts (Noto Sans CJK, the widest, fits about
+// 17 a line). Near a page's height pdfmake can drop such a row, heading and all, without an
+// error, so a taller line has to count for more (#300).
 const MAX_ROW_LINES = 45
 const CHARS_PER_LINE = 10
+// A line with Chinese, Japanese or Korean is Noto Sans CJK's 1.448 em tall, against 1.172 for
+// Roboto and Noto Emoji: 1.24 times, rounded up.
+const CJK_LINE = 1.25
 
 function wrappedLines(line: Line, nameOf: (personId: string) => string): number {
-  const lines = (text: string) => Math.max(1, Math.ceil(text.length / CHARS_PER_LINE))
+  const lines = (text: string) =>
+    Math.max(1, Math.ceil(text.length / CHARS_PER_LINE)) *
+    (fontRuns(text).some((run) => run.font === 'NotoSansCJK') ? CJK_LINE : 1)
   return line.shares.reduce(
     (sum, share) => sum + lines(nameOf(share.personId)),
     lines(lineText(line)),

@@ -394,6 +394,37 @@ describe('renderDividePdf', () => {
     expect(reads).toEqual([])
   })
 
+  // statements.md#monthly-divide-pdf-layout-house: a line in Noto Sans CJK is about 24% taller
+  // than one in Roboto, so a row kept whole by Roboto's count can be taller than pdfmake can
+  // place, and it drops the row, heading and all, without an error (#300). This one counted 44
+  // of 45 lines: 15 names of 20 characters and a description of 140, each character different.
+  it('prints a row of Chinese names and description whole, or across pages, never dropped', async () => {
+    const chars = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => String.fromCodePoint(from + i)).join('')
+    const names = Array.from({ length: 15 }, (_, i) => chars(0x4e00 + i * 20, 20))
+    const description = chars(0x5000, 140)
+    const input = goldenInput([
+      line(
+        '2026-10-10',
+        'bill',
+        15000,
+        names.map((_, i) => share(`p${i}`, i === 0 ? 15000 : 0, 1000)),
+        { description },
+      ),
+    ])
+    const snapshot = buildStatementSnapshot({
+      ...input,
+      people: names.map((name, i) => ({ personId: `p${i}`, name })),
+      previousClosing: [],
+    })
+    const text = (await pageTexts(await renderDividePdf(snapshot))).join(' ')
+    // From the table's heading on, every character of the row, wherever its lines wrap.
+    const heading = text.indexOf('Transactions Date Description')
+    expect(heading).toBeGreaterThanOrEqual(0)
+    const table = text.slice(heading)
+    for (const char of names.join('') + description) expect(table).toContain(char)
+  })
+
   it('refuses an invoice snapshot', async () => {
     const snapshot = buildStatementSnapshot(goldenInput())
     const employer = { ...snapshot, group: { ...snapshot.group, type: 'employer' as const } }
