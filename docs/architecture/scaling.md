@@ -8,7 +8,7 @@ The aim: nothing we build now needs a rewrite at 100,000 users, and we don't bui
 | --- | --- | --- |
 | Operations per TablesDB transaction | Free 100 · Pro 1,000 · Scale 2,500 | At most 30 items, 15 people and 10 receipts per transaction, so one write uses fewer than 100 operations (the largest, a `PATCH` that changes them all, uses 85). Bulk jobs (locking, merges) work in batches of 90. |
 | Synchronous execution timeout | 30 seconds, hard | User-facing routes target under 2 s. Long work (finalize) runs async and is resumable. |
-| Cron timing | UTC clock | Jobs run hourly and work out each group's local date themselves. |
+| Scheduled runs | No cron on this plan; `interval: 60` at the shortest, at a minute Appwrite picks ([function settings](../engineering/environments-and-deploys.md#function-settings)) | Jobs run every 60 minutes and work out each group's local date themselves. |
 | Pagination | Offset paging slows down on large tables | Always use cursor pagination (`Query.cursorAfter`), page size 100. A job that goes through rows which may be deleted meanwhile pages by `$id` instead (`Query.greaterThan('$id', last)` with `Query.orderAsc('$id')`), because a deleted cursor row fails the query. |
 
 Production runs on the **Pro** plan. Development may use Free, which is why we keep under the Free limits.
@@ -44,7 +44,7 @@ The JSON holds one entry for each person who has a share in the group: tens of e
 | Slow queries | An index exists for every query in [data model](data-model.md) | Any new query in a PR must name the index it uses. |
 | Duplicate writes from retries or bad mobile networks | Client-generated IDs; deterministic occurrence IDs | Nothing more needed. |
 | Receipt storage cost | Client resizes images to at most 1600 px and WebP before upload; 10 MB cap. The scheduler deletes files that no transaction lists after 24 hours ([step 5](scheduling.md#step-5-receipt-clean-up)); the work grows with new uploads and the files that are due, not with total storage. | Add lifecycle rules if storage costs matter. |
-| Receipt clean-up falls behind | Step 5 has at most 4 minutes of each hourly run (2 for never-attached uploads, the rest for removed receipts) and no count limit. Never-attached uploads go oldest first from a stored checkpoint, so none is dropped, only delayed. | `receipt_cleanup_behind` logged on several runs in a row: give step 5 its own, more frequent cron, or a longer slice. |
+| Receipt clean-up falls behind | Step 5 has at most 4 minutes of each hourly run (2 for never-attached uploads, the rest for removed receipts) and no count limit. Never-attached uploads go oldest first from a stored checkpoint, so none is dropped, only delayed. | `receipt_cleanup_behind` logged on several runs in a row: give step 5 its own function (also `interval: 60`), or a longer slice. |
 | Data grows forever | Closed periods never change; reports read statements for old periods | Archive shares and transactions older than N years to cold storage. Not before 2028. |
 | Realtime fan-out | One subscription per signed-in app for the tables it reads. The activity feed has no channel of its own: every activity row is written with a row of one of those tables, whose event refreshes it. Appwrite sends only rows the user can read, and only queries on screen refetch. | Nothing more needed for groups of under 20 people. |
 | Email volume | Resend | Separate transactional and summary sending streams. |
