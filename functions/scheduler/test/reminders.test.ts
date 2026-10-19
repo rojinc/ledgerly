@@ -184,7 +184,7 @@ describe('step 3: shift to confirm', () => {
     expect(email).toMatchObject({
       to: 'sam@example.com',
       subject: expect.stringContaining('Confirm your shift'),
-      idempotencyKey: 'reminder-t1',
+      idempotencyKey: `reminder-t1-${SYDNEY_YESTERDAY}`,
     })
     expect(email?.text).toContain(`${APP_URL}/groups/acme/transactions/t1`)
     expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
@@ -211,6 +211,19 @@ describe('step 3: shift to confirm', () => {
     quiet.mockRestore()
   })
 
+  it('leaves an auto-post shift unmarked when nobody can be asked, so step 2 keeps trying it', async () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const services = seeded([transaction('t1', { scheduleId: 'auto' })], {
+      accounts: { u1: { email: 'sam@example.com', emailVerification: false } },
+    })
+    expect(await runCron(services)).toMatchObject({
+      posted: { posted: 0, skipped: 0, failed: 1 },
+      reminders: { sent: 0, skipped: 0, failed: 0 },
+    })
+    expect(remindedAt(services, 't1')).toBeNull()
+    quiet.mockRestore()
+  })
+
   it('reminds about a shift of an auto-post schedule made after its day, which step 2 leaves', async () => {
     // Made on Sydney's 19 October (now), for the 18th.
     const late = transaction('t1', { scheduleId: 'auto', $createdAt: NOW.toISOString() })
@@ -219,6 +232,26 @@ describe('step 3: shift to confirm', () => {
       posted: { posted: 0, skipped: 0, failed: 0 },
       reminders: { sent: 1, skipped: 0, failed: 0 },
     })
+  })
+
+  it('reminds again, with its own key, about a shift moved after its reminder', async () => {
+    const services = seeded([transaction('t1')])
+    await runCron(services)
+    // A PATCH to a new date clears remindedAt (functions-api.md#ledger).
+    const earlier = '2026-10-16'
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't1',
+        data: { date: earlier, remindedAt: null },
+      }),
+    )
+    expect((await runCron(services)).reminders.sent).toBe(1)
+    expect(services.sendEmail.mock.calls.map(([email]) => email.idempotencyKey)).toEqual([
+      `reminder-t1-${SYDNEY_YESTERDAY}`,
+      `reminder-t1-${earlier}`,
+    ])
   })
 
   it('reminds about a shift whose schedule was deleted', async () => {
@@ -293,17 +326,24 @@ describe('step 3: shift to confirm', () => {
   })
 
   it.each([
-    ['has no verified email', { email: 'sam@example.com', emailVerification: false }],
+    ['has no verified email', { email: 'sam@example.com', emailVerification: false }, 'manual'],
     [
       'is blocked, as one being deleted is',
       { email: 'sam@example.com', emailVerification: true, status: false },
+      'manual',
     ],
-  ])('marks it reminded without sending when the owner’s account %s', async (_case, account) => {
-    const services = seeded([transaction('t1')], { accounts: { u1: account } })
-    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 1, failed: 0 })
-    expect(services.sendEmail).not.toHaveBeenCalled()
-    expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
-  })
+    // Nothing would post these either.
+    ['has no verified email (no schedule)', { emailVerification: false }, null],
+    ['has no verified email (schedule deleted)', { emailVerification: false }, 'gone'],
+  ])(
+    'marks it reminded without sending when the owner’s account %s',
+    async (_case, account, scheduleId) => {
+      const services = seeded([transaction('t1', { scheduleId })], { accounts: { u1: account } })
+      expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 1, failed: 0 })
+      expect(services.sendEmail).not.toHaveBeenCalled()
+      expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
+    },
+  )
 
   it('tries again next run when the email fails', async () => {
     const services = seeded([transaction('t1')])
@@ -447,7 +487,7 @@ describe('step 3: timer still running', () => {
       expect.objectContaining({
         to: 'alex@example.com',
         subject: 'Your timer is still running',
-        idempotencyKey: 'reminder-long',
+        idempotencyKey: `reminder-long-${SYDNEY_YESTERDAY}`,
       }),
     )
     // Shown in the group's timezone: 18:00 on 18 October in Sydney.
