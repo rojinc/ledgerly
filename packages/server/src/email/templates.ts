@@ -317,9 +317,10 @@ export function reminderEmail(input: {
 // The most of someone's own text a reminder or an invite shows, per name.
 const SHORT_LINE_LENGTH = 40
 const GRAPHEMES = new Intl.Segmenter(LOCALE, { granularity: 'grapheme' })
-// Bidi controls: embeddings and overrides, isolates, and the two marks. They can make text
-// around the name read in another order. The zero-width joiner (U+200D) stays: emoji need it.
-const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069\u200E\u200F]/g
+// Unicode's Bidi_Control characters: embeddings and overrides, isolates, and the three marks
+// (LRM, RLM and the Arabic letter mark). They can make text around the name read in another
+// order. The zero-width joiner (U+200D) isn't one, so it stays: emoji need it.
+const BIDI_CONTROLS = /\p{Bidi_Control}/gu
 
 /**
  * Free text someone chose, for an email body: one line, as the subject is, so a line break
