@@ -37,7 +37,7 @@ The two config files share the resource files through the CLI's `includes` field
 | Trigger | Steps |
 | --- | --- |
 | push to `main` | `npm ci` → `npm run build` (the web app with `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID` of dev) → install `appwrite-cli` (pinned) → `appwrite client -e $ENDPOINT -p $DEV_PROJECT -k $DEV_KEY` → `appwrite push table`, `bucket`, `function` and `site`, each with `--all --force` |
-| tag `vMAJOR.MINOR.PATCH` | the same steps with `--config-file appwrite.config.prod.json` and the prod secrets, in the `production` environment (see the owner setup below for who can approve it). The tag must be on `main`. |
+| run by hand (**Run workflow**) on a tag `vMAJOR.MINOR.PATCH` | the same steps with `--config-file appwrite.config.prod.json` and the prod secrets, in the `production` environment. The run fails unless it was started on a release tag whose commit is on `main`. Only the owner runs it; agents never do, and never create `v*` tags (AGENTS.md). Pushing a tag deploys nothing. |
 
 - **One deploy per environment at a time,** and a running one is never cancelled.
 - **The CLI can exit 0 when a resource fails to push** (for example "Deployed 4 of 5 functions … 1 failed."), so each push runs under `pipefail` and also fails on any `✗` or "… failed." line in the CLI's output. `appwrite push all` can't be used: it needs a console login, not an API key.
@@ -53,10 +53,11 @@ The two config files share the resource files through the CLI's `includes` field
 GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_API_KEY`, `APPWRITE_PROD_PROJECT_ID`, `APPWRITE_PROD_API_KEY`.
 
 **Owner setup for deploys (#3):**
-- **Who can deploy prod.** Anyone who can push a `v*` tag on a `main` commit. The agents work through the owner's GitHub account, so GitHub can't tell them apart from the owner: the rule that only the owner tags a release is a process rule. What GitHub can add depends on the plan ([GitHub docs](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)):
+- **Who can deploy prod.** Anyone who can run a workflow in the repo. The agents work through the owner's GitHub account, so GitHub can't tell them apart from the owner: the rule that only the owner tags a release and runs the prod deploy is a process rule (AGENTS.md). What GitHub can add depends on the plan ([GitHub docs](https://docs.github.com/en/actions/reference/workflows-and-actions/deployments-and-environments)):
   - **Public repo, or GitHub Enterprise:** a required reviewer on the `production` environment, environment secrets, and deployment tags limited to `v*`.
   - **Private repo on GitHub Pro or Team:** environment secrets and deployment tags limited to `v*`, so only a tag run can read the prod key. No required reviewers.
   - **Private repo on GitHub Free:** none of these. The prod secrets are repo secrets, and a `production` environment the workflow names is created with no protection.
+- **Add the prod secrets only when you're ready to release** (#3). Until they exist, a prod run fails at its first step.
 - Store the two `APPWRITE_PROD_*` secrets as secrets of the `production` environment where the plan allows it, and limit its deployment tags to `v*`.
 - Create the web site's domain once in the Appwrite console, in each project: an API key can't create it.
 

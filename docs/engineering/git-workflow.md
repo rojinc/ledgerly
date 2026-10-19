@@ -51,8 +51,8 @@ Refs #17
 ## Releases
 
 - Every merge to `main` deploys to the **dev** environment.
-- A release is a git tag `vMAJOR.MINOR.PATCH` on `main`. Pushing the tag deploys to **prod**. Notes are generated from the conventional commits.
-- Hotfix: branch from `main`, PR, merge, tag a patch release.
+- A release is a git tag `vMAJOR.MINOR.PATCH` on `main`, created by the owner. The owner then runs the **Deploy** workflow by hand on that tag (Actions → Deploy → Run workflow), which deploys to **prod**. Pushing a tag deploys nothing. Agents never create `v*` tags and never run the prod deploy. Notes are generated from the conventional commits.
+- Hotfix: branch from `main`, PR, merge, then the owner tags a patch release and runs the prod deploy.
 
 See [Environments and deploys](environments-and-deploys.md).
 

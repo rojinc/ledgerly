@@ -1,15 +1,15 @@
 name: Deploy
 
-# A push to main deploys to dev. A v* tag on main deploys to prod, once the owner approves the
-# `production` environment (docs/engineering/environments-and-deploys.md#cicd-github-actions).
+# A push to main deploys to dev. Prod deploys only when the owner runs this workflow by hand on
+# a release tag; agents never do (AGENTS.md, environments-and-deploys.md#cicd-github-actions).
 on:
   push:
     branches: [main]
-    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
 
 # One deploy per environment at a time, and never cancelled half-way through a push.
 concurrency:
-  group: deploy-${{ github.ref_type == 'tag' && 'prod' || 'dev' }}
+  group: deploy-${{ github.event_name == 'workflow_dispatch' && 'prod' || 'dev' }}
   cancel-in-progress: false
 
 permissions:
@@ -22,24 +22,24 @@ defaults:
 
 jobs:
   deploy:
-    name: deploy ${{ github.ref_type == 'tag' && 'prod' || 'dev' }}
+    name: deploy ${{ github.event_name == 'workflow_dispatch' && 'prod' || 'dev' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    environment: ${{ github.ref_type == 'tag' && 'production' || 'dev' }}
+    environment: ${{ github.event_name == 'workflow_dispatch' && 'production' || 'dev' }}
     # The API key is passed only to the steps that need it, never to npm or the build. The
     # `|| ''` keeps a missing prod secret from falling back to the dev one.
     env:
-      IS_PROD: ${{ github.ref_type == 'tag' }}
-      CONFIG: ${{ github.ref_type == 'tag' && 'appwrite.config.prod.json' || 'appwrite.config.json' }}
+      IS_PROD: ${{ github.event_name == 'workflow_dispatch' }}
+      CONFIG: ${{ github.event_name == 'workflow_dispatch' && 'appwrite.config.prod.json' || 'appwrite.config.json' }}
       APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
-      PROJECT_ID: ${{ github.ref_type == 'tag' && secrets.APPWRITE_PROD_PROJECT_ID || github.ref_type != 'tag' && secrets.APPWRITE_DEV_PROJECT_ID || '' }}
+      PROJECT_ID: ${{ github.event_name == 'workflow_dispatch' && secrets.APPWRITE_PROD_PROJECT_ID || github.event_name != 'workflow_dispatch' && secrets.APPWRITE_DEV_PROJECT_ID || '' }}
     steps:
       # Until the owner adds the secrets (#3), a dev deploy is skipped with a warning. A prod
       # deploy, or a dev one with only some of its secrets, fails instead.
       - name: Check the secrets
         id: secrets
         env:
-          API_KEY: ${{ github.ref_type == 'tag' && secrets.APPWRITE_PROD_API_KEY || github.ref_type != 'tag' && secrets.APPWRITE_DEV_API_KEY || '' }}
+          API_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.APPWRITE_PROD_API_KEY || github.event_name != 'workflow_dispatch' && secrets.APPWRITE_DEV_API_KEY || '' }}
         run: |
           if [ -n "$APPWRITE_ENDPOINT" ] && [ -n "$PROJECT_ID" ] && [ -n "$API_KEY" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
@@ -58,12 +58,18 @@ jobs:
         if: steps.secrets.outputs.ready == 'true'
         with:
           persist-credentials: false
-          # The whole history, so a tag can be checked against main.
+          # The whole history, so a release tag can be checked against main.
           fetch-depth: 0
 
-      - name: Check the tag is on main
-        if: steps.secrets.outputs.ready == 'true' && github.ref_type == 'tag'
-        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+      # A prod run must be started on a release tag (vMAJOR.MINOR.PATCH) whose commit is on main.
+      - name: Check the release tag
+        if: steps.secrets.outputs.ready == 'true' && github.event_name == 'workflow_dispatch'
+        run: |
+          if [ "$GITHUB_REF_TYPE" != "tag" ] || ! [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Run the prod deploy on a release tag (vMAJOR.MINOR.PATCH), not on $GITHUB_REF_NAME."
+            exit 1
+          fi
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
       # The CLI takes the endpoint from APPWRITE_ENDPOINT over the config file's, and the config
       # file names the project, so this is the only check that the secrets and the file agree.
@@ -102,7 +108,7 @@ jobs:
       - name: Push tables, buckets, functions and the web site
         if: steps.secrets.outputs.ready == 'true'
         env:
-          API_KEY: ${{ github.ref_type == 'tag' && secrets.APPWRITE_PROD_API_KEY || github.ref_type != 'tag' && secrets.APPWRITE_DEV_API_KEY || '' }}
+          API_KEY: ${{ github.event_name == 'workflow_dispatch' && secrets.APPWRITE_PROD_API_KEY || github.event_name != 'workflow_dispatch' && secrets.APPWRITE_DEV_API_KEY || '' }}
         run: |
           appwrite client --endpoint "$APPWRITE_ENDPOINT" --project-id "$PROJECT_ID" --key "$API_KEY"
           push() {
