@@ -215,8 +215,14 @@ export async function requireNoOpenMerge(
       ],
       total: false,
     })
-    const holds = (personId: string) => members.some((member) => member.personId === personId)
-    if (holds(person.$id) || !holds(person.mergedInto as string)) continue
+    const has = (personId: string) => members.find((member) => member.personId === personId)
+    // Step 2 always leaves U's row joined; a placeholder row of U's isn't P's place (D-016).
+    if (
+      has(person.$id) ||
+      (has(person.mergedInto as string)?.status ?? 'placeholder') === 'placeholder'
+    ) {
+      continue
+    }
     const details: MergingRefusal = { reason: 'merging' }
     throw new AppError(
       'CONFLICT',

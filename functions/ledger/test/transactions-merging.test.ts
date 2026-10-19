@@ -1,6 +1,6 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { call, NOW, rows, seed } from './harness'
+import { call, member, NOW, rows, seed } from './harness'
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -240,6 +240,14 @@ describe('a merge that isn’t open in the row’s group', () => {
   it('one where U has no row in the group (Pat’s was removed before step 2) doesn’t hold it', async () => {
     // Pat's merge into Dan, who isn't in the house: nothing gave Pat's place to anyone.
     const db = await written(byDays, marked(['house'], 'dan'), ...stepTwo)
+    expect((await call(db, 'PATCH', '/transactions/b1', edit)).status).toBe(200)
+  })
+
+  it('one where U has only a placeholder row (U never joined) doesn’t hold it (D-016)', async () => {
+    // Dan was added to the house but hasn't joined; Pat's row was removed before step 2.
+    const { $id, ...placeholder } = member('m-dan', 'house', 'dan', 'member', 'placeholder')
+    const dansRow: Write = { action: 'create', tableId: 'members', rowId: $id, data: placeholder }
+    const db = await written(byDays, dansRow, marked(['house'], 'dan'), ...stepTwo)
     expect((await call(db, 'PATCH', '/transactions/b1', edit)).status).toBe(200)
   })
 
