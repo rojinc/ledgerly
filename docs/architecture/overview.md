@@ -13,7 +13,7 @@
 │ Auth        users, sessions, email/phone verification                 │
 │ TablesDB    persons, identities, profiles, groups, members,           │
 │             transactions, shares, items, schedules, statements,       │
-│             activity, invites, receiptFiles                           │
+│             activity, invites, receiptFiles, migrations               │
 │ Teams       one team per group, which gives members read access       │
 │ Storage     receipts, statements (PDFs)                               │
 │ Realtime    live updates to rows the user can read                    │
