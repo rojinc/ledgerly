@@ -71,11 +71,23 @@ describe('the statements job (POST /, cron)', () => {
     )
   })
 
-  it('leaves groups alone that are not due, or have no invoices', async () => {
+  it('leaves groups alone that are not due, or have no statements', async () => {
     const services = fakes({
       groups: [
         job({}, { nextCloseAt: '2026-11-30T19:00:00.000Z' }),
-        { ...job(), $id: 'house2', type: 'house', settingsJson: '{"type":"house"}' },
+        {
+          ...job(),
+          $id: 'house2',
+          type: 'house',
+          settingsJson: JSON.stringify({
+            type: 'house',
+            autoFinalize: false,
+            defaultBillSplit: 'days',
+          }),
+          nextCloseAt: '2026-11-30T19:00:00.000Z',
+        },
+        // A pair group never has statements, whatever its row says.
+        { ...job(), $id: 'pair2', type: 'pair', settingsJson: '{"type":"pair"}' },
       ],
     })
     expect(await runJob(services)).toEqual({ drafted: 0, failed: 0 })
@@ -302,12 +314,6 @@ describe('POST /statements/reissue', () => {
 
   it.each([
     ['a member who is not an admin', { ...october, groupId: 'house' }, 'u-bob', 'FORBIDDEN'],
-    [
-      'a house, until divides come',
-      { ...october, groupId: 'house' },
-      'u-alice',
-      'VALIDATION_FAILED',
-    ],
     [
       'a range that ends before it starts',
       { ...october, periodEnd: '2026-09-30' },

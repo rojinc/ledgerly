@@ -156,6 +156,7 @@ export type Groups = Models.Row & {
     statementCycle: GroupsStatementCycle;
     cycleAnchor: string | null;
     nextCloseAt: string | null;
+    nextCheckAt: string | null;
     settingsJson: string;
     archivedAt: string | null;
     rev: string | null;
@@ -214,6 +215,10 @@ export type Items = Models.Row & {
     splitJson: string;
 }
 
+export type Balances = Models.Row & {
+    peopleJson: string;
+}
+
 export type Schedules = Models.Row & {
     groupId: string;
     kind: SchedulesKind;
@@ -252,6 +257,7 @@ export type Activity = Models.Row & {
     actorPersonId: string | null;
     action: string;
     transactionId: string | null;
+    subjectPersonId: string | null;
     summary: string;
     changesJson: string | null;
     at: string;

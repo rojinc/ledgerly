@@ -15,7 +15,7 @@ Rules for every coding agent (Claude Code, Codex, others) and every person worki
 ## Rules that always apply
 
 - **Stay inside your issue's Scope paths.** Need more? Comment on the issue and ask.
-- **Never** push to `main`, force-push someone else's branch, edit Appwrite resources in the console, or commit secrets or `.env` files. Only the **lead agent** merges PRs, after a review by a different agent ([merge rules](docs/collaboration/multi-agent-workflow.md#5-review)).
+- **Never** push to `main`, force-push someone else's branch, edit Appwrite resources in the console, or commit secrets or `.env` files. Agents never create tags and never run a deploy by hand: only merges to `main` deploy. Only the **lead agent** merges PRs, after a review by a different agent ([merge rules](docs/collaboration/multi-agent-workflow.md#5-review)).
 - **Sub-agents** may research, write code in their own worktree and self-review, but never claim, push, post on GitHub, merge or touch Appwrite. One agent owns the PR ([details](docs/collaboration/multi-agent-workflow.md#3-work)).
 - **Money is integer cents.** Splitting always uses `allocate()`. Never use floats for money.
 - **Dates are `YYYY-MM-DD` strings in the group's timezone.** Never `new Date('YYYY-MM-DD')`. Use the date helpers in `packages/core`.
@@ -49,7 +49,7 @@ Run lint, typecheck, test and build before you mark a PR ready.
 apps/web/          React + Vite PWA (features/<feature>/ per feature)
 packages/core/     pure TypeScript domain logic: money, dates, ledger, schemas (no I/O)
 packages/server/   helpers for functions only (Appwrite client, auth, email, pdf)
-functions/<name>/  Appwrite Functions: ledger, groups, identity, scheduler, statements
+functions/<name>/  Appwrite Functions: ledger, groups, identity, account, scheduler, statements
 appwrite/          tables, buckets, functions as code
 docs/              design docs (GitBook)
 ```

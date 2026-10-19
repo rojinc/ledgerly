@@ -1,6 +1,6 @@
 # Functions API
 
-Every write goes through one of five Appwrite Functions. This page is the **contract** between frontend and backend: routes, payloads, responses and errors. The zod schemas in `packages/core/src/schemas/` are the code version of this page, and the response types sit next to them (`TransactionView`, `Balances`, `BootstrapResult` and so on), so functions and the web app share one copy. Change both in the same `contract` PR.
+Every write goes through one of six Appwrite Functions. This page is the **contract** between frontend and backend: routes, payloads, responses and errors. The zod schemas in `packages/core/src/schemas/` are the code version of this page, and the response types sit next to them (`TransactionView`, `Balances`, `BootstrapResult` and so on), so functions and the web app share one copy. Change both in the same `contract` PR.
 
 ## Calling a function
 
@@ -141,13 +141,15 @@ What every write does, in **one TablesDB transaction**:
 
 On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use. The scheduler's `PATCH /schedules/{id}`, `/end` and `DELETE` do the same for a schedule's group.
 
-`/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
+`/balances` is a function, not a client-side sum, so the `balances` cache changes no client. It reads the group's `balances` row ([ledger](ledger.md#balances)): one read. A group with no row, or whose row can't be read, fails `balancesPeopleSchema` or has nets that don't add up to 0 (each logged as an error), is summed from its shares, reading again until the group's `rev` is the same before and after. The response is the same either way, and a sum that doesn't add up to 0 is `INVARIANT_VIOLATION`.
 
 - `people` has one entry per person with shares in the group, sorted by `personId`. Anyone else is at 0.
 - It reads the shares a page at a time, then the group row again. Every write of shares writes a fresh `rev` to the group row ([concurrency](ledger.md#concurrency)). So if `rev` changed, or a page's cursor row was deleted, a write committed during the read, and it reads again. After 3 reads like that, it gives `CONFLICT`.
 - A whole read whose shares don't add up to 0 gives `INVARIANT_VIOLATION`.
 
 A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date gets its own reminder.
+
+**Deleted people.** `POST /transactions`, `PATCH` and `/post` refuse, with `VALIDATION_FAILED`, an input whose people (`everyPersonId()`: payers, the split, items) include a person with `deletedAt` whom the stored input didn't already name, **in a group where that person's member row isn't `placeholder`**. Payments and adjustments are exempt, so balances with a former member can still be settled. Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). The scheduler's `POST` and `PATCH /schedules` apply the same rule to the template.
 
 **Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
 
@@ -199,6 +201,28 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 - `/join` reads the caller's member row in that group first, so someone who isn't in the group learns nothing about it; with no row it returns `NOT_A_MEMBER`. It then runs the steps in [Joining a group](identity-and-invites.md#joining-a-group): team first, then `active` (or `left` if `leftOn` is set) with a `member.joined` row. If the row is already `active`, or `left` for someone who moved out (still in the team), it returns `{ group, member }` unchanged and doesn't touch the team, so a retry is safe. Someone who left on their own (`left`, no longer in the team) gets `NOT_A_MEMBER`: coming back after leaving isn't supported in v1. If the join fails while the row is still `placeholder`, the team membership from the first step is taken back. Joining writes no ledger data, so it works on archived groups, the same as claim and invites.
 
 Details: [People, identity and invites](identity-and-invites.md).
+
+## account
+
+Deleting an account ([#50](https://github.com/rojinc/ledgerly/issues/50)). A function of its own, so `identity` never holds `users.write` or file access.
+
+| Route | Body | Returns | Who |
+| --- | --- | --- | --- |
+| `POST /delete` | `{ confirm: 'DELETE' }` | `{ deletedAt, finished }` | the user, signed in within the last 10 minutes |
+
+Cron: `35 * * * *`, sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), skipping any started in the last minute. A person calling `POST /` gets `FORBIDDEN`.
+
+**`POST /delete`** deletes the caller's account ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). It is synchronous and works for up to 20 seconds; `finished: false` means the hourly job deletes the rest. Refusals change nothing, and are checked in this order:
+
+| Code | When |
+| --- | --- |
+| `VALIDATION_FAILED` | The body isn't `{ confirm: 'DELETE' }` |
+| `FORBIDDEN`, `details: { reason: 'reauth' }` | The caller's session (from the JWT's session ID, loaded with `users.listSessions`) was created more than `REAUTH_WINDOW_MINUTES` (10) ago, or can't be found. The app asks them to sign in again and retries. |
+| `FORBIDDEN`, `details: { reason: 'recent_password_change' }` | The user's `passwordUpdate` is less than `RECENT_PASSWORD_CHANGE_HOURS` (24) old. The app says when they can try again. |
+| `CONFLICT` | They have a timer running in a group that isn't archived |
+| `VALIDATION_FAILED`, `details: { groupIds }` | They're the only joined admin of a house that isn't archived and has another `active` member. Here `details` names the houses, not schema issues. |
+
+A call after `deletedAt` is set skips the checks (apart from the body) and carries on, since the account is already going. The caller's sessions are deleted right after, so a retry from the app gets `UNAUTHENTICATED`. That doesn't prove the deletion finished: the app asks the user to sign in again, which fails once their account is gone. The types are `deleteAccountBodySchema`, `DeleteAccountResult` and `DeleteAccountRefusal` in `packages/core/src/schemas/identity.ts`.
 
 ## scheduler
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { MAX_AMOUNT_CENTS } from '../constants/limits'
-import { formatMoney, parseMoney } from './format'
+import { centsToDecimal, formatMoney, parseMoney } from './format'
 
 // ICU puts a no-break space between a currency code and the number.
 const plain = (text: string) => text.replace(/\s/g, ' ')
@@ -74,5 +74,21 @@ describe('parseMoney', () => {
   it('does not repeat the input in its error message', () => {
     expect(() => parseMoney('secret note 12', 'AUD')).toThrow(/^Not an amount of AUD/)
     expect(() => parseMoney('secret note 12', 'AUD')).not.toThrow(/secret/)
+  })
+})
+
+describe('centsToDecimal (#50)', () => {
+  it('writes cents as a plain decimal with the currency’s digits', () => {
+    expect(centsToDecimal(-1230, 'AUD')).toBe('-12.30')
+    expect(centsToDecimal(5, 'AUD')).toBe('0.05')
+    expect(centsToDecimal(-5, 'AUD')).toBe('-0.05')
+    expect(centsToDecimal(0, 'AUD')).toBe('0.00')
+    expect(centsToDecimal(1234, 'JPY')).toBe('1234')
+    expect(centsToDecimal(1234, 'KWD')).toBe('1.234')
+    expect(centsToDecimal(10_000_000_000, 'AUD')).toBe('100000000.00')
+  })
+
+  it('refuses an amount that isn’t whole cents', () => {
+    expect(() => centsToDecimal(1.5, 'AUD')).toThrow()
   })
 })

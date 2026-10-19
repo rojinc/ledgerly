@@ -293,6 +293,25 @@ export const stopTimerBodySchema = z.strictObject({
 
 export type StopTimerBody = z.infer<typeof stopTimerBodySchema>
 
+/**
+ * `balances.peopleJson` (data-model.md#balances): each person with at least one share in the
+ * group, with their net and how many shares they have, in ascending `personId` order, each once.
+ * Nets are sums of many transactions, so only a safe integer bounds them.
+ */
+export const balancesPeopleSchema = z
+  .array(z.strictObject({ personId: idSchema, netCents: z.int(), shares: z.int().min(1) }))
+  .superRefine((people, ctx) => {
+    people.forEach((person, index) => {
+      const before = people[index - 1]
+      if (before !== undefined && before.personId >= person.personId) {
+        const message = 'In ascending personId order, each once'
+        ctx.addIssue({ code: 'custom', message, path: [index, 'personId'] })
+      }
+    })
+  })
+
+export type BalancesPeople = z.infer<typeof balancesPeopleSchema>
+
 // Responses (functions-api.md#ledger), shared by the function and the web app.
 
 /** What every transaction write and the timer routes return. */

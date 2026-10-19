@@ -64,8 +64,9 @@ export async function archiveGroup(
           'A statement in this group is being finalized. Finish it first.',
         )
       }
+      // Not the group's name either: a pair group's is what its creator calls the other person.
       await tx.write(
-        activityWrite(groupId, person.$id, 'group.archived', `${group.name} archived`, now),
+        activityWrite(groupId, person.$id, 'group.archived', 'Archived the group', now),
       )
     }),
   )

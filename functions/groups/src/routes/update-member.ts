@@ -9,6 +9,7 @@ import { requireMember } from '@ledgerly/server/auth/require-member'
 import type { Services } from '../services'
 import {
   activityWrite,
+  aRole,
   conflictAsTryAgain,
   getMemberOf,
   getRowOrNull,
@@ -101,18 +102,37 @@ export async function updateMember(
         )
       }
       await tx.write(
-        activityWrite(
-          groupId,
-          caller.$id,
-          'member.updated',
-          `${next.displayName}'s membership was changed`,
-          now,
-          { before, after },
-        ),
+        activityWrite(groupId, caller.$id, 'member.updated', changeSummary(after), now, {
+          subjectPersonId: current.personId,
+          changes: { before: withoutName(before), after: withoutName(after) },
+        }),
       )
     }),
   )
   return db.getRow<Members>({ databaseId: DATABASE_ID, tableId: TABLES.members, rowId: memberId })
+}
+
+/**
+ * What changed, to read after the member's current name, which the app shows from
+ * `subjectPersonId`: "was renamed and moved in on 2026-08-15". It names no one, not even with
+ * a rename (data-model.md#activity).
+ */
+function changeSummary(after: Partial<Fields>): string {
+  const parts: string[] = []
+  if (after.displayName !== undefined) parts.push('was renamed')
+  if (after.joinedOn !== undefined) parts.push(`moved in on ${after.joinedOn}`)
+  if (after.leftOn === null) parts.push('moved back in')
+  if (after.leftOn) parts.push(`moved out on ${after.leftOn}`)
+  // Moving out makes them a viewer, which "moved out" already says.
+  if (after.role !== undefined && !after.leftOn) parts.push(`was made ${aRole(after.role)}`)
+  // A status only changes with leftOn, so the fallback is for rows that break that rule.
+  const last = parts.pop() ?? 'had their membership changed'
+  return parts.length > 0 ? `${parts.join(', ')} and ${last}` : last
+}
+
+/** The changes without the name, which the summary only says changed. */
+function withoutName({ displayName: _, ...fields }: Partial<Fields>): Partial<Fields> {
+  return fields
 }
 
 /**

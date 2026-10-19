@@ -244,7 +244,7 @@ describe('POST /claim', () => {
     expect(await claimed(services)).toEqual(['g1'])
     expect(teamUsers(services, 'g1')).toEqual(['uAdmin', 'u1'])
     expect(services.db.rows('activity')).toEqual([
-      expect.objectContaining({ summary: 'Sam L joined' }),
+      expect.objectContaining({ subjectPersonId: 'pSam', summary: 'joined' }),
     ])
   })
 

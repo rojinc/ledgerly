@@ -21,8 +21,8 @@ export type Tx = {
   id: string
   /**
    * Stages the writes in one request, after every earlier `write` call has staged, so writes
-   * apply in call order. If any of these rows changes outside the transaction after this, the
-   * commit fails with 409. Always await it (Biome's `noFloatingPromises` checks). As a safety
+   * apply in call order. Staging an update or delete of a row that is gone fails with 409, and
+   * if any of these rows changes outside the transaction after this, the commit fails with 409. Always await it (Biome's `noFloatingPromises` checks). As a safety
    * net, `withTransaction` waits for every staging before it commits, and if one failed it
    * rolls back and throws that error, even if the route caught it. Once `work` has resolved,
    * `write` stages nothing and throws.
@@ -32,8 +32,8 @@ export type Tx = {
 
 /**
  * Runs `work` in a TablesDB transaction and commits what it staged. If `work` throws, the
- * transaction is rolled back and the error rethrown. A commit conflict (409) is rethrown for
- * the route to retry. One transaction holds at most MAX_OPS_PER_DB_TRANSACTION writes
+ * transaction is rolled back and the error rethrown. A conflict (409), at the commit or when a
+ * write to a row deleted meanwhile is staged, is rethrown for the route to retry. One transaction holds at most MAX_OPS_PER_DB_TRANSACTION writes
  * (scaling.md).
  *
  * To guard a row, for example never to change a locked transaction (I-7): stage the write to
@@ -60,7 +60,11 @@ export async function withTransaction<T>(db: Db, work: (tx: Tx) => Promise<T>): 
         `A transaction holds at most ${MAX_OPS_PER_DB_TRANSACTION} writes, got ${requested}`,
       )
     }
-    await db.createOperations({ transactionId, operations: writes.map(toOperation) })
+    try {
+      await db.createOperations({ transactionId, operations: writes.map(toOperation) })
+    } catch (error) {
+      throw asConflict(error)
+    }
     staged += writes.length
   }
   const tx: Tx = {
@@ -118,14 +122,24 @@ async function commit(db: Db, transactionId: string): Promise<void> {
   try {
     await db.updateTransaction({ transactionId, commit: true })
   } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404 && ROW_GONE.includes(error.type)) {
-      throw new AppwriteException(error.message, 409, 'transaction_conflict')
-    }
-    throw error
+    throw asConflict(error)
   }
 }
 
 const ROW_GONE = ['row_not_found', 'document_not_found']
+
+/**
+ * A 404 for a row that's gone, as a 409. Appwrite gives it when a staged row was deleted before
+ * the commit (#105), and when an update or delete is staged for a row deleted since the route
+ * read it, at staging (#238). Both are the race a 409 is, so a route retries and then answers
+ * its own NOT_FOUND if the row is really gone.
+ */
+function asConflict(error: unknown): unknown {
+  if (error instanceof AppwriteException && error.code === 404 && ROW_GONE.includes(error.type)) {
+    return new AppwriteException(error.message, 409, 'transaction_conflict')
+  }
+  return error
+}
 
 /**
  * Commits `writes` in batches of MAX_OPS_PER_DB_TRANSACTION, one transaction each. Only for
