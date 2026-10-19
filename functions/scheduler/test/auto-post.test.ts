@@ -158,20 +158,23 @@ describe('step 2: auto-post', () => {
     await create(services, thursdays)
     expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
     expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    // Dated on its own day, not the day it was posted.
     expect(row(services, `${ID}_20261015`)).toMatchObject({
       status: 'posted',
+      date: '2026-10-15',
       totalCents: 12_500,
       updatedBy: 'pSam',
     })
     expect(
-      sharesOf(services, `${ID}_20261015`).map(({ personId, givenCents, receivedCents }) => ({
+      sharesOf(services, `${ID}_20261015`).map(({ personId, date, givenCents, receivedCents }) => ({
         personId,
+        date,
         givenCents,
         receivedCents,
       })),
     ).toEqual([
-      { personId: 'pAcme', givenCents: 0, receivedCents: 12_500 },
-      { personId: 'pSam', givenCents: 12_500, receivedCents: 0 },
+      { personId: 'pAcme', date: '2026-10-15', givenCents: 0, receivedCents: 12_500 },
+      { personId: 'pSam', date: '2026-10-15', givenCents: 12_500, receivedCents: 0 },
     ])
     const activity = services.db.rows('activity') as unknown as Activity[]
     expect(activity).toEqual([
@@ -327,6 +330,26 @@ describe('step 2: auto-post', () => {
     expect(log).toHaveBeenCalledWith(
       `scheduler: auto-post failed for transaction ${ID}_20261015: AppError INVARIANT_VIOLATION`,
     )
+  })
+
+  it('posts an occurrence once when two runs overlap', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // A second run starts and posts it while the first one's post commits.
+    let second: RunResult | undefined
+    beforeCommit(services.db, async () => {
+      second = await runCron(services)
+    })
+    const first = await runCron(services)
+    expect([first.posted, second?.posted]).toEqual([
+      { posted: 0, skipped: 0, failed: 0 },
+      { posted: 1, skipped: 0, failed: 0 },
+    ])
+    const id = `${ID}_20261015`
+    expect(row(services, id).status).toBe('posted')
+    expect(sharesOf(services, id)).toHaveLength(2)
+    const activity = services.db.rows('activity') as unknown as Activity[]
+    expect(activity.filter((entry) => entry.transactionId === id)).toHaveLength(1)
   })
 
   it('can’t give a share to a member removed while the post commits', async () => {
