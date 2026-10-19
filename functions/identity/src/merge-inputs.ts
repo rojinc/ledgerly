@@ -1,6 +1,13 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
 import type { DateRange, LocalDate } from '@ledgerly/core/dates/local-date'
-import type { Groups, Items, Schedules, Shares, Transactions } from '@ledgerly/core/generated/rows'
+import type {
+  Groups,
+  Items,
+  Persons,
+  Schedules,
+  Shares,
+  Transactions,
+} from '@ledgerly/core/generated/rows'
 import {
   type Merge,
   mergeInput,
@@ -9,7 +16,11 @@ import {
 } from '@ledgerly/core/identity/merge-input'
 import type { LedgerContext } from '@ledgerly/core/ledger/build-shares'
 import type { LedgerMember } from '@ledgerly/core/ledger/split-amount'
-import type { MergeMembers } from '@ledgerly/core/schemas/identity'
+import {
+  type MergeCursors,
+  type MergeMembers,
+  mergeCursorsSchema,
+} from '@ledgerly/core/schemas/identity'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { splitSpecSchema } from '@ledgerly/core/schemas/split'
 import type { Db } from '@ledgerly/server/appwrite/client'
@@ -25,7 +36,7 @@ import {
   type StoredInput,
   storedInputSchema,
 } from '@ledgerly/server/ledger/transactions'
-import { Query } from 'node-appwrite'
+import { AppwriteException, Query } from 'node-appwrite'
 import type { z } from 'zod'
 import { dropBalances, Finalizing, isFinalizing } from './merge'
 import { getRowOrNull, isAppwriteError } from './rows'
@@ -70,6 +81,7 @@ export async function moveInputs(
   now: Date,
   deadline: number,
   recorded: MergeMembers = [],
+  cursors: MergeCursors = [],
 ): Promise<InputsResult> {
   const result: InputsResult = {
     rewritten: 0,
@@ -81,7 +93,8 @@ export async function moveInputs(
   }
   for (const groupId of groupIds) {
     const dates = recorded.find((entry) => entry.groupId === groupId)
-    const outcome = await moveGroupInputs(db, merge, groupId, now, deadline, result, dates)
+    const from = cursors.find((entry) => entry.groupId === groupId)
+    const outcome = await moveGroupInputs(db, merge, groupId, now, deadline, result, dates, from)
     if (outcome === 'putOff') result.putOff.push(groupId)
     if (outcome === 'cutOff') {
       result.cutOff = true
@@ -101,6 +114,7 @@ async function moveGroupInputs(
   deadline: number,
   result: InputsResult,
   dates: MergeMembers[number] | undefined,
+  from: MergeCursors[number] | undefined,
 ): Promise<'done' | 'putOff' | 'cutOff'> {
   // An edit after the merge plans a row with the members as step 2 left them, and as they are
   // after a race: a member change may be what made the batch run again.
@@ -109,22 +123,41 @@ async function moveGroupInputs(
     return group ? (await loadGroupLedger(db, group, merge.into)).ctx : undefined
   }
   let ctx = await members()
-  let cursor: string | undefined
+  // Where an earlier run's scan got to (#242 G), and the rows it left as they are: those are
+  // read again first, so one voided or fixed since no longer holds the merge open.
+  let cursor = from?.after
+  let left = from?.left ?? []
+  let again = left
   for (;;) {
     if (Date.now() >= deadline) return 'cutOff'
-    // Void rows are skipped below, not in the query, so the cursor row is always still there.
-    const { rows } = await db.listRows<Transactions>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.transactions,
-      queries: [
-        Query.equal('groupId', groupId),
-        Query.isNull('statementId'),
-        Query.orderAsc('$id'),
-        Query.limit(PAGE),
-        ...(cursor === undefined ? [] : [Query.cursorAfter(cursor)]),
-      ],
-      total: false,
-    })
+    let page: Transactions[]
+    try {
+      // Void rows are skipped below, not in the query, so within a run the cursor row is always
+      // still there.
+      ;({ rows: page } = await db.listRows<Transactions>({
+        databaseId: DATABASE_ID,
+        tableId: TABLES.transactions,
+        queries: [
+          Query.equal('groupId', groupId),
+          Query.isNull('statementId'),
+          Query.orderAsc('$id'),
+          Query.limit(PAGE),
+          ...(cursor === undefined ? [] : [Query.cursorAfter(cursor)]),
+        ],
+        total: false,
+      }))
+    } catch (error) {
+      // An earlier run's cursor row has gone since (deleted, or locked): start the scan again.
+      if (!(error instanceof AppwriteException && error.type === 'general_cursor_not_found')) {
+        throw error
+      }
+      cursor = undefined
+      continue
+    }
+    const leftRows = [
+      ...(await listById<Transactions>(db, TABLES.transactions, again)).values(),
+    ].filter((row) => row.groupId === groupId && row.statementId === null)
+    const rows = [...leftRows, ...page]
     const { rewrites, skipped } = await planRewrites(
       db,
       rows.filter((row) => row.status !== 'void'),
@@ -151,13 +184,77 @@ async function moveGroupInputs(
       }
       throw error
     }
-    for (const rowId of skipped) {
+    for (const rowId of skipped.filter((id) => !again.includes(id))) {
       console.warn(`merge ${merge.from} into ${merge.into} left transaction ${rowId} as it is`)
     }
-    result.skipped += skipped.length
-    const last = rows.at(-1)
-    if (!last || rows.length < PAGE) return 'done'
-    cursor = last.$id
+    const cleared = again.filter((rowId) => !skipped.includes(rowId))
+    left = [...new Set([...left.filter((rowId) => !cleared.includes(rowId)), ...skipped])]
+    again = []
+    const last = page.at(-1)
+    if (last) cursor = last.$id
+    if (cursor !== undefined) {
+      await saveCursor(db, merge.from, { groupId, after: cursor, left }, cleared)
+    }
+    if (!last || page.length < PAGE) {
+      result.skipped += left.length
+      return 'done'
+    }
+  }
+}
+
+/** P's resume points (`persons.mergeCursorsJson`); none if there are none or they can't be read. */
+export function cursorsOf(placeholder: Pick<Persons, 'mergeCursorsJson'> | null): MergeCursors {
+  if (!placeholder?.mergeCursorsJson) return []
+  let raw: unknown
+  try {
+    raw = JSON.parse(placeholder.mergeCursorsJson)
+  } catch {
+    return []
+  }
+  const parsed = mergeCursorsSchema.safeParse(raw)
+  return parsed.success ? parsed.data : []
+}
+
+/**
+ * Records where the group's scan got to on P's row, once the page's batches have committed. The
+ * stored entries are read, then the write is staged and they're read again, so another run's
+ * entry written meanwhile is kept, not lost: its rows left as they are stay left, apart from the
+ * ones this run `cleared`. Unreadable entries start over from scratch, which is only slower.
+ */
+async function saveCursor(
+  db: Db,
+  placeholderId: string,
+  entry: MergeCursors[number],
+  cleared: readonly string[],
+): Promise<void> {
+  for (;;) {
+    try {
+      await withTransaction(db, async (tx) => {
+        const stored = await getRowOrNull<Persons>(db, TABLES.persons, placeholderId)
+        // Persons are never deleted; without P's row there's nowhere to keep it.
+        if (!stored) return
+        const cursors = cursorsOf(stored)
+        const theirs = cursors.find((other) => other.groupId === entry.groupId)?.left ?? []
+        const left = [
+          ...new Set([...theirs.filter((rowId) => !cleared.includes(rowId)), ...entry.left]),
+        ]
+        const next = [
+          ...cursors.filter((other) => other.groupId !== entry.groupId),
+          { ...entry, left },
+        ]
+        await tx.write({
+          action: 'update',
+          tableId: TABLES.persons,
+          rowId: placeholderId,
+          data: { mergeCursorsJson: JSON.stringify(next) },
+        })
+        const now = await getRowOrNull<Persons>(db, TABLES.persons, placeholderId)
+        if (now?.mergeCursorsJson !== stored.mergeCursorsJson) throw new Raced()
+      })
+      return
+    } catch (error) {
+      if (!(error instanceof Raced || isAppwriteError(error, 409))) throw error
+    }
   }
 }
 

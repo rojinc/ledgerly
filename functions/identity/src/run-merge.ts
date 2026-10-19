@@ -4,7 +4,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
 import { memberOf, moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
-import { moveInputs, moveTemplates } from './merge-inputs'
+import { cursorsOf, moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
 
 // identity-and-invites.md#merging-two-persons, steps 2–4, run by /claim (and bootstrap's claim).
@@ -64,6 +64,7 @@ async function runMerge(
   const putOff = new Set<string>()
   const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
   const recorded = memberDatesOf(placeholder)
+  const cursors = cursorsOf(placeholder)
   let done = true
   // Only P's groups can name P; never U's others, so a merge costs what P had. A group P has no
   // row in any more comes first: step 2 is done there, so it may be part done, and a later claim
@@ -80,6 +81,13 @@ async function runMerge(
     if (Date.now() >= deadline) {
       done = false
       break
+    }
+    // Step 3 never plans a posted row's items without step 1's dates (#301): a group without them
+    // waits whole, P's row included, and keeps the merge open.
+    if (!recorded?.some((entry) => entry.groupId === groupId)) {
+      console.error(`merge ${fromId}: no recorded member dates for group ${groupId}`)
+      putOff.add(groupId)
+      continue
     }
     const members = await moveMembers(services, userId, fromId, intoId, [groupId], deadline)
     joined.push(...members.joined)
@@ -103,7 +111,7 @@ async function runMerge(
       putOff.add(groupId)
       continue
     }
-    const inputs = await moveInputs(db, merge, [groupId], now, deadline, recorded)
+    const inputs = await moveInputs(db, merge, [groupId], now, deadline, recorded, cursors)
     moved.inputs += inputs.rewritten
     moved.voided += inputs.voided
     moved.skipped += inputs.skipped
@@ -184,9 +192,9 @@ async function stray(
   return false
 }
 
-/** The member dates step 1 recorded for P (#242 B2); none if they can't be read. */
-function memberDatesOf(placeholder: Persons): MergeMembers {
-  if (placeholder.mergeMembersJson === null) return []
+/** The member dates step 1 recorded for P (#242 B2); undefined if there are none it can read. */
+function memberDatesOf(placeholder: Persons): MergeMembers | undefined {
+  if (placeholder.mergeMembersJson === null) return undefined
   let raw: unknown
   try {
     raw = JSON.parse(placeholder.mergeMembersJson)
@@ -196,7 +204,7 @@ function memberDatesOf(placeholder: Persons): MergeMembers {
   const parsed = mergeMembersSchema.safeParse(raw)
   if (parsed.success) return parsed.data
   console.error(`merge ${placeholder.$id}: its recorded member dates are unreadable`)
-  return []
+  return undefined
 }
 
 /** The persons merged into U. */

@@ -259,6 +259,25 @@ async function cutOffAt(services: Fakes, cutAt: number) {
   vi.mocked(Date.now).mockRestore()
 }
 
+/** P's and Sam's member dates in these groups, as merge step 1 records them (#242 B2). */
+function recorded(services: Fakes, groupIds: string[]): string {
+  const dates = (personId: string, groupId: string) => {
+    const row = services.db
+      .rows('members')
+      .find((member) => member.groupId === groupId && member.personId === personId)
+    return row ? { joinedOn: row.joinedOn, leftOn: row.leftOn ?? null } : null
+  }
+  // Sammy had a row in each of them when step 1 ran, even one a test has since removed.
+  const added = { joinedOn: '2026-01-01', leftOn: null }
+  return JSON.stringify(
+    groupIds.map((groupId) => ({
+      groupId,
+      from: dates('pP', groupId) ?? added,
+      into: dates('pSam', groupId),
+    })),
+  )
+}
+
 /** The merges that stopped on an error: none, unless a test makes one. */
 function stopped() {
   return warn.mock.calls.filter(([line]: unknown[]) => /stopped/.test(String(line)))
@@ -570,7 +589,11 @@ describe('POST /claim, merging a placeholder', () => {
           action: 'update',
           tableId: 'persons',
           rowId: 'pP',
-          data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2'] },
+          data: {
+            mergedInto: 'pSam',
+            mergeGroupIds: ['g1', 'g2'],
+            mergeMembersJson: recorded(services, ['g1', 'g2']),
+          },
         }),
       )
       const start = Date.now()
@@ -619,7 +642,11 @@ describe('POST /claim, merging a placeholder', () => {
         action: 'update',
         tableId: 'persons',
         rowId: 'pP',
-        data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2', 'g3'] },
+        data: {
+          mergedInto: 'pSam',
+          mergeGroupIds: ['g1', 'g2', 'g3'],
+          mergeMembersJson: recorded(services, ['g1', 'g2', 'g3']),
+        },
       }),
     )
     await claim(services)
@@ -644,7 +671,11 @@ describe('POST /claim, merging a placeholder', () => {
             action: 'update',
             tableId: 'persons',
             rowId: 'pP',
-            data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2'] },
+            data: {
+              mergedInto: 'pSam',
+              mergeGroupIds: ['g1', 'g2'],
+              mergeMembersJson: recorded(services, ['g1', 'g2']),
+            },
           }),
         )
         await cutOffAt(services, first)
@@ -670,7 +701,11 @@ describe('POST /claim, merging a placeholder', () => {
             action: 'update',
             tableId: 'persons',
             rowId: 'pP',
-            data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2'] },
+            data: {
+              mergedInto: 'pSam',
+              mergeGroupIds: ['g1', 'g2'],
+              mergeMembersJson: recorded(services, ['g1', 'g2']),
+            },
           }),
         )
         await cutOffAt(services, first)
@@ -742,10 +777,14 @@ describe('POST /claim, merging a placeholder', () => {
     expect(warn).toHaveBeenCalledWith(
       'merge pP into pSam left members row m9 in group g9 for a later claim',
     )
-    // The next claim walks Sammy's rows too, so it moves that one and finishes.
+    // The next claim walks Sammy's rows too, but step 1 recorded no dates for g9, so the group
+    // waits whole (#301) and the merge stays open, logged.
     vi.mocked(services.db.listRows).mockRestore()
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     await claim(services)
-    expect(namingSammy(services).identities).toEqual([])
+    expect(namingSammy(services).identities).toEqual(['iPhone'])
+    expect(services.db.rows('members').find((member) => member.$id === 'm9')?.personId).toBe('pP')
+    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g9')
   })
 
   it('moves nothing in a group whose finalize ends just after step 2 put it off', async () => {
@@ -846,7 +885,8 @@ describe('POST /claim, merging a placeholder', () => {
     })
   })
 
-  it('carries on with the members as step 2 left them when the recorded dates can’t be read', async () => {
+  it('puts every group off, and keeps the merge open, when the recorded dates can’t be read', async () => {
+    // #301: step 3 never plans a posted row's items without step 1's dates.
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
     const services = house()
     await withTransaction(services.db, (tx) =>
@@ -858,8 +898,10 @@ describe('POST /claim, merging a placeholder', () => {
       }),
     )
     await claim(services)
-    expect(namingSammy(services).identities).toEqual([])
+    // Nothing moved: Sammy keeps both rows, the shares and the key.
+    expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], members: ['m1', 'm3'] })
     expect(error).toHaveBeenCalledWith('merge pP: its recorded member dates are unreadable')
+    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
   })
 
   it('still logs the user in, and joins their own rows, when a merge stops on an error', async () => {

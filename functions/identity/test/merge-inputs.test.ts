@@ -6,7 +6,7 @@ import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { moveShares } from '../src/merge'
-import { moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
+import { cursorsOf, moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
 import { beforeStaging, NOW } from './harness'
 
 // P (a placeholder) is merged into U; X is someone else.
@@ -926,6 +926,121 @@ describe('moveInputs (step 3)', () => {
       done: false,
     })
     expect(input(store, 't1')).toEqual(EXPENSE)
+  })
+})
+
+describe('moveInputs: where the scan got to (#242 G)', () => {
+  const P = { $id: 'pP', userId: null, displayName: 'P', mergedInto: 'pU', mergeCursorsJson: null }
+  const ids = (count: number) =>
+    Array.from({ length: count }, (_, n) => `t${String(n).padStart(3, '0')}`)
+
+  function withP(transactions: object[], cursors: object | null = null) {
+    return seed(transactions, {
+      persons: [
+        { $id: 'pU', userId: 'uU', displayName: 'U', mergedInto: null, deletedAt: null },
+        { ...P, mergeCursorsJson: cursors && JSON.stringify(cursors) },
+      ],
+    })
+  }
+
+  function cursors(store: FakeDb) {
+    return cursorsOf(store.rows('persons').find((row) => row.$id === 'pP') as never)
+  }
+
+  it('records each page, and a later run carries on after it rather than from the start', async () => {
+    const store = withP(ids(250).map((id) => transaction(id, EXPENSE)))
+    // Out of time once the first page's cursor is stored.
+    const start = Date.now()
+    let out = false
+    vi.spyOn(Date, 'now').mockImplementation(() => (out ? start + 60_000 : start))
+    beforeStaging(
+      store,
+      (operations) => operations.includes('mergeCursorsJson'),
+      async () => {
+        out = true
+      },
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, start + 1000)).toMatchObject({
+      rewritten: 100,
+      cutOff: true,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't099', left: [] }])
+    vi.restoreAllMocks()
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, [], cursors(store))).toMatchObject({
+      rewritten: 150,
+      done: true,
+    })
+    const first = reads.mock.calls.find(([params]) => params.tableId === 'transactions')?.[0]
+    expect(first?.queries).toContainEqual(expect.stringContaining('t099'))
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't249', left: [] }])
+    expect(store.rows('transactions').every((row) => !/\bpP\b/.test(row.inputJson as string))).toBe(
+      true,
+    )
+  })
+
+  it('keeps a row it left behind the cursor holding the merge open, until it’s voided', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const broken = { ...transaction('t001', {}), inputJson: '{' }
+    const store = withP([transaction('t000', EXPENSE), broken, transaction('t002', EXPENSE)])
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+      skipped: 1,
+      done: false,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: ['t001'] }])
+    // The next run reads t001 again first: still unreadable, still open.
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, [], cursors(store))).toMatchObject({
+      skipped: 1,
+      done: false,
+    })
+    // Voided since, it no longer names anyone: the group's inputs are done.
+    await withTransaction(store, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't001',
+        data: { status: 'void' },
+      }),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, [], cursors(store))).toMatchObject({
+      skipped: 0,
+      done: true,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: [] }])
+  })
+
+  it('starts the scan again when the cursor’s row has gone since', async () => {
+    const gone = [{ groupId: 'g1', after: 't500', left: [] }]
+    const store = withP([transaction('t000', EXPENSE), transaction('t600', EXPENSE)], gone)
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, [], gone)).toMatchObject({
+      rewritten: 2,
+      done: true,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't600', left: [] }])
+  })
+
+  it('keeps another run’s cursor for another group, written just before this one', async () => {
+    const store = withP([transaction('t000', EXPENSE)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('mergeCursorsJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pP',
+            data: {
+              mergeCursorsJson: JSON.stringify([{ groupId: 'g2', after: 'x', left: ['x'] }]),
+            },
+          }),
+        ),
+    )
+    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    expect(cursors(store)).toEqual([
+      { groupId: 'g2', after: 'x', left: ['x'] },
+      { groupId: 'g1', after: 't000', left: [] },
+    ])
   })
 })
 
