@@ -74,6 +74,20 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "addressMisses",
+        "type": "integer",
+        "required": false,
+        "array": false,
+        "default": 0
+      },
+      {
+        "key": "addressMissesFrom",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
