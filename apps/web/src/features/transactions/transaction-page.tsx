@@ -28,11 +28,14 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 function storedParts(inputJson: string): {
   note?: string
   shift?: { minutes: number; rateCents: number }
+  /** An equal split's head count (#180). */
+  equalSplit?: number
 } {
   try {
     const stored = JSON.parse(inputJson) as {
       note?: unknown
       shift?: { minutes?: unknown; rateCents?: unknown }
+      split?: { mode?: unknown; personIds?: unknown }
     } | null
     const note = typeof stored?.note === 'string' && stored.note !== '' ? stored.note : undefined
     const minutes = stored?.shift?.minutes
@@ -41,7 +44,14 @@ function storedParts(inputJson: string): {
       Number.isInteger(minutes) && Number.isInteger(rateCents)
         ? { minutes: minutes as number, rateCents: rateCents as number }
         : undefined
-    return { ...(note ? { note } : {}), ...(shift ? { shift } : {}) }
+    const personIds = stored?.split?.personIds
+    const equalSplit =
+      stored?.split?.mode === 'equal' && Array.isArray(personIds) ? personIds.length : undefined
+    return {
+      ...(note ? { note } : {}),
+      ...(shift ? { shift } : {}),
+      ...(equalSplit ? { equalSplit } : {}),
+    }
   } catch {
     return {}
   }
@@ -93,7 +103,7 @@ function Details({ row }: { row: Transactions }) {
   const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
   const locked = row.statementId !== null
   const archived = group.data.archivedAt !== null
-  const { note, shift } = storedParts(row.inputJson)
+  const { note, shift, equalSplit } = storedParts(row.inputJson)
 
   return (
     <>
@@ -130,6 +140,15 @@ function Details({ row }: { row: Transactions }) {
             <dd>
               {row.category[0]?.toUpperCase()}
               {row.category.slice(1)}
+            </dd>
+          </>
+        )}
+        {/* An employer entry's one-person split says nothing its type doesn't. */}
+        {group.data.type === 'house' && equalSplit && (
+          <>
+            <dt className="text-muted-foreground">Split</dt>
+            <dd>
+              Equally between {equalSplit} {equalSplit === 1 ? 'person' : 'people'}
             </dd>
           </>
         )}
@@ -186,8 +205,14 @@ function hoursText(minutes: number): string {
 
 function GroupLink({ group }: { group: Groups }) {
   const name = useGroupName(group)
-  return group.type === 'employer' ? (
-    <Link to={`/transactions?groupId=${group.$id}`} className="underline underline-offset-4">
+  const to =
+    group.type === 'employer'
+      ? `/transactions?groupId=${group.$id}`
+      : group.type === 'house'
+        ? `/groups/${group.$id}`
+        : undefined
+  return to ? (
+    <Link to={to} className="underline underline-offset-4">
       {name}
     </Link>
   ) : (

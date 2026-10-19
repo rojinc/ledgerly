@@ -255,6 +255,9 @@ describe('HousePage', () => {
       expect(screen.getByRole('region', { name: 'Settings' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Archive group' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Add expense' }).getAttribute('href')).toBe(
+        '/transactions/new?groupId=g1',
+      )
       expect(screen.getByText('Settle up section')).toBeTruthy()
     })
 
@@ -269,6 +272,7 @@ describe('HousePage', () => {
       expect(screen.queryByRole('region', { name: 'Settings' })).toBeNull()
       expect(screen.queryByRole('region', { name: 'Archive group' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Add expense' })).toBeTruthy()
     })
 
     it('lets a viewer only look, and leave', async () => {
@@ -278,6 +282,7 @@ describe('HousePage', () => {
       expect(screen.queryByRole('region', { name: 'Add a housemate' })).toBeNull()
       expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
+      expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
     })
 
     it('makes an archived house read-only for everyone', async () => {
@@ -287,6 +292,7 @@ describe('HousePage', () => {
       await row('Alex')
       expect(screen.queryAllByRole('button')).toEqual([])
       expect(screen.queryByRole('textbox')).toBeNull()
+      expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
     })
   })
 

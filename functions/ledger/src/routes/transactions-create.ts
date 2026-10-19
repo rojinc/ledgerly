@@ -25,6 +25,7 @@ import {
   teamRead,
   transactionColumns,
 } from '@ledgerly/server/ledger/transactions'
+import { attachReceipts, receiptsColumn, sameReceipts } from '../receipts'
 import type { ServicesFor } from '../services'
 
 export const createTransactionSchema = transactionInputSchema
@@ -43,21 +44,13 @@ export const createTransaction = (services: ServicesFor) =>
       // scheduling.md: `<scheduleId>_<YYYYMMDD>` belongs to a schedule occurrence. A client
       // taking one would stop the scheduler creating it.
       if (OCCURRENCE_ID.test(input.id)) invalid('This id is kept for schedule occurrences.')
-      const membership = await requireMember(
-        db,
-        services({ headers }).teams,
-        userId,
-        input.groupId,
-        {
-          roles: ['admin', 'member'],
-        },
-      )
+      const { teams, files } = services({ headers })
+      const membership = await requireMember(db, teams, userId, input.groupId, {
+        roles: ['admin', 'member'],
+      })
       const now = new Date()
       requireNotTooFarAhead(input.date, membership.group, now)
-      // permissions.md#storage: each file's permissions must be checked and reset first.
-      if (input.receiptFileIds?.length) {
-        throw new AppError('VALIDATION_FAILED', 'Receipts can’t be attached yet.')
-      }
+      const receipts = input.receiptFileIds ?? []
       const status = input.kind === 'bill' && input.bill?.status === 'due' ? 'due' : 'posted'
       const ledger = await loadLedger(db, membership)
       const planned = plan(input, status, ledger)
@@ -68,7 +61,9 @@ export const createTransaction = (services: ServicesFor) =>
         const same =
           Object.entries(columns).every(
             ([column, value]) => (existing as Record<string, unknown>)[column] === value,
-          ) && sameItems(await listItems(db, existing.$id), planned)
+          ) &&
+          sameReceipts(existing.receiptFileIds ?? [], receipts) &&
+          sameItems(await listItems(db, existing.$id), planned)
         if (!same || existing.voidReason !== null) {
           throw new AppError('CONFLICT', 'A different transaction already has this ID.')
         }
@@ -81,6 +76,8 @@ export const createTransaction = (services: ServicesFor) =>
       await withTransaction(db, async (tx) => {
         await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
         await requireNotFinalizing(db, input.groupId, [input.date])
+        // permissions.md#storage: checked and limited to the team before the row commits.
+        await attachReceipts(files, input.groupId, receipts)
         await tx.write(
           {
             action: 'create',
@@ -91,7 +88,7 @@ export const createTransaction = (services: ServicesFor) =>
               scheduleId: null,
               overridden: false,
               statementId: null,
-              receiptFileIds: null,
+              receiptFileIds: receiptsColumn(receipts),
               startedAt: null,
               remindedAt: null,
               voidReason: null,
