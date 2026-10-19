@@ -109,7 +109,8 @@ function Details({ row }: { row: Transactions }) {
             ? 'Timer running'
             : formatMoney(row.totalCents, group.data.currency)}
         </dd>
-        {row.kind === 'shift' && shift && (
+        {/* A running timer stores 0 minutes until it stops. */}
+        {row.kind === 'shift' && row.status !== 'running' && shift && (
           <>
             <dt className="text-muted-foreground">Shift</dt>
             <dd>

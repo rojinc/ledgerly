@@ -110,10 +110,11 @@ export function NewTransactionPage() {
   } else if (
     // The presets are worded from the worker's side ("I paid for them"), so only the group's
     // owner, the worker it pays, adds here (as only they start the timer).
-    group.ownerPersonId !== personId ||
-    (member.data?.role !== 'admin' && member.data?.role !== 'member')
+    group.ownerPersonId !== personId
   ) {
     content = <Message>Only the person this group pays adds expenses and payments here.</Message>
+  } else if (member.data?.role !== 'admin' && member.data?.role !== 'member') {
+    content = <Message>You can see this group’s history but no longer add to it.</Message>
   } else {
     const people = employerPeople(group, members.data)
     content = people ? (
