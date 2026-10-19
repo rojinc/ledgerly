@@ -170,23 +170,30 @@ async function keep(
   })
 }
 
-// The schedules in the group that they created, or whose template names them, end on the
-// earlier of their stored end and today, so no new occurrence names a deleted person. One that
-// hasn't started and has nothing posted is deleted instead, as it would otherwise end before
-// it starts. False when the time budget runs out first.
+// The schedules in the group that they created, or whose template names them, and in a `pair`
+// or `employer` group every schedule, end on the earlier of their stored end and today, so no
+// new occurrence names a deleted person. One that hasn't started and has nothing posted is
+// deleted instead, as it would otherwise end before it starts. False when the time budget runs
+// out first.
 async function endSchedules(
   { db, now, outOfTime }: Services,
   personId: string,
   group: Groups,
 ): Promise<boolean> {
   const today = localToday(group.timezone, now)
+  // There, a schedule the other side made can give them a share without naming them (the
+  // default split, or a shift's employer), and the ledger refuses its occurrences once they're
+  // posted (identity-and-invites.md#after-deletion, a lead decision on #320).
+  const every = group.type === 'pair' || group.type === 'employer'
   // idx_groupId
   const schedules = await allRows<Schedules>(db, TABLES.schedules, [
     Query.equal('groupId', group.$id),
   ])
   for (const schedule of schedules) {
     if (outOfTime()) return false
-    if (schedule.createdBy !== personId && !namedIn(schedule).includes(personId)) continue
+    if (!every && schedule.createdBy !== personId && !namedIn(schedule).includes(personId)) {
+      continue
+    }
     const storedEnd = schedule.endsOn as LocalDate | null
     const generated = schedule.generatedThrough as LocalDate | null
     // Already ended by today, made up to its end and with nothing left for an end to delete:

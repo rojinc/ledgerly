@@ -577,6 +577,51 @@ describe('POST /delete: each group they joined', () => {
     ])
   })
 
+  it('ends every schedule in a kept pair or employer group, not just theirs (#320)', async () => {
+    const services = kept()
+    // Alex (p2) is the other admin of the pair group q1, so it isn't archived. In e2 Sam (p1) is
+    // the employer, and Kim (p3) the admin who logs the shifts.
+    await insert(services, 'groups', [group('q1', 'pair', 'p2'), group('e2', 'employer', 'p3')])
+    await insert(services, 'members', [
+      member('q1', 'p1'),
+      member('q1', 'p2'),
+      member('e2', 'p1', { role: 'viewer' }),
+      member('e2', 'p3'),
+    ])
+    for (const [teamId, userId] of [
+      ['q1', 'u2'],
+      ['e2', 'u3'],
+    ] as const) {
+      await services.teams.create({ teamId, name: teamId })
+      await services.teams.createMembership({ teamId, roles: [], userId: 'u1' })
+      await services.teams.createMembership({ teamId, roles: [], userId })
+    }
+    // Made by the other side, and their templates don't name Sam.
+    const pair = schedule('sPair', 'q1', 'p2', ['p2'])
+    const shifts = schedule('sShifts', 'e2', 'p3', ['p3'])
+    // The same in the house h1: it keeps running.
+    const house = schedule('sHouse', 'h1', 'p2', ['p2'])
+    await insert(services, 'schedules', [pair, shifts, house])
+    await insert(services, 'transactions', [
+      occurrence(pair, '2026-10-26'),
+      occurrence(shifts, '2026-10-26'),
+      occurrence(house, '2026-10-26'),
+    ])
+    const houseBefore = rowOf(services, 'schedules', 'sHouse')
+    expect((await remove(services)).finished).toBe(true)
+
+    expect(rowOf(services, 'groups', 'q1')).toMatchObject({ archivedAt: null })
+    expect(rowOf(services, 'groups', 'e2')).toMatchObject({ archivedAt: null })
+    for (const id of ['sPair', 'sShifts']) {
+      expect(rowOf(services, 'schedules', id)).toMatchObject({ endsOn: TODAY })
+    }
+    expect(rowOf(services, 'schedules', 'sHouse')).toEqual(houseBefore)
+    const ids = services.db.rows('transactions').map((row) => row.$id)
+    expect(ids).toContain('sHouse_20261026')
+    expect(ids).not.toContain('sPair_20261026')
+    expect(ids).not.toContain('sShifts_20261026')
+  })
+
   it('ends an ended schedule again only while it has a future occurrence an end would delete', async () => {
     const services = kept()
     const ended = { endsOn: '2026-10-10', generatedThrough: '2026-10-10', nextRunAt: null }
