@@ -163,6 +163,13 @@ describe('HouseBillsPage', () => {
     expect(queried.every((params) => params.queries[0] === Query.equal('groupId', 'house1'))).toBe(
       true,
     )
+    // Recurring bills are the personal group's (#75): not shown or read here.
+    expect(screen.queryByRole('heading', { name: 'Recurring' })).toBeNull()
+    expect(
+      listRows.mock.calls.some(
+        ([params]) => (params as unknown as { tableId: string }).tableId === 'schedules',
+      ),
+    ).toBe(false)
   })
 
   it.each([
