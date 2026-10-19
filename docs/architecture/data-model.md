@@ -31,6 +31,7 @@ persons ──┬── identities                       (server only)
                       statements
                       activity
                       invites                   (server only)
+                      reminders                 (server only)
                       balances      (1:1 with a group, server only)
 ```
 
@@ -45,7 +46,7 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `claimedAt` | datetime? | When the person first got a user account (bootstrap or adopt). Claim joins member rows whose `$createdAt` is strictly before it ([identity](identity-and-invites.md#claim-linking-records-to-a-new-account)). |
 | `mergedInto` | varchar(36)? | Set when this person is merged into another ([identity](identity-and-invites.md#merging-two-persons)). Kept for good: old statements and groups the other person left on their own can still name this one. |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). Set first, as the point of no return; a person with `deletedAt` and `userId` both set has a deletion still to finish. |
-| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite limits, adds that find the person, and saves of schedules that name them. |
+| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits, adds that find the person, and saves of schedules that name them. |
 
 Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`, `idx_deletedAt (deletedAt)` (the hourly job finds deletions to finish).
 Permissions: placeholders have none (server only). A registered person's row gets `read("user:<userId>")`.
@@ -284,10 +285,10 @@ Append-only. Never updated. Deleted only with a group purged when a member delet
 | --- | --- | --- |
 | `groupId` | varchar(36) | |
 | `actorPersonId` | varchar(36)? | Empty for system jobs |
-| `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized` |
+| `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized`, `reminder.sent` |
 | `transactionId` | varchar(36)? | |
-| `subjectPersonId` | varchar(36)? | The person a `member.*` row is about, so the app shows their current name ("Former member" after deletion) |
-| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member row names its person through `subjectPersonId` instead, and a group row names no one (rows written before #50 keep their text). |
+| `subjectPersonId` | varchar(36)? | The person a `member.*` or `reminder.sent` row is about, so the app shows their current name ("Former member" after deletion) |
+| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member or reminder row names its person through `subjectPersonId` instead, and a group row names no one (rows written before #50 keep their text). |
 | `changesJson` | text? | `{ before, after }` of the changed fields; never a display name. Empty when only a name changed, which the summary says. |
 | `at` | datetime | |
 
@@ -310,6 +311,22 @@ Permissions: `read("team:<groupId>")`.
 
 Indexes: `uniq_tokenHash (tokenHash)` **unique**, `idx_invitedBy_sentAt (invitedBy, sentAt)`, `idx_identity_sentAt (identityKey, sentAt)`.
 Permissions: none (server only).
+
+## reminders
+
+One row per reminder sent ([reminders](identity-and-invites.md#reminders), F-63): the state its rate limits count. Row ID = the client's `id`, so a retry finds it.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `groupId` | varchar(36) | A `pair` group |
+| `sentBy` | varchar(36) | personId of the sender, a joined member |
+| `toPersonId` | varchar(36) | personId of the other member it was sent to |
+| `channel` | enum(email, sms) | `email` until SMS reminders, after [#40](https://github.com/rojinc/ledgerly/issues/40) |
+| `sentAt` | datetime | |
+
+The address typed and the amount are **not stored**: the limits count by person, and the address is already an identity row.
+Indexes: `idx_sentBy_sentAt (sentBy, sentAt)`, `idx_toPerson_sentAt (toPersonId, sentAt)`, `idx_groupId (groupId)` (for a purge).
+Permissions: none (server only). Kept until either person's account is deleted, or the group is purged ([deleting an account](identity-and-invites.md#deleting-an-account-m4)); pruning old rows is a later follow-up.
 
 ## Storage buckets
 

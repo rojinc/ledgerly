@@ -1,6 +1,6 @@
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import { type TransactionInput, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
@@ -355,7 +355,7 @@ export function EntryForm({
         <p role="status" className="text-sm text-muted-foreground">
           {owed === 0
             ? `Nothing is owed that way right now, so this will be owed the other way.`
-            : `That’s more than ${from === 'them' ? `${name} owes you` : `you owe ${name}`} (${formatMoney(owed, group.currency)}). The rest will be owed the other way.`}
+            : `That’s more than ${from === 'them' ? `${name} owes you` : `you owe ${name}`} (${formatNet(owed, group.currency)}). The rest will be owed the other way.`}
         </p>
       )}
       <TextField

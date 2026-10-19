@@ -120,6 +120,19 @@ export const acceptInviteBodySchema = z.strictObject({ token: z.string().max(128
 export type AcceptInviteBody = z.infer<typeof acceptInviteBodySchema>
 
 /**
+ * `POST /reminders` (F-63, identity-and-invites.md#reminders): sent only to the address the caller
+ * typed, which must already be stored for the other member. `id` is the retry key. Email only
+ * until SMS reminders (#40).
+ */
+export const sendReminderBodySchema = z.strictObject({
+  id: idSchema,
+  groupId: idSchema,
+  email: emailSchema,
+})
+
+export type SendReminderBody = z.infer<typeof sendReminderBodySchema>
+
+/**
  * `account POST /delete` (#50, identity-and-invites.md#deleting-an-account-m4). Typing DELETE is
  * the confirmation; there is no undo.
  */
@@ -129,6 +142,9 @@ export type DeleteAccountBody = z.infer<typeof deleteAccountBodySchema>
 
 // Responses (functions-api.md#identity), shared by the function and the web app. `PATCH /profile`
 // returns the profile row itself.
+
+/** `POST /reminders` */
+export type SendReminderResult = { sentAt: string }
 
 /** `POST /bootstrap` */
 export type BootstrapResult = {
