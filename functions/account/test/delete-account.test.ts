@@ -651,7 +651,9 @@ describe('POST /delete: each group they joined', () => {
     expect(rowOf(services, 'statements', 'st1')).toMatchObject({ status: 'finalizing' })
     expect(rowOf(services, 'members', 'e1-p1')).toMatchObject({ displayName: 'Former member' })
     expect(teamOf(services, 'e1')).toEqual(['u3'])
-    expect(errors.mock.calls).toEqual([['account: group e1 not archived: statement st1 is stuck']])
+    expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      { fn: 'unknown', event: 'stuck_finalize_not_archived', groupId: 'e1', statementId: 'st1' },
+    ])
     errors.mockRestore()
   })
 
@@ -965,8 +967,13 @@ describe('POST /delete: each group they joined', () => {
     expect(rowOf(services, 'schedules', 'sBadOwn')).toMatchObject({ endsOn: TODAY })
     expect(rowOf(services, 'schedules', 'sBadOther')).toEqual(otherBefore)
     // Their own needs no template, so only the other one is read.
-    expect(errors.mock.calls).toEqual([
-      ["account: schedule sBadOther has a template that can't be read"],
+    expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'schedule_template_unreadable',
+        groupId: 'h1',
+        scheduleId: 'sBadOther',
+      },
     ])
     errors.mockRestore()
   })
