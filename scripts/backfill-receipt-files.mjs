@@ -37,14 +37,14 @@ try {
     .setProject(APPWRITE_PROJECT_ID)
     .setKey(APPWRITE_API_KEY)
   const storage = new Storage(client)
-  // A page of file IDs by ID, not by cursor (scaling.md).
+  // A page of file IDs by ID. listFiles pages by cursor; the backfill deletes no file.
   const files = async (after) => {
     const { files: page } = await storage.listFiles({
       bucketId: 'receipts',
       queries: [
-        ...(after === undefined ? [] : [Query.greaterThan('$id', after)]),
         Query.orderAsc('$id'),
         Query.limit(100),
+        ...(after === undefined ? [] : [Query.cursorAfter(after)]),
       ],
       total: false,
     })

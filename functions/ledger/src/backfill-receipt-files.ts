@@ -16,6 +16,8 @@ export type BackfillCounts = {
 export type ReceiptsListing = (after: string | undefined) => Promise<string[]>
 
 const PAGE = 100
+// data-model.md#migrations: scheduler step 5 waits for this row.
+export const BACKFILL_MARKER = 'receipt-files-backfill'
 // Times a file's row is read and written again after another write changed it meanwhile.
 const TRIES = 3
 
@@ -23,7 +25,8 @@ const TRIES = 3
  * data-model.md#receiptfiles, for files uploaded before the ledger kept these rows. Run by
  * scripts/backfill-receipt-files.mjs, once in each environment before scheduler step 5 ships:
  * - adds every transaction that lists a file to the file's row;
- * - gives every other file with no row a row taken off `now`, so step 5 deletes it a day later.
+ * - gives every other file with no row a row taken off `now`, so step 5 deletes it a day later;
+ * - last, writes the `migrations` row that lets step 5 start.
  *
  * Safe to run again, and while the ledger runs: a row that changes meanwhile is read again. A
  * file taken off a transaction during the run can stay listed, which only keeps it. `deleting`
@@ -66,6 +69,15 @@ export async function backfillReceiptFiles(
     if (page.length < PAGE) break
     after = page.at(-1)
   }
+  await withTransaction(db, (tx) =>
+    tx.write({
+      action: 'upsert',
+      tableId: TABLES.migrations,
+      rowId: BACKFILL_MARKER,
+      data: { doneAt: now.toISOString() },
+      permissions: [],
+    }),
+  )
   return counts
 }
 

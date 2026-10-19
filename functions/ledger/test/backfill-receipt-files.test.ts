@@ -65,6 +65,26 @@ describe('backfillReceiptFiles', () => {
     expect(await backfillReceiptFiles(db, files, NOW)).toMatchObject({ unchanged: 1, swept: 0 })
   })
 
+  it('writes the marker that lets step 5 start, last', async () => {
+    const db = new FakeDb({ transactions: [tx('t1', ['f1'])] })
+    let markers: unknown[] | undefined
+    const files = async () => {
+      // The bucket is read before the marker is written.
+      markers ??= db.rows('migrations')
+      return ['f2']
+    }
+    await backfillReceiptFiles(db, files, NOW)
+    expect(markers).toEqual([])
+    expect(db.rows('migrations')).toEqual([
+      expect.objectContaining({ $id: 'receipt-files-backfill', doneAt: NOW.toISOString() }),
+    ])
+    expect(db.rows('migrations')[0]?.$permissions).toEqual([])
+    // Run again, it moves the marker on.
+    const later = new Date('2026-10-20T06:00:00.000Z')
+    await backfillReceiptFiles(db, files, later)
+    expect(db.rows('migrations')[0]?.doneAt).toBe(later.toISOString())
+  })
+
   it('reads every page of the bucket', async () => {
     const db = new FakeDb()
     const fileIds = Array.from({ length: 250 }, (_, index) => `f${String(index).padStart(3, '0')}`)
