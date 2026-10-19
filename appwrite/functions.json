@@ -61,7 +61,15 @@
     "timeout": 900,
     "enabled": true,
     "logging": true,
-    "scopes": ["rows.read", "rows.write", "teams.read", "teams.write", "users.read"]
+    "scopes": [
+      "rows.read",
+      "rows.write",
+      "files.read",
+      "files.write",
+      "teams.read",
+      "teams.write",
+      "users.read"
+    ]
   },
   {
     "$id": "statements",
