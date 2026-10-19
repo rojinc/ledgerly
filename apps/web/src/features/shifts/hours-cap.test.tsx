@@ -131,6 +131,21 @@ describe('HoursCapSummary (Today and Home)', () => {
     })
   })
 
+  it('reads every page past 100 shifts, with a cursor', async () => {
+    mockProfile(week(2400))
+    const many = Array.from({ length: 150 }, (_, index) => row(`r${index}`, '2026-10-27', 10))
+    listRows.mockImplementation((async ({ queries }: { queries: string[] }) => {
+      const rows = queries.includes(Query.cursorAfter('r99')) ? many.slice(100) : many.slice(0, 100)
+      return { total: rows.length, rows }
+    }) as never)
+    wrap(<HoursCapSummary />)
+    // 150 shifts of 10 minutes.
+    expect((await screen.findByText(/^This week:/)).textContent).toBe(
+      'This week: 25 h of your 40 h.',
+    )
+    expect(listRows).toHaveBeenCalledTimes(2)
+  })
+
   it('says when you’ve reached your limit, in words', async () => {
     mockProfile(week(2400))
     mockRows([row('a', '2026-10-26', 2400)])

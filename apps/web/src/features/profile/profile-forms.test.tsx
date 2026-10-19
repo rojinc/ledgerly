@@ -1,4 +1,5 @@
 import type { Profiles } from '@ledgerly/core/generated/rows'
+import { updateProfileBodySchema } from '@ledgerly/core/schemas/identity'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BusinessForm } from './business-form'
@@ -159,10 +160,18 @@ describe('HoursCapForm (#53)', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(NOW)
   })
-  afterEach(() => vi.useRealTimers())
+  // Every body the form sends is one PATCH /profile accepts, as sent.
+  let sent: unknown[] = []
+  afterEach(() => {
+    vi.useRealTimers()
+    for (const body of sent) expect(updateProfileBodySchema.parse(body)).toEqual(body)
+    sent = []
+  })
 
   function renderForm(stored: Partial<Profiles> = {}) {
-    const onSave = vi.fn().mockResolvedValue(undefined)
+    const onSave = vi.fn(async (body: unknown) => {
+      sent.push(body)
+    })
     render(<HoursCapForm profile={{ ...noCap, ...stored } as Profiles} onSave={onSave} />)
     return onSave
   }
