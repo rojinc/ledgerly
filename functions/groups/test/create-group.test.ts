@@ -177,6 +177,10 @@ describe('POST /groups', () => {
     const { members } = await ok<CreateGroupResult>(services, 'POST', '/groups', EMPLOYER)
     expect(members[1]).toMatchObject({ personId: 'p2', role: 'viewer', status: 'placeholder' })
     expect(services.db.rows('persons')).toHaveLength(2)
+    // The row is about the person found, not the creator (data-model.md#activity).
+    expect(services.db.rows('activity').filter((row) => row.action === 'member.added')).toEqual([
+      expect.objectContaining({ subjectPersonId: 'p2' }),
+    ])
     expect(services.teams.members('g1')).toEqual([
       { $id: expect.any(String), userId: 'u1', roles: [] },
     ])

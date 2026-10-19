@@ -1,5 +1,5 @@
 import type { Groups, Profiles, Shares, Transactions } from '../generated/rows'
-import { centsToDecimal } from '../money/format'
+import { centsToDecimal, netToDecimal } from '../money/format'
 import type { BusinessDetails } from '../schemas/identity'
 
 // The data export (#50, security-and-privacy.md#data-export): built in the browser from rows the
@@ -35,7 +35,7 @@ function amounts(currency: string, total: number, given: number, received: numbe
     { money: centsToDecimal(given, currency) },
     { money: centsToDecimal(received, currency) },
     // Positive is owed to them (ledger.md#balances).
-    { money: centsToDecimal(given - received, currency) },
+    { money: netToDecimal(given - received, currency) },
   ]
 }
 

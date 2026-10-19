@@ -23,6 +23,15 @@ function decimal(cents: number, digits: number): string {
  */
 export function formatMoney(cents: number, currency: string, locale?: string): string {
   assertAmountCents(cents)
+  return formatNet(cents, currency, locale)
+}
+
+/**
+ * `formatMoney` for a figure worked out from amounts, such as a net, a balance or a total, which
+ * can pass the amount cap (ledger.md#allocation-and-rounding): it only has to be an exact integer.
+ */
+export function formatNet(cents: number, currency: string, locale?: string): string {
+  if (!Number.isSafeInteger(cents)) throw new RangeError('A net must be a whole number of cents')
   const { format, digits } = currencyFormat(currency, locale)
   return format.format(decimal(cents, digits) as Intl.StringNumericLiteral)
 }
@@ -34,16 +43,29 @@ export function formatMoney(cents: number, currency: string, locale?: string): s
  */
 export function centsToDecimal(cents: number, currency: string): string {
   assertAmountCents(cents)
+  return decimal(cents, digitsOf(currency))
+}
+
+/**
+ * `centsToDecimal` for a figure worked out from amounts, such as a net, which can pass the amount
+ * cap: it only has to be an exact integer.
+ */
+export function netToDecimal(cents: number, currency: string): string {
+  if (!Number.isSafeInteger(cents)) throw new RangeError('A net must be a whole number of cents')
+  return decimal(cents, digitsOf(currency))
+}
+
+// An export makes thousands of amounts; a NumberFormat for each is slow.
+const DIGITS = new Map<string, number>()
+
+function digitsOf(currency: string): number {
   let digits = DIGITS.get(currency)
   if (digits === undefined) {
     digits = currencyFormat(currency).digits
     DIGITS.set(currency, digits)
   }
-  return decimal(cents, digits)
+  return digits
 }
-
-// An export makes thousands of amounts; a NumberFormat for each is slow.
-const DIGITS = new Map<string, number>()
 
 const MONEY_TEXT = /^(-?)(\d+)(?:\.(\d+))?$/
 

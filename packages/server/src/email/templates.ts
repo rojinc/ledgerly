@@ -1,6 +1,7 @@
 import { endOfMonth, type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import { formatMoney } from '@ledgerly/core/money/format'
+import type { PersonalReport } from '@ledgerly/core/reports/personal-report'
 import type { Attachment } from './send-email'
 
 /** What `sendEmail` needs apart from the addresses. */
@@ -48,7 +49,7 @@ export function statementReadyEmail(input: {
       `Your ${period} ${input.type} for ${input.groupName} has been drafted.`,
       'Check it before you finalize it. You can still add or fix transactions until then.',
     ],
-    { label: `Review the ${input.type}`, url: input.url },
+    [{ label: `Review the ${input.type}`, url: input.url }],
   )
 }
 
@@ -122,15 +123,15 @@ export function divideEmail(input: {
         ...input.pays.map((to) => `Pay ${to.name} ${money(to.cents)}.`),
         ...input.receives.map((from) => `${from.name} pays you ${money(from.cents)}.`),
       ],
-      { label: 'Open the divide', url: input.url },
+      [{ label: 'Open the divide', url: input.url }],
     ),
     attachments: [{ filename: `divide-${input.periodEnd}.pdf`, content: input.pdf }],
   }
 }
 
 /**
- * To the group owner when a shift that doesn't auto-post is past and still unconfirmed
- * (scheduling.md#step-3-reminders).
+ * To the group owner when a past shift is still unconfirmed: one that doesn't auto-post, or one
+ * step 2 couldn't post (scheduling.md#step-3-reminders).
  */
 export function shiftToConfirmEmail(input: {
   groupName: string
@@ -144,7 +145,7 @@ export function shiftToConfirmEmail(input: {
       `Your shift in ${input.groupName} on ${day} hasn't been confirmed yet.`,
       'Confirm it, or change the hours if they were different, so it goes on your invoice.',
     ],
-    { label: 'Confirm the shift', url: input.url },
+    [{ label: 'Confirm the shift', url: input.url }],
   )
 }
 
@@ -172,31 +173,125 @@ export function timerRunningEmail(input: {
       `Your timer in ${input.groupName} has been running since ${since}.`,
       "If you've finished, stop it and set the end time so the hours are right.",
     ],
-    { label: 'Open the timer', url: input.url },
+    [{ label: 'Open the timer', url: input.url }],
   )
 }
 
-// The same paragraphs as HTML and as plain text. Names are user-typed, so HTML escapes
-// everything, and the subject is kept to one line. No images, so no tracking pixels
+/** What one group owes the person (positive) or they owe it (negative), in its currency. */
+export type SummaryBalance = { groupName: string; currency: string; cents: number }
+
+/**
+ * A person's summary for a period (scheduling.md#step-4-summary-emails). For each currency:
+ * what they spent, by category, and their income, from their `reports`; then the groups that
+ * owe them and the groups they owe, from `balances` (leave out the ones at 0). `profileUrl` is
+ * where they turn summaries off.
+ */
+export function summaryEmail(input: {
+  periodStart: LocalDate
+  periodEnd: LocalDate
+  reports: readonly PersonalReport[]
+  balances: readonly SummaryBalance[]
+  url: string
+  profileUrl: string
+}): EmailContent {
+  const period = periodLabel(input.periodStart, input.periodEnd)
+  const currencies = [
+    ...new Set([...input.reports, ...input.balances].map((entry) => entry.currency)),
+  ].sort()
+  return message(
+    `Your ${period} summary`,
+    [
+      `Here is your summary for ${period}.`,
+      ...currencies.flatMap((currency) => summaryBlocks(currency, input, currencies.length > 1)),
+      'You can turn these emails off, or change how often they come, in your profile.',
+    ],
+    [
+      { label: 'Open Ledgerly', url: input.url },
+      { label: 'Change your summary emails', url: input.profileUrl },
+    ],
+  )
+}
+
+function summaryBlocks(
+  currency: string,
+  {
+    reports,
+    balances,
+  }: { reports: readonly PersonalReport[]; balances: readonly SummaryBalance[] },
+  named: boolean,
+): Block[] {
+  const money = (cents: number) => formatMoney(cents, currency, LOCALE)
+  const report = reports.find((entry) => entry.currency === currency)
+  // Biggest first, then by name.
+  const categories = Object.entries(report?.spendingByCategory ?? {})
+    .filter(([, cents]) => cents !== 0)
+    .sort(([a, x], [b, y]) => y - x || (a < b ? -1 : 1))
+  // Biggest first, as for categories.
+  const sorted = balances
+    .filter((entry) => entry.currency === currency)
+    .sort((a, b) => Math.abs(b.cents) - Math.abs(a.cents) || (a.groupName < b.groupName ? -1 : 1))
+  const owed = sorted.filter((entry) => entry.cents > 0)
+  const owing = sorted.filter((entry) => entry.cents < 0)
+  return [
+    ...(named ? [`In ${currency}:`] : []),
+    ...(report
+      ? [
+          `You spent ${money(report.spendingCents)}.`,
+          ...(categories.length > 0
+            ? [categories.map(([category, cents]) => `${categoryName(category)}: ${money(cents)}`)]
+            : []),
+          `Your income was ${money(report.incomeCents)}.`,
+        ]
+      : []),
+    ...(owed.length > 0
+      ? ['Owed to you:', owed.map((entry) => `${entry.groupName}: ${money(entry.cents)}`)]
+      : []),
+    ...(owing.length > 0
+      ? ['You owe:', owing.map((entry) => `${entry.groupName}: ${money(-entry.cents)}`)]
+      : []),
+  ]
+}
+
+// `groceries` → `Groceries`; spending with no category is reported as `none` (ledger.md#reports).
+function categoryName(category: string): string {
+  return category === 'none' ? 'No category' : category.charAt(0).toUpperCase() + category.slice(1)
+}
+
+// A paragraph, or a list of short lines.
+type Block = string | readonly string[]
+type Link = { label: string; url: string }
+
+// The same paragraphs and lists as HTML and as plain text. Names are user-typed, so HTML
+// escapes everything, and the subject is kept to one line. No images, so no tracking pixels
 // (security-and-privacy.md).
 function message(
   subject: string,
-  paragraphs: string[],
-  link?: { label: string; url: string },
+  blocks: readonly Block[],
+  links: readonly Link[] = [],
 ): EmailContent {
   // Links are built from APP_URL; anything else (javascript:, data:) is a bug.
-  if (link && !/^https?:\/\//.test(link.url)) throw new RangeError('Email links must be http(s)')
+  if (links.some((link) => !/^https?:\/\//.test(link.url))) {
+    throw new RangeError('Email links must be http(s)')
+  }
   const html = [
     '<!doctype html>',
     '<html><body style="font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.5; color: #1f2933;">',
-    ...paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`),
-    ...(link ? [`<p><a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a></p>`] : []),
+    ...blocks.map((block) =>
+      typeof block === 'string'
+        ? `<p>${escapeHtml(block)}</p>`
+        : `<ul>${block.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`,
+    ),
+    ...links.map(
+      (link) => `<p><a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a></p>`,
+    ),
     '<p style="color: #616e7c; font-size: 13px;">Sent with Ledgerly.</p>',
     '</body></html>',
   ].join('\n')
   const text = [
-    ...paragraphs,
-    ...(link ? [`${link.label}: ${link.url}`] : []),
+    ...blocks.map((block) =>
+      typeof block === 'string' ? block : block.map((line) => `- ${line}`).join('\n'),
+    ),
+    ...links.map((link) => `${link.label}: ${link.url}`),
     '--\nSent with Ledgerly.',
   ].join('\n\n')
   return { subject: subject.replace(/\s+/g, ' ').trim(), html, text }
