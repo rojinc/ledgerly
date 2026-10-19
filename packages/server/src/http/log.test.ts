@@ -1,19 +1,26 @@
 import { AppwriteException } from 'node-appwrite'
-import { afterEach, beforeEach, expect, describe as group, it, type MockInstance, vi } from 'vitest'
+import { afterEach, beforeEach, expect, describe as group, it, vi } from 'vitest'
 import { EmailError } from '../email/send-email'
 import { AppError } from './app-error'
 import { describe, logProblem } from './log'
 
-let logged: MockInstance<typeof console.error>
+// Every line written, with the console method that wrote it.
+let written: Array<{ level: string; line: string }>
 beforeEach(() => {
-  logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+  written = []
+  for (const level of ['log', 'warn', 'error'] as const) {
+    vi.spyOn(console, level).mockImplementation((line: unknown) => {
+      written.push({ level, line: String(line) })
+    })
+  }
 })
 afterEach(() => {
-  logged.mockRestore()
+  vi.restoreAllMocks()
   vi.unstubAllEnvs()
 })
 
-const lines = () => logged.mock.calls.map(([line]) => JSON.parse(String(line)))
+const lines = () => written.map(({ line }) => JSON.parse(line))
+const levels = () => written.map(({ level }) => level)
 
 group('logProblem', () => {
   it('writes one JSON line with the function, the event and the fields given', () => {
@@ -106,8 +113,41 @@ group('logProblem', () => {
   it('never writes an error’s message', () => {
     logProblem('draft_failed', { groupId: 'g1', error: new Error('sam@example.com owes $40') })
     logProblem('draft_failed', { groupId: 'g1', error: 'sam@example.com' })
-    expect(String(logged.mock.calls)).not.toMatch(/sam|\$40/)
+    expect(JSON.stringify(written)).not.toMatch(/sam|\$40/)
     expect(lines().map((line) => line.cause)).toEqual(['Error', 'string'])
+  })
+
+  it('writes each event at its level: problems as errors, the rest as logs or warnings', () => {
+    logProblem('draft_failed', { groupId: 'g1' })
+    logProblem('team_membership_removed', { groupId: 'g1', membershipId: 'm1' })
+    logProblem('typed_keys_deleted', { personId: 'p1', count: 1 })
+    logProblem('claim_identity_unusable', { identityType: 'phone' })
+    logProblem('claim_needs_merge')
+    logProblem('nightly_check_cut_off', { groupId: 'g1' })
+    logProblem('pdf_characters_replaced', { count: 2 })
+    for (const outcome of ['sent', 'stale', 'unverified', 'gone', 'failed'] as const) {
+      logProblem('password_notice', { userId: 'u1', outcome })
+    }
+    expect(levels()).toEqual([
+      'error',
+      'error',
+      'log',
+      'warn',
+      'warn',
+      'warn',
+      'warn',
+      'log',
+      'log',
+      'log',
+      'log',
+      'error',
+    ])
+    expect(lines()[1]).toEqual({
+      fn: 'unknown',
+      event: 'team_membership_removed',
+      groupId: 'g1',
+      membershipId: 'm1',
+    })
   })
 
   it('names an error that is undefined', () => {
@@ -127,6 +167,13 @@ group('describe', () => {
     )
     expect(describe(new EmailError('no key', 'missing_config'))).toBe('EmailError missing_config')
     expect(describe(new SyntaxError('Unexpected token S in "Sam"'))).toBe('SyntaxError')
+    // A name or type is any code's to set, so one that isn't shaped like one isn't written.
+    const named = new Error('x')
+    named.name = 'sam@example.com'
+    expect(describe(named)).toBe('invalid')
+    expect(describe(new AppwriteException('x', 400, 'Sam Smith'))).toBe(
+      'AppwriteException 400 invalid',
+    )
     expect(describe(42)).toBe('number')
   })
 })

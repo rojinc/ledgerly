@@ -1,7 +1,7 @@
 import type { BootstrapResult } from '@ledgerly/core/schemas/identity'
 import { resolvePerson } from '@ledgerly/server/identity/resolve-person'
 import { AppwriteException } from 'node-appwrite'
-import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   AFTER,
   account,
@@ -45,20 +45,26 @@ function addedBeforeSignUp(typed: ReturnType<typeof identity>[] = []) {
   )
 }
 
-let logged: MockInstance<typeof console.error>
+// Every line written, at any level: an adoption logs, a claim warns (log.ts LEVELS).
+let logged: string[]
 beforeEach(() => {
-  logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+  logged = []
+  for (const level of ['log', 'warn', 'error'] as const) {
+    vi.spyOn(console, level).mockImplementation((line: unknown) => {
+      logged.push(String(line))
+    })
+  }
 })
 afterEach(() => {
   // No personal data in logs: no email, phone number or name.
-  for (const args of logged.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}|\bSam\b/)
-  logged.mockRestore()
+  for (const line of logged) expect(line).not.toMatch(/@|\+?\d{6,}|\bSam\b/)
+  vi.restoreAllMocks()
 })
 
 // The logProblem lines written, without `fn`.
 const events = () =>
-  logged.mock.calls.map(([line]) => {
-    const { fn: _fn, ...event } = JSON.parse(String(line)) as Record<string, unknown>
+  logged.map((line) => {
+    const { fn: _fn, ...event } = JSON.parse(line) as Record<string, unknown>
     return event
   })
 // The adoption's line (#252): IDs and counts only, never a key.

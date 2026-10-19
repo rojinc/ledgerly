@@ -295,7 +295,7 @@ describe('renderInvoicePdf', () => {
   })
 
   it('prints a character Roboto can’t draw as �, so Bill to is never blank (#269)', async () => {
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const snapshot = buildStatementSnapshot({
       ...goldenInput({ ...fullBusiness, businessName: 'Café Ngọc' }),
       recipient: { personId: 'employer', name: '张三 Pty Ltd', emails: ['accounts@acme.example'] },
@@ -310,7 +310,7 @@ describe('renderInvoicePdf', () => {
   })
 
   it('marks every text it prints from the profile and the snapshot', async () => {
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const snapshot = buildStatementSnapshot({
       ...goldenInput({
         businessName: '山 Services',
@@ -374,13 +374,13 @@ describe('renderInvoicePdf', () => {
   })
 
   it('logs nothing when Roboto can draw it all', async () => {
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
     await renderInvoicePdf(goldenSnapshot(), details)
     expect(logged).not.toHaveBeenCalled()
   })
 
   it('prints decomposed accents composed, not as �', async () => {
-    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const businessName = 'Nguyễn Thị Ánh'.normalize('NFD')
     const snapshot = buildStatementSnapshot(goldenInput({ businessName }))
     const text = await pdfText(await renderInvoicePdf(snapshot, details))

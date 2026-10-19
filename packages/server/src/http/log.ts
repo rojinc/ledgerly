@@ -24,6 +24,21 @@ export type LogEvent =
   | 'nightly_check_finding'
   | 'nightly_check_cut_off'
   | 'password_notice'
+  | 'team_membership_removed'
+
+/**
+ * How each event is written. Most are problems, written with `console.error`: until alerting
+ * exists, the error lines are the alert (scheduling.md#step-6-nightly-check). These aren't: `log`
+ * for what went as it should, `warn` for something to look at that isn't a failure. A password
+ * notice is an error only when its send failed.
+ */
+const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
+  typed_keys_deleted: 'log',
+  claim_identity_unusable: 'warn',
+  claim_needs_merge: 'warn',
+  nightly_check_cut_off: 'warn',
+  pdf_characters_replaced: 'warn',
+}
 
 /** What the password notice did (identity-and-invites.md#password-notice). */
 export type NoticeOutcome = 'sent' | 'stale' | 'unverified' | 'gone' | 'failed'
@@ -31,6 +46,7 @@ export type NoticeOutcome = 'sent' | 'stale' | 'unverified' | 'gone' | 'failed'
 /** What a nightly-check finding breaks: the `balances` row, or a ledger invariant (ledger.md). */
 export type LogRule = 'balances_row' | `I-${1 | 2 | 3 | 4 | 5 | 6 | 7}` | 'invariant'
 
+/** Row IDs only: an ID is checked for its shape, so a name or number shaped like one gets through. */
 export type LogFields = {
   groupId?: string
   statementId?: string
@@ -39,11 +55,15 @@ export type LogFields = {
   personId?: string
   reminderId?: string
   userId?: string
+  membershipId?: string
   problems?: readonly SnapshotProblem[]
   identityType?: 'email' | 'phone'
   rule?: LogRule
   outcome?: NoticeOutcome
-  /** How many, such as the keys an adoption deleted. Anything but a whole number is `invalid`. */
+  /**
+   * How many things, such as the keys an adoption deleted; never an amount of money. Anything
+   * but a whole number is `invalid`.
+   */
   count?: number
   /** The error behind it. Only its name is written (`describe`). */
   error?: unknown
@@ -51,13 +71,15 @@ export type LogFields = {
 
 /**
  * Writes one JSON line for something that happened inside a route: `{ fn, event, groupId?,
- * statementId?, transactionId?, profileId?, personId?, reminderId?, userId?, problems?,
- * identityType?, rule?, outcome?, count?, cause? }`. Only IDs, fixed names, counts and error names, never text that could
- * quote what someone typed (security-and-privacy.md). A value passed as an ID that isn't one is
- * written as `invalid`.
+ * statementId?, transactionId?, profileId?, personId?, reminderId?, userId?, membershipId?,
+ * problems?, identityType?, rule?, outcome?, count?, cause? }`, at the event's level (`LEVELS`).
+ * Only row IDs, fixed names, counts and error names, never text that could quote what someone
+ * typed (security-and-privacy.md). A value passed as an ID that isn't shaped like one is written
+ * as `invalid`.
  */
 export function logProblem(event: LogEvent, fields: LogFields = {}): void {
   const { groupId, statementId, transactionId, profileId, personId, reminderId, userId } = fields
+  const { membershipId } = fields
   const { problems, identityType, rule, outcome, count } = fields
   const line = {
     fn: process.env.APPWRITE_FUNCTION_ID ?? 'unknown',
@@ -69,6 +91,7 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
     personId: id(personId),
     reminderId: id(reminderId),
     userId: id(userId),
+    membershipId: id(membershipId),
     problems,
     identityType,
     rule,
@@ -76,8 +99,14 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
     count: count === undefined || (Number.isSafeInteger(count) && count >= 0) ? count : 'invalid',
     cause: 'error' in fields ? describe(fields.error) : undefined,
   }
+  const level =
+    event === 'password_notice'
+      ? outcome === 'failed'
+        ? 'error'
+        : 'log'
+      : (LEVELS[event] ?? 'error')
   // biome-ignore lint/suspicious/noConsole: the one place a function logs from inside a route.
-  console.error(JSON.stringify(line))
+  console[level](JSON.stringify(line))
 }
 
 /**
@@ -86,10 +115,16 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
  */
 export function describe(error: unknown): string {
   if (error instanceof AppError) return `AppError ${error.code}`
-  if (error instanceof AppwriteException) return `AppwriteException ${error.code} ${error.type}`
+  if (error instanceof AppwriteException) {
+    return `AppwriteException ${error.code} ${name(error.type)}`
+  }
   if (error instanceof EmailError) return `EmailError ${error.type} ${error.status ?? ''}`.trim()
-  return error instanceof Error ? error.name : typeof error
+  return error instanceof Error ? name(error.name) : typeof error
 }
+
+// An error's name or type is written only when it looks like one (as sendEmail checks
+// EmailError.type), since any code can set it.
+const name = (value: string) => (/^[A-Za-z_]{1,64}$/.test(value) ? value : 'invalid')
 
 const id = (value: string | undefined) =>
   value === undefined || idSchema.safeParse(value).success ? value : 'invalid'

@@ -78,7 +78,7 @@ describe('POST / (the users.*.update.password event)', () => {
     ['no email', { email: '' }, 'unverified'],
   ])('sends nothing for %s', async (_, overrides, outcome) => {
     const services = changed(overrides)
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     expect((await fire(services)).body).toEqual({ ok: true, data: {} })
     expect(services.sendEmail).not.toHaveBeenCalled()
     expect(notices(log)).toEqual([{ event: 'password_notice', userId: 'u1', outcome }])
@@ -86,7 +86,7 @@ describe('POST / (the users.*.update.password event)', () => {
 
   it('sends nothing for a user who is gone, or with no user ID in the name or the body', async () => {
     const services = changed()
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     services.users = {
       get: async () => {
         throw new AppwriteException('User not found', 404, 'user_not_found')
@@ -147,7 +147,7 @@ describe('POST / (the users.*.update.password event)', () => {
     expect(get).toHaveBeenCalledWith({ userId: 'u1' })
   })
 
-  it('logs a failed send and fails the run, which Appwrite won’t retry', async () => {
+  it('logs a failed send as an error and fails the run, which Appwrite won’t retry', async () => {
     const services = changed()
     const log = vi.spyOn(console, 'error').mockImplementation(() => {})
     services.sendEmail = vi.fn(async () => {
@@ -166,7 +166,7 @@ describe('POST / (the users.*.update.password event)', () => {
 
   it('never logs the body, the address or the name', async () => {
     const services = changed()
-    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
     const result = await fire(services)
     const logged = [...result.logs, ...log.mock.calls.flat()].join('\n')
     expect(logged).not.toMatch(/SECRET|sam@example|Sam Lee/)

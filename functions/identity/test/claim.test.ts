@@ -62,9 +62,10 @@ async function claimed(services: Fakes) {
   return (await ok<{ linkedGroupIds: string[] }>(services, 'POST', '/claim')).linkedGroupIds
 }
 
-let logged: MockInstance<typeof console.error>
+// A claim's lines are warnings (log.ts LEVELS).
+let logged: MockInstance<typeof console.warn>
 beforeEach(() => {
-  logged = vi.spyOn(console, 'error').mockImplementation(() => {})
+  logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
 })
 afterEach(() => logged.mockRestore())
 
