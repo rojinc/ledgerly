@@ -102,8 +102,9 @@ export function buildStatementSnapshot(input: SnapshotInput): StatementSnapshot 
  * Statements core rule 2 after a person merge (identity-and-invites.md#merging-two-persons): a
  * closing whose person has no member row in the group counts for the person they were merged
  * into, following `mergedInto` to the first person who has one, and is added to that person's
- * own closing. A closing that can't be followed that far stays as it is, so the snapshot
- * reports it.
+ * own closing. A closing that can't be followed that far (corrupt data: a loop, or a
+ * non-member who was never merged) stays as it is, so `buildStatementSnapshot` throws
+ * `INVARIANT_VIOLATION` for it.
  */
 export function mergedClosings(
   closings: readonly Net[],

@@ -25,6 +25,15 @@ import { chunks, getRowOrNull, invalid, listAll } from './shared'
 
 type Line = StatementSnapshot['lines'][number]
 
+/**
+ * Who has a member row in the group, and who each merged person with none was merged into, as
+ * one snapshot read them (statements.md#core-rules, rule 2).
+ */
+export type Membership = {
+  inGroup: ReadonlySet<string>
+  mergedInto: ReadonlyMap<string, string | null>
+}
+
 // A shift's stored input keeps its minutes and rate (ledger.md#shifts).
 const storedShiftSchema = z.looseObject({
   shift: z.looseObject({ minutes: z.int(), rateCents: z.int() }).optional(),
@@ -42,7 +51,8 @@ export function statementTypeOf(group: Groups): Statements['type'] {
  * locked and is dated on or before the period end, plus those already locked to `statementId`
  * (an interrupted finalize, step 3). The opening is the closing of the latest final statement
  * that ends before this period does. Also returns the IDs of the transactions not locked yet,
- * which finalize step 4 locks.
+ * which finalize step 4 locks, and the membership it used, so finalize's check (step 5) counts
+ * people the same way even if a merge changes a member row meanwhile.
  */
 export async function computeSnapshot(
   db: Db,
@@ -50,7 +60,7 @@ export async function computeSnapshot(
   period: DateRange,
   now: Date,
   statementId?: string,
-): Promise<{ snapshot: StatementSnapshot; unlockedIds: string[] }> {
+): Promise<{ snapshot: StatementSnapshot; unlockedIds: string[]; membership: Membership }> {
   const type = statementTypeOf(group)
   const [members, unlocked, locked, previous] = await Promise.all([
     listAll<Members>(db, TABLES.members, [Query.equal('groupId', group.$id)]),
@@ -103,21 +113,26 @@ export async function computeSnapshot(
     ...(type === 'invoice' ? await invoiceParties(db, group, members) : {}),
     generatedAt: now.toISOString(),
   })
-  return { snapshot, unlockedIds: unlocked.map((row) => row.$id) }
+  return {
+    snapshot,
+    unlockedIds: unlocked.map((row) => row.$id),
+    membership: { inGroup, mergedInto },
+  }
 }
 
 /**
- * `mergedInto` for every person in `personIds` with no member row in the group, following each
- * chain once (statements.md#core-rules, rule 2). Reads `persons` only for those, which is rare:
- * a merge in progress, or a closing from before one.
+ * `known` plus `mergedInto` for every other person in `personIds` with no member row in the
+ * group, following each chain once (statements.md#core-rules, rule 2). Reads `persons` only for
+ * those, which is rare: a merge in progress, or a closing from before one.
  */
 async function mergedIntoOf(
   db: Db,
   personIds: readonly string[],
   inGroup: ReadonlySet<string>,
+  known: ReadonlyMap<string, string | null> = new Map(),
 ): Promise<Map<string, string | null>> {
-  const mergedInto = new Map<string, string | null>()
-  let unread = [...new Set(personIds)].filter((id) => !inGroup.has(id))
+  const mergedInto = new Map(known)
+  let unread = [...new Set(personIds)].filter((id) => !inGroup.has(id) && !mergedInto.has(id))
   while (unread.length > 0) {
     for (const id of unread) mergedInto.set(id, null)
     const rows = (
@@ -142,22 +157,22 @@ async function mergedIntoOf(
 }
 
 /**
- * `shares` with a merged person who has no member row in the group counted as the person they
- * were merged into (rule 2), for finalize's fresh sum (step 5).
+ * `shares` with a merged person who has no member row counted as the person they were merged
+ * into (rule 2), for finalize's fresh sum (step 5). It uses the snapshot's `membership`, reading
+ * `persons` only for people the snapshot didn't name.
  */
 export async function sharesInGroup(
   db: Db,
-  groupId: string,
+  { inGroup, mergedInto }: Membership,
   shares: readonly Shares[],
 ): Promise<Net[]> {
-  const members = await listAll<Members>(db, TABLES.members, [Query.equal('groupId', groupId)])
-  const inGroup = new Set(members.map((member) => member.personId))
-  const mergedInto = await mergedIntoOf(
+  const all = await mergedIntoOf(
     db,
     shares.map((share) => share.personId),
     inGroup,
+    mergedInto,
   )
-  return netsFromShares(mergedShares(shares, inGroup, mergedInto))
+  return netsFromShares(mergedShares(shares, inGroup, all))
 }
 
 /** The snapshot of the latest final statement ending before `period` does, if there is one. */
