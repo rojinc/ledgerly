@@ -52,6 +52,14 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "mergeGroupIds",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": true,
+        "default": null
       }
     ],
     "indexes": [
@@ -848,6 +856,64 @@
       {
         "key": "peopleJson",
         "type": "mediumtext",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": []
+  },
+  {
+    "$id": "receiptFiles",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "receiptFiles",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "transactionIds",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": true,
+        "default": null
+      },
+      {
+        "key": "detachedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "deletingAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_detachedAt",
+        "type": "key",
+        "columns": ["detachedAt"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "checkpoints",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "checkpoints",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "through",
+        "type": "datetime",
         "required": true,
         "array": false,
         "default": null
