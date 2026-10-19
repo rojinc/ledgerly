@@ -142,20 +142,20 @@ describe('POST / (the hourly run)', () => {
     expect(status).toBe(200)
     expect(body).toEqual({
       ok: true,
-      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0 },
+      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
     })
     expect(services.db.rows('members')[0]).toMatchObject({ personId: 'pSam', status: 'active' })
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
     expect(events(log, 'merge_run')).toEqual([
       {
         event: 'merge_run',
-        counts: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, personsRead: 1 },
+        counts: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, stopped: 0, personsRead: 1 },
       },
     ])
     // Finished: the next run finds nothing.
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0 },
+      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0 },
     })
   })
 
@@ -164,7 +164,7 @@ describe('POST / (the hourly run)', () => {
     const services = fakes({ persons: [SAM] } as Parameters<typeof fakes>[0])
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0 },
+      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0 },
     })
   })
 
@@ -202,7 +202,7 @@ describe('POST / (the hourly run)', () => {
       )
       expect((await hourly(services)).body).toEqual({
         ok: true,
-        data: { unfinished: 2, finished: 0, skipped: 2, cutOff: 0 },
+        data: { unfinished: 2, finished: 0, skipped: 2, cutOff: 0, stopped: 0 },
       })
       expect(identity(services, 'iPhone')?.personId).toBe('pP')
       expect(identity(services, 'iP2')?.personId).toBe('pP2')
@@ -230,15 +230,39 @@ describe('POST / (the hourly run)', () => {
     expect((await hourly(services)).body).toMatchObject({ ok: true, data: { unfinished: 2 } })
   })
 
+  it('pages the identities by ID, so one deleted between pages doesn’t fail the run', async () => {
+    // 120 identities on pMany, and the 100th (the last of the first page) is deleted, by a claim
+    // or a deletion, before the second page is read.
+    const many = { ...SAMMY, $id: 'pMany', mergeGroupIds: [] }
+    const keys = Array.from({ length: 120 }, (_, n) => ({
+      ...PHONE,
+      $id: `iMany${String(n).padStart(3, '0')}`,
+      key: `email:many${n}@example.com`,
+      type: 'email',
+      personId: 'pMany',
+    }))
+    const services = seeded({ persons: [many], identities: keys })
+    afterFirstRead(services, 'identities', () =>
+      withTransaction(services.db, (tx) =>
+        tx.write({ action: 'delete', tableId: 'identities', rowId: 'iMany099' }),
+      ),
+    )
+    expect((await hourly(services)).body).toMatchObject({ ok: true, data: { unfinished: 2 } })
+  })
+
   it('counts merges the budget cut off, and the next run carries them on', async () => {
     const services = seeded()
     const { outOfTime } = stoppedClock()
     // Out of time once the walk has found the merges.
     afterFirstRead(services, 'identities', outOfTime)
+    const reads = vi.spyOn(services.db, 'getRow')
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 1, finished: 0, skipped: 0, cutOff: 1 },
+      data: { unfinished: 1, finished: 0, skipped: 0, cutOff: 1, stopped: 0 },
     })
+    // Past the budget, a U costs nothing more: not even its person row is read.
+    expect(reads.mock.calls.filter(([params]) => params.tableId === 'persons')).toEqual([])
+    expect(events(warn, 'merge_walk_cut_off')).toEqual([])
     expect(identity(services, 'iPhone')?.personId).toBe('pP')
     vi.mocked(Date.now).mockRestore()
     vi.mocked(services.db.listRows).mockRestore()
@@ -263,13 +287,24 @@ describe('POST / (the hourly run)', () => {
     // The first page: pM000 to pM099 (pP sorts after them). The walk stops before the second.
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100 },
+      data: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100, stopped: 0 },
     })
     expect(events(log, 'merge_run')).toEqual([
       {
         event: 'merge_run',
-        counts: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100, personsRead: 100 },
+        counts: {
+          unfinished: 100,
+          finished: 0,
+          skipped: 0,
+          cutOff: 100,
+          stopped: 0,
+          personsRead: 100,
+        },
       },
+    ])
+    // The merges past the walk's end are missing from the counts, so it says so.
+    expect(events(warn, 'merge_walk_cut_off')).toEqual([
+      { event: 'merge_walk_cut_off', count: 100 },
     ])
   })
 
@@ -277,7 +312,7 @@ describe('POST / (the hourly run)', () => {
     const services = seeded(PUT_OFF)
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0 },
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
     })
     // Sammy's merge finished and moved the phone, but Sam's other merge is still open.
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: false })
@@ -296,7 +331,7 @@ describe('POST / (the hourly run)', () => {
     })
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 1 },
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 1, stopped: 0 },
     })
   })
 
@@ -324,7 +359,7 @@ describe('POST / (the hourly run)', () => {
     // The walk found Sammy's merge, which finished, and pP2's, put off; pNew's isn't counted.
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0 },
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
     })
     expect(identity(services, 'iNew')?.personId).toBe('pSam')
   })
@@ -342,7 +377,7 @@ describe('POST / (the hourly run)', () => {
     })
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0 },
+      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
     })
     // So Sam's merges count as finished, and the moved phone is verified.
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
@@ -399,6 +434,23 @@ describe('POST / (the hourly run)', () => {
     ])
   })
 
+  it('warns, not errs, when a claim overlapping the run makes U’s merge try again', async () => {
+    const services = seeded()
+    // Every commit races: what a /claim of Sam's own, landing first each time, would cause.
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      if (params.commit) throw new AppwriteException('Conflict', 409, 'transaction_conflict')
+      return { $id: params.transactionId } as never
+    })
+    expect((await hourly(services)).body).toMatchObject({
+      ok: true,
+      data: { unfinished: 1, finished: 0, stopped: 1 },
+    })
+    expect(events(warn, 'merge_stopped')).toEqual([
+      { event: 'merge_stopped', intoPersonId: 'pSam', cause: 'AppError CONFLICT' },
+    ])
+    expect(events(error, 'merge_run_failed')).toEqual([])
+  })
+
   it('goes on to the next U when one U’s person row can’t be read', async () => {
     const ALEX = { ...SAM, $id: 'pAlex', userId: 'u2', displayName: 'Alex' }
     const ALEXS = { ...SAMMY, $id: 'pA2', mergedInto: 'pAlex', mergeGroupIds: [] }
@@ -417,15 +469,17 @@ describe('POST / (the hourly run)', () => {
     })
     expect((await hourly(services)).body).toMatchObject({
       ok: true,
-      data: { unfinished: 2, finished: 1 },
+      data: { unfinished: 2, finished: 1, stopped: 1 },
     })
-    expect(events(warn, 'merge_stopped')).toEqual([
+    // Not a race: an error line, the alert (conventions.md), and no warning.
+    expect(events(error, 'merge_run_failed')).toEqual([
       {
-        event: 'merge_stopped',
+        event: 'merge_run_failed',
         intoPersonId: 'pSam',
         cause: 'AppwriteException 500 general_unknown',
       },
     ])
+    expect(events(warn, 'merge_stopped')).toEqual([])
     expect(identity(services, 'iAlex')?.personId).toBe('pAlex')
     expect(identity(services, 'iPhone')?.personId).toBe('pP')
   })
@@ -444,13 +498,14 @@ describe('POST / (the hourly run)', () => {
       if (userId === 'u1') throw new AppwriteException('Server error', 500, 'general_unknown')
       return account({ $id: 'u2', email: 'alex@example.com' })
     }
+    // Sam's merge had finished, so nothing counts as stopped; the keys wait for the next login.
     expect((await hourly(services)).body).toMatchObject({
       ok: true,
-      data: { unfinished: 2, finished: 2 },
+      data: { unfinished: 2, finished: 2, stopped: 0 },
     })
-    expect(events(warn, 'merge_stopped')).toEqual([
+    expect(events(error, 'merge_run_failed')).toEqual([
       {
-        event: 'merge_stopped',
+        event: 'merge_run_failed',
         intoPersonId: 'pSam',
         cause: 'AppwriteException 500 general_unknown',
       },

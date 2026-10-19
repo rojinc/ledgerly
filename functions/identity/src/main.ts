@@ -25,8 +25,9 @@ export function identityRoutes(
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
     // One route for both runs that come with no caller: the hourly schedule finishes merges
     // (identity-and-invites.md#finishing-merges), and the users.*.update.password and
-    // users.*.recovery.*.update events send the password notice (#password-notice). Anything
-    // else, a signed-in call included, gets the password notice's FORBIDDEN.
+    // users.*.recovery.*.update events send the password notice (#password-notice). A signed-in
+    // call gets the password notice's FORBIDDEN; one with neither a JWT nor a trigger gets
+    // createHandler's UNAUTHENTICATED first.
     route(
       'POST',
       '/',
