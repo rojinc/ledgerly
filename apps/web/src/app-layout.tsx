@@ -17,6 +17,7 @@ const NAV = [
   { to: '/groups', label: 'Groups' },
   { to: '/people', label: 'People' },
   { to: '/bills', label: 'Bills' },
+  { to: '/activity', label: 'Activity' },
   { to: '/profile', label: 'Profile' },
 ]
 
