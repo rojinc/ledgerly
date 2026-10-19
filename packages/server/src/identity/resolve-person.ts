@@ -87,7 +87,11 @@ const MAX_MERGES = 10
  * it moves P's identities, so a key can still point at P while it runs. The person to use is
  * the end of the chain, so adding P's email mid-merge adds U.
  */
-async function mergedTarget(db: Db, personId: string, transactionId?: string): Promise<string> {
+export async function mergedTarget(
+  db: Db,
+  personId: string,
+  transactionId?: string,
+): Promise<string> {
   let current = personId
   for (let step = 0; step < MAX_MERGES; step++) {
     const person = await db.getRow<Persons>({

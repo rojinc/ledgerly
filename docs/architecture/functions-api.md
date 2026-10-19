@@ -30,7 +30,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 
 | Code | HTTP | When |
 | --- | --- | --- |
-| `UNAUTHENTICATED` | 401 | No signed-in user |
+| `UNAUTHENTICATED` | 401 | No signed-in user. Also `identity POST /invites` and `POST /reminders` from a caller (the inviter or the sender) whose account deletion started while the request ran ([invites](identity-and-invites.md#invites), [reminders](identity-and-invites.md#reminders)); one that started before gets `NOT_A_MEMBER` ([permissions](permissions.md)) |
 | `VALIDATION_FAILED` | 400 | Payload failed the zod schema or a ledger rule. `details` holds the issues. |
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
@@ -38,7 +38,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again), a merge into one of the people is still open in the group (`details: { reason: 'merging' }`; try again shortly, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
-| `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
+| `INVITE_INVALID` | 400 | Invite token unknown, expired, or the invite isn't the caller's (used by someone else, or its address is another account's) |
 | `RATE_LIMITED` | 429 | Too many invites or reminders, or too many wrong addresses typed for them ([#274](https://github.com/rojinc/ledgerly/issues/274)) |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |
@@ -167,7 +167,7 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 
 **Merges still open.** `PATCH` and `/post` refuse with `CONFLICT` (`details: { reason: 'merging' }`) a row whose stored shares, input or item splits name a person whose merge is still open in the group ([merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)). The app asks to try again shortly.
 
-**Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
+**Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a posted row with several stored payers or none; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
 
 `/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
 
