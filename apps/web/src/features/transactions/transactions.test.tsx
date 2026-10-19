@@ -495,9 +495,8 @@ describe('NewTransactionPage, house expense', () => {
     expect(await screen.findByRole('region', { name: 'Each person’s part' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
-    expect(
-      (call.mock.calls[0]?.[3] as { split: { personIds: string[] } }).split.personIds,
-    ).toHaveLength(14)
+    const body = call.mock.calls[0]?.[3] as { split: { personIds: string[] } } | undefined
+    expect(body?.split.personIds).toHaveLength(14)
   })
 
   it('sends a list for a house of one', async () => {

@@ -4,6 +4,7 @@ import { MAX_AMOUNT_CENTS } from '../constants/limits'
 import {
   itemInputSchema,
   postTransactionBodySchema,
+  receiptsBodySchema,
   startTimerBodySchema,
   stopTimerBodySchema,
   transactionInputSchema,
@@ -383,6 +384,34 @@ describe('transactionInputSchema', () => {
       'receiptFileIds',
     ])
   })
+
+  it('refuses the same receipt file twice', () => {
+    expect(
+      paths(transactionInputSchema, { ...expense, receiptFileIds: ['file1', 'file2', 'file1'] }),
+    ).toEqual(['receiptFileIds'])
+  })
+})
+
+describe('receiptsBodySchema', () => {
+  const files = Array.from({ length: 11 }, (_, index) => `file${index}`)
+
+  it('accepts a whole list of 0 to 10 files', () => {
+    expect(paths(receiptsBodySchema, { receiptFileIds: [] })).toEqual([])
+    expect(paths(receiptsBodySchema, { receiptFileIds: files.slice(0, 10) })).toEqual([])
+  })
+
+  it('refuses more than 10 files, a file twice, a bad ID and a missing list', () => {
+    expect(paths(receiptsBodySchema, { receiptFileIds: files })).toEqual(['receiptFileIds'])
+    expect(paths(receiptsBodySchema, { receiptFileIds: ['file1', 'file1'] })).toEqual([
+      'receiptFileIds',
+    ])
+    expect(paths(receiptsBodySchema, { receiptFileIds: ['../x'] })).toEqual(['receiptFileIds.0'])
+    expect(paths(receiptsBodySchema, {})).toEqual(['receiptFileIds'])
+  })
+
+  it('refuses unknown keys', () => {
+    expect(paths(receiptsBodySchema, { receiptFileIds: [], groupId: 'house1' })).toEqual([''])
+  })
 })
 
 describe('transactionTemplateSchema', () => {
@@ -395,6 +424,11 @@ describe('transactionTemplateSchema', () => {
     expect(paths(transactionTemplateSchema, { kind: 'shift', shift: shift.shift })).toEqual([''])
     expect(paths(transactionTemplateSchema, { date: '2026-10-29' })).toEqual([''])
     expect(paths(transactionTemplateSchema, { totalCents: 1.5 })).toEqual(['totalCents'])
+  })
+
+  it('has no receipts: a receipt belongs to one transaction', () => {
+    expect(paths(transactionTemplateSchema, { receiptFileIds: ['file1'] })).toEqual([''])
+    expect(paths(transactionTemplateSchema, { receiptFileIds: [] })).toEqual([''])
   })
 })
 
