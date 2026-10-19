@@ -25,7 +25,7 @@ import {
 } from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
 import type { z } from 'zod'
-import { dropBalances, Finalizing, isFinalizing } from './merge'
+import { dropBalances, Finalizing, guardInto, isFinalizing } from './merge'
 import { getRowOrNull, isAppwriteError } from './rows'
 
 // identity-and-invites.md#merging-two-persons, step 3, inputs. Logs hold IDs and counts only.
@@ -117,7 +117,7 @@ async function moveGroupInputs(
     )
     try {
       for (const batch of batches(rewrites)) {
-        await runBatch(db, groupId, batch)
+        await runBatch(db, groupId, merge.into, batch)
         for (const rewrite of batch) {
           if (rewrite.voided) result.voided += 1
           else result.rewritten += 1
@@ -332,8 +332,8 @@ function voidWrites(row: Transactions, shares: Shares[], by: string, now: Date):
   ]
 }
 
-// A batch's own writes: the group's guard, and the delete of its `balances` row.
-const OWN_WRITES = 2
+// A batch's own writes: the group's guard, U's person guard, and the delete of its `balances` row.
+const OWN_WRITES = 3
 
 /**
  * Rewrites packed into batches of at most 90 writes, the group's guard and the delete of its
@@ -361,7 +361,12 @@ function batches(rewrites: readonly Rewrite[]): Rewrite[][] {
  * the rows read again as stored, so one posted, edited, voided, locked or unlocked meanwhile runs
  * it again.
  */
-async function runBatch(db: Db, groupId: string, batch: readonly Rewrite[]): Promise<void> {
+async function runBatch(
+  db: Db,
+  groupId: string,
+  intoId: string,
+  batch: readonly Rewrite[],
+): Promise<void> {
   await withTransaction(db, async (tx) => {
     await tx.write({
       action: 'update',
@@ -370,6 +375,7 @@ async function runBatch(db: Db, groupId: string, batch: readonly Rewrite[]): Pro
       data: { rev: randomId() },
     })
     if (await isFinalizing(db, groupId)) throw new Finalizing()
+    await guardInto(tx, db, intoId)
     // A void deletes shares; a rewritten input changes none.
     if (batch.some((rewrite) => rewrite.voided)) await dropBalances(tx, db, groupId)
     await tx.write(...batch.flatMap((rewrite) => rewrite.writes))
@@ -509,7 +515,7 @@ async function moveGroupTemplates(
       if (templateJson === undefined) continue
       if (Date.now() >= deadline) return 'cutOff'
       try {
-        await rewriteTemplate(db, groupId, schedule, templateJson)
+        await rewriteTemplate(db, groupId, merge.into, schedule, templateJson)
         result.rewritten += 1
       } catch (error) {
         if (error instanceof Finalizing) return 'putOff'
@@ -531,6 +537,7 @@ async function moveGroupTemplates(
 async function rewriteTemplate(
   db: Db,
   groupId: string,
+  intoId: string,
   schedule: Schedules,
   templateJson: string,
 ): Promise<void> {
@@ -542,6 +549,7 @@ async function rewriteTemplate(
       data: { rev: randomId() },
     })
     if (await isFinalizing(db, groupId)) throw new Finalizing()
+    await guardInto(tx, db, intoId)
     await tx.write({
       action: 'update',
       tableId: TABLES.schedules,

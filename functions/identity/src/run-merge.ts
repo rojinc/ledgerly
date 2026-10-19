@@ -42,8 +42,25 @@ export async function finishMerges(
   return result
 }
 
-/** Steps 2 and 3 for P, then its identities once nothing else names P (step 4). */
+/** `runSteps`, stopped when U's account is being deleted: deletion ends that merge (step 5). */
 async function runMerge(
+  services: Services,
+  userId: string,
+  fromId: string,
+  intoId: string,
+  deadline: number,
+): Promise<{ joined: string[]; finished: boolean }> {
+  try {
+    return await runSteps(services, userId, fromId, intoId, deadline)
+  } catch (error) {
+    if (!(error instanceof IntoDeleted)) throw error
+    console.log(`merge ${fromId} into ${intoId} stopped: that account is being deleted`)
+    return { joined: [], finished: false }
+  }
+}
+
+/** Steps 2 and 3 for P, then its identities once nothing else names P (step 4). */
+async function runSteps(
   services: Services,
   userId: string,
   fromId: string,
@@ -52,15 +69,7 @@ async function runMerge(
 ): Promise<{ joined: string[]; finished: boolean }> {
   const { db, now } = services
   const merge = { from: fromId, into: intoId }
-  let members: Awaited<ReturnType<typeof moveMembers>>
-  try {
-    members = await moveMembers(services, userId, fromId, intoId, deadline)
-  } catch (error) {
-    // U's account is being deleted: the merge stops here, and deletion ends it (step 5).
-    if (!(error instanceof IntoDeleted)) throw error
-    console.log(`merge ${fromId} into ${intoId} stopped: that account is being deleted`)
-    return { joined: [], finished: false }
-  }
+  const members = await moveMembers(services, userId, fromId, intoId, deadline)
   // P's groups are U's now, so every group of U's but the kept ones may still name P.
   const groupIds = (await groupsOf(db, intoId)).filter((groupId) => !members.kept.has(groupId))
   // Templates first, so an expansion from now on names U.

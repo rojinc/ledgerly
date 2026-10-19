@@ -31,6 +31,27 @@ class NotOurs extends Error {}
 export class IntoDeleted extends Error {}
 
 /**
+ * Stages a guard write on U's person row, then checks it has no `deletedAt` (#246). Deletion
+ * step 2 writes the same row, so a merge write and a deletion take turns, and no merge write
+ * joins a person whose account is being deleted, or makes an input or template name them.
+ */
+export async function guardInto(tx: Tx, db: Db, intoId: string): Promise<void> {
+  // Read first: a row that's gone can't be staged, and staging it would read as a race.
+  const deleted = async () => {
+    const into = await getRowOrNull<Persons>(db, TABLES.persons, intoId)
+    return !into || into.deletedAt !== null
+  }
+  if (await deleted()) throw new IntoDeleted()
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: intoId,
+    data: { rev: randomId() },
+  })
+  if (await deleted()) throw new IntoDeleted()
+}
+
+/**
  * Step 1: marks P as merged into U. It stages `mergedInto`, then reads P's stored row, so of
  * two adoptions or merges at once only one wins. True when P is U's to merge: marked now, or
  * already by an earlier call that was cut off.
@@ -183,16 +204,7 @@ async function moveMember(
               },
             ]),
       )
-      // U's own row too, guarded: deletion step 2 writes it, so the two take turns, and a merge
-      // never joins a person whose account is being deleted (#246).
-      await tx.write({
-        action: 'update',
-        tableId: TABLES.persons,
-        rowId: intoId,
-        data: { rev: randomId() },
-      })
-      const into = await getRowOrNull<Persons>(db, TABLES.persons, intoId)
-      if (!into || into.deletedAt) throw new IntoDeleted()
+      await guardInto(tx, db, intoId)
       // Stage, then check: both rows as stored, not this transaction's view of them.
       const storedTheirs = await getRowOrNull<Members>(db, TABLES.members, theirs.$id)
       const storedOwn = own ? await getRowOrNull<Members>(db, TABLES.members, own.$id) : null

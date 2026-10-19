@@ -5,7 +5,7 @@ import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { moveShares } from '../src/merge'
+import { IntoDeleted, moveShares } from '../src/merge'
 import { moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
 import { beforeStaging, NOW } from './harness'
 
@@ -39,6 +39,8 @@ function seed(transactions: object[], more: Record<string, object[]> = {}) {
   return new FakeDb({
     groups: [{ $id: 'g1', type: 'house', name: 'Flat', rev: 'r0', settingsJson: HOUSE }],
     transactions,
+    // U, whose row every rewrite guards (#246).
+    persons: [{ $id: 'pU', userId: 'uU', displayName: 'U', mergedInto: null, deletedAt: null }],
     ...more,
   } as ConstructorParameters<typeof FakeDb>[0])
 }
@@ -827,9 +829,26 @@ describe('moveInputs (step 3)', () => {
       const count = perTransaction.get(params.transactionId) ?? 0
       perTransaction.set(params.transactionId, count + (params.operations?.length ?? 0))
     }
-    // The first: the guard, the delete, the void's 4 and 84 renames.
-    expect([...perTransaction.values()]).toEqual([MERGE_BATCH, 3])
+    // The first: the group's guard, U's guard, the delete, the void's 4 and 83 renames. Then the
+    // two guards and the last 3.
+    expect([...perTransaction.values()]).toEqual([MERGE_BATCH, 5])
     expect(store.rows('balances')).toEqual([])
+  })
+
+  it('renames nothing into a person whose account is being deleted (#246)', async () => {
+    const store = seed([transaction('t1', EXPENSE)], {
+      persons: [
+        {
+          $id: 'pU',
+          userId: 'uU',
+          displayName: 'U',
+          mergedInto: null,
+          deletedAt: '2026-10-18T00:00:00.000Z',
+        },
+      ],
+    })
+    await expect(moveInputs(store, merge, ['g1'], NOW, FAR)).rejects.toBeInstanceOf(IntoDeleted)
+    expect(input(store, 't1')).toEqual(EXPENSE)
   })
 
   it('starts nothing once the deadline has passed, and says it isn’t done', async () => {
