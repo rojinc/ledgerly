@@ -361,7 +361,7 @@ async function moveMember(
 }
 
 /** Whether the person has a joined row in the group (`active` or `left`) they didn't leave on their own. */
-async function joinedHere(db: Db, groupId: string, personId: string): Promise<boolean> {
+export async function joinedHere(db: Db, groupId: string, personId: string): Promise<boolean> {
   const row = await memberOf(db, groupId, personId)
   if (!row || row.status === 'placeholder') return false
   return !(await leftOnTheirOwn(db, groupId, personId, row.$createdAt))
@@ -748,6 +748,20 @@ export async function moveSubjects(
     }
   }
   return { moved, done: true }
+}
+
+/** How many activity rows in the group are about P (`idx_group_subject`). */
+export async function subjectsOf(db: Db, fromId: string, groupId: string): Promise<number> {
+  const { total } = await db.listRows<Activity>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.activity,
+    queries: [
+      Query.equal('groupId', groupId),
+      Query.equal('subjectPersonId', fromId),
+      Query.limit(1),
+    ],
+  })
+  return total
 }
 
 /** Whether a statement of the group is `finalizing` (statements.md#2-finalize). */

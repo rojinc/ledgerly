@@ -7,12 +7,14 @@ import { Query } from 'node-appwrite'
 import {
   IntoDeleted,
   intoDeleted,
+  joinedHere,
   memberOf,
   moveIdentities,
   moveMembers,
   moveReminders,
   moveShares,
   moveSubjects,
+  subjectsOf,
 } from './merge'
 import { cursorsOf, moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
@@ -63,10 +65,10 @@ export async function finishMerges(
 
 /**
  * Steps 2 and 3 for P, one group at a time: P's member row there, then the group's templates,
- * inputs, activity subjects and shares, before the next group. A cut-off then leaves at most one group part done,
- * and a group that can't go on now (a statement being finalized) waits whole. One whose finalize
- * starts after its member row moved waits part done, and a later claim finishes it first. Then
- * reminders, and P's identities once nothing else names P (step 4).
+ * inputs, activity subjects and shares, before the next group. A cut-off then leaves at most one
+ * group part done, and a group that can't go on now (a statement being finalized) waits whole.
+ * One whose finalize starts after its member row moved waits part done, and a later claim
+ * finishes it first. Then reminders, and P's identities once nothing else names P (step 4).
  */
 async function runSteps(
   services: Services,
@@ -78,6 +80,7 @@ async function runSteps(
   const { db, now } = services
   const fromId = placeholder.$id
   const merge = { from: fromId, into: intoId }
+  const ids = { personId: fromId, intoPersonId: intoId }
   const kept = new Set<string>()
   const joined: string[] = []
   const putOff = new Set<string>()
@@ -145,11 +148,20 @@ async function runSteps(
     // Rows left as they are keep the merge open, but their group's shares can still move.
     if (!templates.done || !inputs.done) done = false
     // Activity rows about P are about U from now on (#257): the feed names U, not "A former member".
-    const subjects = await moveSubjects(db, fromId, intoId, [groupId], deadline)
-    moved.subjects += subjects.moved
-    if (!subjects.done) {
-      done = false
-      break
+    // Only where U is joined, as share batches check (#338). Elsewhere a row the team reads would
+    // link the placeholder to U's account (D-016), so they stay on P and don't hold the merge open.
+    if (await joinedHere(db, groupId, intoId)) {
+      const subjects = await moveSubjects(db, fromId, intoId, [groupId], deadline)
+      moved.subjects += subjects.moved
+      if (!subjects.done) {
+        done = false
+        break
+      }
+    } else {
+      const left = await subjectsOf(db, fromId, groupId)
+      if (left > 0) {
+        logProblem('merge_left_subjects', { ...ids, groupId, count: left })
+      }
     }
     // Neither has a row here (U's, once P's, was removed since): a share moved to U would be one
     // with no member row (I-3), so P's stay, and `stray()` keeps the merge open while one is left.
@@ -174,7 +186,6 @@ async function runSteps(
     reminders: reminders.moved,
     leftAsTheyAre: moved.skipped,
   }
-  const ids = { personId: fromId, intoPersonId: intoId }
   if (
     done &&
     putOff.size === 0 &&
