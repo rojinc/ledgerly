@@ -385,6 +385,29 @@ describe('POST /bootstrap for a deleted account', () => {
     expect(services.db.rows('profiles')).toEqual([])
     expect(services.db.rows('groups')).toEqual([])
   })
+
+  it.each([
+    ['a new person', fakes],
+    ['an adopted placeholder', addedBeforeSignUp],
+  ])(
+    'refuses when step 3 labels the user while it sets up %s, writing nothing',
+    async (_, setUp) => {
+      const services = setUp()
+      const persons = services.db.rows('persons')
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"profiles"'),
+        async () => {
+          services.account.labels.push('deleted')
+        },
+      )
+      expect(await failure(services, 'POST', '/bootstrap', BODY)).toMatchObject(deleted)
+      expect(services.db.rows('persons')).toEqual(persons)
+      expect(services.db.rows('profiles')).toEqual([])
+      expect(services.db.rows('groups')).toEqual([])
+      expect(services.db.rows('members').filter((row) => row.status !== 'placeholder')).toEqual([])
+    },
+  )
 })
 
 describe('GET /health', () => {

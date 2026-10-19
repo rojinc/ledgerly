@@ -1,5 +1,6 @@
 import type { DeleteAccountResult } from '@ledgerly/core/schemas/identity'
 import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
 import {
   account,
@@ -53,7 +54,8 @@ function kept(accountOverrides: Parameters<typeof account>[0] = {}) {
   return fakes(
     {
       persons: [
-        person('p1', 'u1', { displayName: 'Sam Lee' }),
+        // Bootstrap gives the user read access to their own person; step 6 takes it away.
+        person('p1', 'u1', { displayName: 'Sam Lee', $permissions: ['read("user:u1")'] }),
         person('p2', 'u2'),
         person('p3', 'u3'),
       ],
@@ -319,6 +321,8 @@ describe('POST /delete: steps 2 and 3', () => {
       deletedAt: DELETED_AT,
       displayName: 'Former member',
       rev: expect.stringMatching(/^[a-z0-9]{20}$/),
+      // Until step 6.
+      $permissions: ['read("user:u1")'],
     })
     expect(services.users.account('u1')).toMatchObject({
       labels: ['beta', 'deleted'],
@@ -352,6 +356,26 @@ describe('POST /delete: steps 2 and 3', () => {
     beforeCommit(services.db, () => setRow(services, 'persons', 'p1', { rev: 'invite' }))
     expect(await failure(services)).toMatchObject({ status: 409, code: 'CONFLICT' })
     expect(state(services)).toEqual(before)
+  })
+
+  it.each([
+    ['already unlinked by a deletion past step 6', null],
+    ['now naming another user', 'u9'],
+  ])('changes nothing when the person, marked deleted meanwhile, is %s', async (_, userId) => {
+    const services = kept()
+    let raced: ReturnType<typeof state> | undefined
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('deletedAt'),
+      async () => {
+        await setRow(services, 'persons', 'p1', { deletedAt: EARLIER, userId })
+        raced = state(services)
+      },
+    )
+    // Not a deletion of this user's to carry on.
+    expect(await failure(services)).toMatchObject({ status: 409, code: 'CONFLICT' })
+    expect(state(services)).toEqual(raced)
+    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ displayName: 'Sam Lee' })
   })
 })
 
@@ -543,6 +567,102 @@ describe('POST /delete: each group they joined', () => {
     expect(activityIn(services, 'h1').map((row) => row.action)).toEqual(['member.left'])
   })
 
+  it('leaves a keep for a later run when the group’s time zone changes before it commits', async () => {
+    const services = kept()
+    // Read in Sydney, where it's already 19 October; in Los Angeles it's still the 18th.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"rowId":"h1-p1"'),
+      () => setRow(services, 'groups', 'h1', { timezone: 'America/Los_Angeles' }),
+    )
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
+    expect(rowOf(services, 'members', 'h1-p1')).toMatchObject({ status: 'active', leftOn: null })
+    expect(activityIn(services, 'h1')).toEqual([])
+    expect(teamOf(services, 'h1')).toEqual(['u1', 'u2'])
+    vi.restoreAllMocks()
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'members', 'h1-p1')).toMatchObject({
+      status: 'left',
+      leftOn: '2026-10-18',
+    })
+  })
+
+  it.each([
+    [
+      'an admin moved them out',
+      { status: 'left', role: 'viewer', leftOn: '2026-10-05' },
+      '2026-10-05',
+    ],
+    ['an admin moved their start to next month', { joinedOn: '2026-11-01' }, '2026-11-01'],
+    ['a merge gave the row to another person', { personId: 'p9' }, null],
+    ['an admin removed the row', null, null],
+  ] as const)(
+    'leaves a keep for a later run when %s after the rows were listed',
+    async (_, change, leftOn) => {
+      const services = kept()
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"h1-p1"'),
+        () =>
+          change
+            ? setRow(services, 'members', 'h1-p1', change)
+            : withTransaction(services.db, (tx) =>
+                tx.write({ action: 'delete', tableId: 'members', rowId: 'h1-p1' }),
+              ),
+      )
+      const before = rowOf(services, 'members', 'h1-p1')
+      expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
+      expect(rowOf(services, 'members', 'h1-p1')).toEqual(
+        change ? { ...before, ...change, $updatedAt: expect.any(String) } : undefined,
+      )
+      expect(activityIn(services, 'h1')).toEqual([])
+      vi.restoreAllMocks()
+      expect((await remove(services)).finished).toBe(true)
+      // A row still theirs is kept on the rerun, with the dates as they are now.
+      if (leftOn) {
+        expect(rowOf(services, 'members', 'h1-p1')).toMatchObject({
+          displayName: 'Former member',
+          status: 'left',
+          leftOn,
+        })
+      }
+    },
+  )
+
+  it('leaves the archive for a later run when the group was archived meanwhile, never twice', async () => {
+    const services = kept()
+    // Another run of this deletion, say, archived e1 first.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"archivedAt"') && operations.includes('"rowId":"e1"'),
+      async () => {
+        await setRow(services, 'groups', 'e1', { archivedAt: EARLIER, nextCloseAt: null })
+        await insert(services, 'activity', [
+          {
+            $id: 'aArchived',
+            groupId: 'e1',
+            actorPersonId: 'p1',
+            action: 'group.archived',
+            summary: 'Archived the group',
+            at: EARLIER,
+          },
+        ])
+      },
+    )
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
+    expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: EARLIER })
+    expect(teamOf(services, 'e1')).toEqual(['u1', 'u3'])
+    vi.restoreAllMocks()
+    // The rerun finds it archived, so it only leaves the team.
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: EARLIER })
+    expect(teamOf(services, 'e1')).toEqual(['u3'])
+    expect(activityIn(services, 'e1').map((row) => row.action)).toEqual([
+      'member.left',
+      'group.archived',
+    ])
+  })
+
   it('purges a group nobody else is in, such as their personal group, and keeps the others', async () => {
     const services = kept()
     await withPersonalGroup(services)
@@ -609,6 +729,52 @@ describe('POST /delete: steps 5 to 7', () => {
       displayName: 'Former member',
       $permissions: [],
     })
+    expect(services.users.account('u1')).toBeUndefined()
+  })
+
+  it('waits for a group joined or made after step 4 listed their member rows, which a rerun does', async () => {
+    const services = kept()
+    // Alex added Sam to the house g5; Sam hasn't joined it yet (D-016).
+    await insert(services, 'groups', [group('g5', 'house', 'p2')])
+    await insert(services, 'members', [
+      member('g5', 'p1', { role: 'member', status: 'placeholder' }),
+      member('g5', 'p2'),
+    ])
+    await services.teams.create({ teamId: 'g5', name: 'g5' })
+    await services.teams.createMembership({ teamId: 'g5', roles: [], userId: 'u2' })
+    // Once the rows are listed (at the first keep), Sam's join of g5 commits, and so does a
+    // group h2 Sam made.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"rowId":"e1-p1"'),
+      async () => {
+        await services.teams.createMembership({ teamId: 'g5', roles: [], userId: 'u1' })
+        await setRow(services, 'members', 'g5-p1', { status: 'active' })
+        await insert(services, 'groups', [group('h2', 'house', 'p1')])
+        await insert(services, 'members', [member('h2', 'p1'), member('h2', 'p2')])
+        await services.teams.create({ teamId: 'h2', name: 'h2' })
+        await services.teams.createMembership({ teamId: 'h2', roles: [], userId: 'u1' })
+        await services.teams.createMembership({ teamId: 'h2', roles: [], userId: 'u2' })
+      },
+    )
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
+    // The groups it listed are done; steps 5–7 wait for the others.
+    expect(teamOf(services, 'h1')).toEqual(['u2'])
+    expect(rowOf(services, 'members', 'g5-p1')).toMatchObject({ status: 'active' })
+    expect(rowOf(services, 'identities', 'i1')).toBeDefined()
+    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: 'u1' })
+    expect(services.users.account('u1')).toBeDefined()
+
+    vi.restoreAllMocks()
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    for (const groupId of ['g5', 'h2']) {
+      expect(rowOf(services, 'members', `${groupId}-p1`)).toMatchObject({
+        displayName: 'Former member',
+        status: 'left',
+        role: 'viewer',
+      })
+      expect(teamOf(services, groupId)).toEqual(['u2'])
+    }
     expect(services.users.account('u1')).toBeUndefined()
   })
 
@@ -730,6 +896,15 @@ describe('POST /delete: reruns and the time budget', () => {
     const { users: _, ...done } = await oneRun()
     expect(rest).toEqual(done)
     expect(users[0]).toMatchObject({ labels: ['deleted'], status: false, sessions: [] })
+  })
+
+  it('keeps the user when out of time just after step 6', async () => {
+    const services = kept()
+    services.outOfTime = () => rowOf(services, 'persons', 'p1')?.userId === null
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
+    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: null, $permissions: [] })
+    // Labelled and blocked, for the hourly job (#50 PR-3).
+    expect(services.users.account('u1')).toMatchObject({ labels: ['deleted'], status: false })
   })
 
   it('stops between groups once out of time, and a rerun carries on', async () => {

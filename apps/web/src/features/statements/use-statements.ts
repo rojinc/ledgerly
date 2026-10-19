@@ -2,7 +2,7 @@ import type { Statements } from '@ledgerly/core/generated/rows'
 import type { VoidStatementBody } from '@ledgerly/core/schemas/statements'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AppwriteException, ExecutionMethod, Query, Storage } from 'appwrite'
-import { callFunction, type Method, parseEnvelope } from '../../lib/api'
+import { callFunction, type ErrorCode, type Method, parseEnvelope } from '../../lib/api'
 import { client, DATABASE_ID, functions, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { writeErrorMessage } from '../groups/archive-group'
@@ -16,13 +16,18 @@ const PAGE = 100
 export const finalizeTiming = { pollMs: 2000, polls: 160 }
 
 // An async execution keeps no response body (functions-api.md), so a refusal is known only by
-// its status code: these are the finalize route's.
-const FINALIZE_REFUSED: Record<number, string> = {
-  400: 'This invoice can’t be finalized as it is. Reload the page to see it as it is now.',
-  401: 'Please log in again.',
-  403: 'Only an admin can finalize this invoice.',
-  404: 'This invoice no longer exists. Reload the page.',
-  409: 'It couldn’t be finalized yet: an earlier invoice of this group must be finalized first, or something else changed it at the same time. Try again.',
+// its status code: these are the finalize route's. A divide is never called an invoice
+// (statements.md#monthly-divide-pdf-layout-house).
+function finalizeRefused(status: number, type: Statements['type']): string | undefined {
+  const noun = type === 'divide' ? 'divide' : 'invoice'
+  const earlier = type === 'divide' ? 'statement' : 'invoice'
+  return {
+    400: `This ${noun} can’t be finalized as it is. Reload the page to see it as it is now.`,
+    401: 'Please log in again.',
+    403: `Only an admin can finalize this ${noun}.`,
+    404: `This ${noun} no longer exists. Reload the page.`,
+    409: `It couldn’t be finalized yet: an earlier ${earlier} of this group must be finalized first, or something else changed it at the same time. Try again.`,
+  }[status]
 }
 
 /** Calls the statements function; a refusal throws its message in plain words. */
@@ -105,8 +110,19 @@ export function useVoidStatement(id: string) {
   })
 }
 
-/** How a finalize ended: the statement as stored, and the error if the execution failed. */
-export type FinalizeResult = { statement: Statements; error?: string }
+/**
+ * How a finalize ended: the statement as stored, and if the execution failed, the error, its
+ * code when the answer kept one, and its status code.
+ */
+export type FinalizeResult = {
+  statement: Statements
+  error?: string
+  code?: ErrorCode
+  status?: number
+}
+
+/** The statement was deleted meanwhile: another admin discarded the draft. */
+export class StatementGone extends Error {}
 
 /**
  * `POST /statements/{id}/finalize` as an **async** execution (functions-api.md#statements): polls
@@ -143,12 +159,15 @@ export function useFinalizeStatement(statement: Statements) {
           const row = await read()
           if (run.status === 'completed' && run.responseStatusCode < 400) return { statement: row }
           const answer = run.responseBody ? parseEnvelope(run) : undefined
+          const refusal = answer && !answer.ok ? answer.error : undefined
           return {
             statement: row,
-            error:
-              answer && !answer.ok
-                ? writeErrorMessage(answer.error)
-                : (FINALIZE_REFUSED[run.responseStatusCode] ?? 'The server stopped with an error.'),
+            error: refusal
+              ? writeErrorMessage(refusal)
+              : (finalizeRefused(run.responseStatusCode, statement.type) ??
+                'The server stopped with an error.'),
+            ...(refusal && { code: refusal.code }),
+            status: run.responseStatusCode,
           }
         }
         return {
@@ -157,6 +176,9 @@ export function useFinalizeStatement(statement: Statements) {
             'This is taking longer than usual. Reload the page in a minute to see how it went.',
         }
       } catch (error) {
+        if (error instanceof AppwriteException && error.code === 404) {
+          throw new StatementGone('This statement no longer exists.')
+        }
         throw new Error(
           error instanceof AppwriteException && error.code === 401
             ? 'Please log in again.'
@@ -165,7 +187,39 @@ export function useFinalizeStatement(statement: Statements) {
       }
     },
     onSuccess: ({ statement: row }) => store(queryClient, row),
-    // A watch that failed part way may have missed the row changing: read it again.
+    onError: (error) => {
+      if (error instanceof StatementGone) {
+        queryClient.removeQueries({ queryKey: queryKeys.statement(statement.$id) })
+        return queryClient.invalidateQueries({ queryKey: queryKeys.statements(statement.groupId) })
+      }
+      // A watch that failed part way may have missed the row changing: read it again.
+      return queryClient.invalidateQueries({ queryKey: queryKeys.statement(statement.$id) })
+    },
+  })
+}
+
+/**
+ * `POST /statements/{id}/discard`: deletes a draft (statements.md#5). Asking again gets
+ * `NOT_FOUND`, which counts as done: an earlier try's answer may have been lost.
+ */
+export function useDiscardStatement(statement: Statements) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async () => {
+      const result = await callFunction<object>(
+        'statements',
+        'POST',
+        `/statements/${statement.$id}/discard`,
+      )
+      if (!result.ok && result.error.code !== 'NOT_FOUND') {
+        throw new Error(writeErrorMessage(result.error))
+      }
+    },
+    onSuccess: () => {
+      queryClient.removeQueries({ queryKey: queryKeys.statement(statement.$id) })
+      void queryClient.invalidateQueries({ queryKey: queryKeys.statements(statement.groupId) })
+    },
+    // It may have been discarded although the answer was lost, or changed by someone else.
     onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.statement(statement.$id) }),
   })
 }
@@ -173,8 +227,9 @@ export function useFinalizeStatement(statement: Statements) {
 const storage = new Storage(client)
 
 /**
- * The PDF of a final (or since voided) statement, saved as `<number>.pdf`. Fetched through the SDK, so the
- * session goes with it, then handed to the browser.
+ * The PDF of a final (or since voided) statement, saved as `<number>.pdf`, or
+ * `divide-<periodEnd>.pdf` for a divide (statements.md#2, step 7). Fetched through the SDK, so
+ * the session goes with it, then handed to the browser.
  */
 export async function downloadPdf(statement: Statements): Promise<void> {
   const url = storage.getFileDownload({
@@ -185,7 +240,10 @@ export async function downloadPdf(statement: Statements): Promise<void> {
   const href = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }))
   const link = document.createElement('a')
   link.href = href
-  link.download = `${statement.displayNumber ?? 'invoice'}.pdf`
+  link.download =
+    statement.type === 'divide'
+      ? `divide-${statement.periodEnd}.pdf`
+      : `${statement.displayNumber ?? 'invoice'}.pdf`
   link.click()
   // Later, so the browser has started saving it first.
   setTimeout(() => URL.revokeObjectURL(href), 1000)

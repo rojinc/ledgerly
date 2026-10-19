@@ -22,24 +22,35 @@ export type Deleting = Persons & { deletedAt: string }
 /**
  * Step 4 (identity-and-invites.md#each-group-they-joined): every group where the person's member
  * row is `active` or `left`, one at a time, until the time budget is used up. Groups where they
- * never joined are left exactly as they are (D-016). True once every group is done.
+ * never joined are left exactly as they are (D-016). True once every group is done, one they
+ * joined meanwhile included.
  */
 export async function leaveGroups(
   services: Services,
   userId: string,
   person: Deleting,
 ): Promise<boolean> {
-  // idx_person_status. Paged by $id: a purge deletes member rows.
-  const members = await allRows<Members>(services.db, TABLES.members, [
-    Query.equal('personId', person.$id),
-    Query.equal('status', ['active', 'left']),
-  ])
+  const members = await joinedRows(services.db, person.$id)
   let finished = true
   for (const member of members) {
     if (services.outOfTime()) return false
     if (!(await leaveGroup(services, userId, person, member))) finished = false
   }
-  return finished
+  if (!finished) return false
+  // Listed once more: a row that a join or a new group committed after the list above is left
+  // for the next run, so steps 5–7 never start with a group still to do. Every listed row is
+  // done, whatever happened to it since (an admin may rename a "Former member").
+  const listed = new Set(members.map((member) => member.$id))
+  return (await joinedRows(services.db, person.$id)).every((member) => listed.has(member.$id))
+}
+
+// Their `active` and `left` member rows (idx_person_status). Paged by $id: a purge deletes
+// member rows.
+function joinedRows(db: Db, personId: string): Promise<Members[]> {
+  return allRows<Members>(db, TABLES.members, [
+    Query.equal('personId', personId),
+    Query.equal('status', ['active', 'left']),
+  ])
 }
 
 // One group. False when it's left for the next run: a statement in it is being finalized,

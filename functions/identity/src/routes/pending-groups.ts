@@ -115,7 +115,7 @@ export async function joinPendingGroup(
   const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
   if (!group) throw notAMember()
   if (member.status === 'placeholder') {
-    await joinGroup(services, userId, person.$id, member)
+    await joinGroup(services, userId, person.$id, member, notAMember)
     // Joined now, or by a claim at the same time; gone or someone else's (removed or merged
     // meanwhile) means not a member, and joinGroup has taken back the team membership.
     member = await ownMemberRow(db, groupId, person.$id)
