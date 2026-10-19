@@ -21,7 +21,8 @@ export function identityRoutes(
 ): Route[] {
   return [
     route('GET', '/health', async () => ({ fn: 'identity', version }), { public: true }),
-    // identity-and-invites.md#password-notice: the users.*.update.password event.
+    // identity-and-invites.md#password-notice: the users.*.update.password and
+    // users.*.recovery.*.update events.
     route(
       'POST',
       '/',

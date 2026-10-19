@@ -15,8 +15,8 @@ const PASSWORD_NOTICE_WINDOW_MINUTES = 60
 type Outcome = 'sent' | 'stale' | 'unverified' | 'gone' | `failed (${string})`
 
 /**
- * `identity POST /` (identity-and-invites.md#password-notice): the `users.*.update.password`
- * event, run without a JWT. Only the user ID is read: from the event's name, else the body's
+ * `identity POST /` (identity-and-invites.md#password-notice): the `users.*.update.password` and
+ * `users.*.recovery.*.update` events, run without a JWT. Only the user ID is read: from the event's name, else the body's
  * `$id`. The body can carry the password hash, so it's never logged or stored; everything else
  * comes from `users.get`. `{}` unless the send fails; the outcome goes to the log, with the ID.
  */
