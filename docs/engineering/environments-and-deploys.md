@@ -101,7 +101,7 @@ Each function runs from a bundle: `npm run build` writes `functions/<name>/dist/
 - **Key scopes** are those of the ephemeral key in `x-appwrite-key` (`.*` = `read` and `write`). Give a function only the scopes a documented route needs; a change to them gets the `security` label.
 - `GET /health`, the only route that runs without a signed-in caller, returns `{ fn, version }` on every function, where `version` is the commit the bundle was built from (`-dirty` when built with uncommitted changes).
 
-Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, `SUPPORT_EMAIL` (the address the [change notice](../architecture/identity-and-invites.md#email-and-phone-change-notice) tells a user to write to; optional, the owner sets it on #3), later `SMS_*` and `SENTRY_DSN`.
+Project variables (Appwrite → Settings → Variables): `RESEND_API_KEY`, `EMAIL_FROM`, `APP_URL`, `SUPPORT_EMAIL` (the address the [change notice](../architecture/identity-and-invites.md#email-and-phone-change-notice) tells a user to write to; optional, the owner sets it on #3. Without it the notice says "reply to this email", which only works if someone reads the `EMAIL_FROM` inbox), later `SMS_*` and `SENTRY_DSN`.
 
 ## Schema changes
 
