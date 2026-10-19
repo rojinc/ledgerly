@@ -77,6 +77,7 @@ describe('moveInputs (step 3)', () => {
             splitJson: JSON.stringify({ mode: 'equal', personIds: ['pP'] }),
           },
         ],
+        balances: [{ $id: 'g1', peopleJson: '[]' }],
       },
     )
     expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
@@ -107,6 +108,8 @@ describe('moveInputs (step 3)', () => {
     expect(stored.t3?.inputJson).toBe(voided.inputJson)
     expect(stored.t4?.inputJson).toBe(without.inputJson)
     expect(store.rows('groups')[0]?.rev).not.toBe('r0')
+    // A rewritten input changes no share, so the balances row stays.
+    expect(store.rows('balances')).toHaveLength(1)
     // Nothing names P any more: a second run writes nothing.
     expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 0 })
   })
@@ -190,6 +193,7 @@ describe('moveInputs (step 3)', () => {
           { $id: 's1', transactionId: 't1', personId: 'pP', givenCents: 9000, receivedCents: 0 },
           { $id: 's2', transactionId: 't1', personId: 'pU', givenCents: 0, receivedCents: 9000 },
         ],
+        balances: [{ $id: 'g1', peopleJson: '[]' }],
       },
     )
     expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
@@ -201,6 +205,8 @@ describe('moveInputs (step 3)', () => {
       ['t2', 'void', VOID_REASON],
     ])
     expect(store.rows('shares')).toEqual([])
+    // A void deletes shares, so the batch deletes the balances row too.
+    expect(store.rows('balances')).toEqual([])
     expect(
       store.rows('activity').map((row) => [row.transactionId, row.action, row.actorPersonId]),
     ).toEqual([

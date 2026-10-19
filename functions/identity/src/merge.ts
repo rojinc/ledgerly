@@ -1,5 +1,6 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
 import type {
+  Balances,
   Groups,
   Identities,
   Members,
@@ -10,7 +11,7 @@ import type {
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
-import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { Raced } from '@ledgerly/server/ledger/transactions'
@@ -298,8 +299,11 @@ export async function moveIdentities(
   }
 }
 
-/** Shares moved per transaction: each may take two writes (combine), plus the group's guard. */
-const SHARES_PER_BATCH = Math.floor((MAX_OPS_PER_DB_TRANSACTION - 1) / 2)
+/**
+ * Shares moved per transaction: each may take two writes (combine), plus the group's guard and
+ * the delete of its `balances` row.
+ */
+const SHARES_PER_BATCH = Math.floor((MAX_OPS_PER_DB_TRANSACTION - 2) / 2)
 
 /** What became of the groups whose shares a call looked at. `done`: P has none left there. */
 export type SharesResult = { moved: number; putOff: string[]; done: boolean }
@@ -390,6 +394,7 @@ async function moveShareBatch(
         })
         // Another merge of P moved them meanwhile.
         if (theirs.length === 0) return 0
+        await dropBalances(tx, db, groupId)
         const transactionIds = theirs.map((share) => share.transactionId)
         const { rows: ours } = await db.listRows<Shares>({
           databaseId: DATABASE_ID,
@@ -442,6 +447,19 @@ function combined(theirs: readonly Shares[], ours: readonly Shares[], intoId: st
       { action: 'delete', tableId: TABLES.shares, rowId: share.$id },
     ]
   })
+}
+
+/**
+ * Stages the delete of the group's `balances` row, if it has one (ledger.md#balances): a merge
+ * renames a person, which that cache can't follow share by share, so `/balances` sums the shares
+ * until the nightly check builds it again. Read after the group's guard, so a row rebuilt
+ * meanwhile fails this commit, and one deleted meanwhile fails the delete (409): the batch runs
+ * again either way.
+ */
+export async function dropBalances(tx: Tx, db: Db, groupId: string): Promise<void> {
+  if (await getRowOrNull<Balances>(db, TABLES.balances, groupId)) {
+    await tx.write({ action: 'delete', tableId: TABLES.balances, rowId: groupId })
+  }
 }
 
 /** Whether a statement of the group is `finalizing` (statements.md#2-finalize). */

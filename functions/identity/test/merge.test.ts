@@ -481,15 +481,16 @@ describe('moveShares (step 3)', () => {
     }
   }
 
-  function seed(shares: object[], statements: object[] = []) {
+  function seed(shares: object[], statements: object[] = [], balances: object[] = []) {
     return new FakeDb({
       persons: [U, P],
       groups: [
-        { $id: 'g1', type: 'house', name: 'Flat', rev: 'r0', settingsJson: '{}' },
-        { $id: 'g2', type: 'house', name: 'Old flat', rev: 'r0', settingsJson: '{}' },
+        { $id: 'g1', type: 'house', name: 'Flat', rev: 'r0' },
+        { $id: 'g2', type: 'house', name: 'Old flat', rev: 'r0' },
       ],
       shares,
       statements,
+      balances,
     } as ConstructorParameters<typeof FakeDb>[0])
   }
 
@@ -578,6 +579,67 @@ describe('moveShares (step 3)', () => {
       expect(operations.length).toBeLessThanOrEqual(MERGE_BATCH)
       expect(JSON.stringify(operations)).toContain('"rev"')
     }
+  })
+
+  it('deletes the balances row of each group whose shares it moves, where there is one', async () => {
+    const store = seed(
+      [
+        share('s1', 't1', 'pP', 100, 0, 'g1'),
+        share('s2', 't1', 'pX', 0, 100, 'g1'),
+        share('s3', 't2', 'pP', 100, 0, 'g2'),
+        share('s4', 't2', 'pX', 0, 100, 'g2'),
+      ],
+      [],
+      [
+        { $id: 'g1', peopleJson: '[]' },
+        { $id: 'g3', peopleJson: '[]' },
+      ],
+    )
+    expect((await moveShares(store, 'pP', 'pU', new Set(), FAR)).moved).toBe(2)
+    // g2 had none, and nothing of P's was in g3.
+    expect(store.rows('balances').map((row) => row.$id)).toEqual(['g3'])
+  })
+
+  it('keeps each batch within 90 writes with the balances row delete, every share combined', async () => {
+    const shares = Array.from({ length: 100 }, (_, n) => [
+      share(`p${n}`, `t${n}`, 'pP', 0, 100),
+      share(`u${n}`, `t${n}`, 'pU', 100, 0),
+    ]).flat()
+    const store = seed(shares, [], [{ $id: 'g1', peopleJson: '[]' }])
+    const commits = vi.spyOn(store, 'createOperations')
+    expect((await moveShares(store, 'pP', 'pU', new Set(), FAR)).moved).toBe(100)
+    const perTransaction = new Map<string, unknown[]>()
+    for (const [params] of commits.mock.calls) {
+      perTransaction.set(params.transactionId, [
+        ...(perTransaction.get(params.transactionId) ?? []),
+        ...(params.operations ?? []),
+      ])
+    }
+    const sizes = [...perTransaction.values()].map((operations) => operations.length)
+    // The first: the guard, the delete and 44 combined shares, two writes each.
+    expect(sizes[0]).toBe(MERGE_BATCH)
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(MERGE_BATCH)
+    expect(store.rows('balances')).toEqual([])
+  })
+
+  it('runs a batch again when the balances row is deleted after it was read', async () => {
+    const store = seed(
+      [share('s1', 't1', 'pP', 0, 100), share('s2', 't1', 'pX', 100, 0)],
+      [],
+      [{ $id: 'g1', peopleJson: '[]' }],
+    )
+    const raced = beforeStaging(
+      store,
+      (operations) => operations.includes('"balances"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({ action: 'delete', tableId: 'balances', rowId: 'g1' }),
+        ),
+    )
+    expect((await moveShares(store, 'pP', 'pU', new Set(), FAR)).moved).toBe(1)
+    expect(raced).toHaveBeenCalled()
+    expect(store.rows('shares').map((row) => row.personId)).toEqual(['pU', 'pX'])
+    expect(store.rows('balances')).toEqual([])
   })
 
   it('starts no batch, and no identity, once the deadline has passed', async () => {

@@ -20,7 +20,7 @@ import {
 } from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
 import type { z } from 'zod'
-import { Finalizing, isFinalizing } from './merge'
+import { dropBalances, Finalizing, isFinalizing } from './merge'
 import { getRowOrNull, isAppwriteError } from './rows'
 
 // identity-and-invites.md#merging-two-persons, step 3, inputs. Logs hold IDs and counts only.
@@ -295,16 +295,19 @@ function voidWrites(row: Transactions, shares: Shares[], by: string, now: Date):
   ]
 }
 
-/** Rewrites packed into batches of at most 90 writes, the group's guard included. */
+/**
+ * Rewrites packed into batches of at most 90 writes, the group's guard and the delete of its
+ * `balances` row included.
+ */
 function batches(rewrites: readonly Rewrite[]): Rewrite[][] {
   const result: Rewrite[][] = []
   let batch: Rewrite[] = []
-  let size = 1
+  let size = 2
   for (const rewrite of rewrites) {
     if (batch.length > 0 && size + rewrite.writes.length > MAX_OPS_PER_DB_TRANSACTION) {
       result.push(batch)
       batch = []
-      size = 1
+      size = 2
     }
     batch.push(rewrite)
     size += rewrite.writes.length
@@ -326,6 +329,8 @@ async function runBatch(db: Db, groupId: string, batch: readonly Rewrite[]): Pro
       data: { rev: randomId() },
     })
     if (await isFinalizing(db, groupId)) throw new Finalizing()
+    // A void deletes shares; a rewritten input changes none.
+    if (batch.some((rewrite) => rewrite.voided)) await dropBalances(tx, db, groupId)
     await tx.write(...batch.flatMap((rewrite) => rewrite.writes))
     const rows = await listById<Transactions>(
       db,
