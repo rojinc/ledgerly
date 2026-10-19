@@ -7,7 +7,7 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { PendingGroups } from '../groups/pending-groups'
 import { GroupName, useSortedByName } from '../groups/use-group-name'
 import { useProfile } from '../profile/use-profile'
-import { isHidden, storeHidden, useHasEntry } from './use-onboarding'
+import { isDone, isHidden, storeHidden, useHasEntry } from './use-onboarding'
 
 const ROW =
   'flex flex-col gap-0.5 px-4 py-3 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset'
@@ -33,7 +33,8 @@ const CHOICES = [
 /**
  * Home's guide for a new user (#52): what to track first, then their first entry. It's worked out
  * from the joined groups and one transactions read, and it goes for good once there's an entry.
- * While any of that loads or fails, it shows nothing, so the dashboard is as it always was.
+ * While any of that loads or fails, it shows nothing, so the dashboard is as it always was. Hide
+ * hides the guide, but not the groups waiting to be joined.
  */
 export function GettingStarted({
   groups,
@@ -47,10 +48,12 @@ export function GettingStarted({
   const [hiddenNow, setHiddenNow] = useState(false)
   const [joined, setJoined] = useState('')
   const hidden = hiddenNow || isHidden(userId)
+  const done = isDone(userId)
   const groupIds = groups.map((group) => group.$id)
-  const entry = useHasEntry(groupIds, !hidden)
+  // Read even while hidden, until done: step 1 shows the groups waiting to be joined.
+  const entry = useHasEntry(userId, groupIds, !done)
 
-  const hasEntry = groupIds.length === 0 ? false : entry.data
+  const hasEntry = done || (groupIds.length === 0 ? false : entry.data)
   const personal = bootstrap.data?.personalGroupId
   let step: 1 | 2 | undefined
   if (personal !== undefined && hasEntry === false) {
@@ -76,29 +79,29 @@ export function GettingStarted({
       <p role="status" className="text-sm text-muted-foreground empty:hidden">
         {joined && `Joined ${joined}.`}
       </p>
+      {step === 1 && (
+        <PendingGroups
+          onJoined={(name) => {
+            setJoined(name)
+            // The joined row and its focused button go away: keep focus on the page.
+            focusHeading()
+          }}
+        />
+      )}
       {!hidden && step === 1 && (
-        <>
-          <PendingGroups
-            onJoined={(name) => {
-              setJoined(name)
-              // The joined row and its focused button go away: keep focus on the page.
-              focusHeading()
-            }}
-          />
-          <Guide id="getting-started" title="What do you want to track first?" onHide={hide}>
-            <ul className="divide-y divide-border rounded-md border border-border">
-              {CHOICES.map((choice) => (
-                <li key={choice.to}>
-                  <Link to={choice.to} className={ROW}>
-                    <span className="font-medium">{choice.title}</span>
-                    <span className="text-sm text-muted-foreground">{choice.description}</span>
-                  </Link>
-                </li>
-              ))}
-            </ul>
-            <ProfileLine userId={userId} />
-          </Guide>
-        </>
+        <Guide id="getting-started" title="What do you want to track first?" onHide={hide}>
+          <ul className="divide-y divide-border rounded-md border border-border">
+            {CHOICES.map((choice) => (
+              <li key={choice.to}>
+                <Link to={choice.to} className={ROW}>
+                  <span className="font-medium">{choice.title}</span>
+                  <span className="text-sm text-muted-foreground">{choice.description}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+          <ProfileLine userId={userId} />
+        </Guide>
       )}
       {!hidden && step === 2 && links.length > 0 && (
         <Guide id="first-entry" title="Record your first entry" onHide={hide}>
@@ -157,7 +160,7 @@ function Guide({
         <h2 id={id} className="text-lg font-medium">
           {title}
         </h2>
-        <Button variant="ghost" size="sm" onClick={onHide}>
+        <Button variant="ghost" size="sm" onClick={onHide} aria-label="Hide getting started">
           Hide
         </Button>
       </div>

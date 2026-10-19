@@ -1,9 +1,11 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/schemas/statements'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
+import { periodLabel } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, ID, type Models, Permission, Query, Role } from 'node-appwrite'
@@ -142,6 +144,18 @@ export function activityWrite(
     },
     permissions: teamRead(groupId),
   }
+}
+
+/**
+ * How activity rows name a statement (statements.md#2-finalize): an invoice by its number, and
+ * one with no number (a divide, or an invoice draft being discarded) by its period.
+ */
+export function statementName(
+  statement: Pick<Statements, 'type' | 'displayNumber' | 'periodStart' | 'periodEnd'>,
+): string {
+  if (statement.displayNumber) return `Invoice ${statement.displayNumber}`
+  const period = periodLabel(statement.periodStart as LocalDate, statement.periodEnd as LocalDate)
+  return `${statement.type === 'divide' ? 'Divide' : 'Invoice draft'} for ${period}`
 }
 
 export function snapshotOf(statement: Statements): StatementSnapshot {

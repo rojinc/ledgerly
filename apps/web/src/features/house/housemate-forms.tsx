@@ -209,7 +209,14 @@ function FormButtons({
       <Button type="submit" aria-disabled={pending}>
         {pending ? 'Saving…' : label}
       </Button>
-      <Button type="button" variant="outline" onClick={onCancel}>
+      {/* aria-disabled, not disabled: a disabled button loses focus. A save that's sent still
+          applies, so Cancel waits for it. */}
+      <Button
+        type="button"
+        variant="outline"
+        aria-disabled={pending}
+        onClick={() => !pending && onCancel()}
+      >
         Cancel
       </Button>
     </div>
@@ -385,7 +392,7 @@ export function MoveBackIn({ member, writes, onClose }: RowFormProps) {
       <SelectField
         id={`${id}-backInRole`}
         label="Role"
-        hint="Their move-out date is cleared, and they live here again."
+        hint="Their move-out date is cleared, and they live here again. They count as living here since they moved in, including while they were away."
         error={errors.role}
         {...form.register('role')}
       >

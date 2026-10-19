@@ -79,7 +79,7 @@ describe('POST /groups', () => {
         groupId: 'g1',
         actorPersonId: 'p1',
         action: 'group.created',
-        summary: 'Created Flat',
+        summary: 'Created the group',
         at: NOW.toISOString(),
         $permissions: TEAM,
       }),
@@ -148,9 +148,11 @@ describe('POST /groups', () => {
       }),
     ])
     expect(teams.members('g1')?.map((membership) => membership.userId)).toEqual(['u1'])
-    expect(db.rows('activity').map((row) => [row.action, row.summary])).toEqual([
-      ['group.created', 'Created Acme work'],
-      ['member.added', 'Boss was added'],
+    expect(
+      db.rows('activity').map((row) => [row.action, row.summary, row.subjectPersonId]),
+    ).toEqual([
+      ['group.created', 'Created the group', undefined],
+      ['member.added', 'was added as a viewer', boss?.$id],
     ])
   })
 
@@ -159,6 +161,11 @@ describe('POST /groups', () => {
     const { members } = await ok<CreateGroupResult>(services, 'POST', '/groups', PAIR)
     expect(members[1]).toMatchObject({ displayName: 'Kim', role: 'admin', status: 'placeholder' })
     expect(services.teams.members('g1')).toHaveLength(1)
+    expect(services.db.rows('activity')[1]).toMatchObject({
+      action: 'member.added',
+      subjectPersonId: members[1]?.personId,
+      summary: 'was added as an admin',
+    })
   })
 
   it('adds a registered counterpart as a placeholder, outside the team', async () => {

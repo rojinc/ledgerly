@@ -183,7 +183,7 @@ describe('POST /statements/{id}/finalize', () => {
   })
 
   it('goes on after an interruption at the lock step, and numbers only once', async () => {
-    // 95 shifts: locking takes two batches of at most 90 writes.
+    // 95 shifts: locking takes two batches of 89 locks and a guard write to the group row.
     const shifts = Array.from({ length: 95 }, (_, index) =>
       shift(`s${String(index).padStart(3, '0')}`, '2026-10-10', 60),
     )
@@ -199,7 +199,7 @@ describe('POST /statements/{id}/finalize', () => {
       (await failure(services, 'POST', '/statements/st1/finalize', { send: false })).code,
     ).toBe('INTERNAL')
     expect(stored(services)).toMatchObject({ status: 'finalizing', number: 10 })
-    expect(Object.values(locks(services)).filter((lock) => lock === 'st1')).toHaveLength(90)
+    expect(Object.values(locks(services)).filter((lock) => lock === 'st1')).toHaveLength(89)
 
     const final = await finalize(services)
     expect(final).toMatchObject({ status: 'final', number: 10, displayNumber: 'INV-0010' })
@@ -484,17 +484,10 @@ describe('POST /statements/{id}/finalize', () => {
     expect(stored(services).status).toBe('draft')
   })
 
-  it('refuses a house divide until divides come, and a member who is not an admin', async () => {
+  it('refuses a house divide to a member who is not an admin', async () => {
     const services = fakes({
       statements: [statement('st-house', { groupId: 'house', type: 'divide' })],
     })
-    const asAdmin = await failure(
-      services,
-      'POST',
-      '/statements/st-house/finalize',
-      { send: false },
-      'u-alice',
-    )
     const asMember = await failure(
       services,
       'POST',
@@ -502,7 +495,7 @@ describe('POST /statements/{id}/finalize', () => {
       { send: false },
       'u-bob',
     )
-    expect([asAdmin.code, asMember.code]).toEqual(['VALIDATION_FAILED', 'FORBIDDEN'])
+    expect(asMember.code).toBe('FORBIDDEN')
   })
 
   it('emails the invoice when asked to send it', async () => {

@@ -185,10 +185,16 @@ describe('step 3: shift to confirm', () => {
     expect((await runCron(services)).reminders.sent).toBe(1)
   })
 
-  it('leaves shifts of auto-post schedules to step 2', async () => {
+  it('reminds about a shift of an auto-post schedule that step 2 couldn’t post', async () => {
+    // Its template no longer makes a transaction, so step 2 fails on it every hour.
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
     const services = seeded([transaction('t1', { scheduleId: 'auto' })])
-    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 0 })
-    expect(remindedAt(services, 't1')).toBeNull()
+    expect(await runCron(services)).toMatchObject({
+      posted: { posted: 0, skipped: 0, failed: 1 },
+      reminders: { sent: 1, skipped: 0, failed: 0 },
+    })
+    expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
+    quiet.mockRestore()
   })
 
   it('reminds about a shift of an auto-post schedule made after its day, which step 2 leaves', async () => {
@@ -201,7 +207,7 @@ describe('step 3: shift to confirm', () => {
     })
   })
 
-  it('treats a deleted schedule as one that doesn’t auto-post', async () => {
+  it('reminds about a shift whose schedule was deleted', async () => {
     const services = seeded([transaction('t1', { scheduleId: 'gone' })])
     expect((await runCron(services)).reminders.sent).toBe(1)
   })

@@ -318,26 +318,80 @@ describe('GettingStarted: done, loading and failures', () => {
   })
 })
 
+describe('GettingStarted: done is remembered', () => {
+  it('on this device once a read finds an entry, so later visits don’t read', async () => {
+    renderHome()
+    await screen.findByRole('heading', { name: STEP_1 })
+    // No entry yet: nothing to remember.
+    expect(localStorage.length).toBe(0)
+    cleanup()
+    withEntries = ['g0']
+    renderHome()
+    await waitFor(() => expect(entryReads()).toHaveLength(2))
+    await waitFor(() => expect(localStorage.getItem('ledgerly:onboarding-done:u1')).toBe('1'))
+    cleanup()
+    pending = [KIM as PendingGroup]
+    renderHome()
+    await screen.findByRole('region', { name: 'Owed to me / I owe' })
+    await later()
+    expect(entryReads()).toHaveLength(2)
+    // Done: no guide and, as before the guide, no groups waiting to be joined on Home.
+    expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
+    expect(screen.queryByRole('heading', { name: 'Waiting for you to join' })).toBeNull()
+  })
+
+  it('for this user only', async () => {
+    localStorage.setItem('ledgerly:onboarding-done:u1', '1')
+    mockUserId = 'u2'
+    renderHome()
+    expect(await screen.findByRole('heading', { name: STEP_1 })).toBeTruthy()
+    expect(entryReads()).toHaveLength(1)
+  })
+
+  it('even with no groups', async () => {
+    localStorage.setItem('ledgerly:onboarding-done:u1', '1')
+    joined = []
+    renderHome()
+    await screen.findByRole('heading', { level: 1 })
+    await later()
+    expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
+  })
+})
+
 describe('GettingStarted: Hide', () => {
   it('hides it for this user on this device, and moves focus to the heading', async () => {
     const view = renderHome()
-    fireEvent.click(await screen.findByRole('button', { name: 'Hide' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Hide getting started' }))
     expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
     expect(document.activeElement).toBe(view.getByRole('heading', { level: 1 }))
     expect(localStorage.getItem('ledgerly:onboarding-hidden:u1')).toBe('1')
     expect(localStorage.length).toBe(1)
   })
 
-  it('stays hidden on the next visit, without reading, but not for another user', async () => {
+  it('stays hidden on the next visit, but not for another user', async () => {
     localStorage.setItem('ledgerly:onboarding-hidden:u1', '1')
     renderHome()
     await screen.findByRole('region', { name: 'Owed to me / I owe' })
+    // Still read until done: step 1 shows the groups waiting to be joined.
+    await waitFor(() => expect(entryReads()).toHaveLength(1))
     expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
-    expect(entryReads()).toEqual([])
     cleanup()
     mockUserId = 'u2'
     renderHome()
     expect(await screen.findByRole('heading', { name: STEP_1 })).toBeTruthy()
+  })
+
+  it('still shows the groups waiting to be joined, and announces a join', async () => {
+    localStorage.setItem('ledgerly:onboarding-hidden:u1', '1')
+    pending = [KIM as PendingGroup]
+    renderHome()
+    fireEvent.click(await screen.findByRole('button', { name: 'Join Kim' }))
+    expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
+    expect(await screen.findByText('Joined Kim.')).toBeTruthy()
+    // The joined pair is empty, but the guide stays hidden.
+    await waitFor(() => expect(entryReads()).toHaveLength(2))
+    await later()
+    expect(screen.queryByRole('heading', { name: STEP_2 })).toBeNull()
   })
 
   it('shows the guide when storage throws, and Hide still hides it for now', async () => {
@@ -348,7 +402,7 @@ describe('GettingStarted: Hide', () => {
       throw new Error('blocked')
     })
     renderHome()
-    fireEvent.click(await screen.findByRole('button', { name: 'Hide' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Hide getting started' }))
     expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
   })
 })
