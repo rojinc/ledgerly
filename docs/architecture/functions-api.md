@@ -168,7 +168,7 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 When `POST /groups` leaves them out, `currency`, `timezone` and `region` come from the creator's profile, and `settings` takes its defaults ([data model](data-model.md#groups)). In a house, a member who isn't an admin can add people only with the default role.
 
-Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseAt`, so no more statements are drafted. A `personal` group can't be archived (`VALIDATION_FAILED`). Nor can a group with a timer running in it (`CONFLICT`): stop or void the timer first, since one in an archived group can't be stopped.
+Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseAt`, so no more statements are drafted. A `personal` group can't be archived (`VALIDATION_FAILED`). Nor can a group with a timer running in it (`CONFLICT`): stop or void the timer first, since one in an archived group can't be stopped. Nor can a group with a statement being finalized (`CONFLICT`): finalize it again first, since a finalize can't finish in an archived group.
 
 ## identity
 

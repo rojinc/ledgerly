@@ -1,4 +1,4 @@
-import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Statements, Transactions } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -18,8 +18,8 @@ import {
 
 /**
  * `groups POST /groups/{id}/archive`: admin only, permanent in v1. Archiving an archived group
- * returns it unchanged, so a retry is safe. Refused while a timer is running in the group.
- * Returns the group as stored.
+ * returns it unchanged, so a retry is safe. Refused while a timer is running or a statement is
+ * being finalized in the group. Returns the group as stored.
  */
 export async function archiveGroup(
   { db, teams, now }: Services,
@@ -54,12 +54,33 @@ export async function archiveGroup(
       if (await hasRunningTimer(db, groupId)) {
         throw new AppError('CONFLICT', 'A timer is running in this group. Stop or void it first.')
       }
+      // A finalize resumed after the archive would get ARCHIVED and stay `finalizing`, with its
+      // locks, for good. Finalize step 1 stages the group row in the transaction that sets
+      // `finalizing` (statements.md#2-finalize-post-statementsidfinalize), so the same order
+      // argument as for a timer start holds.
+      if (await hasFinalizingStatement(db, groupId)) {
+        throw new AppError(
+          'CONFLICT',
+          'A statement in this group is being finalized. Finish it first.',
+        )
+      }
       await tx.write(
         activityWrite(groupId, person.$id, 'group.archived', `${group.name} archived`, now),
       )
     }),
   )
   return db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId })
+}
+
+/** Whether any statement of the group is `finalizing` (`idx_group_period`). */
+async function hasFinalizingStatement(db: Db, groupId: string): Promise<boolean> {
+  const { rows } = await db.listRows<Statements>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.statements,
+    queries: [Query.equal('groupId', groupId), Query.equal('status', 'finalizing'), Query.limit(1)],
+    total: false,
+  })
+  return rows.length > 0
 }
 
 /** Whether any transaction in the group is `running` (`idx_group_status_date`). */
