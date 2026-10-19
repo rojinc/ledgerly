@@ -1,4 +1,5 @@
 import { CATEGORIES } from '@ledgerly/core/constants/categories'
+import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { type ScheduleInput, scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
@@ -12,6 +13,8 @@ import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { centsToText } from '../groups/employer-form'
 import { WEEKDAY_LABEL, WEEKDAYS } from '../schedules/rrule'
+import { BACKDATE_DAYS } from '../schedules/schedule-form-page'
+import { formatDate } from '../statements/invoice-view'
 import { Message, usePersonalGroup } from './bills-page'
 import { type RecurringValues, toRecurringInput } from './recurring-values'
 import { useCreateRecurringBill } from './use-bills'
@@ -20,6 +23,8 @@ import { useCreateRecurringBill } from './use-bills'
 function recurringResolver(
   toBody: (values: RecurringValues) => ReturnType<typeof toRecurringInput>,
   currency: string,
+  /** The earliest first due date: the scheduler refuses a start more than BACKDATE_DAYS ago. */
+  minStart: LocalDate,
 ): Resolver<RecurringValues, unknown, ScheduleInput> {
   const resolve = schemaResolver<RecurringValues, ScheduleInput>(scheduleInputSchema, toBody)
   return async (values, context, options) => {
@@ -34,10 +39,12 @@ function recurringResolver(
     else if (get(found, 'template.totalCents') || Number.isNaN(total)) {
       add('amount', `Enter an amount like ${centsToText(4550, currency)}`)
     } else if (typeof total === 'number' && total <= 0) add('amount', 'Enter an amount above 0')
-    if (values.repeat === 'monthly' && !/^([1-9]|1\d|2[0-8])$/.test(values.monthDay.trim())) {
+    if (values.repeat === 'monthly' && !/^(0?[1-9]|1\d|2[0-8])$/.test(values.monthDay.trim())) {
       add('monthDay', 'Enter a day from 1 to 28, or choose the last day of the month')
     }
     if (!values.startsOn) add('startsOn', 'Required')
+    else if (values.startsOn < minStart)
+      add('startsOn', `Pick a date from ${formatDate(minStart)} on`)
     if (values.until && values.startsOn && values.until < values.startsOn) {
       add('until', 'The last date must be on or after the first')
     }
@@ -90,8 +97,10 @@ function RecurringBillForm({ group }: { group: Groups }) {
   const [id] = useState(() => ID.unique())
   const toBody = (values: RecurringValues) =>
     toRecurringInput(values, { id, groupId: group.$id }, group.currency)
+  const today = localToday(group.timezone, new Date())
+  const minStart = addDays(today, -BACKDATE_DAYS)
   const form = useForm<RecurringValues, unknown, ScheduleInput>({
-    resolver: recurringResolver(toBody, group.currency),
+    resolver: recurringResolver(toBody, group.currency, minStart),
     defaultValues: {
       description: '',
       category: '',
@@ -99,7 +108,7 @@ function RecurringBillForm({ group }: { group: Groups }) {
       repeat: 'monthly',
       weekday: 'MO',
       monthDay: '1',
-      startsOn: localToday(group.timezone, new Date()),
+      startsOn: today,
       until: '',
       autopay: false,
     },
@@ -120,7 +129,8 @@ function RecurringBillForm({ group }: { group: Groups }) {
         void form.handleSubmit(async (body) => {
           try {
             await create.mutateAsync(body)
-            navigate('/bills', { replace: true })
+            // The Bills heading takes focus there, as this form and its button are gone.
+            navigate('/bills', { replace: true, state: { saved: true } })
           } catch (error) {
             form.setError('root', { message: (error as Error).message })
           }
@@ -171,7 +181,7 @@ function RecurringBillForm({ group }: { group: Groups }) {
         </label>
       </fieldset>
       {repeat === 'weekly' && (
-        <SelectField id="weekday" label="On" {...form.register('weekday')}>
+        <SelectField id="weekday" label="Day of the week" {...form.register('weekday')}>
           {WEEKDAYS.map((day) => (
             <option key={day} value={day}>
               {WEEKDAY_LABEL[day]}
@@ -194,6 +204,7 @@ function RecurringBillForm({ group }: { group: Groups }) {
         type="date"
         label="First due date"
         hint="The first bill is due on the first matching day from this date."
+        min={minStart}
         error={errors.startsOn}
         {...form.register('startsOn')}
       />
@@ -212,7 +223,8 @@ function RecurringBillForm({ group }: { group: Groups }) {
         </label>
         {/* The scheduler's auto-post step comes with #33; until then this only stores the choice. */}
         <p id="autopay-hint" className="text-sm text-muted-foreground">
-          Bills are paid automatically once auto-pay is switched on for the app.
+          Until automatic payment is available, these bills still show as due and you mark them paid
+          yourself.
         </p>
       </div>
       <Button type="submit" className="self-start" aria-disabled={isSubmitting}>

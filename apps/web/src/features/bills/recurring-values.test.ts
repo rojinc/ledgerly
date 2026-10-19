@@ -1,12 +1,6 @@
 import { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
 import { describe, expect, it } from 'vitest'
-import {
-  hasEnded,
-  lastDue,
-  type RecurringValues,
-  templateCents,
-  toRecurringInput,
-} from './recurring-values'
+import { lastDue, type RecurringValues, templateCents, toRecurringInput } from './recurring-values'
 
 const RENT: RecurringValues = {
   description: ' Rent ',
@@ -87,20 +81,5 @@ describe('lastDue', () => {
     expect(lastDue({ endsOn: '2027-12-28', rrule: 'FREQ=WEEKLY;BYDAY=MO;UNTIL=20270628' })).toBe(
       '2027-06-28',
     )
-  })
-})
-
-describe('hasEnded', () => {
-  it('has ended once its end date or UNTIL is before today', () => {
-    expect(hasEnded({ endsOn: '2026-10-18', rrule: 'FREQ=WEEKLY;BYDAY=MO' }, '2026-10-19')).toBe(
-      true,
-    )
-    expect(hasEnded({ endsOn: '2026-10-19', rrule: 'FREQ=WEEKLY;BYDAY=MO' }, '2026-10-19')).toBe(
-      false,
-    )
-    expect(
-      hasEnded({ endsOn: null, rrule: 'FREQ=MONTHLY;BYMONTHDAY=1;UNTIL=20261001' }, '2026-10-19'),
-    ).toBe(true)
-    expect(hasEnded({ endsOn: null, rrule: 'FREQ=WEEKLY;BYDAY=MO' }, '2026-10-19')).toBe(false)
   })
 })

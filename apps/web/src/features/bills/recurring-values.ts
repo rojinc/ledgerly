@@ -88,9 +88,3 @@ export function lastDue(schedule: Pick<Schedules, 'endsOn' | 'rrule'>): string |
   const dates = [schedule.endsOn, until ? `${until[1]}-${until[2]}-${until[3]}` : undefined]
   return dates.filter((date): date is string => Boolean(date)).sort()[0]
 }
-
-/** Stopped, or past its last date: nothing more is made. */
-export function hasEnded(schedule: Pick<Schedules, 'endsOn' | 'rrule'>, today: string): boolean {
-  const last = lastDue(schedule)
-  return last !== undefined && last < today
-}

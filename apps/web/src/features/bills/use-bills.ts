@@ -13,7 +13,7 @@ import { callFunction, type Method } from '../../lib/api'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { writeErrorMessage } from '../groups/archive-group'
-import { ledger } from '../transactions/use-transactions'
+import { LedgerError, ledger } from '../transactions/use-transactions'
 
 // Appwrite's limit for one page.
 const PAGE = 100
@@ -116,7 +116,7 @@ export function useRecurringBills(groupId: string) {
 /** Calls the scheduler function; a refusal throws its message in plain words. */
 async function scheduler<T>(method: Method, path: string, body?: unknown): Promise<T> {
   const result = await callFunction<T>('scheduler', method, path, body)
-  if (!result.ok) throw new Error(writeErrorMessage(result.error))
+  if (!result.ok) throw new LedgerError(result.error.code, writeErrorMessage(result.error))
   return result.data
 }
 
@@ -140,18 +140,27 @@ export function useCreateRecurringBill() {
 
 /**
  * Stops a recurring bill from `today`: `POST /schedules/{id}/end` with today as its end date.
- * One that hasn't started has no end date to give (the scheduler refuses one before `startsOn`),
- * and nothing of it has been paid, so it's removed with `DELETE /schedules/{id}` instead.
+ * One that hasn't started can't end before its start (the scheduler refuses that), so it's
+ * removed with `DELETE /schedules/{id}`. If its first bill was already paid early, the scheduler
+ * refuses the delete (a schedule with posted bills is ended, not deleted): it then ends on its
+ * first date, keeping that paid bill.
  */
 export function useStopRecurringBill(schedule: Schedules) {
   const queryClient = useQueryClient()
   return useMutation({
     mutationFn: async (today: LocalDate): Promise<Schedules | undefined> => {
+      let endsOn = today
       if (today < schedule.startsOn) {
-        await scheduler<object>('DELETE', `/schedules/${schedule.$id}`)
-        return undefined
+        try {
+          await scheduler<object>('DELETE', `/schedules/${schedule.$id}`)
+          return undefined
+        } catch (error) {
+          // DELETE takes no body, so its only VALIDATION_FAILED is "has posted transactions".
+          if (!(error instanceof LedgerError && error.code === 'VALIDATION_FAILED')) throw error
+          endsOn = schedule.startsOn as LocalDate
+        }
       }
-      const body: EndScheduleBody = { endsOn: today }
+      const body: EndScheduleBody = { endsOn }
       const { schedule: stopped } = await scheduler<{ schedule: Schedules }>(
         'POST',
         `/schedules/${schedule.$id}/end`,

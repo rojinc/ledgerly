@@ -8,6 +8,7 @@ import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
 import { useGroup } from '../groups/use-groups'
 import { billRoutes } from './routes'
+import { billKeys } from './use-bills'
 
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../../lib/appwrite', () => ({
@@ -111,7 +112,7 @@ describe('NewRecurringBillPage', () => {
     type('Category', 'rent')
     type('Amount (AUD)', '400')
     fireEvent.click(screen.getByLabelText('Every week'))
-    type('On', 'MO')
+    type('Day of the week', 'MO')
     fireEvent.click(screen.getByRole('button', { name: 'Add recurring bill' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(call.mock.calls[0]?.slice(0, 3)).toEqual(['scheduler', 'POST', '/schedules'])
@@ -128,6 +129,10 @@ describe('NewRecurringBillPage', () => {
     })
     expect(sentBody().id).toHaveLength(20)
     await waitFor(() => expect(router.state.location.pathname).toBe('/bills'))
+    // The form and its button are gone: focus goes to the Bills heading.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Bills' })),
+    )
   })
 
   it('sends monthly on a day with a last date and autopay, or the last day of the month', async () => {
@@ -135,18 +140,21 @@ describe('NewRecurringBillPage', () => {
     renderAt('/bills/recurring/new')
     type('Description', 'Phone')
     type('Amount (AUD)', '45.50')
-    type('Day of the month', '15')
+    // A leading zero is fine: "05" is the 5th.
+    type('Day of the month', '05')
     type('Last due date (optional)', '2027-06-30')
     const autopay = screen.getByLabelText(/Autopay/)
     expect(
       document.getElementById(autopay.getAttribute('aria-describedby') ?? '')?.textContent,
-    ).toBe('Bills are paid automatically once auto-pay is switched on for the app.')
+    ).toBe(
+      'Until automatic payment is available, these bills still show as due and you mark them paid yourself.',
+    )
     fireEvent.click(autopay)
     fireEvent.click(screen.getByRole('button', { name: 'Add recurring bill' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(sentBody()).toMatchObject({
       template: { totalCents: 4550, bill: { status: 'due' } },
-      rrule: 'FREQ=MONTHLY;BYMONTHDAY=15;UNTIL=20270630',
+      rrule: 'FREQ=MONTHLY;BYMONTHDAY=5;UNTIL=20270630',
       autoPost: true,
     })
     cleanup()
@@ -173,6 +181,28 @@ describe('NewRecurringBillPage', () => {
     expect(screen.getByText('Required').id).toBe('amount-error')
     expect(screen.getByText('The last date must be on or after the first').id).toBe('until-error')
     expect(call).not.toHaveBeenCalled()
+  })
+
+  it('refuses an amount of 0, and a first date more than 31 days ago, inline', async () => {
+    renderAt('/bills/recurring/new')
+    const first = screen.getByLabelText('First due date') as HTMLInputElement
+    // 31 days before Monday the 19th in Sydney.
+    expect(first.min).toBe('2026-09-18')
+    type('Description', 'Gym')
+    type('Amount (AUD)', '0')
+    type('First due date', '2026-09-17')
+    fireEvent.click(screen.getByRole('button', { name: 'Add recurring bill' }))
+    expect((await screen.findByText('Enter an amount above 0')).id).toBe('amount-error')
+    expect(screen.getByText(/^Pick a date from (18 Sep|Sep 18,) 2026 on$/).id).toBe(
+      'startsOn-error',
+    )
+    expect(call).not.toHaveBeenCalled()
+    type('First due date', '2026-09-18')
+    type('Amount (AUD)', '10')
+    call.mockResolvedValue(ok({ schedule: schedule('s1') }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add recurring bill' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sentBody().startsOn).toBe('2026-09-18')
   })
 
   it('shows the scheduler’s refusal and stays, keeping one id for a retry', async () => {
@@ -291,6 +321,58 @@ describe('BillsPage: recurring', () => {
     expect(region.queryByRole('listitem')).toBeNull()
   })
 
+  it('ends one on its first date when its first bill was already paid early', async () => {
+    mockLists([schedule('s1', { startsOn: '2026-10-26' })])
+    call.mockImplementation(async (_fn, method) =>
+      method === 'DELETE'
+        ? {
+            ok: false as const,
+            error: {
+              code: 'VALIDATION_FAILED',
+              message: 'This schedule has posted transactions, so end it instead of deleting it.',
+            },
+          }
+        : ok({ schedule: schedule('s1', { startsOn: '2026-10-26', endsOn: '2026-10-26' }) }),
+    )
+    renderAt('/bills')
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop Rent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+    expect(await screen.findByText('Stopped Rent. Bills already made stay.')).toBeTruthy()
+    expect(call.mock.calls.map((args) => args.slice(1))).toEqual([
+      ['DELETE', '/schedules/s1', undefined],
+      ['POST', '/schedules/s1/end', { endsOn: '2026-10-26' }],
+    ])
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('shows any other refusal of a removal as it is', async () => {
+    mockLists([schedule('s1', { startsOn: '2026-10-26' })])
+    call.mockResolvedValue({ ok: false, error: { code: 'FORBIDDEN', message: 'Not yours.' } })
+    renderAt('/bills')
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop Rent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Remove it' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Not yours.')
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a stop at once, and reloads the lists and the calendar', async () => {
+    mockLists([schedule('s1')])
+    call.mockResolvedValue(ok({ schedule: schedule('s1', { endsOn: '2026-10-19' }) }))
+    const { queryClient } = renderAt('/bills')
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop Rent' }))
+    // Every reload from here never answers: what shows is the stop's own answer.
+    listRows.mockReturnValue(new Promise(() => {}))
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: 'Stop it' }))
+    await screen.findByText('Stopped Rent. Bills already made stay.')
+    const region = within(screen.getByRole('region', { name: 'Recurring' }))
+    expect(region.getByRole('listitem').textContent).toMatch(/Last due (19 Oct|Oct 19,) 2026/)
+    expect(region.queryByRole('button', { name: 'Stop Rent' })).toBeNull()
+    const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey)
+    expect(keys).toContainEqual(['calendar'])
+    expect(keys).toContainEqual(billKeys.all('g1'))
+  })
+
   it('moves focus to Cancel when the question opens', async () => {
     mockLists([schedule('s1')])
     renderAt('/bills')
@@ -300,7 +382,7 @@ describe('BillsPage: recurring', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
   })
 
-  it('shows the last due date from the rule’s end too, the earlier one first', async () => {
+  it('shows a stop’s end date once, after the rule’s own end in its words', async () => {
     mockLists([
       schedule('s1', { rrule: 'FREQ=WEEKLY;BYDAY=MO;UNTIL=20270628' }),
       schedule('s2', {
@@ -312,7 +394,8 @@ describe('BillsPage: recurring', () => {
     renderAt('/bills')
     const region = within(await screen.findByRole('region', { name: 'Recurring' }))
     const items = await region.findAllByRole('listitem')
-    expect(items[0]?.textContent).toMatch(/Last due (28 Jun|Jun 28,) 2027/)
+    expect(items[0]?.textContent).toMatch(/until (28 Jun|Jun 28,) 2027/)
+    expect(items[0]?.textContent).not.toMatch(/Last due/)
     expect(items[1]?.textContent).toMatch(/Last due (28 Dec|Dec 28,) 2026/)
   })
 
@@ -323,9 +406,15 @@ describe('BillsPage: recurring', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Stop Rent' }))
     fireEvent.click(screen.getByRole('button', { name: 'Stop it' }))
     expect((await screen.findByRole('alert')).textContent).toBe('Try again later.')
+    // The question is a group named by its words, so they're read out with Cancel.
+    const question = screen.getByRole('group', { name: /^Stop Rent from today\?/ })
+    expect(question.contains(screen.getByRole('button', { name: 'Cancel' }))).toBe(true)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     await act(() => new Promise((resolve) => requestAnimationFrame(resolve)))
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Stop Rent' }))
+    // Asked again, the last refusal is gone.
+    fireEvent.click(screen.getByRole('button', { name: 'Stop Rent' }))
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('links to New recurring bill', async () => {

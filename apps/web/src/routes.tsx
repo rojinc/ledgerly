@@ -44,8 +44,6 @@ export const routes: RouteObject[] = [
           shiftRoutes,
           scheduleRoutes,
           billRoutes,
-          scheduleRoutes,
-          billRoutes,
           { path: 'activity', element: <ActivityPage /> },
         ],
       },
