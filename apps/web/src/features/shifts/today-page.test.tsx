@@ -239,6 +239,38 @@ describe('TodayPage', () => {
     expect(screen.getByRole('heading', { name: 'Timer running · Acme Cafe' })).toBeTruthy()
   })
 
+  it('moves focus to the heading on Start and Stop, and reads out the result (#147 O8)', async () => {
+    mockGroups([acme])
+    mockRows([])
+    call.mockImplementation(async (_fn, _method, path, body) => {
+      if (path !== '/timer/start') {
+        mockRows([])
+        return ok(shift('r1', { status: 'posted' }))
+      }
+      const started = shift((body as { id: string }).id, {
+        status: 'running',
+        startedAt: NOW.toISOString(),
+      })
+      // The server has it now.
+      mockRows([], [started])
+      return ok(started)
+    })
+    renderPage()
+    const startButton = await screen.findByRole('button', { name: 'Start' })
+    const heading = screen.getByRole('heading', { name: 'Today' })
+    // Focused, as a keyboard user's would be; the button goes away as the timer starts.
+    startButton.focus()
+    fireEvent.click(startButton)
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Timer started.'))
+    expect(document.activeElement).toBe(heading)
+
+    const stopButton = screen.getByRole('button', { name: 'Stop' })
+    stopButton.focus()
+    fireEvent.click(stopButton)
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Timer stopped.'))
+    expect(document.activeElement).toBe(heading)
+  })
+
   it('starts the timer in the chosen employer', async () => {
     mockRows([])
     call.mockReturnValue(new Promise(() => {}))

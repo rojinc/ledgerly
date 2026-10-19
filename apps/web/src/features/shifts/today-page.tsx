@@ -1,7 +1,7 @@
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
 import { ID } from 'appwrite'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
@@ -53,6 +53,10 @@ export function TodayPage() {
   const [startId, setStartId] = useState(() => ID.unique())
   const [startGroupId, setStartGroupId] = useState('')
   const [breakMinutes, setBreakMinutes] = useState('')
+  // Start and Stop go away as the timer panel swaps: focus moves to the heading, and the result
+  // is read out.
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [done, setDone] = useState('')
   // Once the server has a timer with this ID (say the start's answer was lost, and the refetch
   // shows it), the next Start needs a new one: the server would take the same ID as a retry.
   // While the start is pending, the timer shown is the optimistic one, not the server's.
@@ -107,7 +111,9 @@ export function TodayPage() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold">Today</h1>
+        <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+          Today
+        </h1>
         {adders.length > 0 && (
           <Link
             to="/shifts/new"
@@ -117,6 +123,10 @@ export function TodayPage() {
           </Link>
         )}
       </div>
+      {/* Mounted from the start, so the announcement is read out when it changes. */}
+      <p role="status" className="sr-only">
+        {done}
+      </p>
       {open.length === 0 ? (
         <p className="text-muted-foreground">
           Add an employer to record shifts:{' '}
@@ -132,7 +142,14 @@ export function TodayPage() {
           // Not stoppable until the server has the timer.
           starting={start.isPending}
           // Stopped: an earlier start error no longer applies.
-          onStopped={() => start.reset()}
+          onStopped={() => {
+            start.reset()
+            setDone('Timer stopped.')
+          }}
+          onStopping={() => {
+            setDone('')
+            heading.current?.focus()
+          }}
           breakMinutes={breakMinutes}
           onBreak={setBreakMinutes}
         />
@@ -148,7 +165,9 @@ export function TodayPage() {
               : (starters[0]?.$id ?? '')
           }
           onGroup={setStartGroupId}
-          onStart={(groupId) =>
+          onStart={(groupId) => {
+            setDone('')
+            heading.current?.focus()
             start.mutate(
               { id: startId, groupId },
               {
@@ -157,10 +176,11 @@ export function TodayPage() {
                   setBreakMinutes('')
                   // A new timer: the last one's stop error no longer applies.
                   stop.reset()
+                  setDone('Timer started.')
                 },
               },
             )
-          }
+          }}
         />
       )}
       <section aria-labelledby="today-shifts" className="flex flex-col gap-2">
@@ -266,6 +286,7 @@ function RunningTimer({
   stop,
   starting,
   onStopped,
+  onStopping,
   breakMinutes,
   onBreak,
 }: {
@@ -274,6 +295,7 @@ function RunningTimer({
   stop: ReturnType<typeof useStopTimer>
   starting: boolean
   onStopped: () => void
+  onStopping: () => void
   breakMinutes: string
   onBreak: (text: string) => void
 }) {
@@ -302,6 +324,7 @@ function RunningTimer({
             return
           }
           setError(undefined)
+          onStopping()
           stop.mutate(
             { transactionId: shift.$id, ...(text === '' ? {} : { breakMinutes: Number(text) }) },
             {

@@ -699,6 +699,17 @@ describe('ShiftPage', () => {
     expect(screen.getByText('Confirmed.')).toBeTruthy()
   })
 
+  it('moves focus to the heading when Confirm goes away (#147 O8)', async () => {
+    mockRow(shiftRow({ status: 'scheduled' }))
+    call.mockResolvedValue(view(shiftRow({ status: 'posted' })))
+    renderAt('/shifts/t1')
+    const button = await screen.findByRole('button', { name: 'Confirm as worked' })
+    button.focus()
+    fireEvent.click(button)
+    expect(await screen.findByText('Confirmed.')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Morning shift' }))
+  })
+
   it('won’t confirm while the form has unsaved changes', async () => {
     mockRow(shiftRow({ status: 'scheduled' }))
     call.mockImplementation(async (_fn, _method, _path, body) =>
@@ -818,6 +829,19 @@ describe('ShiftPage', () => {
     await act(async () => pending.resolve(view(shiftRow({ status: 'void', voidReason: 'Sick' }))))
     await settle()
     expect(screen.getByText('Voided. Reason: Sick')).toBeTruthy()
+  })
+
+  it('moves focus to the heading when the void form goes away (#147 O8)', async () => {
+    mockRow(shiftRow())
+    call.mockResolvedValue(view(shiftRow({ status: 'void', voidReason: 'Sick' })))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Reason for voiding')
+    type('Reason for voiding', 'Sick')
+    const button = screen.getByRole('button', { name: 'Void shift' })
+    button.focus()
+    fireEvent.click(button)
+    expect(await screen.findByText('Voided. Reason: Sick')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Morning shift' }))
   })
 
   it('needs a reason to void and sends nothing without one', async () => {

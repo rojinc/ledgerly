@@ -4,7 +4,7 @@ import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
 import { ID } from 'appwrite'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useRef, useState } from 'react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
@@ -138,11 +138,16 @@ const STATUS: Record<Transactions['status'], string> = {
 export function ShiftPage() {
   const id = useParams().shiftId ?? ''
   const transaction = useTransaction(id)
+  // Confirm and Void go away once the shift changes: focus moves here, and the status line below
+  // reads out the new status.
+  const heading = useRef<HTMLHeadingElement>(null)
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="text-2xl font-semibold">{transaction.data?.description ?? 'Shift'}</h1>
+      <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+        {transaction.data?.description ?? 'Shift'}
+      </h1>
       {transaction.data ? (
-        <ShiftDetails row={transaction.data} />
+        <ShiftDetails row={transaction.data} onAction={() => heading.current?.focus()} />
       ) : transaction.isError ? (
         <Message alert>We couldn’t load this shift. Reload the page to try again.</Message>
       ) : (
@@ -152,7 +157,7 @@ export function ShiftPage() {
   )
 }
 
-function ShiftDetails({ row }: { row: Transactions }) {
+function ShiftDetails({ row, onAction }: { row: Transactions; onAction: () => void }) {
   const userId = useCurrentUser().data?.$id ?? ''
   const personId = useBootstrap(userId).data?.personId ?? ''
   const group = useGroup(row.groupId)
@@ -192,7 +197,9 @@ function ShiftDetails({ row }: { row: Transactions }) {
       {!mayChange && !locked && (
         <Message>Only an admin or the person who added it can change it.</Message>
       )}
-      {open && row.status === 'scheduled' && <ConfirmShift confirm={confirm} dirty={dirty} />}
+      {open && row.status === 'scheduled' && (
+        <ConfirmShift confirm={confirm} dirty={dirty} onConfirm={onAction} />
+      )}
       {shift && open && (row.status === 'scheduled' || row.status === 'posted') && (
         <ShiftForm
           // A new status starts the form again from the stored shift, so it never shows pay
@@ -214,7 +221,7 @@ function ShiftDetails({ row }: { row: Transactions }) {
       )}
       {/* A running timer can be voided too: one left on for more than a day can't be stopped. */}
       {open && row.status !== 'void' && (
-        <VoidShift voidShift={voidShift} reason={reason} onReason={setReason} />
+        <VoidShift voidShift={voidShift} reason={reason} onReason={setReason} onVoid={onAction} />
       )}
     </>
   )
@@ -223,14 +230,19 @@ function ShiftDetails({ row }: { row: Transactions }) {
 function ConfirmShift({
   confirm,
   dirty,
+  onConfirm,
 }: {
   confirm: ReturnType<typeof useConfirmShift>
   dirty: boolean
+  onConfirm: () => void
 }) {
   return (
     <div className="flex flex-col items-start gap-2">
       <Button
-        onClick={() => confirm.mutate()}
+        onClick={() => {
+          onConfirm()
+          confirm.mutate()
+        }}
         disabled={confirm.isPending || dirty}
         aria-describedby={dirty ? 'confirm-hint' : undefined}
       >
@@ -250,10 +262,12 @@ function VoidShift({
   voidShift,
   reason,
   onReason,
+  onVoid,
 }: {
   voidShift: ReturnType<typeof useVoidShift>
   reason: string
   onReason: (reason: string) => void
+  onVoid: () => void
 }) {
   const [error, setError] = useState<string>()
   return (
@@ -267,6 +281,7 @@ function VoidShift({
           return
         }
         setError(undefined)
+        onVoid()
         voidShift.mutate({ reason: reason.trim() })
       }}
     >
