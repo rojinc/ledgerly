@@ -1,5 +1,5 @@
 import type { Schedules } from '@ledgerly/core/generated/rows'
-import { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
+import { type ScheduleResult, scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
@@ -14,8 +14,6 @@ import { generateOccurrences } from '../occurrences'
 import { parseBody } from '../parse-body'
 import { checkTemplate, findSchedule, getSchedule, scheduleColumns } from '../schedule-rows'
 import type { Services } from '../services'
-
-export type ScheduleResult = { schedule: Schedules; created: number }
 
 /**
  * `scheduler POST /schedules` (functions-api.md#scheduler): creates the schedule, then its

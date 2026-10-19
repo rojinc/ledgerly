@@ -83,9 +83,40 @@ describe('scheduleInputSchema', () => {
     ).toEqual([])
   })
 
-  it("leaves each occurrence's dueOn and billing period to the scheduler", () => {
-    const template = { ...rentSchedule.template, split: { mode: 'days' } }
+  it("leaves each occurrence's dueOn to the scheduler", () => {
+    const template = { ...rentSchedule.template, bill: { status: 'due' } }
     expect(paths(scheduleInputSchema, { ...rentSchedule, template })).toEqual([])
+  })
+
+  it('refuses a billing period, and so a days split, in a bill template', () => {
+    const bill = { status: 'due', periodStart: '2026-11-01', periodEnd: '2026-11-30' }
+    expect(
+      paths(scheduleInputSchema, { ...rentSchedule, template: { ...rentSchedule.template, bill } }),
+    ).toEqual(['template.bill.periodStart', 'template.bill.periodEnd'])
+    expect(
+      paths(scheduleInputSchema, {
+        ...rentSchedule,
+        template: { ...rentSchedule.template, bill: { status: 'due', periodEnd: '2026-11-30' } },
+      }),
+    ).toEqual(['template.bill.periodEnd'])
+    expect(
+      paths(scheduleInputSchema, {
+        ...rentSchedule,
+        template: { ...rentSchedule.template, split: { mode: 'days' } },
+      }),
+    ).toEqual(['template.split.mode'])
+    expect(
+      paths(scheduleInputSchema, {
+        ...rentSchedule,
+        template: {
+          bill: { status: 'due' },
+          items: [
+            { name: 'Rent', amountCents: 200_000, split: { mode: 'equal', personIds: ['alice'] } },
+            { name: 'Power', amountCents: 40_000, split: { mode: 'days' } },
+          ],
+        },
+      }),
+    ).toEqual(['template.items.1.split.mode'])
   })
 
   it('rejects template fields that come from the schedule itself', () => {

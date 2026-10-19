@@ -6,7 +6,7 @@ Schedules create transactions automatically: a Thursday shift, weekly rent, a mo
 
 A row in `schedules` ([data model](data-model.md#schedules)) with:
 
-- a **template**: the transaction to create (kind, description, amount or minutes × rate, payers, split),
+- a **template**: the transaction to create (kind, description, amount or minutes × rate, payers, split). A bill template has no billing period, since one period can't fit every occurrence, and so no `days` split ([days present](ledger.md#days-present)); recurring days-present bills are for later,
 - a **recurrence rule** (RFC 5545 `RRULE`), a start date and an optional end date,
 - skip rules: specific dates (`exdates`) and optionally public holidays for the group's region,
 - `autoPost`: whether occurrences post themselves.
@@ -102,6 +102,7 @@ An edit, another run, a member removed or an occurrence changed meanwhile makes 
 - **Autopay bills:** status `due`, `dueOn <= localToday`, and the schedule has `autoPost` → post with the template's payers, `date = dueOn`.
 - **Other `scheduled` kinds** (expense, income): post when `date <= localToday` and `autoPost` is set.
 - Edited (`overridden`) occurrences auto-post too, with the edited values. Voided ones never do.
+- **Never one made after its own day** (local date of its `$createdAt` later than its `date`): a run that came late after an edit, or a new schedule that starts in the past, makes past occurrences, and those wait for the user like any past occurrence that wasn't posted. So a week an edit moved (Thursday posted, Friday made late) is never paid twice.
 
 Query with `idx_status_date` (autopay bills: `idx_status_dueOn`) for dates from 7 days ago up to the UTC date plus one day (some timezones are ahead), then check each group's local date before posting. Skip transactions in archived groups; they stay as they are. The 7-day floor matters: shifts waiting for manual confirmation stay `scheduled` for as long as the user ignores them, and without a floor every run would re-read all of them. An auto-post occurrence missed by more than 7 days (a long outage) waits for the user.
 
@@ -145,7 +146,7 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | Route | What it does |
 | --- | --- |
 | `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
-| `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` set to yesterday (it stays empty for a schedule that never expanded, which starts from `startsOn` like a new one), then expand again from local today, never filling in past dates, even when reopening an ended schedule: changeable occurrences are updated in place, deleted when the new rule no longer has their date (before a later `startsOn`, say) or they are after its end, and created where missing. `created` and `removed` count the ones created and deleted; one updated in place counts as neither. The group and kind can't change (`VALIDATION_FAILED`) |
+| `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` set to yesterday (it stays empty for a schedule that never expanded, which starts from `startsOn` like a new one), then expand again from local today, never filling in past dates, even when reopening an ended schedule: changeable occurrences are updated in place, deleted when the new rule no longer has their date (before a later `startsOn`, say) or they are after its end, and created where missing. `created`, `updated` and `removed` count the ones created, updated in place and deleted. The group and kind can't change (`VALIDATION_FAILED`) |
 | `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended. It sets `nextRunAt` to now, and `generatedThrough` to no earlier than yesterday, so the next cron run deletes any it didn't get to (a timeout, say), or carries on up to a later `endsOn` than before, from today on |
 | `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items. One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |

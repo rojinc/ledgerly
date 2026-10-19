@@ -1,7 +1,6 @@
 import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Schedules } from '@ledgerly/core/generated/rows'
-import { endScheduleBodySchema } from '@ledgerly/core/schemas/scheduler'
+import { type EndedSchedule, endScheduleBodySchema } from '@ledgerly/core/schemas/scheduler'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { guardGroup, ledgerRoute } from '@ledgerly/server/ledger/transactions'
@@ -9,8 +8,6 @@ import { guardSchedule, laterOf, removeOccurrences } from '../occurrences'
 import { parseBody } from '../parse-body'
 import { getSchedule, requireScheduleWriter } from '../schedule-rows'
 import type { Services } from '../services'
-
-export type EndedSchedule = { schedule: Schedules; removed: number }
 
 /**
  * `scheduler POST /schedules/{id}/end` (scheduling.md#schedule-routes): sets `endsOn` and

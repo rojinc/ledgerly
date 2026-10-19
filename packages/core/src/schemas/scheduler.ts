@@ -1,7 +1,8 @@
 import { z } from 'zod'
 import { compareDates, isLocalDate, type LocalDate, parseLocalDate } from '../dates/local-date'
+import type { Schedules } from '../generated/rows'
 import { checkDateOrder, descriptionSchema, idSchema, localDateSchema } from './common'
-import { checkKindRules, transactionTemplateSchema } from './ledger'
+import { checkKindRules, type TransactionTemplate, transactionTemplateSchema } from './ledger'
 
 // functions-api.md#scheduler and scheduling.md.
 
@@ -103,12 +104,37 @@ type ScheduleFields = z.output<z.ZodObject<typeof scheduleFields>>
 // follows the same kind rules as a TransactionInput.
 function checkSchedule(schedule: ScheduleFields, ctx: z.RefinementCtx): void {
   checkKindRules(schedule.kind, schedule.template, ctx, ['template'])
+  // On any other kind, `bill` and a days split are already reported as not allowed.
+  if (schedule.kind === 'bill') checkScheduledBill(schedule.template, ctx)
   checkDateOrder(schedule.startsOn, schedule.endsOn, 'endsOn', ctx)
   const untilPart = schedule.rrule.split(';').find((part) => part.startsWith('UNTIL='))
   const until = untilDate(untilPart?.slice('UNTIL='.length) ?? '')
   if (until !== undefined && compareDates(until, schedule.startsOn) < 0) {
     ctx.addIssue({ code: 'custom', message: 'UNTIL must not be before startsOn', path: ['rrule'] })
   }
+}
+
+// scheduling.md#what-a-schedule-is: one billing period can't fit every occurrence, so a template
+// has none, and so no days split either (ledger.md#days-present counts days within the period).
+function checkScheduledBill(
+  { bill, split, items }: TransactionTemplate,
+  ctx: z.RefinementCtx,
+): void {
+  for (const key of ['periodStart', 'periodEnd'] as const) {
+    if (bill?.[key] !== undefined) {
+      const message = 'A schedule template has no billing period'
+      ctx.addIssue({ code: 'custom', message, path: ['template', 'bill', key] })
+    }
+  }
+  const message = 'A schedule can’t split by days'
+  if (split?.mode === 'days') {
+    ctx.addIssue({ code: 'custom', message, path: ['template', 'split', 'mode'] })
+  }
+  items?.forEach((item, index) => {
+    if (item.split.mode === 'days') {
+      ctx.addIssue({ code: 'custom', message, path: ['template', 'items', index, 'split', 'mode'] })
+    }
+  })
 }
 
 /** `POST /schedules`, and `PATCH /schedules/{id}` with the same `id`. */
@@ -134,6 +160,20 @@ export type PreviewScheduleBody = z.infer<typeof previewScheduleBodySchema>
 
 /** Why a preview skipped a date. */
 export type SkipReason = 'exdate' | 'holiday'
+
+/** `POST /schedules`: the schedule, and how many occurrences it created. */
+export type ScheduleResult = { schedule: Schedules; created: number }
+
+/** `PATCH /schedules/{id}`: occurrences created, changed in place, and deleted. */
+export type UpdatedSchedule = {
+  schedule: Schedules
+  created: number
+  updated: number
+  removed: number
+}
+
+/** `POST /schedules/{id}/end`: occurrences deleted. */
+export type EndedSchedule = { schedule: Schedules; removed: number }
 
 /** `POST /schedules/preview` */
 export type SchedulePreview = {
