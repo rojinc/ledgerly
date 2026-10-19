@@ -122,6 +122,16 @@ describe('POST / (the users.*.update.password event)', () => {
     expect(sent(services)).toHaveLength(1)
   })
 
+  it.each(['users.u1.x.update.password', 'users.u1.x.recovery.token1.update'])(
+    'reads a user ID that contains a dot whole, never as another user’s (%s)',
+    async (name) => {
+      const services = changed()
+      const get = vi.spyOn(services.users, 'get')
+      await fire(services, { $id: 'token1', userId: 'u1.x' }, { 'x-appwrite-event': name })
+      expect(get.mock.calls).toEqual([[{ userId: 'u1.x' }]])
+    },
+  )
+
   it('falls back to the body’s $id when the name has no user ID', async () => {
     const services = changed()
     const get = vi.spyOn(services.users, 'get')

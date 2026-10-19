@@ -40,9 +40,13 @@ export async function passwordNotice(
   return {}
 }
 
-// `users.<userId>.update.password`, or `users.<userId>.recovery.<tokenId>.update`.
+// `users.<userId>.update.password`, or `users.<userId>.recovery.<tokenId>.update`. The whole name
+// is matched: a user ID can contain `.`, so `users.<victimId>.x.update.password` is user
+// `<victimId>.x`'s event, not the victim's.
+const EVENT_NAME = /^users\.(.+)\.(?:update\.password|recovery\.[^.]+\.update)$/
+
 function idFromEvent(name: string | undefined): string | null {
-  const parsed = idSchema.safeParse(name?.match(/^users\.([^.]+)\./)?.[1])
+  const parsed = idSchema.safeParse(name?.match(EVENT_NAME)?.[1])
   return parsed.success ? parsed.data : null
 }
 
