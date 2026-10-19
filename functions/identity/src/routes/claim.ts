@@ -6,6 +6,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { ID, Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
 import { parseBody } from '../parse-body'
@@ -52,7 +53,7 @@ export function verifiedIdentities(user: AccountUser): VerifiedIdentity[] {
       identities.push({ type, key: identityKey(type, value) })
     } catch (error) {
       if (!(error instanceof RangeError)) throw error
-      console.warn(`skipped an unusable verified ${type}`)
+      logProblem('claim_identity_unusable', { identityType: type })
     }
   }
   return identities
@@ -121,7 +122,7 @@ async function claimIdentity(
   // the caller's person, which is #39; until then it stays where it is. The log is a fixed
   // line, never the key (security-and-privacy.md).
   const owner = await getRowOrNull<Persons>(db, TABLES.persons, identity.personId)
-  if (owner && !owner.userId) console.warn('claim needs a merge; skipped')
+  if (owner && !owner.userId) logProblem('claim_needs_merge')
 }
 
 // Step 3: the person's `placeholder` rows added strictly before `claimedAt`, while they had no

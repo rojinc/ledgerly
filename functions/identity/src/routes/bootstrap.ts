@@ -6,6 +6,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, ensureTeam } from '@ledgerly/server/appwrite/teams'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { logProblem } from '@ledgerly/server/http/log'
 import { profileDefaults } from '@ledgerly/server/identity/defaults'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { ID, Permission, Query, Role } from 'node-appwrite'
@@ -123,9 +124,7 @@ async function setUp(
       return 0
     })
     // Once committed, so a lost race logs nothing. IDs and counts only.
-    if (deleted > 0) {
-      console.log(`bootstrap adopted ${person.personId}; typed keys deleted: ${deleted}`)
-    }
+    if (deleted > 0) logProblem('typed_keys_deleted', { personId: person.personId, count: deleted })
   } catch (error) {
     if (!isAppwriteError(error, 409)) throw error
     // A bootstrap for the same user that ran at the same time created the profile first: use

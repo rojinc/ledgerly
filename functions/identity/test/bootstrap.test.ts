@@ -1,7 +1,7 @@
 import type { BootstrapResult } from '@ledgerly/core/schemas/identity'
 import { resolvePerson } from '@ledgerly/server/identity/resolve-person'
 import { AppwriteException } from 'node-appwrite'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import {
   AFTER,
   account,
@@ -45,20 +45,24 @@ function addedBeforeSignUp(typed: ReturnType<typeof identity>[] = []) {
   )
 }
 
-let warn: ReturnType<typeof vi.spyOn>
-let log: ReturnType<typeof vi.spyOn>
+let logged: MockInstance<typeof console.error>
 beforeEach(() => {
-  warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-  log = vi.spyOn(console, 'log').mockImplementation(() => {})
+  logged = vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => {
   // No personal data in logs: no email, phone number or name.
-  for (const args of warn.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}|Sam/)
-  // An adoption logs IDs and counts only, never a key.
-  for (const args of log.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}/)
-  warn.mockRestore()
-  log.mockRestore()
+  for (const args of logged.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}|Sam/)
+  logged.mockRestore()
 })
+
+// The logProblem lines written, without `fn`.
+const events = () =>
+  logged.mock.calls.map(([line]) => {
+    const { fn: _fn, ...event } = JSON.parse(String(line)) as Record<string, unknown>
+    return event
+  })
+// The adoption's line (#252): IDs and counts only, never a key.
+const adoptions = () => events().filter(({ event }) => event === 'typed_keys_deleted')
 
 describe('POST /bootstrap', () => {
   it('sets up the person, profile, personal group, its team and an admin membership', async () => {
@@ -199,7 +203,7 @@ describe('POST /bootstrap', () => {
         'pSam',
       )
       expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iOther'])
-      expect(log).toHaveBeenCalledWith('bootstrap adopted pSam; typed keys deleted: 1')
+      expect(adoptions()).toEqual([{ event: 'typed_keys_deleted', personId: 'pSam', count: 1 }])
     })
 
     it('keeps a key the user verified too, and logs nothing', async () => {
@@ -210,7 +214,7 @@ describe('POST /bootstrap', () => {
         expect.objectContaining({ $id: 'iSam', personId: 'pSam', verified: true }),
         expect.objectContaining({ $id: 'iTyped', personId: 'pSam', verified: true }),
       ])
-      expect(log).not.toHaveBeenCalled()
+      expect(adoptions()).toEqual([])
     })
 
     it("drops the victim's typed email when someone adopts by their own phone (#247)", async () => {
@@ -274,7 +278,7 @@ describe('POST /bootstrap', () => {
       expect.objectContaining({ $id: 'i2', personId: 'pEmail', verified: true }),
     ])
     expect(services.db.rows('persons').find((row) => row.$id === 'pPhone')?.userId).toBeNull()
-    expect(warn).toHaveBeenCalledWith('claim needs a merge; skipped')
+    expect(events()).toEqual([{ event: 'claim_needs_merge' }])
   })
 
   it('names a new person "Me" when the account has no name, and keeps the name an adopted one had', async () => {
@@ -304,9 +308,9 @@ describe('POST /bootstrap', () => {
     const result = await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)
     expect(result.personId).toMatch(ID)
     expect(services.db.rows('identities')).toEqual([])
-    expect(warn.mock.calls).toEqual([
-      ['skipped an unusable verified email'],
-      ['skipped an unusable verified phone'],
+    expect(events()).toEqual([
+      { event: 'claim_identity_unusable', identityType: 'email' },
+      { event: 'claim_identity_unusable', identityType: 'phone' },
     ])
   })
 
@@ -382,7 +386,7 @@ describe('POST /bootstrap', () => {
       // Its typed-key delete went with the rest: the placeholder is the other user's to claim.
       expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iTyped'])
       // And nothing claims it was adopted.
-      expect(log).not.toHaveBeenCalled()
+      expect(adoptions()).toEqual([])
     },
   )
 

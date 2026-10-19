@@ -142,8 +142,9 @@ describe('the statements job (POST /, cron)', () => {
     })
     expect(await runJob(services)).toEqual({ drafted: 1, failed: 1 })
     expect(services.db.rows('statements').map((row) => row.groupId)).toEqual(['job'])
-    expect(errors).toHaveLength(1)
-    expect(errors[0]).toContain('job2')
+    expect(errors.map((line) => JSON.parse(line))).toEqual([
+      { fn: 'unknown', event: 'draft_failed', groupId: 'job2', cause: expect.any(String) },
+    ])
     expect(errors[0]).not.toMatch(/Bakery|Sam|@/)
   })
 
@@ -200,8 +201,13 @@ describe('the statements job (POST /, cron)', () => {
     services.appUrl = ''
     expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
     expect(services.db.rows('statements')[0]?.status).toBe('final')
-    expect(errors).toEqual([
-      expect.stringMatching(/^statements: ready email failed for statement \S+: RangeError$/),
+    expect(errors.map((line) => JSON.parse(line))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'ready_email_failed',
+        statementId: expect.any(String),
+        cause: 'RangeError',
+      },
     ])
   })
 

@@ -1,6 +1,6 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import {
   AFTER,
   account,
@@ -62,11 +62,11 @@ async function claimed(services: Fakes) {
   return (await ok<{ linkedGroupIds: string[] }>(services, 'POST', '/claim')).linkedGroupIds
 }
 
-let warn: ReturnType<typeof vi.spyOn>
+let logged: MockInstance<typeof console.error>
 beforeEach(() => {
-  warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  logged = vi.spyOn(console, 'error').mockImplementation(() => {})
 })
-afterEach(() => warn.mockRestore())
+afterEach(() => logged.mockRestore())
 
 describe('POST /claim', () => {
   it('joins only placeholder rows added strictly before claimedAt', async () => {
@@ -156,7 +156,9 @@ describe('POST /claim', () => {
     })
     services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
     expect(await claimed(services)).toEqual([])
-    expect(warn.mock.calls).toEqual([['claim needs a merge; skipped']])
+    expect(logged.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      { fn: 'unknown', event: 'claim_needs_merge' },
+    ])
     expect(services.db.rows('identities')[1]).toMatchObject({
       personId: 'pOther',
       verified: false,
@@ -171,7 +173,7 @@ describe('POST /claim', () => {
     })
     services.users.get = async () => account({ phone: '+61412345678', phoneVerification: true })
     await claimed(services)
-    expect(warn).not.toHaveBeenCalled()
+    expect(logged).not.toHaveBeenCalled()
     expect(services.db.rows('identities')[1]).toMatchObject({ personId: 'pOther' })
   })
 

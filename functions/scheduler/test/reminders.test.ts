@@ -369,12 +369,24 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 't2')).toBe(NOW.toISOString())
   })
 
-  it('counts any other failure and carries on with the next row', async () => {
+  it('counts and logs any other failure, and carries on with the next row', async () => {
     const services = seeded([transaction('t1'), transaction('t2', { date: '2026-10-17' })])
-    services.sendEmail.mockRejectedValueOnce(new TypeError('boom'))
+    services.sendEmail.mockRejectedValueOnce(new TypeError('Sam <sam@example.com>'))
+    const logged = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect((await runCron(services)).reminders).toEqual({ sent: 1, skipped: 0, failed: 1 })
     expect(remindedAt(services, 't1')).toBeNull()
     expect(remindedAt(services, 't2')).toBe(NOW.toISOString())
+    // IDs and the error's name, never its message.
+    expect(logged.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'reminder_failed',
+        groupId: 'acme',
+        transactionId: 't1',
+        cause: 'TypeError',
+      },
+    ])
+    logged.mockRestore()
   })
 
   it('sends nothing about a shift posted after the page was read', async () => {
