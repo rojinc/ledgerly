@@ -19,12 +19,20 @@ export function GroupsPage() {
         <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
           Groups
         </h1>
-        <Link
-          to="/groups/new-employer"
-          className="inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
-          New employer
-        </Link>
+        <div className="flex flex-wrap gap-3">
+          <Link
+            to="/groups/new-house"
+            className="inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            New house
+          </Link>
+          <Link
+            to="/groups/new-employer"
+            className="inline-flex h-10 items-center rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+          >
+            New employer
+          </Link>
+        </div>
       </div>
       {/* Mounted from the start, so the announcement is read out when it changes. */}
       <p role="status" className="text-sm text-muted-foreground empty:hidden">
@@ -81,13 +89,15 @@ function GroupList({ groups }: { groups: Groups[] }) {
 
 function GroupRow({ group }: { group: Groups }) {
   const name = useGroupName(group)
-  // Employers open their settings; lend & borrow opens the person's page (#34).
+  // Employers open their settings; lend & borrow opens the person's page (#34); a house, its page.
   const to =
     group.type === 'employer'
       ? `/groups/${group.$id}/settings`
       : group.type === 'pair'
         ? `/people/${group.$id}`
-        : null
+        : group.type === 'house'
+          ? `/groups/${group.$id}`
+          : null
   return (
     <li className="flex items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0">

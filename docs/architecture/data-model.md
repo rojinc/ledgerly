@@ -42,8 +42,9 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `userId` | varchar(36)? | Appwrite user ID. Empty = placeholder. |
 | `displayName` | varchar(100) | Their own name if registered; otherwise the name used by whoever first added them. |
 | `claimedAt` | datetime? | When the person first got a user account (bootstrap or adopt). Claim joins member rows whose `$createdAt` is strictly before it ([identity](identity-and-invites.md#claim-linking-records-to-a-new-account)). |
-| `mergedInto` | varchar(36)? | Set while this person is being merged into another ([identity](identity-and-invites.md#merging-two-persons)). |
+| `mergedInto` | varchar(36)? | Set when this person is merged into another ([identity](identity-and-invites.md#merging-two-persons)). Kept for good: old statements and groups the other person left on their own can still name this one. |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history. |
+| `rev` | varchar(20)? | A fresh random value on every guard write (invite limits), so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |
 
 Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`.
 Permissions: placeholders have none (server only). A registered person's row gets `read("user:<userId>")`.
@@ -222,7 +223,7 @@ Permissions: `read("team:<groupId>")` (the function sets the group's team when i
 | `groupId` | varchar(36) | |
 | `kind` | enum(shift, bill, expense, income) | |
 | `description` | varchar(200) | |
-| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule) |
+| `templateJson` | text | `ScheduleInput.template`: a `TransactionInput` without `id`, `groupId`, `date`, `kind` and `description` (those live on the schedule), and without `receiptFileIds` (a receipt belongs to one transaction) |
 | `rrule` | varchar(255) | RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=TH` |
 | `startsOn` | varchar(10) | First possible occurrence (local date) |
 | `endsOn` | varchar(10)? | Last possible occurrence. Empty = until stopped. |
@@ -268,7 +269,7 @@ Append-only. Never updated or deleted, except when anonymising a deleted account
 | `actorPersonId` | varchar(36)? | Empty for system jobs |
 | `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized` |
 | `transactionId` | varchar(36)? | |
-| `summary` | varchar(255) | Human-readable, e.g. "Alice changed Electricity from $90.00 to $95.00" |
+| `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00` |
 | `changesJson` | text? | `{ before, after }` of the changed fields |
 | `at` | datetime | |
 
@@ -296,10 +297,10 @@ Permissions: none (server only).
 
 | Bucket | Who uploads | File permissions | Limits |
 | --- | --- | --- | --- |
-| `receipts` | Clients, directly | Client sets `read("team:<groupId>")` at upload. Appwrite only lets a user grant roles they hold. | 10 MB; jpg, jpeg, png, webp, heic, pdf |
+| `receipts` | Clients, directly | Client sets `read("team:<groupId>")` at upload. Appwrite only lets a user grant roles they hold. The ledger resets it to exactly that when the file is attached ([permissions](permissions.md#storage)). | 10 MB; jpg, jpeg, png, webp, heic, pdf |
 | `statements` | `statements` function | `read("team:<groupId>")` | 10 MB; PDFs only |
 
-Bucket-level permission on `receipts`: `create("users")`. File security on for both buckets.
+Bucket-level permission on `receipts`: `create("users/verified")`, so only verified users can upload. File security on for both buckets.
 
 ## Derived and copied data
 

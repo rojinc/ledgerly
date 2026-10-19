@@ -79,7 +79,7 @@ describe('POST /groups', () => {
         groupId: 'g1',
         actorPersonId: 'p1',
         action: 'group.created',
-        summary: 'Person 1 created Flat',
+        summary: 'Created Flat',
         at: NOW.toISOString(),
         $permissions: TEAM,
       }),
@@ -149,7 +149,7 @@ describe('POST /groups', () => {
     ])
     expect(teams.members('g1')?.map((membership) => membership.userId)).toEqual(['u1'])
     expect(db.rows('activity').map((row) => [row.action, row.summary])).toEqual([
-      ['group.created', 'Person 1 created Acme work'],
+      ['group.created', 'Created Acme work'],
       ['member.added', 'Boss was added'],
     ])
   })

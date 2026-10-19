@@ -125,9 +125,12 @@ export const updateMemberBodySchema = z
     displayName: displayNameSchema.optional(),
     role: z.enum(ROLES).optional(),
     joinedOn: localDateSchema.optional(),
-    leftOn: localDateSchema.optional(),
+    // `null` clears it: someone who moved out moves back in (permissions.md#leaving-a-group).
+    leftOn: localDateSchema.nullable().optional(),
   })
-  .superRefine((member, ctx) => checkDateOrder(member.joinedOn, member.leftOn, 'leftOn', ctx))
+  .superRefine((member, ctx) =>
+    checkDateOrder(member.joinedOn, member.leftOn ?? undefined, 'leftOn', ctx),
+  )
 
 export type UpdateMemberBody = z.infer<typeof updateMemberBodySchema>
 

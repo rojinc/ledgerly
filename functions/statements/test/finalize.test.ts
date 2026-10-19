@@ -198,6 +198,19 @@ describe('POST /statements/{id}/finalize', () => {
     expect(services.files.stored.has('st1')).toBe(true)
   })
 
+  it('refuses with ARCHIVED when an archive commits before step 1 is staged (#190)', async () => {
+    const services = fakes(october())
+    // The archive lands after the request read the group, just before step 1 stages.
+    beforeStaging(services.db, [
+      op('groups', 'job', { archivedAt: '2026-11-01T00:00:00.000Z', nextCloseAt: null }),
+    ])
+    expect(
+      await failure(services, 'POST', '/statements/st1/finalize', { send: false }, 'u-sam'),
+    ).toMatchObject({ status: 409, code: 'ARCHIVED' })
+    expect(stored(services)).toMatchObject({ status: 'draft' })
+    expect(lastNumber(services)).toBe(9)
+  })
+
   it('unlocks everything and goes back to draft when the check fails', async () => {
     // September's final invoice says Acme owes $50.00, but no locked share backs that up.
     const services = fakes(
