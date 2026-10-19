@@ -158,7 +158,14 @@ type StatementSnapshot = {
 8. **How to pay:** bank details and/or PayID, and payment terms.
 9. Notes (`invoiceNotes`).
 
-**Characters the font can't draw:** the PDF prints in the Roboto that pdfmake bundles, which has Latin (with accents), Greek and Cyrillic but no Chinese, Japanese, Korean, Thai, Hebrew, Arabic or emoji, and pdfmake would leave those out without a trace. So every text the invoice prints goes through `printable()` (`packages/core/src/pdf/pdf-glyphs.ts`), and each such character prints as `�`. It composes the text (Unicode NFC) first: Roboto has the accented letters but few combining marks, so decomposed text, as macOS paste and some Vietnamese input methods give it, would otherwise lose its accents. A letter Roboto has only as base and mark, such as `ṣ` or `ὰ`, prints from those parts. The render logs only how many, and the draft page warns before finalize when the snapshot has any.
+**Fonts (#270):** the PDF prints in the Roboto that pdfmake bundles (Latin with accents, Greek and Cyrillic), then Noto Sans CJK SC (Chinese, Japanese and Korean), then Noto Emoji (monochrome). `fontRuns()` (`packages/core/src/pdf/pdf-glyphs.ts`) splits every text the invoice prints into runs: each character, or whole emoji sequence, goes to the first font that has it, and pdfmake gets one text per run in its font.
+
+- **Regular only.** Bold Chinese, Japanese, Korean and emoji print regular: bold CJK files would double the deployment.
+- **One pan-CJK font,** so Han characters take Simplified Chinese shapes, in a Japanese or Korean name too.
+- **Read when needed.** The Noto files are too big to bundle, so they sit in the function's `dist/fonts/` ([deploys](../engineering/environments-and-deploys.md#function-settings)). A file is read the first time a text needs its font and kept while the instance is warm, so a Latin invoice reads none.
+- **Licence:** both fonts are under the SIL Open Font License 1.1 (`packages/server/fonts/NotoSansCJK-OFL.txt`; Noto Emoji's ships in its npm package).
+
+**Characters no font has:** Thai, Hebrew, Arabic and other scripts, and emoji that Noto Emoji lacks. pdfmake would leave those out without a trace, so each prints as `�` (`missingGlyphs()` and `printable()` mean "no font of the PDF has it"). The text is composed (Unicode NFC) first: Roboto has the accented letters but few combining marks, so decomposed text, as macOS paste and some Vietnamese input methods give it, would otherwise lose its accents. A letter Roboto has only as base and mark, such as `ṣ` or `ὰ`, prints from those parts. The render logs only how many characters print as `�` (`pdf_characters_replaced`), never the text, and the draft page warns before finalize when the snapshot has any.
 
 **GST:** v1 does not calculate GST and must not label the PDF a "tax invoice". GST support needs its own design and tax advice before it's built.
 
