@@ -1,7 +1,7 @@
 import { CATEGORIES } from '@ledgerly/core/constants/categories'
 import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import type { ReactNode } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
@@ -185,7 +185,7 @@ function GroupSummary({ group }: { group: Groups }) {
   // Only once it's known whose side to word it from, and who the other person is.
   if (balances.data && personId !== '' && other !== undefined) {
     const net = balances.data.people.find((p) => p.personId === personId)?.netCents ?? 0
-    const amount = formatMoney(Math.abs(net), group.currency)
+    const amount = formatNet(Math.abs(net), group.currency)
     balance =
       net > 0
         ? `${other} owes you ${amount}`

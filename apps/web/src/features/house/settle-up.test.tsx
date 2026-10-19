@@ -6,7 +6,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type ErrorCode, type Result } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
-import { SettleUp } from './settle-up'
+import { balanceLine, SettleUp } from './settle-up'
 
 vi.mock('../../lib/appwrite', () => ({ DATABASE_ID: 'main', tablesDB: {}, teams: {} }))
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
@@ -131,6 +131,13 @@ afterEach(() => {
   vi.resetAllMocks()
 })
 
+describe('balanceLine', () => {
+  it('words a balance past the amount cap', () => {
+    expect(balanceLine('Alice', 20_000_000_000, 'AUD')).toMatch(/^Alice is owed .*200,000,000\.00$/)
+    expect(balanceLine('Cara', -20_000_000_000, 'AUD')).toMatch(/^Cara owes .*200,000,000\.00$/)
+  })
+})
+
 describe('SettleUp', () => {
   it('shows each balance in words, the viewer first, and the suggested payments in order', async () => {
     mockLedger()
@@ -154,6 +161,18 @@ describe('SettleUp', () => {
       `Dan pays Mia (you) ${money(960)}`,
     ])
     expect(call).toHaveBeenCalledWith('ledger', 'GET', '/groups/g1/balances')
+  })
+
+  it('shows a suggested payment past the amount cap', async () => {
+    mockLedger({
+      people: [
+        { personId: 'p1', netCents: 20_000_000_000 },
+        { personId: 'p3', netCents: -20_000_000_000 },
+      ],
+      transfers: [{ fromPersonId: 'p3', toPersonId: 'p1', cents: 20_000_000_000 }],
+    })
+    renderSettleUp()
+    expect(await screen.findByText(/^Cara pays Mia \(you\) .*200,000,000\.00$/)).toBeTruthy()
   })
 
   it('says when everyone is square', async () => {

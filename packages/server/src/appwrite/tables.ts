@@ -17,6 +17,7 @@ export const TABLES = {
   statements: 'statements',
   activity: 'activity',
   invites: 'invites',
+  reminders: 'reminders',
 } as const
 
 export type TableId = (typeof TABLES)[keyof typeof TABLES]
