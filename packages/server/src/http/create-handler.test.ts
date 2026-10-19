@@ -195,6 +195,30 @@ describe('createHandler', () => {
     expect(result.body).toMatchObject({ data: { userId: 'me' } })
   })
 
+  it('reads the session ID from the verified JWT, and gives null for anything else', async () => {
+    // Appwrite's JWTs are `header.payload.signature`, with `{ userId, sessionId, exp }`.
+    const jwt = (payload: unknown) =>
+      `jwt-h.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.sig`
+    const session = route('GET', '/s', async ({ sessionId }) => ({ sessionId }))
+    const handler = createHandler([session], undefined, async () => 'u1')
+    const sessionOf = async (header: string) =>
+      (await call(handler, { path: '/s', headers: { 'x-appwrite-user-jwt': header } })).body
+    expect(await sessionOf(jwt({ userId: 'u1', sessionId: 's1', exp: 1 }))).toEqual({
+      ok: true,
+      data: { sessionId: 's1' },
+    })
+    for (const header of [
+      jwt({ userId: 'u1' }),
+      jwt({ userId: 'u2', sessionId: 's1' }),
+      jwt({ userId: 'u1', sessionId: '' }),
+      jwt('s1'),
+      'jwt-u1',
+      'jwt-h.%%%.sig',
+    ]) {
+      expect(await sessionOf(header)).toEqual({ ok: true, data: { sessionId: null } })
+    }
+  })
+
   it('returns UNAUTHENTICATED for a JWT Appwrite rejects, without running the route', async () => {
     const handler = vi.fn(async () => 'ran')
     const result = await call(make([route('GET', '/x', handler)]), {

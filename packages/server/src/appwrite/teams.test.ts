@@ -1,7 +1,7 @@
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeTeams } from './fake-teams'
-import { addToTeam, ensureTeam, isInTeam, removeFromTeam } from './teams'
+import { addToTeam, ensureTeam, isInTeam, othersInTeam, removeFromTeam } from './teams'
 
 describe('ensureTeam', () => {
   it('creates the team with no roles, and counts one that already exists as done', async () => {
@@ -104,5 +104,25 @@ describe('isInTeam', () => {
       },
     }
     await expect(isInTeam(teams, 'g1', 'u1')).rejects.toMatchObject({ code: 500 })
+  })
+})
+
+describe('othersInTeam', () => {
+  it('says whether anyone but the user is in the team, and null for a team that is gone', async () => {
+    const teams = new FakeTeams({ alone: ['u1'], shared: ['u1', 'u2'], others: ['u2', 'u3'] })
+    expect(await othersInTeam(teams, 'alone', 'u1')).toBe(false)
+    expect(await othersInTeam(teams, 'shared', 'u1')).toBe(true)
+    expect(await othersInTeam(teams, 'others', 'u1')).toBe(true)
+    expect(await othersInTeam(new FakeTeams({ empty: [] }), 'empty', 'u1')).toBe(false)
+    expect(await othersInTeam(teams, 'gone', 'u1')).toBeNull()
+  })
+
+  it('rethrows any other error', async () => {
+    const teams = {
+      listMemberships: async () => {
+        throw new AppwriteException('Server error', 500)
+      },
+    }
+    await expect(othersInTeam(teams, 'g1', 'u1')).rejects.toMatchObject({ code: 500 })
   })
 })

@@ -4,7 +4,8 @@ import { scheduleInputSchema, type UpdatedSchedule } from '@ledgerly/core/schema
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { guardGroupAndMembers, ledgerRoute, loadLedger } from '@ledgerly/server/ledger/transactions'
-import { generateOccurrences, guardSchedule } from '../occurrences'
+import { guardSchedule } from '@ledgerly/server/scheduler/end-schedule'
+import { generateOccurrences } from '../occurrences'
 import { parseBody } from '../parse-body'
 import {
   checkTemplate,

@@ -8,6 +8,7 @@ import type {
   Transactions,
 } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
+import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
@@ -18,7 +19,6 @@ import {
 } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
 import { madeLate } from '../occurrences'
-import { pages } from '../pages'
 import type { Services } from '../services'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
