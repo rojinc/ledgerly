@@ -9,7 +9,7 @@ const GSM7_EXTENSION = new Set('\f^{}\\[~]|€')
 // What one segment holds, and each part of a longer text (a header takes the rest).
 const SEGMENT = { gsm7: { single: 160, part: 153 }, ucs2: { single: 70, part: 67 } } as const
 
-// The length rule (#40, pending the lead): an invite fits one GSM-7 segment, or at most two
+// The length rule (#40, the lead's call): an invite fits one GSM-7 segment, or at most two
 // UCS-2 segments when a name needs UCS-2. Names are cut until it does.
 const MAX_SEGMENTS = { gsm7: 1, ucs2: 2 } as const
 // The group name is cut first, down to this many graphemes, before the inviter's name is.
@@ -57,10 +57,8 @@ export function inviteSms(input: { inviterName: string; groupName: string; url: 
   if (!/^https?:\/\//.test(input.url)) throw new RangeError('SMS links must be http(s)')
   const message = (inviter: string, group: string) =>
     `${inviter} invited you to ${group} on Ledgerly: ${input.url}`
-  // Names are user-typed. A tab or a no-break space isn't GSM-7, so it would switch the whole
-  // text to UCS-2; runs of whitespace become one space.
-  const inviter = graphemes(input.inviterName.replace(/\s+/g, ' ').trim())
-  const group = graphemes(input.groupName.replace(/\s+/g, ' ').trim())
+  const inviter = graphemes(clean(input.inviterName))
+  const group = graphemes(clean(input.groupName))
   const full = message(inviter.join(''), group.join(''))
   const ellipsis = smsSegments(full).encoding === 'gsm7' ? '...' : '…'
   for (const [keepInviter, keepGroup] of cuts(inviter.length, group.length)) {
@@ -69,6 +67,19 @@ export function inviteSms(input: { inviterName: string; groupName: string; url: 
     if (segments <= MAX_SEGMENTS[encoding]) return text
   }
   throw new RangeError('The invite link is too long for a text message')
+}
+
+// Names are user-typed, and one character GSM-7 lacks switches the whole text to UCS-2, which
+// leaves the names a few characters. So: NFC, which turns a decomposed "é" back into GSM-7's
+// own; straight quotes for curly ones, as phones type them; and runs of whitespace (a tab, a
+// no-break space) as one space.
+function clean(name: string): string {
+  return name
+    .normalize('NFC')
+    .replace(/[‘’‚‛]/g, "'")
+    .replace(/[“”„‟]/g, '"')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 // How many graphemes of each name to keep, in the order to try: all, then the group name down

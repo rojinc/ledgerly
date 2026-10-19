@@ -130,6 +130,19 @@ describe('inviteSms', () => {
   })
 
   it.each([
+    ['a curly apostrophe', 'Sam O’Brien', 'Sam’s flat', "Sam O'Brien", "Sam's flat"],
+    ['curly double quotes', 'Ann', '“The Flat”', 'Ann', '"The Flat"'],
+    ['a decomposed é', 'Rene\u0301', 'Cafe\u0301 flat', 'René', 'Café flat'],
+  ])(
+    'keeps %s in GSM-7: straight quotes, and NFC',
+    (_case, inviter, group, inviterShown, groupShown) => {
+      const text = invite(inviter, group)
+      expect(namesIn(text)).toEqual([inviterShown, groupShown])
+      expect(smsSegments(text)).toEqual({ encoding: 'gsm7', segments: 1 })
+    },
+  )
+
+  it.each([
     ['Devanagari', 'प्रियंका शर्मा', 'हमारा घर बोंडी में', 'प्रियं…', 'हमारा…'],
     ['Chinese', '王小明', '我们在悉尼邦迪海滩的合租公寓', '王小明', '我们在悉尼邦迪海滩…'],
     ['emoji', 'Mia 👩🏽‍💻', '🏠🏖️ Beach House 🌊', 'Mia…', '🏠🏖️…'],
