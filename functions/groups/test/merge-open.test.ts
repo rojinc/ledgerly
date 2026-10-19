@@ -57,6 +57,7 @@ function open(
     members?: object[]
     shares?: object[]
     transactions?: object[]
+    activity?: object[]
   } = {},
 ) {
   return fakes(
@@ -68,6 +69,7 @@ function open(
       // pP's share is still pP's: U's balance alone is 0.
       shares: more.shares ?? PS_SHARES,
       transactions: more.transactions ?? [],
+      activity: more.activity ?? [],
     } as never,
     { g1: ['u1', 'u2'] },
   )
@@ -216,6 +218,28 @@ describe('while a merge into the member is open in the group', () => {
     expect(await refusal(services, 'DELETE', '/groups/g1/members/m2')).toMatchObject(MERGING)
     expect(memberIds(services)).toEqual(['m1', 'm2'])
     expect(services.teams.members('g1')?.map((m) => m.userId)).toEqual(['u1', 'u2'])
+  })
+
+  it('goes ahead removing a U who left on their own: step 3 leaves P’s rows on P (#349)', async () => {
+    const services = open({
+      members: [MOVED_OUT],
+      // U's leave was refused while P had a share here, so P has none; P is named only unposted.
+      shares: [],
+      transactions: [scheduled('pP')],
+      activity: [
+        {
+          $id: 'aLeft',
+          groupId: 'g1',
+          actorPersonId: 'p2',
+          action: 'member.left',
+          subjectPersonId: 'p2',
+          summary: 'left',
+          at: '2026-10-10T00:00:00.000Z',
+        },
+      ],
+    })
+    expect(await ok(services, 'DELETE', '/groups/g1/members/m2')).toEqual({})
+    expect(memberIds(services)).toEqual(['m1'])
   })
 
   it('goes ahead where P keeps its own row (a kept group, or one step 2 hasn’t reached)', async () => {

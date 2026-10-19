@@ -8,6 +8,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
+import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import {
@@ -267,11 +268,13 @@ export async function requireNoOpenMerge(
   const listing = merged.filter((placeholder) => placeholder.mergeGroupIds?.includes(groupId))
   if (listing.length === 0) return
   // Step 2 always leaves their row joined: a placeholder row of theirs isn't P's place (D-016).
+  // Where they left on their own, step 3 leaves P's rows on P, so the group isn't open (#349).
   const own = await findFirst<Members>(db, TABLES.members, [
     Query.equal('groupId', groupId),
     Query.equal('personId', personId),
   ])
   if (!own || own.status === 'placeholder') return
+  if (own.status === 'left' && (await leftOnTheirOwn(db, groupId, personId, own.$createdAt))) return
   await tx?.write({
     action: 'update',
     tableId: TABLES.groups,

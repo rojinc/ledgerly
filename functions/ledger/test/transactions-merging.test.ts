@@ -175,6 +175,36 @@ describe('while a merge is open in the row’s group', () => {
     expect(ledgerOf(db)).toEqual(before)
   })
 
+  it('lets an edit through where U left on their own: step 3 leaves the row on P (#349)', async () => {
+    // Bob left the house on their own after step 2: their own member.left is their newest there.
+    const bobQuit: Write[] = [
+      {
+        action: 'update',
+        tableId: 'members',
+        rowId: 'm-bob',
+        data: { status: 'left', role: 'viewer', leftOn: '2026-10-05' },
+      },
+      {
+        action: 'create',
+        tableId: 'activity',
+        rowId: 'a-bob-left',
+        data: {
+          groupId: 'house',
+          actorPersonId: 'bob',
+          action: 'member.left',
+          subjectPersonId: 'bob',
+          summary: 'left',
+          at: '2026-10-05T00:00:00.000Z',
+        },
+      },
+    ]
+    const due = { ...byDays, split: withPat, bill: { status: 'due', dueOn: '2026-10-25' } }
+    const db = await written(due, marked(), ...stepTwo, ...bobQuit)
+    // An edit must name someone else instead of Pat, as for any non-member.
+    const alone = { ...due, split: { mode: 'equal', personIds: ['alice'] } }
+    expect((await call(db, 'PATCH', '/transactions/b1', alone)).status).toBe(200)
+  })
+
   it('/post refuses a due bill whose stored split names the person', async () => {
     const due = { ...byDays, split: withPat, bill: { status: 'due', dueOn: '2026-10-25' } }
     const db = await written(due, marked(), ...stepTwo)

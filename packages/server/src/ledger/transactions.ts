@@ -29,6 +29,7 @@ import { z } from 'zod'
 import type { Db } from '../appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '../appwrite/tables'
 import type { Tx, Write } from '../appwrite/transaction'
+import { leftOnTheirOwn } from '../auth/left-on-their-own'
 import type { Membership } from '../auth/require-member'
 import { AppError } from '../http/app-error'
 import { randomId } from '../identity/random-id'
@@ -217,10 +218,15 @@ export async function requireNoOpenMerge(
       total: false,
     })
     const has = (personId: string) => members.find((member) => member.personId === personId)
-    // Step 2 always leaves U's row joined; a placeholder row of U's isn't P's place (D-016).
+    const into = has(person.mergedInto as string)
+    // Step 2 always leaves U's row joined; a placeholder row of U's isn't P's place (D-016). Where
+    // U left on their own, step 3 leaves P's rows on P, so the group isn't open either (#349).
     if (
       has(person.$id) ||
-      (has(person.mergedInto as string)?.status ?? 'placeholder') === 'placeholder'
+      !into ||
+      into.status === 'placeholder' ||
+      (into.status === 'left' &&
+        (await leftOnTheirOwn(db, row.groupId, into.personId, into.$createdAt)))
     ) {
       continue
     }
