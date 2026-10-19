@@ -6,6 +6,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
+import { logProblem } from '@ledgerly/server/http/log'
 import { readBalances, readGroupNets } from '@ledgerly/server/ledger/balances'
 import type { ServicesFor } from '../services'
 
@@ -33,11 +34,7 @@ export const groupBalances = (services: ServicesFor) =>
         if (transfers) return { people, transfers }
       }
       // No row yet (not backfilled), or a row that's broken: the shares are the truth.
-      if (row !== undefined) {
-        console.error(
-          `balances: the row of group ${group.$id} can't be read or doesn't add up; summed the shares`,
-        )
-      }
+      if (row !== undefined) logProblem('balances_row_unusable', { groupId: group.$id })
       return freshBalances(db, group)
     },
   )
