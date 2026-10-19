@@ -5,6 +5,7 @@ import type { Groups, Members, Persons, Shares } from '@ledgerly/core/generated/
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import type { MergingRefusal } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
+import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
@@ -262,12 +263,7 @@ export async function requireNoOpenMerge(
   personId: string,
   named: (placeholderId: string) => Promise<boolean>,
 ): Promise<void> {
-  const { rows: merged } = await db.listRows<Persons>({
-    databaseId: DATABASE_ID,
-    tableId: TABLES.persons,
-    queries: [Query.equal('mergedInto', personId), Query.limit(100)],
-    total: false,
-  })
+  const merged = await allRows<Persons>(db, TABLES.persons, [Query.equal('mergedInto', personId)])
   const listing = merged.filter((placeholder) => placeholder.mergeGroupIds?.includes(groupId))
   if (listing.length === 0) return
   // Step 2 always leaves their row joined: a placeholder row of theirs isn't P's place (D-016).
@@ -293,7 +289,7 @@ export async function requireNoOpenMerge(
     const details: MergingRefusal = { reason: 'merging' }
     throw new AppError(
       'CONFLICT',
-      'Someone’s accounts are being joined up in this group. Try again shortly.',
+      "Some of this group's records are still being updated. Try again shortly.",
       details,
     )
   }
