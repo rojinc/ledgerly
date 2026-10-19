@@ -14,6 +14,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows, pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, type Models, Permission, Query, Role } from 'node-appwrite'
 import { getRowOrNull, isPlaceholder } from './rows'
@@ -89,15 +90,26 @@ async function deleteFile(files: FilesApi, bucketId: string, fileId: string, gro
 
 // Every row of the group but its member rows and the group row, in transactions of at most 90
 // writes: each transaction with its shares and items, never split, and the balances row with
-// the first, so the cache never disagrees with the shares.
+// the first, so the cache never disagrees with the shares. Each batch also gives the group row
+// a fresh `rev`, as every other writer of shares does (ledger.md#concurrency), so a nightly check
+// reading the group meanwhile sees it change, and its repair fails rather than build the
+// balances row again.
 async function deleteRows(services: Services, groupId: string): Promise<boolean> {
   const { db } = services
   let batch: Write[] = []
-  const add = async (writes: Write[]) => {
-    if (batch.length + writes.length > MAX_OPS_PER_DB_TRANSACTION) {
-      await commit(db, batch)
-      batch = []
+  const flush = async () => {
+    if (batch.length === 0) return
+    const guard: Write = {
+      action: 'update',
+      tableId: TABLES.groups,
+      rowId: groupId,
+      data: { rev: randomId() },
     }
+    await withTransaction(db, (tx) => tx.write(guard, ...batch))
+    batch = []
+  }
+  const add = async (writes: Write[]) => {
+    if (batch.length + writes.length > MAX_OPS_PER_DB_TRANSACTION - 1) await flush()
     batch.push(...writes)
   }
   if (await getRowOrNull<Balances>(db, TABLES.balances, groupId)) {
@@ -121,7 +133,7 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
       await add([remove(tableId, row.$id)])
     }
   }
-  await commit(db, batch)
+  await flush()
   return !services.outOfTime()
 }
 
@@ -167,10 +179,6 @@ async function isLonePlaceholder(db: Db, member: Members): Promise<boolean> {
     total: false,
   })
   return rows.every((row) => row.$id === member.$id)
-}
-
-async function commit(db: Db, writes: Write[]): Promise<void> {
-  if (writes.length > 0) await withTransaction(db, (tx) => tx.write(...writes))
 }
 
 function remove(tableId: TableId, rowId: string): Write {

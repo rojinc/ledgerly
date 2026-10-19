@@ -340,7 +340,14 @@ describe('POST /delete: purging a group nobody else is in', () => {
     expect(leftOf(services, PURGED)).toEqual([])
     expect(batches.every((writes) => writes.length <= 90)).toBe(true)
     const first = batches.findIndex((writes) => writes.includes('balances/h2'))
-    expect(batches[first]?.[0]).toBe('balances/h2')
+    expect(batches[first]?.slice(0, 2)).toEqual(['groups/h2', 'balances/h2'])
+    // Every batch of a group's rows gives that group a fresh rev first, so a nightly check
+    // reading meanwhile sees it (ledger.md#concurrency).
+    const rows = batches.filter((writes) =>
+      writes.some((write) => /^(balances|shares|items|transactions)\//.test(write)),
+    )
+    expect(rows.length).toBeGreaterThan(1)
+    expect(rows.every((writes) => writes[0]?.startsWith('groups/'))).toBe(true)
     // Shares and items have IDs `<transactionId>-…` here.
     for (const transactionId of ['t3', 't4', 'tBig0', 'tBig1', 'tBig2']) {
       const holding = batches.filter((writes) =>
