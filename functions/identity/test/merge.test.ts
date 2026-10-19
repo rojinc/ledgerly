@@ -93,6 +93,34 @@ describe('markMerged (step 1)', () => {
     expect(log).toHaveBeenCalledWith('merge pP into pU: 1 typed keys deleted')
   })
 
+  it('counts P as merged when another claim for U deleted the typed key first', async () => {
+    const store = db(
+      [U, P],
+      [
+        { ...identity(1), verified: false },
+        { ...identity(2), verified: false },
+      ],
+    )
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    // The other claim marks P and deletes the typed key just before this one stages its delete,
+    // which then finds no row: a 404 that withTransaction reports as the race (409) it is.
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"action":"delete"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write(
+            { action: 'update', tableId: 'persons', rowId: 'pP', data: { mergedInto: 'pU' } },
+            { action: 'delete', tableId: 'identities', rowId: 'i1' },
+          ),
+        ),
+    )
+    expect(await markMerged(store, 'pP', 'pU', ['email:p2@example.com'])).toBe(true)
+    expect(store.rows('identities').map((row) => row.$id)).toEqual(['i2'])
+    // This claim's own step 1 rolled back: it deleted nothing.
+    expect(log).not.toHaveBeenCalled()
+  })
+
   it('keeps every key of P that U verified', async () => {
     const keys = [identity(1), identity(2), { ...identity(3), verified: false }]
     const store = db([U, P], keys)

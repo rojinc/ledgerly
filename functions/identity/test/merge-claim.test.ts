@@ -653,6 +653,67 @@ describe('POST /claim, merging a placeholder', () => {
     },
   )
 
+  // AI A's F on #242: the first claim puts g1 off (a finalize) and is cut off in g2. The second,
+  // once the finalize has ended, finishes g2 before it starts g1 again.
+  it.each(Array.from({ length: 21 }, (_, n) => n + 1))(
+    'leaves at most one group part done when the first claim put a group off and was cut off at read %i',
+    async (first) => {
+      for (let second = 1; second <= 21; second += 1) {
+        const services = house({
+          statements: [
+            { $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' },
+          ],
+        })
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pP',
+            data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2'] },
+          }),
+        )
+        await cutOffAt(services, first)
+        await withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'statements', rowId: 'st1' }),
+        )
+        await cutOffAt(services, second)
+        expect(partDone(services).length).toBeLessThanOrEqual(1)
+      }
+    },
+  )
+
+  it('puts a group off whole when its templates wait, even if the finalize ends before its inputs', async () => {
+    // A finalize in g1 starts once Sammy's row there has moved, and ends before g1's inputs.
+    const services = house({
+      statements: [{ $id: 'st1', groupId: 'g1', status: 'draft', periodStart: '2026-10-01' }],
+    })
+    const status = (value: string) =>
+      withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'statements',
+          rowId: 'st1',
+          data: { status: value },
+        }),
+      )
+    const list = services.db.listRows.bind(services.db)
+    let phase = 0
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      if (phase === 0 && params.tableId === 'schedules') {
+        phase = 1
+        await status('finalizing')
+      } else if (phase === 1 && params.tableId === 'transactions') {
+        phase = 2
+        await status('draft')
+      }
+      return list(params)
+    })
+    await claim(services)
+    expect(phase).toBe(2)
+    // g1's template and t1 both still name Sammy: g1 waits whole for the next claim.
+    expect(namingSammy(services)).toMatchObject({ schedules: ['sc1'], transactions: ['t1'] })
+  })
+
   it('keeps the merge open when a row of Sammy’s appears outside the groups it walked', async () => {
     const services = house({ groups: [group('g9')] })
     await services.teams.create({ teamId: 'g9', name: 'g9' })
