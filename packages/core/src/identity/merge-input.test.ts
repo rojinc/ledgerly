@@ -542,6 +542,47 @@ describe('mergeInput', () => {
   })
 })
 
+describe('mergeInput: a posted row with a 0 total', () => {
+  const heavy: SplitSpec = {
+    mode: 'weights',
+    weights: [
+      { personId: 'P', weight: 6000 },
+      { personId: 'U', weight: 6000 },
+      { personId: 'X', weight: 1 },
+    ],
+  }
+  const nothing: TransactionTemplate = { payers: [{ personId: 'X', cents: 0 }], split: heavy }
+
+  it('writes out as exact zeros a split the rename takes past MAX_WEIGHT, so it can be stored', () => {
+    const { input } = mergeInput(nothing, 'expense', merge, posted([]))
+    expect(input.split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'U', cents: 0 },
+        { personId: 'X', cents: 0 },
+      ],
+    })
+    expect(transactionTemplateSchema.safeParse(input).success).toBe(true)
+  })
+
+  it('keeps a split the rename leaves valid, and a row with no split', () => {
+    const light: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'P', weight: 1 },
+        { personId: 'U', weight: 1 },
+      ],
+    }
+    expect(
+      mergeInput({ ...nothing, split: light }, 'expense', merge, posted([])).input.split,
+    ).toEqual(mergeSplit(light, merge))
+    const noSplit: TransactionTemplate = { payers: [{ personId: 'P', cents: 0 }] }
+    expect(mergeInput(noSplit, 'bill', merge, posted([])).input).toEqual({
+      payers: [{ personId: 'U', cents: 0 }],
+    })
+  })
+})
+
 describe('mergePostedSplit', () => {
   const ctx = { members: house().members }
   const equal = (...personIds: string[]): SplitSpec => ({ mode: 'equal', personIds })

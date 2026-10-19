@@ -8,7 +8,7 @@ import {
 } from '../ledger/build-shares'
 import { byPersonId, type Part, type SplitContext, splitAmount } from '../ledger/split-amount'
 import { everyPersonId, type TransactionTemplate } from '../schemas/ledger'
-import type { SplitSpec } from '../schemas/split'
+import { type SplitSpec, splitPersonIds, splitSpecSchema } from '../schemas/split'
 
 // identity-and-invites.md#merging-two-persons, step 3: when placeholder P is merged into U, P
 // becomes U inside the stored inputs that name people. Where U is already listed, the entries
@@ -248,7 +248,16 @@ export function mergeInput<T extends Named>(
 /** Writes `input`'s split out where the renamed input wouldn't plan the parts again. */
 function writeOut(input: Named, kind: TransactionKind, merge: Merge, posted: Posted) {
   const parts = mergedParts(posted, merge)
-  if (parts.length === 0 || plansTo(input, kind, posted, parts)) return
+  if (parts.length === 0) {
+    // No part to keep (a 0 total). Unless the rename left the split invalid (weights past
+    // MAX_WEIGHT), it stays; otherwise everyone it names gets 0, so the row can still be stored.
+    if (input.split && !splitSpecSchema.safeParse(input.split).success) {
+      const amounts = splitPersonIds(input.split).map((personId) => ({ personId, cents: 0 }))
+      input.split = { mode: 'exact', amounts }
+    }
+    return
+  }
+  if (plansTo(input, kind, posted, parts)) return
   if (!input.split) {
     // As the default lists them: by personId (ledger.md#default-split).
     const personIds = posted.shares
