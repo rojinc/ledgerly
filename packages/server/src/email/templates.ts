@@ -228,6 +228,68 @@ export function passwordChangedEmail(input: {
 }
 
 /**
+ * To an old verified address when the account's email changes
+ * (identity-and-invites.md#email-and-phone-change-notice). `newEmail` is the account's email as
+ * Appwrite holds it, shown masked (`j***@example.com`). `supportEmail` is the `SUPPORT_EMAIL`
+ * variable, empty when it isn't set. No token or link that signs anyone in: `url` is the app's
+ * sign-in page.
+ */
+export function emailChangedEmail(input: {
+  newEmail: string
+  supportEmail: string
+  url: string
+}): EmailContent {
+  return message(
+    'Your Ledgerly email address was changed',
+    [
+      `The email address for your Ledgerly account was changed to ${maskedEmail(input.newEmail)}.`,
+      "If this was you, there's nothing to do.",
+      notYou(input.supportEmail),
+    ],
+    [{ label: 'Go to Ledgerly', url: input.url }],
+  )
+}
+
+/**
+ * To the account's verified email when its phone number changes
+ * (identity-and-invites.md#email-and-phone-change-notice): the new number by its last 3 digits
+ * only, or that it was removed when `newPhone` is empty. As `emailChangedEmail` otherwise.
+ */
+export function phoneChangedEmail(input: {
+  newPhone: string
+  supportEmail: string
+  url: string
+}): EmailContent {
+  const digits = input.newPhone.replace(/\D/g, '')
+  return message(
+    'Your Ledgerly phone number was changed',
+    [
+      digits === ''
+        ? 'The phone number was removed from your Ledgerly account.'
+        : `The phone number on your Ledgerly account was changed to one ending in ${digits.slice(-3)}.`,
+      "If this was you, there's nothing to do.",
+      notYou(input.supportEmail),
+    ],
+    [{ label: 'Go to Ledgerly', url: input.url }],
+  )
+}
+
+// The first character of the address, then `***`, then `@` and the domain.
+function maskedEmail(email: string): string {
+  const at = email.lastIndexOf('@')
+  const first = Array.from(email.slice(0, Math.max(at, 0)))[0] ?? ''
+  return `${first}***${at < 0 ? '' : email.slice(at)}`
+}
+
+// Plain text, never a link: the reader writes from the address that got the notice.
+function notYou(supportEmail: string): string {
+  const to = supportEmail.trim()
+  return to
+    ? `If this wasn't you, write to ${to} from this address right away.`
+    : "If this wasn't you, reply to this email right away."
+}
+
+/**
  * A reminder that someone owes the sender money (F-63, identity-and-invites.md#reminders), to
  * the address the sender typed. `senderName` is the sender's name in that group, free text they
  * chose, so it stays out of the subject and is cut (`shortLine`); `amountCents` is the whole
@@ -255,9 +317,10 @@ export function reminderEmail(input: {
 // The most of someone's own text a reminder or an invite shows, per name.
 const SHORT_LINE_LENGTH = 40
 const GRAPHEMES = new Intl.Segmenter(LOCALE, { granularity: 'grapheme' })
-// Bidi controls: embeddings and overrides, isolates, and the two marks. They can make text
-// around the name read in another order. The zero-width joiner (U+200D) stays: emoji need it.
-const BIDI_CONTROLS = /[\u202A-\u202E\u2066-\u2069\u200E\u200F]/g
+// Unicode's Bidi_Control characters: embeddings and overrides, isolates, and the three marks
+// (LRM, RLM and the Arabic letter mark). They can make text around the name read in another
+// order. The zero-width joiner (U+200D) isn't one, so it stays: emoji need it.
+const BIDI_CONTROLS = /\p{Bidi_Control}/gu
 
 /**
  * Free text someone chose, for an email body: one line, as the subject is, so a line break

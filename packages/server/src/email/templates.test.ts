@@ -3,9 +3,11 @@ import { describe, expect, it } from 'vitest'
 import {
   divideEmail,
   type EmailContent,
+  emailChangedEmail,
   inviteEmail,
   invoiceEmail,
   passwordChangedEmail,
+  phoneChangedEmail,
   reminderEmail,
   shiftToConfirmEmail,
   statementReadyEmail,
@@ -383,6 +385,85 @@ describe('passwordChangedEmail', () => {
   })
 })
 
+describe('emailChangedEmail and phoneChangedEmail', () => {
+  const url = 'https://app.example/login'
+  const emailNotice = (newEmail: string, supportEmail = '') =>
+    emailChangedEmail({ newEmail, supportEmail, url })
+  const phoneNotice = (newPhone: string, supportEmail = '') =>
+    phoneChangedEmail({ newPhone, supportEmail, url })
+
+  it('shows the new email only masked, in a subject that holds no address', () => {
+    const content = emailNotice('jo.attacker@example.com')
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your Ledgerly email address was changed')
+    expect(content.text).toContain(
+      'The email address for your Ledgerly account was changed to j***@example.com.',
+    )
+    expect(`${content.subject} ${content.html} ${content.text}`).not.toContain('attacker')
+  })
+
+  it.each([
+    // The address as Appwrite holds it: not lowercased, the last @ starting the domain.
+    ['Jo@Example.COM', 'J***@Example.COM'],
+    ['"a@b"@example.com', '"***@example.com'],
+    ['éva@example.com', 'é***@example.com'],
+    ['😀x@example.com', '😀***@example.com'],
+    ['', '***'],
+  ])('masks %j as %j', (newEmail, masked) => {
+    expect(emailNotice(newEmail).text).toContain(`was changed to ${masked}.`)
+  })
+
+  it('HTML-escapes the masked address, whose domain the changer chose', () => {
+    const content = emailNotice('j@<b>"x\'&.example')
+    expect(content.html).toContain('changed to j***@&lt;b&gt;&quot;x&#39;&amp;.example.')
+    expect(content.html).not.toContain('<b>')
+  })
+
+  it.each([
+    ['+61412345678', 'was changed to one ending in 678.'],
+    ['+1 (555) 010-0199', 'was changed to one ending in 199.'],
+    ['', 'The phone number was removed from your Ledgerly account.'],
+  ])('names the new phone %j only by its last 3 digits', (newPhone, line) => {
+    const content = phoneNotice(newPhone)
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your Ledgerly phone number was changed')
+    expect(content.text).toContain(line)
+    expect(`${content.subject} ${content.html} ${content.text}`).not.toMatch(/412|555|010/)
+  })
+
+  it.each([
+    ['email', emailNotice('j@example.com', ' help@ledgerly.example ')],
+    ['phone', phoneNotice('+61412345678', ' help@ledgerly.example ')],
+  ])('tells the %s notice’s reader to write to SUPPORT_EMAIL, as plain text', (_, content) => {
+    expect(content.text).toContain(
+      "If this wasn't you, write to help@ledgerly.example from this address right away.",
+    )
+    expect(content.html).toContain(
+      'write to help@ledgerly.example from this address right away.</p>',
+    )
+    // One link, the sign-in page: the support address is not one.
+    expect(content.html.match(/href=/g)).toEqual(['href='])
+    expect(content.html).toContain(`<a href="${url}">Go to Ledgerly</a>`)
+    expect(content.html).not.toContain('mailto:')
+    expect(content.text).toContain(`Go to Ledgerly: ${url}`)
+  })
+
+  it.each([
+    ['email', emailNotice('j@example.com')],
+    ['phone', phoneNotice('')],
+    ['email (blank SUPPORT_EMAIL)', emailNotice('j@example.com', '  ')],
+  ])('says “reply to this email” in the %s notice without SUPPORT_EMAIL', (_, content) => {
+    expect(content.text).toContain("If this wasn't you, reply to this email right away.")
+    expect(content.text).not.toContain('write to')
+  })
+
+  it('escapes SUPPORT_EMAIL in the HTML', () => {
+    const content = emailNotice('j@example.com', '<a href="x">help</a>')
+    expect(content.html).toContain('write to &lt;a href=&quot;x&quot;&gt;help&lt;/a&gt; from')
+    expect(content.html.match(/<a /g)).toEqual(['<a '])
+  })
+})
+
 describe('summaryEmail', () => {
   const report = (currency: string, extra: object = {}) => ({
     currency,
@@ -597,11 +678,11 @@ describe('reminderEmail', () => {
     expect(content.html).toContain('Sam Pay at https://evil.example now sent you a reminder')
   })
 
-  // Embeddings and overrides (U+202A–U+202E), isolates (U+2066–U+2069) and the two marks.
+  // Embeddings and overrides (U+202A–U+202E), isolates (U+2066–U+2069) and the three marks.
   const BIDI = [
-    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f,
+    0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069, 0x200e, 0x200f, 0x061c,
   ]
-  it.each(BIDI.map((code) => [code.toString(16).toUpperCase(), code]))(
+  it.each(BIDI.map((code) => [code.toString(16).toUpperCase().padStart(4, '0'), code]))(
     'removes the bidi control U+%s from a name, before cutting it',
     (_hex, code) => {
       const control = String.fromCodePoint(code)

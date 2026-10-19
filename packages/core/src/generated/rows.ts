@@ -131,6 +131,8 @@ export type Persons = Models.Row & {
     mergeGroupIds: string[] | null;
     mergeMembersJson: string | null;
     mergeCursorsJson: string | null;
+    addressMisses: number;
+    addressMissesFrom: string | null;
 }
 
 export type Identities = Models.Row & {

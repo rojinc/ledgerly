@@ -16,6 +16,7 @@
     "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@expo-google-fonts/noto-emoji": "0.4.8",
     "@types/node": "^24.19.2",
     "@types/pdfmake": "^0.3.3",
     "fontkit": "^2.0.4",

@@ -23,6 +23,7 @@ export type LogEvent =
   | 'nightly_check_finding'
   | 'nightly_check_cut_off'
   | 'password_notice'
+  | 'change_notice'
   | 'team_membership_removed'
   | 'schedule_template_unreadable'
   | 'stuck_finalize_not_archived'
@@ -32,18 +33,22 @@ export type LogEvent =
   | 'merge_left_locked_transaction'
   | 'merge_left_schedule'
   | 'merge_left_stray_row'
+  | 'merge_left_subjects'
   | 'merge_typed_keys_deleted'
   | 'merge_finished'
   | 'merge_carries_on'
   | 'merge_stopped_into_deleted'
   | 'merge_stopped'
+  | 'merge_run_failed'
+  | 'merge_walk_cut_off'
+  | 'merge_run'
   | 'invite_cleanup_failed'
 
 /**
  * How each event is written. Most are problems, written with `console.error`: until alerting
  * exists, the error lines are the alert (scheduling.md#step-6-nightly-check). These aren't: `log`
- * for what went as it should, `warn` for something to look at that isn't a failure. A password
- * notice is an error only when its send failed.
+ * for what went as it should, `warn` for something to look at that isn't a failure. A password or
+ * change notice is an error only when a send failed, and a change notice's `mismatch` a warning.
  */
 const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   typed_keys_deleted: 'log',
@@ -51,6 +56,7 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_finished: 'log',
   merge_carries_on: 'log',
   merge_stopped_into_deleted: 'log',
+  merge_run: 'log',
   claim_identity_unusable: 'warn',
   nightly_check_cut_off: 'warn',
   pdf_characters_replaced: 'warn',
@@ -58,22 +64,46 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_left_locked_transaction: 'warn',
   merge_left_schedule: 'warn',
   merge_left_stray_row: 'warn',
+  merge_left_subjects: 'warn',
   merge_stopped: 'warn',
+  merge_walk_cut_off: 'warn',
 }
 
 /** What the password notice did (identity-and-invites.md#password-notice). */
 export type NoticeOutcome = 'sent' | 'stale' | 'unverified' | 'gone' | 'failed'
 
-/** What a merge moved or left (identity-and-invites.md#merging-two-persons), each a count. */
+/**
+ * What the email or phone change notice did, for one email or for the run
+ * (identity-and-invites.md#email-and-phone-change-notice).
+ */
+export type ChangeNoticeOutcome =
+  | 'sent'
+  | 'gone'
+  | 'no_old_address'
+  | 'unverified'
+  | 'mismatch'
+  | 'failed'
+
+/**
+ * What a merge moved or left (identity-and-invites.md#merging-two-persons), and what the hourly
+ * run found (#finishing-merges): merges, and the merged persons it read. Each a count.
+ */
 const COUNTS = [
   'groupsJoined',
   'inputs',
   'voided',
   'shares',
+  'subjects',
   'reminders',
   'leftAsTheyAre',
   'identities',
   'groupsPutOff',
+  'unfinished',
+  'finished',
+  'skipped',
+  'cutOff',
+  'stopped',
+  'personsRead',
 ] as const
 export type LogCount = (typeof COUNTS)[number]
 
@@ -101,7 +131,7 @@ export type LogFields = {
   problems?: readonly SnapshotProblem[]
   identityType?: 'email' | 'phone'
   rule?: LogRule
-  outcome?: NoticeOutcome
+  outcome?: NoticeOutcome | ChangeNoticeOutcome
   /**
    * How many things, such as the keys an adoption deleted; never an amount of money. Anything
    * but a whole number is `invalid`.
@@ -111,6 +141,11 @@ export type LogFields = {
   counts?: Partial<Record<LogCount, number>>
   /** The error behind it. Only its name is written (`describe`). */
   error?: unknown
+  /**
+   * A fixed cause, for a failure with no error behind it: `budget`, a change notice's addresses
+   * left when its time ran out. `error` wins over it.
+   */
+  cause?: 'budget'
 }
 
 /**
@@ -154,13 +189,17 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
           whole(counts[name]),
         ]),
       ),
-    cause: 'error' in fields ? describe(fields.error) : undefined,
+    // Pinned at run time too, as a cast could pass any text.
+    cause:
+      'error' in fields ? describe(fields.error) : fields.cause === 'budget' ? 'budget' : undefined,
   }
   const level =
-    event === 'password_notice'
+    event === 'password_notice' || event === 'change_notice'
       ? outcome === 'failed'
         ? 'error'
-        : 'log'
+        : outcome === 'mismatch'
+          ? 'warn'
+          : 'log'
       : (LEVELS[event] ?? 'error')
   // biome-ignore lint/suspicious/noConsole: the one place a function logs from inside a route.
   console[level](JSON.stringify(line))

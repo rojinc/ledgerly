@@ -20,8 +20,9 @@ export type Email = {
 
 /**
  * Every way a send fails. `type` is `missing_config`, `timeout`, `network` or Resend's error
- * name; `status` is Resend's HTTP status, when it answered. The message never holds addresses,
- * subjects or bodies, so it is safe to log.
+ * name; `status` is Resend's HTTP status, when it answered, and `retryAfterMs` its `retry-after`
+ * header, when it sent one (a 429). The message never holds addresses, subjects or bodies, so it
+ * is safe to log.
  */
 export class EmailError extends Error {
   override name = 'EmailError'
@@ -30,6 +31,7 @@ export class EmailError extends Error {
     message: string,
     readonly type: string,
     readonly status?: number,
+    readonly retryAfterMs?: number,
   ) {
     super(message)
   }
@@ -37,9 +39,13 @@ export class EmailError extends Error {
 
 /**
  * Sends one email through Resend's HTTP API (D-011), from `EMAIL_FROM`. Logs nothing.
- * Returns Resend's email ID, which is safe to log.
+ * Returns Resend's email ID, which is safe to log. `timeoutMs` shortens the 10 s timeout, for a
+ * run with less time left; it never lengthens it.
  */
-export async function sendEmail(email: Email): Promise<{ id?: string }> {
+export async function sendEmail(
+  email: Email,
+  { timeoutMs = TIMEOUT_MS }: { timeoutMs?: number } = {},
+): Promise<{ id?: string }> {
   const apiKey = requireEnv('RESEND_API_KEY')
   const from = requireEnv('EMAIL_FROM')
   const request: RequestInit = {
@@ -62,7 +68,8 @@ export async function sendEmail(email: Email): Promise<{ id?: string }> {
         content: Buffer.from(content).toString('base64'),
       })),
     }),
-    signal: AbortSignal.timeout(TIMEOUT_MS),
+    // A whole number of ms, never below 0: AbortSignal.timeout throws a RangeError otherwise.
+    signal: AbortSignal.timeout(Math.max(0, Math.floor(Math.min(timeoutMs, TIMEOUT_MS)))),
   }
   let response: Response
   try {
@@ -77,7 +84,14 @@ export async function sendEmail(email: Email): Promise<{ id?: string }> {
   if (!response.ok) {
     const type =
       typeof body?.name === 'string' && ERROR_NAME.test(body.name) ? body.name : 'unknown'
-    throw new EmailError(`Resend answered ${response.status} ${type}`, type, response.status)
+    // Whole seconds, as Resend sends it; anything else is left out.
+    const retryAfter = response.headers.get('retry-after')?.trim() ?? ''
+    throw new EmailError(
+      `Resend answered ${response.status} ${type}`,
+      type,
+      response.status,
+      /^\d{1,6}$/.test(retryAfter) ? Number(retryAfter) * 1000 : undefined,
+    )
   }
   return { id: typeof body?.id === 'string' ? body.id : undefined }
 }
