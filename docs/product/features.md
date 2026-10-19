@@ -12,6 +12,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-04 | Business details printed on invoices: business name, ABN, address, contact email, bank details (account name, BSB, account number) and PayID. | M1 |
 | F-05 | Phone verification (optional). Needed to claim records made with your phone number. | M3 |
 | F-06 | Delete account and export your data. | M4 |
+| F-07 | Getting started: the dashboard asks what you want to track until you've recorded something. | M4 |
 
 ## Groups (shared by every module)
 
