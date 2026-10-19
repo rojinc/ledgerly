@@ -46,7 +46,7 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `claimedAt` | datetime? | When the person first got a user account (bootstrap or adopt). Claim joins member rows whose `$createdAt` is strictly before it ([identity](identity-and-invites.md#claim-linking-records-to-a-new-account)). |
 | `mergedInto` | varchar(36)? | Set when this person is merged into another ([identity](identity-and-invites.md#merging-two-persons)). Kept for good: old statements and groups the other person left on their own can still name this one. |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). Set first, as the point of no return; a person with `deletedAt` and `userId` both set has a deletion still to finish. |
-| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits, adds that find the person, and saves of schedules that name them. |
+| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits, and for adds that find the person. |
 
 Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`, `idx_deletedAt (deletedAt)` (the hourly job finds deletions to finish).
 Permissions: placeholders have none (server only). A registered person's row gets `read("user:<userId>")`.

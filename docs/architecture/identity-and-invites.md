@@ -66,9 +66,9 @@ Claiming is what lets "Sam" see the $50 you lent them when Sam finally signs up.
 2. For each verified identity key:
    - **No identity row:** create one pointing at the user's person, with `verified = true`.
    - **Points at the user's own person:** set `verified = true`.
-   - **Points at a person being merged into the user's person** (`mergedInto` names it, mid-merge): skip it; the merge moves it to them last.
+   - **Points at a person being merged into the user's person** (that person's `mergedInto` is the user's person, mid-merge): skip it; the merge moves it to them last.
    - **Points at a placeholder person P:**
-     - If the user's person is brand new and has no data (bootstrap just made it), **adopt P**: in one database transaction, set `P.userId` to the user and `P.claimedAt` to now, and delete P's identities whose key the user hasn't verified ([below](#only-verified-keys-move)). Use P as their person.
+     - If the user's person is brand new and has no data (bootstrap just made it), **adopt P**: in one database transaction, set `P.userId` to the user and `P.claimedAt` to now, and delete P's identities whose key the user hasn't verified ([below](#only-verified-keys-move)); then read P's stored row again and check it's still a placeholder. If another adoption or merge got there first, roll back and leave P alone, as merge step 1 does. Use P as their person.
      - Otherwise **merge P into the user's person** (next section).
 3. Join the user to every group where their person is still a `placeholder` member and the member row's `$createdAt` is strictly before the person's `claimedAt`. Those rows were added while the person had no account. Rows added later are left alone; the user joins those themselves ([Joining a group](#joining-a-group)). The rule reads only stored data, so a repeated or interrupted claim finishes the job. Functions never rewrite a member row's `$createdAt` and never delete and recreate a member row.
 4. Return the list of groups that were linked, so the app can say "We found 3 groups you were added to".
@@ -133,7 +133,7 @@ Statement snapshots are **not** rewritten. They are historical documents and kee
 
 ## Invites
 
-An invite is a convenience: a link that tells someone they've been added and helps them sign up. Claiming works without one, as long as the person verifies the same email or phone.
+An invite is a convenience: a link that tells someone they've been added and helps them sign up. Claiming works without one, as long as the person verifies the key that was stored for them: the email, or the phone if no email was given ([adding someone](#adding-someone-to-a-group)).
 
 `identity POST /invites` with `{ groupId, memberId, email?, phone? }` (exactly one of email or phone):
 
