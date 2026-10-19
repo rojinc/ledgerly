@@ -1,9 +1,19 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
-import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { nightlyCheck } from '../src/steps/nightly-check'
-import { type Fakes, fakes, group, member, NOW, person } from './harness'
+import {
+  beforeCommit,
+  beforeStaging,
+  type Fakes,
+  fakes,
+  group,
+  member,
+  NOW,
+  person,
+} from './harness'
 
 // scheduling.md#step-6-nightly-check. NOW is 07:00 on Monday 19 October in Sydney.
 const TOMORROW_3AM_SYDNEY = '2026-10-19T16:00:00.000Z'
@@ -75,6 +85,13 @@ const ROW = [
   { personId: 'pAlex', netCents: -3000, shares: 1 },
   { personId: 'pSam', netCents: 3000, shares: 1 },
 ]
+// Then Alex paid $20 of milk for both of them.
+const MILK = transaction('t2', 2000)
+const MILK_SHARES = [share('s3', 't2', 'pSam', 0, 1000), share('s4', 't2', 'pAlex', 2000, 1000)]
+const ROW_WITH_MILK = [
+  { personId: 'pAlex', netCents: -2000, shares: 2 },
+  { personId: 'pSam', netCents: 2000, shares: 2 },
+]
 
 /**
  * Elm St, a Sydney house: Sam (u1) and Alex (u2) live there, Pat is a placeholder, and Lee (u3)
@@ -111,6 +128,43 @@ function seeded(extra: Record<string, object[]> = {}, teams: Record<string, stri
     { teams: { elm: ['u1', 'u2', 'u3'], ...teams } },
   )
 }
+
+/** Posts the milk as a ledger write does: the group's guard, the rows, and the balances row. */
+function postMilk(services: Fakes, peopleJson?: string) {
+  const create = (
+    tableId: 'transactions' | 'shares',
+    { $id, ...data }: { $id: string },
+  ): Write => ({
+    action: 'create',
+    tableId,
+    rowId: $id,
+    data,
+  })
+  const balances: Write = {
+    action: 'update',
+    tableId: 'balances',
+    rowId: 'elm',
+    data: { peopleJson },
+  }
+  return withTransaction(services.db, (tx) =>
+    tx.write(
+      { action: 'update', tableId: 'groups', rowId: 'elm', data: { rev: 'r1' } },
+      create('transactions', MILK),
+      ...MILK_SHARES.map((row) => create('shares', row)),
+      ...(peopleJson === undefined ? [] : [balances]),
+    ),
+  )
+}
+
+/** A write to the group row that commits outside the check, as a ledger write's guard does. */
+function guard(services: Fakes, rev: string) {
+  return withTransaction(services.db, (tx) =>
+    tx.write({ action: 'update', tableId: 'groups', rowId: 'elm', data: { rev } }),
+  )
+}
+
+const DUE = { balances: [{ $id: 'elm', peopleJson: JSON.stringify(ROW) }] }
+const AN_HOUR_ON = new Date(NOW.getTime() + HOUR).toISOString()
 
 function stored(services: Fakes, groupId = 'elm') {
   const row = services.db.rows('balances').find((balances) => balances.$id === groupId)
@@ -181,7 +235,8 @@ describe('step 6: nightly check', () => {
         transaction('t2', 6000),
         // I-6: a void transaction with a share left behind.
         transaction('t3', 1000, { status: 'void' }),
-        // I-3: a share for someone with no member row.
+        // I-3: shares for two people with no member row, one line for the transaction. Dan
+        // has an identity, but nobody is merging him.
         transaction('t4', 1000),
       ],
       shares: [
@@ -190,7 +245,8 @@ describe('step 6: nightly check', () => {
         share('s4', 't2', 'pAlex', 0, 2500),
         share('s5', 't3', 'pSam', 1000, 1000),
         share('s6', 't4', 'pSam', 1000, 0),
-        share('s7', 't4', 'pDan', 0, 1000),
+        share('s7', 't4', 'pDan', 0, 500),
+        share('s8', 't4', 'pEve', 0, 500),
       ],
       persons: [
         person('pSam', 'u1'),
@@ -198,6 +254,17 @@ describe('step 6: nightly check', () => {
         person('pPat', null),
         person('pLee', 'u3'),
         person('pDan', 'u4'),
+        person('pEve', null),
+      ],
+      identities: [
+        {
+          $id: 'i1',
+          key: 'email:dan@example.com',
+          type: 'email',
+          personId: 'pDan',
+          verified: true,
+          verifiedAt: null,
+        },
       ],
     })
     const before = structuredClone([services.db.rows('shares'), services.db.rows('transactions')])
@@ -210,6 +277,20 @@ describe('step 6: nightly check', () => {
     expect([services.db.rows('shares'), services.db.rows('transactions')]).toEqual(before)
   })
 
+  it('counts the shares of a placeholder and of a member who left as members’ shares', async () => {
+    // Pat, the placeholder, paid $10 for Lee before Lee moved out.
+    const services = seeded({
+      transactions: [transaction('t1', 6000), transaction('t2', 1000)],
+      shares: [
+        ...GROCERIES.slice(1),
+        share('s3', 't2', 'pPat', 1000, 0),
+        share('s4', 't2', 'pLee', 0, 1000),
+      ],
+    })
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, findings: 0, merging: 0 })
+    expect(logged()).toEqual([])
+  })
+
   it('counts a share of a person being merged as merging, not as broken', async () => {
     // Pat was merged into Dan, whose merge hasn't moved Pat's share yet; Pat's row went to Dan.
     const services = seeded(
@@ -219,6 +300,7 @@ describe('step 6: nightly check', () => {
           person('pAlex', 'u2'),
           { ...person('pPat', null), mergedInto: 'pDan' },
           person('pLee', 'u3'),
+          person('pDan', 'u4'),
         ],
         members: [member('elm', 'pSam'), member('elm', 'pAlex', { role: 'member' })],
         transactions: [transaction('t1', 6000)],
@@ -239,7 +321,8 @@ describe('step 6: nightly check', () => {
     )
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, findings: 0, merging: 1 })
 
-    // Once the merge is finished (no identity left on Pat), a share left on Pat is broken.
+    // Once the merge is finished (no identity left on Pat, and Dan's account is still there), a
+    // share left on Pat is broken.
     await withTransaction(services.db, (tx) =>
       tx.write(
         { action: 'delete', tableId: 'identities', rowId: 'i1' },
@@ -288,6 +371,21 @@ describe('step 6: nightly check', () => {
     expect(writes).toBeGreaterThan(1)
   })
 
+  it('reads a group again when a write of shares lands while its balances row is read', async () => {
+    const services = seeded(DUE)
+    const get = services.db.getRow.bind(services.db)
+    let reads = 0
+    vi.spyOn(services.db, 'getRow').mockImplementation(async (params) => {
+      // The milk is posted as the row is first read: its shares were read before it.
+      if (params.tableId === 'balances' && ++reads === 1) {
+        await postMilk(services, JSON.stringify(ROW_WITH_MILK))
+      }
+      return get(params)
+    })
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, findings: 0, repaired: 0 })
+    expect(reads).toBe(2)
+  })
+
   it('leaves a group for the next run when writes land during every read', async () => {
     const services = seeded()
     const list = services.db.listRows.bind(services.db)
@@ -330,12 +428,85 @@ describe('step 6: nightly check', () => {
     expect(stored(services)).toBeUndefined()
   })
 
+  it('sums the shares after staging its guard, so a write of shares just before it counts', async () => {
+    const services = seeded()
+    // The milk is posted after the group is read whole, just before the repair stages its guard.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"rev"'),
+      () => postMilk(services),
+    )
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, repaired: 1 })
+    expect(stored(services)).toEqual(ROW_WITH_MILK)
+  })
+
+  it('doesn’t write a balances row the shares make invalid, and fails the group', async () => {
+    // A net past the largest safe integer: Sam paid that much for Alex, on top of the groceries.
+    const huge = Number.MAX_SAFE_INTEGER
+    const services = seeded({
+      transactions: [transaction('t1', 6000), transaction('t2', huge)],
+      shares: [
+        ...GROCERIES.slice(1),
+        share('s3', 't2', 'pSam', huge, 0),
+        share('s4', 't2', 'pAlex', 0, huge),
+      ],
+    })
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, repaired: 0, failed: 1 })
+    expect(stored(services)).toBeUndefined()
+    // Rolled back, guard and all, and left due.
+    expect(groupRow(services).rev).toBe('r0')
+    expect(groupRow(services).nextCheckAt ?? null).toBeNull()
+    expect(logged()).toEqual(['scheduler: nightly check failed for group elm: LedgerError'])
+  })
+
+  it('puts a group off an hour when a write to its row beats its nextCheckAt', async () => {
+    const services = seeded(DUE)
+    beforeCommit(services.db, () => guard(services, 'r1'))
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, busy: 1 })
+    expect(groupRow(services).nextCheckAt).toBe(AN_HOUR_ON)
+  })
+
+  it('leaves a group due when writes to its row beat its nextCheckAt twice', async () => {
+    const services = seeded(DUE)
+    const commit = services.db.updateTransaction.bind(services.db)
+    let landing = false
+    let rev = 0
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      // A ledger write's guard commits before each of the check's commits.
+      if (params.commit && !landing) {
+        landing = true
+        await guard(services, `r${++rev}`)
+        landing = false
+      }
+      return commit(params)
+    })
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, busy: 1 })
+    expect(rev).toBe(2)
+    expect(groupRow(services).nextCheckAt ?? null).toBeNull()
+  })
+
+  it('fails a group whose nextCheckAt can’t be written for another reason', async () => {
+    const services = seeded(DUE)
+    vi.spyOn(services.db, 'updateTransaction').mockRejectedValueOnce(
+      new AppwriteException('Server error', 500, 'general_unknown'),
+    )
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, busy: 0, failed: 1 })
+    expect(logged()).toEqual([
+      'scheduler: nightly check failed for group elm: AppwriteException 500 general_unknown',
+    ])
+  })
+
   it('moves a group the budget cuts off to tomorrow, by ID, and checks it then from the start', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const services = seeded()
-    let calls = 0
-    // Two reads let the page in and the group out of it; out of time once it is read whole.
-    services.outOfTime = () => ++calls > 2
+    // Out of time once the group is read whole.
+    let read = false
+    const list = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      if (params.tableId === 'shares') read = true
+      return list(params)
+    })
+    services.outOfTime = () => read
     expect(await nightlyCheck(services)).toMatchObject({ checked: 0, cutOff: 1, repaired: 0 })
     expect(groupRow(services).nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
     expect(warn).toHaveBeenLastCalledWith(
@@ -356,9 +527,8 @@ describe('step 6: nightly check', () => {
       },
       { oak: ['u1'] },
     )
-    let calls = 0
-    // Out of time once Elm St is done: the page, Elm St, its check, then Oak Rd.
-    services.outOfTime = () => ++calls > 3
+    // Out of time once Elm St is done.
+    services.outOfTime = () => Boolean(groupRow(services).nextCheckAt)
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, cutOff: 0 })
     expect(groupRow(services, 'oak').nextCheckAt ?? null).toBeNull()
   })
@@ -371,6 +541,37 @@ describe('step 6: nightly check', () => {
     expect(stored(services)).toBeUndefined()
     expect(groupRow(services).nextCheckAt ?? null).toBeNull()
     expect(logged()).toEqual([])
+  })
+
+  it('fails a group whose team can’t be read, and leaves it due', async () => {
+    const services = seeded()
+    services.teams = {
+      listMemberships: async () => {
+        throw new AppwriteException('Server error', 500, 'general_unknown')
+      },
+    }
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, skipped: 0, failed: 1 })
+    expect(groupRow(services).nextCheckAt ?? null).toBeNull()
+    expect(logged()).toEqual([
+      'scheduler: nightly check failed for group elm: AppwriteException 500 general_unknown',
+    ])
+  })
+
+  it('counts a group that fails, leaves it due, and goes on to the next', async () => {
+    const house = { type: 'house', settingsJson: '{"type":"house"}' } as const
+    const services = seeded(
+      {
+        groups: [
+          group('elm', 'pSam', { ...house, name: 'Elm St', timezone: 'Nowhere/Elm' }),
+          group('oak', 'pSam', { ...house, name: 'Oak Rd' }),
+        ],
+      },
+      { oak: ['u1'] },
+    )
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, failed: 1 })
+    expect(groupRow(services).nextCheckAt ?? null).toBeNull()
+    expect(groupRow(services, 'oak').nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
+    expect(logged()).toEqual(['scheduler: nightly check failed for group elm: RangeError'])
   })
 
   it('checks archived groups too', async () => {

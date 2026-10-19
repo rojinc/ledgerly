@@ -10,7 +10,7 @@ import type {
 } from '@ledgerly/core/generated/rows'
 import { assertShareInvariants } from '@ledgerly/core/ledger/invariants'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
-import type { BalancesPeople } from '@ledgerly/core/schemas/ledger'
+import { type BalancesPeople, balancesPeopleSchema } from '@ledgerly/core/schemas/ledger'
 import { balancesFromShares } from '@ledgerly/core/settle/balances'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -18,7 +18,7 @@ import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { readBalances } from '@ledgerly/server/ledger/balances'
-import { AppwriteException, type Models, Query } from 'node-appwrite'
+import { AppwriteException, Query } from 'node-appwrite'
 import { allRows, pages } from '../pages'
 import type { Services } from '../services'
 import { describe } from './auto-post'
@@ -89,8 +89,7 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
   }
   // A purge in progress deletes the team first (identity-and-invites.md#deleting-an-account-m4),
   // then the group's rows: they're left alone, and the group stays due.
-  const memberships = await membershipsOf(services.teams, groupId)
-  if (memberships === null) {
+  if (!(await teamExists(services.teams, groupId))) {
     counts.skipped += 1
     return
   }
@@ -99,7 +98,7 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
     CHECK_HOUR,
     group.timezone,
   )
-  // Writes kept landing: a run soon tries again.
+  // Writes landed meanwhile: a run soon tries again. If this write loses too, the group stays due.
   const busy = async () => {
     counts.busy += 1
     await setNextCheck(db, groupId, new Date(services.now.getTime() + PUT_OFF_MS).toISOString())
@@ -122,11 +121,8 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
     counts.repaired += 1
   }
 
-  if (await setNextCheck(db, groupId, tomorrow)) {
-    counts.checked += 1
-  } else {
-    counts.busy += 1
-  }
+  if (!(await setNextCheck(db, groupId, tomorrow))) return busy()
+  counts.checked += 1
 }
 
 type Whole = {
@@ -210,7 +206,9 @@ async function checkShares(
     strangers.map((share) => share.personId),
   )
   const broken = strangers.filter((share) => !merged.has(share.personId))
-  for (const share of broken) report(`transaction ${share.transactionId} breaks I-3`)
+  for (const transactionId of new Set(broken.map((share) => share.transactionId))) {
+    report(`transaction ${transactionId} breaks I-3`)
+  }
   return strangers.length - broken.length
 }
 
@@ -258,7 +256,7 @@ function same(a: BalancesPeople | null, b: BalancesPeople): boolean {
 /**
  * Writes the group's `balances` row from its shares, summed after the group's guard write is
  * staged, so a write of shares that lands meanwhile fails one of the two commits. False when this
- * one lost: the next run tries again.
+ * one lost: the next run tries again. Throws, writing nothing, when the sum isn't a valid row.
  */
 async function rebuildBalances(db: Db, groupId: string): Promise<boolean> {
   try {
@@ -270,7 +268,12 @@ async function rebuildBalances(db: Db, groupId: string): Promise<boolean> {
         data: { rev: randomId() },
       })
       const shares = await allRows<Shares>(db, TABLES.shares, [Query.equal('groupId', groupId)])
-      const peopleJson = JSON.stringify(balancesFromShares(shares))
+      const people = balancesFromShares(shares)
+      // A net past a safe integer, say: a bug, so the group fails until it's fixed by hand.
+      if (!balancesPeopleSchema.safeParse(people).success) {
+        throw new LedgerError('INVARIANT_VIOLATION', 'The shares make no valid balances row')
+      }
+      const peopleJson = JSON.stringify(people)
       await tx.write({
         action: 'upsert',
         tableId: TABLES.balances,
@@ -285,25 +288,16 @@ async function rebuildBalances(db: Db, groupId: string): Promise<boolean> {
   }
 }
 
-type Membership = Pick<Models.Membership, '$id' | 'userId'>
-
-/** Every membership of the group's team; null when the team is gone. */
-async function membershipsOf(
+/** False when the group's team is gone. */
+async function teamExists(
   teams: Pick<TeamsApi, 'listMemberships'>,
   teamId: string,
-): Promise<Membership[] | null> {
-  const found: Membership[] = []
+): Promise<boolean> {
   try {
-    for (;;) {
-      const { memberships } = await teams.listMemberships({
-        teamId,
-        queries: [Query.limit(PAGE), Query.offset(found.length)],
-      })
-      found.push(...memberships)
-      if (memberships.length < PAGE) return found
-    }
+    await teams.listMemberships({ teamId, queries: [Query.limit(1)] })
+    return true
   } catch (error) {
-    if (error instanceof AppwriteException && error.code === 404) return null
+    if (error instanceof AppwriteException && error.code === 404) return false
     throw error
   }
 }
