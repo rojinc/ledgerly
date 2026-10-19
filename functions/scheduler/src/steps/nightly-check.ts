@@ -134,6 +134,12 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
     return
   }
   if (services.outOfTime()) return cutOff()
+  // The team first: a group whose balances below fail, or stay busy, still loses a stale
+  // membership, which is what keeps someone's read access.
+  if (!(await reconcileTeam(services, groupId, memberships, whole.members, counts, report))) {
+    return cutOff()
+  }
+  if (services.outOfTime()) return cutOff()
   counts.merging += await checkShares(db, whole, report)
 
   const fresh = balancesFromShares(whole.shares)
@@ -141,10 +147,6 @@ async function checkGroup(services: Services, group: Groups, counts: CheckCounts
     if (whole.balances !== undefined) report('balances row wrong')
     if (!(await rebuildBalances(db, groupId))) return busy()
     counts.repaired += 1
-  }
-  if (services.outOfTime()) return cutOff()
-  if (!(await reconcileTeam(services, groupId, memberships, whole.members, counts, report))) {
-    return cutOff()
   }
 
   if (!(await setNextCheck(db, groupId, tomorrow))) return busy()

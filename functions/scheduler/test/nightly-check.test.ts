@@ -472,6 +472,27 @@ describe('step 6: nightly check', () => {
     expect(logged()).toEqual(['scheduler: nightly check failed for group elm: LedgerError'])
   })
 
+  it('still removes a stale membership from a group whose balances fail', async () => {
+    const huge = Number.MAX_SAFE_INTEGER
+    // u9 has no member row: a stale membership, in a group whose sums make no valid row.
+    const services = seeded(
+      {
+        transactions: [transaction('t1', 6000), transaction('t2', huge)],
+        shares: [
+          ...GROCERIES.slice(1),
+          share('s3', 't2', 'pSam', huge, 0),
+          share('s4', 't2', 'pAlex', 0, huge),
+        ],
+      },
+      { elm: ['u1', 'u2', 'u3', 'u9'] },
+    )
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await nightlyCheck(services)).toMatchObject({ failed: 1, removed: 1 })
+    expect(services.teams.members('elm')?.map((membership) => membership.userId)).not.toContain(
+      'u9',
+    )
+  })
+
   it('puts a group off an hour when a write to its row beats its nextCheckAt', async () => {
     const services = seeded(DUE)
     beforeCommit(services.db, () => guard(services, 'r1'))
@@ -755,6 +776,7 @@ describe('step 6: nightly check', () => {
     it('keeps a membership up to an hour old, and removes one older', async () => {
       for (const [minutes, removed] of [
         [59, 0],
+        [60, 0],
         [61, 1],
       ] as const) {
         const services = seeded({ persons: PAT_SIGNED_UP })
