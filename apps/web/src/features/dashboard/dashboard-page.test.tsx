@@ -408,3 +408,27 @@ describe('DashboardPage: last 6 months', () => {
     ])
   })
 })
+
+describe('DashboardPage: work-hours limit (#53)', () => {
+  it('shows this week against the limit, reading only the groups you own', async () => {
+    groupsHook.mockReturnValue({ data: GROUPS, isError: false, refetch: vi.fn() } as never)
+    profileHook.mockReturnValue({
+      data: {
+        personId: 'p1',
+        timezone: 'Australia/Sydney',
+        hoursCapMinutes: 2400,
+        hoursCapPeriod: 'week',
+        hoursCapStartsOn: null,
+      },
+      isError: false,
+    } as never)
+    listRows.mockResolvedValue({ total: 0, rows: [] } as never)
+    call.mockResolvedValue({ ok: true, data: { people: [], transfers: [] } })
+    renderPage()
+    expect((await screen.findByText(/^This week:/)).textContent).toBe(
+      'This week: 0 h of your 40 h.',
+    )
+    // None of these groups pays this user: nothing to read.
+    expect(requests().some((args) => args.tableId === 'transactions')).toBe(false)
+  })
+})

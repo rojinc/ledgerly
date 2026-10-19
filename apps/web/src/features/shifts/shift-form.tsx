@@ -9,6 +9,7 @@ import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
+import { ShiftCapLine } from './hours-cap'
 import { paidMinutes, parseHours, type ShiftValues, toShiftBody } from './shift-values'
 
 type Props = {
@@ -262,6 +263,7 @@ export function ShiftForm({
           ? `${Math.floor(minutes / 60)} h ${minutes % 60} min paid · ${pay}`
           : ' '}
       </p>
+      <ShiftCapLine id={id} groupId={values.groupId} date={values.date} minutes={minutes} />
       <div className="flex items-center gap-3">
         <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : submitLabel}
