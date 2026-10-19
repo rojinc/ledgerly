@@ -260,8 +260,11 @@ describe('HousePage', () => {
       const sam = await row('Sam')
       expect(within(sam).getByRole('button', { name: 'Moved out' })).toBeTruthy()
       expect(within(sam).getByRole('button', { name: 'Remove' })).toBeTruthy()
-      // Jo has moved out already.
-      expect(within(await row('Jo')).queryByRole('button', { name: 'Moved out' })).toBeNull()
+      // Jo has moved out already, so Jo can move back in instead.
+      const jo = await row('Jo')
+      expect(within(jo).queryByRole('button', { name: 'Moved out' })).toBeNull()
+      expect(within(jo).getByRole('button', { name: 'Moved back in' })).toBeTruthy()
+      expect(within(sam).queryByRole('button', { name: 'Moved back in' })).toBeNull()
       expect(screen.getByLabelText('Role')).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Settings' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Archive group' })).toBeTruthy()
@@ -487,8 +490,65 @@ describe('HousePage', () => {
       expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Flat 3', level: 1 }))
     })
 
+    it('moves someone back in as a member, with focus on the button that swaps back', async () => {
+      call.mockImplementation(async () => {
+        stored.members = stored.members.map((row) =>
+          row.$id === 'm2' ? { ...row, leftOn: null, status: 'active', role: 'member' } : row,
+        )
+        return ok({})
+      })
+      renderAt('/groups/g1')
+      const jo = await row('Jo')
+      fireEvent.click(within(jo).getByRole('button', { name: 'Moved back in' }))
+      const role = within(jo).getByLabelText('Role') as HTMLSelectElement
+      // Moving out made them a viewer: they come back as a member unless the admin picks again.
+      expect(role.value).toBe('member')
+      expect(document.activeElement).toBe(role)
+      fireEvent.click(within(jo).getByRole('button', { name: 'Mark as moved back in' }))
+      await waitFor(() =>
+        expect(within(jo).getByText(`Member · Moved in ${formatDate('2026-03-01')}`)).toBeTruthy(),
+      )
+      expect(sent()).toEqual([
+        'groups',
+        'PATCH',
+        '/groups/g1/members/m2',
+        { leftOn: null, role: 'member' },
+      ])
+      // The admin can move them out again from where they are.
+      expect(document.activeElement).toBe(within(jo).getByRole('button', { name: 'Moved out' }))
+    })
+
+    it('moves someone back in as a viewer with leftOn alone, and shows a refusal', async () => {
+      call.mockResolvedValue(
+        refused(
+          'VALIDATION_FAILED',
+          "They left this group on their own, so they can't be moved back in.",
+        ),
+      )
+      renderAt('/groups/g1')
+      const jo = await row('Jo')
+      fireEvent.click(within(jo).getByRole('button', { name: 'Moved back in' }))
+      fireEvent.change(within(jo).getByLabelText('Role'), { target: { value: 'viewer' } })
+      fireEvent.click(within(jo).getByRole('button', { name: 'Mark as moved back in' }))
+      expect(
+        await within(jo).findByText(
+          "They left this group on their own, so they can't be moved back in.",
+        ),
+      ).toBeTruthy()
+      expect(sent()).toEqual(['groups', 'PATCH', '/groups/g1/members/m2', { leftOn: null }])
+      // Cancel goes back to the button that opened it.
+      fireEvent.click(within(jo).getByRole('button', { name: 'Cancel' }))
+      expect(document.activeElement).toBe(within(jo).getByRole('button', { name: 'Moved back in' }))
+    })
+
     it('marks someone as moved out, today in the house’s time zone by default', async () => {
-      call.mockResolvedValue(ok({}))
+      call.mockImplementation(async (_fn, _method, _path, body) => {
+        const { leftOn } = body as { leftOn: string }
+        stored.members = stored.members.map((row) =>
+          row.$id === 'm3' ? { ...row, leftOn, role: 'viewer' } : row,
+        )
+        return ok({})
+      })
       renderAt('/groups/g1')
       const sam = await row('Sam')
       fireEvent.click(within(sam).getByRole('button', { name: 'Moved out' }))
@@ -506,6 +566,12 @@ describe('HousePage', () => {
       fireEvent.click(within(sam).getByRole('button', { name: 'Mark as moved out' }))
       await waitFor(() => expect(call).toHaveBeenCalled())
       expect(sent()).toEqual(['groups', 'PATCH', '/groups/g1/members/m3', { leftOn: '2026-10-19' }])
+      // The same button now moves them back in, and keeps focus.
+      await waitFor(() =>
+        expect(document.activeElement).toBe(
+          within(sam).getByRole('button', { name: 'Moved back in' }),
+        ),
+      )
     })
 
     it('removes someone after a confirmation, then focuses the heading', async () => {

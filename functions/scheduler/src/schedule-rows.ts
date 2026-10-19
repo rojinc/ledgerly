@@ -1,9 +1,10 @@
-import type { LocalDate } from '@ledgerly/core/dates/local-date'
-import type { Schedules } from '@ledgerly/core/generated/rows'
+import { daysBetween, type LocalDate } from '@ledgerly/core/dates/local-date'
+import { localToday } from '@ledgerly/core/dates/time-zone'
+import type { Groups, Schedules } from '@ledgerly/core/generated/rows'
 import type { ScheduleInput } from '@ledgerly/core/schemas/scheduler'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { type Membership, requireMember } from '@ledgerly/server/auth/require-member'
+import { type Membership, requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import type { Ledger } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException } from 'node-appwrite'
@@ -61,17 +62,14 @@ export async function requireScheduleWriter(
   scheduleId: string,
 ): Promise<{ schedule: Schedules; membership: Membership }> {
   const schedule = await getSchedule(services.db, scheduleId)
-  let membership: Membership
-  try {
-    membership = await requireMember(services.db, services.teams, userId, schedule.groupId, {
-      roles: ['admin', 'member'],
-    })
-  } catch (error) {
-    if (error instanceof AppError && error.code === 'NOT_A_MEMBER') {
-      throw new AppError('NOT_FOUND', NO_SUCH_SCHEDULE)
-    }
-    throw error
-  }
+  const membership = await requireMemberOf(
+    services.db,
+    services.teams,
+    userId,
+    schedule.groupId,
+    NO_SUCH_SCHEDULE,
+    { roles: ['admin', 'member'] },
+  )
   if (membership.member.role !== 'admin' && schedule.createdBy !== membership.person.$id) {
     throw new AppError('FORBIDDEN', 'Only its creator or an admin can change this schedule.')
   }
@@ -88,4 +86,21 @@ export function checkTemplate(
   ledger: Ledger,
 ): string[] {
   return planOccurrence(schedule, schedule.startsOn as LocalDate, ledger).planned.people
+}
+
+// A new schedule's past occurrences are made at once and wait for the user, so a start date is at
+// most this many days ago: a mistyped year can't make years of them.
+const MAX_DAYS_BACK = 31
+
+/**
+ * VALIDATION_FAILED for a `startsOn` more than 31 days before today in the group's time zone, on
+ * `POST /schedules` and a `PATCH` that changes it (scheduling.md#schedule-routes).
+ */
+export function requireRecentStart(startsOn: LocalDate, group: Groups, now: Date): void {
+  if (daysBetween(startsOn, localToday(group.timezone, now)) > MAX_DAYS_BACK) {
+    throw new AppError(
+      'VALIDATION_FAILED',
+      `The start date can be at most ${MAX_DAYS_BACK} days ago.`,
+    )
+  }
 }

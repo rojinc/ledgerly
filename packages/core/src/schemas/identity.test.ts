@@ -5,6 +5,7 @@ import {
   bootstrapBodySchema,
   businessDetailsSchema,
   createInviteBodySchema,
+  hoursCapSchema,
   updateProfileBodySchema,
 } from './identity'
 
@@ -121,5 +122,61 @@ describe('acceptInviteBodySchema', () => {
     expect(paths(acceptInviteBodySchema, { token: 'not-a-real-token' })).toEqual([])
     expect(paths(acceptInviteBodySchema, { token: 'x'.repeat(129) })).toEqual(['token'])
     expect(paths(acceptInviteBodySchema, {})).toEqual(['token'])
+  })
+})
+
+describe('hoursCapSchema (#53)', () => {
+  it('takes a week, or a fortnight from a Monday', () => {
+    expect(paths(hoursCapSchema, { minutes: 2400, period: 'week' })).toEqual([])
+    // 19 Oct 2026 is a Monday.
+    expect(
+      paths(hoursCapSchema, { minutes: 4800, period: 'fortnight', startsOn: '2026-10-19' }),
+    ).toEqual([])
+    expect(paths(hoursCapSchema, { minutes: 60, period: 'week' })).toEqual([])
+    expect(paths(hoursCapSchema, { minutes: 10080, period: 'week' })).toEqual([])
+    expect(
+      paths(hoursCapSchema, { minutes: 20160, period: 'fortnight', startsOn: '2026-10-19' }),
+    ).toEqual([])
+  })
+
+  it.each([
+    ['under an hour', { minutes: 59, period: 'week' }, ['minutes']],
+    ['over a week', { minutes: 10081, period: 'week' }, ['minutes']],
+    [
+      'over a fortnight',
+      { minutes: 20161, period: 'fortnight', startsOn: '2026-10-19' },
+      ['minutes'],
+    ],
+    ['part of a minute', { minutes: 2400.5, period: 'week' }, ['minutes']],
+    ['a fortnight with no start', { minutes: 4800, period: 'fortnight' }, ['startsOn']],
+    [
+      'a fortnight from a Tuesday',
+      { minutes: 4800, period: 'fortnight', startsOn: '2026-10-20' },
+      ['startsOn'],
+    ],
+    [
+      'a fortnight from a date that isn’t one',
+      { minutes: 4800, period: 'fortnight', startsOn: '2026-02-30' },
+      ['startsOn'],
+    ],
+    [
+      'a week with a start',
+      { minutes: 2400, period: 'week', startsOn: '2026-10-19' },
+      ['startsOn'],
+    ],
+    ['a month', { minutes: 2400, period: 'month' }, ['period']],
+    ['anything else', { minutes: 2400, period: 'week', note: 'x' }, ['']],
+  ])('refuses %s', (_case, cap, expected) => {
+    expect(paths(hoursCapSchema, cap)).toEqual(expected)
+  })
+
+  it('is set or cleared (null) through PATCH /profile, or left out', () => {
+    expect(paths(updateProfileBodySchema, { hoursCap: { minutes: 2400, period: 'week' } })).toEqual(
+      [],
+    )
+    expect(paths(updateProfileBodySchema, { hoursCap: null })).toEqual([])
+    expect(paths(updateProfileBodySchema, { hoursCap: { minutes: 59, period: 'week' } })).toEqual([
+      'hoursCap.minutes',
+    ])
   })
 })
