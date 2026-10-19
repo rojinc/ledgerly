@@ -6,6 +6,7 @@ import { allRows } from '@ledgerly/server/appwrite/pages'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Email, EmailError } from '@ledgerly/server/email/send-email'
 import { emailChangedEmail, phoneChangedEmail } from '@ledgerly/server/email/templates'
+import { type ChangeNoticeOutcome, logProblem } from '@ledgerly/server/http/log'
 import { Query } from 'node-appwrite'
 import { findPersonOfUser, isAppwriteError } from '../rows'
 import type { AccountUser, Services } from '../services'
@@ -25,14 +26,13 @@ const ALREADY_SENT: ReadonlySet<string> = new Set([
 const EMAIL_KEY = 'email:'
 
 type Notice = 'email' | 'phone'
-type Outcome =
-  | 'sent'
-  | 'gone'
-  | 'no_old_address'
-  | 'unverified'
-  | 'mismatch'
-  | `failed (${string})`
-  | `failed (budget): ${number} left`
+type Outcome = Exclude<ChangeNoticeOutcome, 'failed'>
+// What one log line says beyond the user and the notice (step 7): the outcome and, for a failure,
+// the error, or `budget` with how many addresses were left.
+type Line =
+  | { outcome: Outcome }
+  | { outcome: 'failed'; error: unknown }
+  | { outcome: 'failed'; cause: 'budget'; count: number }
 
 /**
  * The email and phone change notice (identity-and-invites.md#email-and-phone-change-notice), for
@@ -47,17 +47,16 @@ export async function changeNotice(
   body: unknown,
 ): Promise<void> {
   const started = Date.now()
-  const log = (outcome: Outcome) =>
-    console.log(`identity: ${notice} change notice for user ${userId}: ${outcome}`)
+  const log = (line: Line) => logProblem('change_notice', { userId, identityType: notice, ...line })
   // Step 1: the body's `$id` is used for this check only.
   const bodyId = typeof body === 'object' && body !== null ? (body as { $id?: unknown }).$id : null
   if (bodyId !== userId) {
-    log('mismatch')
+    log({ outcome: 'mismatch' })
     return
   }
   const emails = await noticesFor(services, userId, notice)
   if (typeof emails === 'string') {
-    log(emails)
+    log({ outcome: emails })
     return
   }
   if (!(await sendEach(services, emails, started, log))) {
@@ -133,7 +132,7 @@ async function sendEach(
   services: Services,
   emails: readonly Email[],
   started: number,
-  log: (outcome: Outcome) => void,
+  log: (line: Line) => void,
 ): Promise<boolean> {
   let lastStart = Number.NEGATIVE_INFINITY
   // Waits until `at`, or later for the spacing; false if the send would start too late.
@@ -146,33 +145,33 @@ async function sendEach(
   }
   const send = (email: Email) =>
     services.sendEmail(email, { timeoutMs: started + END_MS - Date.now() })
-  // One email, and once more after a 429, with the same key: 'sent', or why not.
-  const deliver = async (email: Email): Promise<Outcome> => {
+  // One email, and once more after a 429, with the same key: sent, or the error.
+  const deliver = async (email: Email): Promise<Line> => {
     for (let attempt = 1; ; attempt++) {
       try {
         await send(email)
-        return 'sent'
+        return { outcome: 'sent' }
       } catch (error) {
-        if (!(error instanceof EmailError)) return 'failed (unknown)'
-        if (ALREADY_SENT.has(error.type)) return 'sent'
+        if (!(error instanceof EmailError)) return { outcome: 'failed', error }
+        if (ALREADY_SENT.has(error.type)) return { outcome: 'sent' }
         // After Resend's wait, and only if that wait ends by LAST_START_MS (the lead on #329):
         // a retry sent sooner only gets another 429 and holds up the addresses after it.
         const retryAt = Date.now() + (error.retryAfterMs ?? RETRY_AFTER_MS)
         const retry =
           error.type === 'rate_limit_exceeded' && attempt === 1 && (await startAt(retryAt))
-        if (!retry) return `failed (${error.type})`
+        if (!retry) return { outcome: 'failed', error }
       }
     }
   }
   let allSent = true
   for (const [index, email] of emails.entries()) {
     if (!(await startAt(0))) {
-      log(`failed (budget): ${emails.length - index} left`)
+      log({ outcome: 'failed', cause: 'budget', count: emails.length - index })
       return false
     }
-    const outcome = await deliver(email)
-    log(outcome)
-    allSent &&= outcome === 'sent'
+    const line = await deliver(email)
+    log(line)
+    allSent &&= line.outcome === 'sent'
   }
   return allSent
 }

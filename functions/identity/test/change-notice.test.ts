@@ -46,8 +46,10 @@ const userBody = (id = 'u1') => ({
   password: 'argon2-SECRET',
 })
 
-// Every log line of every run, checked in afterEach.
+// Every log line of every run, and every console line with the method that wrote it, checked in
+// afterEach.
 let logged: string[] = []
+let written: Array<{ level: string; line: string }> = []
 
 function fire(
   services: Fakes,
@@ -68,26 +70,38 @@ function sent(services: Fakes): Email[] {
   return vi.mocked(services.sendEmail).mock.calls.map(([email]) => email)
 }
 
-function lines(): string[] {
-  return vi
-    .mocked(console.log)
-    .mock.calls.map(([line]) => String(line))
-    .filter((line) => line.startsWith('identity: '))
+// The logProblem lines written, parsed, without `fn`.
+function lines(): Array<Record<string, unknown>> {
+  return written.map(({ line }) => {
+    const { fn: _fn, ...fields } = JSON.parse(line) as Record<string, unknown>
+    return fields
+  })
 }
+
+const levels = () => written.map(({ level }) => level)
+
+// A change notice's line for u1, as lines() gives it.
+const logLine = (identityType: 'email' | 'phone', outcome: string, more: object = {}) => ({
+  event: 'change_notice',
+  userId: 'u1',
+  identityType,
+  outcome,
+  ...more,
+})
 
 beforeEach(() => {
   logged = []
-  vi.spyOn(console, 'log').mockImplementation(() => {})
+  written = []
+  for (const level of ['log', 'info', 'warn', 'error'] as const) {
+    vi.spyOn(console, level).mockImplementation((...args: unknown[]) => {
+      written.push({ level, line: args.map(String).join(' ') })
+    })
+  }
 })
 
 afterEach(() => {
   // No address, number, key, name or body in any log line (identity-and-invites.md step 7).
-  const all = [
-    ...logged,
-    ...(['log', 'info', 'warn', 'error'] as const).flatMap((method) =>
-      vi.isMockFunction(console[method]) ? vi.mocked(console[method]).mock.calls.flat() : [],
-    ),
-  ].map(String)
+  const all = [...logged, ...written.map(({ line }) => line)]
   vi.useRealTimers()
   vi.restoreAllMocks()
   for (const line of all) {
@@ -96,22 +110,20 @@ afterEach(() => {
 })
 
 describe('POST / (the users.*.update.email and users.*.update.phone events)', () => {
+  const passwordNotice = { event: 'password_notice' }
+  const emailNotice = { event: 'change_notice', identityType: 'email' }
+  const phoneNotice = { event: 'change_notice', identityType: 'phone' }
   it.each([
-    ['users.u1.update.password', 'u1', 'u1', 'password notice'],
+    ['users.u1.update.password', 'u1', 'u1', passwordNotice],
     // A recovery event's body is the spent token: the user still comes from the name.
-    ['users.u1.recovery.token1.update', 'u1', 'token1', 'password notice'],
-    ['users.u1.update.email', 'u1', 'u1', 'email change notice'],
-    ['users.u1.update.phone', 'u1', 'u1', 'phone change notice'],
-    ['users.u1.x.update.email', 'u1.x', 'u1.x', 'email change notice'],
-    ['users.u1.x.update.phone', 'u1.x', 'u1.x', 'phone change notice'],
-    ['users.u1.x.recovery.token1.update', 'u1.x', 'token1', 'password notice'],
-    [
-      'users.u1.update.phone.update.email',
-      'u1.update.phone',
-      'u1.update.phone',
-      'email change notice',
-    ],
-  ])('reads %s as its event, for user %s', async (name, userId, bodyId, notice) => {
+    ['users.u1.recovery.token1.update', 'u1', 'token1', passwordNotice],
+    ['users.u1.update.email', 'u1', 'u1', emailNotice],
+    ['users.u1.update.phone', 'u1', 'u1', phoneNotice],
+    ['users.u1.x.update.email', 'u1.x', 'u1.x', emailNotice],
+    ['users.u1.x.update.phone', 'u1.x', 'u1.x', phoneNotice],
+    ['users.u1.x.recovery.token1.update', 'u1.x', 'token1', passwordNotice],
+    ['users.u1.update.phone.update.email', 'u1.update.phone', 'u1.update.phone', emailNotice],
+  ])('reads %s as its event, for user %s', async (name, userId, bodyId, event) => {
     const services = seeded([], { email: 'sam@example.com', emailVerification: false })
     const get = vi.spyOn(services.users, 'get')
     expect((await fire(services, 'email', { $id: bodyId }, name)).body).toEqual({
@@ -119,9 +131,7 @@ describe('POST / (the users.*.update.email and users.*.update.phone events)', ()
       data: {},
     })
     expect(get.mock.calls).toEqual([[{ userId }]])
-    expect(lines().map((line) => line.slice(0, line.lastIndexOf(': ')))).toEqual([
-      `identity: ${notice} for user ${userId}`,
-    ])
+    expect(lines()).toEqual([{ ...event, userId, outcome: expect.any(String) }])
   })
 
   it.each([
@@ -150,7 +160,7 @@ describe('POST / (the users.*.update.email and users.*.update.phone events)', ()
     ['a number for $id', { $id: 1 }],
     ['no body', undefined],
     ['a body that isn’t an object', 'u1'],
-  ])('sends nothing for a body with %s, logging mismatch', async (_, body) => {
+  ])('sends nothing for a body with %s, warning of a mismatch', async (_, body) => {
     for (const notice of ['email', 'phone'] as const) {
       const services = seeded([identity('iOld', 'email:sam@example.com')], {})
       const get = vi.spyOn(services.users, 'get')
@@ -164,10 +174,8 @@ describe('POST / (the users.*.update.email and users.*.update.phone events)', ()
       expect(get).not.toHaveBeenCalled()
       expect(services.sendEmail).not.toHaveBeenCalled()
     }
-    expect(lines()).toEqual([
-      'identity: email change notice for user u1: mismatch',
-      'identity: phone change notice for user u1: mismatch',
-    ])
+    expect(lines()).toEqual([logLine('email', 'mismatch'), logLine('phone', 'mismatch')])
+    expect(levels()).toEqual(['warn', 'warn'])
   })
 
   it('refuses a person, even with a forged event trigger and name', async () => {
@@ -197,12 +205,9 @@ describe('POST / (the users.*.update.email and users.*.update.phone events)', ()
       expect((await fire(services, 'phone')).body).toEqual({ ok: true, data: {} })
       expect(services.sendEmail).not.toHaveBeenCalled()
     }
-    expect(lines()).toEqual([
-      'identity: email change notice for user u1: gone',
-      'identity: phone change notice for user u1: gone',
-      'identity: email change notice for user u1: gone',
-      'identity: phone change notice for user u1: gone',
-    ])
+    const gone = [logLine('email', 'gone'), logLine('phone', 'gone')]
+    expect(lines()).toEqual([...gone, ...gone])
+    expect(levels()).toEqual(Array(4).fill('log'))
   })
 
   it.each([
@@ -255,7 +260,8 @@ describe('an email change', () => {
       expect(email.text).toContain('Go to Ledgerly: https://app.example/login')
       expect(email.text).not.toContain('evil')
     }
-    expect(lines()).toEqual(Array(5).fill('identity: email change notice for user u1: sent'))
+    expect(lines()).toEqual(Array(5).fill(logLine('email', 'sent')))
+    expect(levels()).toEqual(Array(5).fill('log'))
     // It writes nothing, ever.
     expect(transaction).not.toHaveBeenCalled()
     expect([services.db.rows('identities'), services.db.rows('persons')]).toEqual(before)
@@ -285,7 +291,8 @@ describe('an email change', () => {
     )
     expect((await fire(services, 'email')).body).toEqual({ ok: true, data: {} })
     expect(services.sendEmail).not.toHaveBeenCalled()
-    expect(lines()).toEqual(['identity: email change notice for user u1: no_old_address'])
+    expect(lines()).toEqual([logLine('email', 'no_old_address')])
+    expect(levels()).toEqual(['log'])
   })
 
   it.each([
@@ -347,10 +354,7 @@ describe('a phone change', () => {
       expect(email?.text).toContain('was changed to one ending in 678.')
       expect(`${email?.subject} ${email?.html} ${email?.text}`).not.toMatch(/412345|1555|1234/)
     }
-    expect(lines()).toEqual([
-      'identity: phone change notice for user u1: sent',
-      'identity: phone change notice for user u1: sent',
-    ])
+    expect(lines()).toEqual([logLine('phone', 'sent'), logLine('phone', 'sent')])
   })
 
   it('says the phone was removed when the account has none now', async () => {
@@ -380,7 +384,8 @@ describe('a phone change', () => {
     const services = phoned(overrides)
     expect((await fire(services, 'phone')).body).toEqual({ ok: true, data: {} })
     expect(services.sendEmail).not.toHaveBeenCalled()
-    expect(lines()).toEqual(['identity: phone change notice for user u1: unverified'])
+    expect(lines()).toEqual([logLine('phone', 'unverified')])
+    expect(levels()).toEqual(['log'])
   })
 })
 
@@ -426,6 +431,10 @@ describe('sending (step 6)', () => {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
   const failure = (type: string, status: number, retryAfterMs?: number) =>
     new EmailError(`Resend answered ${status} ${type}`, type, status, retryAfterMs)
+  const sentLine = logLine('email', 'sent')
+  // A send that failed, naming the error (describe()), or the addresses left at 12 s.
+  const failed = (cause: string) => logLine('email', 'failed', { cause })
+  const budget = (count: number) => logLine('email', 'failed', { cause: 'budget', count })
 
   it('sends one after another, 500 ms apart', async () => {
     const services = seeded(old(3))
@@ -450,7 +459,7 @@ describe('sending (step 6)', () => {
       if (attempt === 1) throw failure('concurrent_idempotent_requests', 409)
     })
     expect((await run(services)).body).toEqual({ ok: true, data: {} })
-    expect(lines()).toEqual(Array(3).fill('identity: email change notice for user u1: sent'))
+    expect(lines()).toEqual(Array(3).fill(logLine('email', 'sent')))
   })
 
   it('tries a rate-limited send once more, with the same key, after Resend’s retry-after', async () => {
@@ -471,11 +480,8 @@ describe('sending (step 6)', () => {
     ])
     expect(attempts[1]?.key).toBe(attempts[0]?.key)
     expect(attempts[3]?.key).toBe(attempts[2]?.key)
-    expect(lines()).toEqual([
-      'identity: email change notice for user u1: sent',
-      'identity: email change notice for user u1: failed (rate_limit_exceeded)',
-      'identity: email change notice for user u1: sent',
-    ])
+    expect(lines()).toEqual([sentLine, failed('EmailError rate_limit_exceeded 429'), sentLine])
+    expect(levels()).toEqual(['log', 'error', 'log'])
   })
 
   it('doesn’t retry when Resend’s wait ends after 12 s, and goes on to the next address', async () => {
@@ -488,10 +494,7 @@ describe('sending (step 6)', () => {
       [0, 'old0@example.com'],
       [500, 'old1@example.com'],
     ])
-    expect(lines()).toEqual([
-      'identity: email change notice for user u1: failed (rate_limit_exceeded)',
-      'identity: email change notice for user u1: sent',
-    ])
+    expect(lines()).toEqual([failed('EmailError rate_limit_exceeded 429'), sentLine])
   })
 
   it('retries when Resend’s wait ends at 12 s exactly', async () => {
@@ -514,9 +517,7 @@ describe('sending (step 6)', () => {
     })
     expect((await run(services)).status).toBe(500)
     expect(attempts).toHaveLength(1)
-    expect(lines()).toEqual([
-      'identity: email change notice for user u1: failed (rate_limit_exceeded)',
-    ])
+    expect(lines()).toEqual([failed('EmailError rate_limit_exceeded 429')])
   })
 
   it('tries every address after a failed one, then fails the run', async () => {
@@ -535,11 +536,13 @@ describe('sending (step 6)', () => {
       'old3@example.com',
     ])
     expect(lines()).toEqual([
-      'identity: email change notice for user u1: sent',
-      'identity: email change notice for user u1: failed (validation_error)',
-      'identity: email change notice for user u1: failed (unknown)',
-      'identity: email change notice for user u1: sent',
+      sentLine,
+      failed('EmailError validation_error 422'),
+      // Not an EmailError: only its class is named, never the message.
+      failed('TypeError'),
+      sentLine,
     ])
+    expect(levels()).toEqual(['log', 'error', 'error', 'log'])
   })
 
   it('starts no send after 12 s, and logs how many were left', async () => {
@@ -549,10 +552,8 @@ describe('sending (step 6)', () => {
     // Every 500 ms from 0 to 12 s.
     expect(attempts).toHaveLength(25)
     expect(attempts.at(-1)?.at).toBe(12_000)
-    expect(lines().at(-1)).toBe(
-      'identity: email change notice for user u1: failed (budget): 5 left',
-    )
-    expect(lines()).toHaveLength(26)
+    expect(lines()).toEqual([...Array(25).fill(sentLine), budget(5)])
+    expect(levels().at(-1)).toBe('error')
   })
 
   it('counts the reads before the first send against the 12 s and 14 s', async () => {
@@ -565,10 +566,8 @@ describe('sending (step 6)', () => {
     const attempts = clocked(services)
     expect((await run(services)).status).toBe(500)
     expect(attempts.map(({ at, timeoutMs }) => [at, timeoutMs])).toEqual([[11_800, 2_200]])
-    expect(lines()).toEqual([
-      'identity: email change notice for user u1: sent',
-      'identity: email change notice for user u1: failed (budget): 1 left',
-    ])
+    expect(lines()).toEqual([sentLine, budget(1)])
+    expect(levels()).toEqual(['log', 'error'])
   })
 
   it('cuts each send’s timeout to what’s left of 14 s, so a slow Resend ends the run in time', async () => {
@@ -586,11 +585,6 @@ describe('sending (step 6)', () => {
       [10_000, 4_000],
     ])
     expect(Date.now() - T0).toBe(14_000)
-    expect(lines()).toEqual([
-      'identity: email change notice for user u1: sent',
-      'identity: email change notice for user u1: sent',
-      'identity: email change notice for user u1: failed (timeout)',
-      'identity: email change notice for user u1: failed (budget): 1 left',
-    ])
+    expect(lines()).toEqual([sentLine, sentLine, failed('EmailError timeout'), budget(1)])
   })
 })

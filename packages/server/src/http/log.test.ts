@@ -37,6 +37,13 @@ group('logProblem', () => {
     logProblem('person_reminder_failed', { reminderId: 'r1' })
     logProblem('nightly_check_finding', { groupId: 'elm', rule: 'I-3', transactionId: 't4' })
     logProblem('password_notice', { userId: 'u1', outcome: 'sent' })
+    logProblem('change_notice', {
+      userId: 'u1',
+      identityType: 'email',
+      outcome: 'failed',
+      cause: 'budget',
+      count: 3,
+    })
     expect(lines()).toEqual([
       {
         fn: 'statements',
@@ -63,6 +70,15 @@ group('logProblem', () => {
         rule: 'I-3',
       },
       { fn: 'statements', event: 'password_notice', userId: 'u1', outcome: 'sent' },
+      {
+        fn: 'statements',
+        event: 'change_notice',
+        userId: 'u1',
+        identityType: 'email',
+        outcome: 'failed',
+        count: 3,
+        cause: 'budget',
+      },
     ])
   })
 
@@ -131,6 +147,11 @@ group('logProblem', () => {
     for (const outcome of ['sent', 'stale', 'unverified', 'gone', 'failed'] as const) {
       logProblem('password_notice', { userId: 'u1', outcome })
     }
+    // A change notice: an error only when a send failed, a warning when the body's user differs.
+    const changes = ['sent', 'gone', 'no_old_address', 'unverified', 'mismatch', 'failed'] as const
+    for (const outcome of changes) {
+      logProblem('change_notice', { userId: 'u1', identityType: 'phone', outcome })
+    }
     // A merge (#242): what it did logs, what it left warns, what stops it is an error.
     const merge = { personId: 'pP', intoPersonId: 'pU' }
     logProblem('merge_typed_keys_deleted', { ...merge, count: 1 })
@@ -155,6 +176,12 @@ group('logProblem', () => {
       'log',
       'log',
       'log',
+      'error',
+      'log',
+      'log',
+      'log',
+      'log',
+      'warn',
       'error',
       'log',
       'log',
@@ -197,6 +224,11 @@ group('logProblem', () => {
       },
       { fn: 'unknown', event: 'merge_carries_on', counts: { groupsPutOff: 1 } },
     ])
+  })
+
+  it('writes the error over a fixed cause given with it', () => {
+    logProblem('change_notice', { outcome: 'failed', error: new TypeError('x'), cause: 'budget' })
+    expect(lines()[0]?.cause).toBe('TypeError')
   })
 
   it('names an error that is undefined', () => {
