@@ -1,10 +1,12 @@
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { parseLocalDate } from '@ledgerly/core/dates/local-date'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { buildStatementSnapshot, type SnapshotInput } from '@ledgerly/core/statements/snapshot'
 import { extractText, getDocumentProxy } from 'unpdf'
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderDividePdf } from './divide-pdf'
+import { useFontReader } from './fonts'
 
 type Line = StatementSnapshot['lines'][number]
 
@@ -93,6 +95,56 @@ async function textBeyondPage(pdf: Buffer): Promise<string[]> {
     }
   }
   return beyond
+}
+
+// Where the build finds each font file (scripts/build-functions.mjs).
+const FONT_PATHS: Record<string, string | URL> = {
+  'NotoSansCJKsc-Regular.otf': new URL('../../fonts/NotoSansCJKsc-Regular.otf', import.meta.url),
+  'NotoEmoji_400Regular.ttf': createRequire(import.meta.url).resolve(
+    '@expo-google-fonts/noto-emoji/400Regular/NotoEmoji_400Regular.ttf',
+  ),
+}
+// The font files each test reads, in order, as a new instance would.
+let reads: string[] = []
+beforeEach(() => {
+  reads = []
+  useFontReader((file) => {
+    reads.push(file)
+    return readFileSync(FONT_PATHS[file] as string | URL)
+  })
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+// What logProblem wrote with console.warn, parsed.
+const logged = (warn: { mock: { calls: unknown[][] } }) =>
+  warn.mock.calls.map(([line]) => JSON.parse(String(line)))
+
+// Alice, Bob and Cara renamed; the golden divide otherwise.
+function renamed(
+  names: { alice: string; bob: string; cara: string },
+  group = '12 Smith St',
+  description = 'Electricity',
+): SnapshotInput {
+  const input = goldenInput([
+    line(
+      '2026-10-10',
+      'bill',
+      27000,
+      [share('alice', 27000, 10139), share('bob', 0, 10139), share('cara', 0, 6722)],
+      { description },
+    ),
+  ])
+  return {
+    ...input,
+    group: { ...input.group, name: group },
+    people: input.people.map((person) => ({
+      ...person,
+      name: names[person.personId as keyof typeof names] ?? person.name,
+    })),
+  }
 }
 
 describe('renderDividePdf', () => {
@@ -287,6 +339,60 @@ describe('renderDividePdf', () => {
     expect(pdf.length).toBeLessThan(10 * 1024 * 1024)
     expect(await pdfText(pdf)).toContain('Shared shopping 500')
   }, 60_000)
+
+  it('prints Chinese, Japanese, Korean and emoji in their own fonts (#300)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const input = renamed(
+      { alice: '张三', bob: '山田太郎', cara: '김민준' },
+      '12 Smith St 🏠',
+      'Power 😀',
+    )
+    const text = await pdfText(await renderDividePdf(buildStatementSnapshot(input)))
+    for (const expected of [
+      '12 Smith St 🏠',
+      '张三 $0.00 $270.00 $101.39 $168.61 is owed $168.61',
+      '山田太郎 -$3.00 $0.00 $101.39 -$104.39 owes $104.39',
+      '김민준 $0.00 $0.00 $67.22 -$67.22 owes $67.22',
+      '山田太郎 pays 张三 $104.39',
+      '김민준 pays Erin $3.00',
+      '10 Oct 2026 Power 😀 张三 $270.00 $101.39 山田太郎 $0.00 $101.39 김민준 $0.00 $67.22',
+    ]) {
+      expect(text).toContain(expected)
+    }
+    // Nothing printed as �, or left out (an unknown glyph extracts as U+0000).
+    expect(text).not.toContain('\uFFFD')
+    expect(text).not.toContain('\u0000')
+    expect(warn).not.toHaveBeenCalled()
+    expect(reads).toEqual(['NotoEmoji_400Regular.ttf', 'NotoSansCJKsc-Regular.otf'])
+  })
+
+  it('reads no font file for a divide Roboto can print', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await renderDividePdf(buildStatementSnapshot(goldenInput()))
+    expect(reads).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  // Thai is in no font. The log line has the count only, never the text.
+  it('prints a character no font has as \uFFFD in every text, and logs how many', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const input = renamed({ alice: 'Alice', bob: 'Bob', cara: 'ก Cara' }, 'ก House', 'ก bill')
+    const text = await pdfText(await renderDividePdf(buildStatementSnapshot(input)))
+    for (const expected of [
+      '\uFFFD House',
+      '\uFFFD Cara $0.00 $0.00 $67.22',
+      '\uFFFD Cara pays Alice $64.22',
+      '\uFFFD Cara pays Erin $3.00',
+      '10 Oct 2026 \uFFFD bill Alice $270.00 $101.39 Bob $0.00 $101.39 \uFFFD Cara $0.00 $67.22',
+    ]) {
+      expect(text).toContain(expected)
+    }
+    expect(text).not.toContain('ก')
+    expect(text).not.toContain('\u0000')
+    // The house name, the description, and Cara in the people table, two transfers and the line.
+    expect(logged(warn)).toEqual([{ fn: 'unknown', event: 'pdf_characters_replaced', count: 6 }])
+    expect(reads).toEqual([])
+  })
 
   it('refuses an invoice snapshot', async () => {
     const snapshot = buildStatementSnapshot(goldenInput())

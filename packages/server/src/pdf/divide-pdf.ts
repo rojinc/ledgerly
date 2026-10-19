@@ -1,4 +1,5 @@
 import { formatMoney } from '@ledgerly/core/money/format'
+import { fontRuns, missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import type {
   Content,
@@ -6,6 +7,8 @@ import type {
   CustomTableLayout,
   TDocumentDefinitions,
 } from 'pdfmake/interfaces'
+import { logProblem } from '../http/log'
+import { loadFonts } from './fonts'
 import {
   breakable,
   field,
@@ -35,6 +38,16 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
     text: formatMoney(cents, snapshot.group.currency, LOCALE),
     noWrap: true,
   })
+  // As the invoice does (invoice-pdf.ts): every text from the snapshot prints as fontRuns()
+  // splits it, each run in its own font, and a character no font has as �. A font's file is read
+  // the first time a run needs it.
+  let replaced = 0
+  const print = (text: string): ContentText[] => {
+    replaced += missingGlyphs(text).length
+    const runs = fontRuns(text)
+    loadFonts(runs.map((run) => run.font))
+    return runs
+  }
   const names = new Map(snapshot.people.map((person) => [person.personId, breakable(person.name)]))
   // buildStatementSnapshot lists everyone in a line or a transfer in `people`.
   const nameOf = (personId: string): string => {
@@ -54,7 +67,7 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   const content: Content[] = [
     {
       columns: [
-        { text: breakable(snapshot.group.name), style: 'issuer' },
+        { text: print(breakable(snapshot.group.name)), style: 'issuer' },
         {
           width: 'auto',
           stack: [
@@ -69,7 +82,7 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
       ['*', AMOUNT, AMOUNT, AMOUNT, 90],
       ['Name', 'Opening', 'Paid', 'Share', 'Closing'],
       snapshot.people.map((person) => [
-        nameOf(person.personId),
+        { text: print(nameOf(person.personId)) },
         money(person.openingCents),
         money(person.givenCents),
         money(person.receivedCents),
@@ -84,13 +97,16 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
     ),
     heading('Suggested transfers'),
     ...(snapshot.transfers.length > 0
-      ? snapshot.transfers.map(
-          (transfer) =>
+      ? snapshot.transfers.map((transfer) => ({
+          text: print(
             `${nameOf(transfer.fromPersonId)} pays ${nameOf(transfer.toPersonId)} ${money(transfer.cents).text}`,
-        )
+          ),
+        }))
       : ['Everyone is settled up.']),
   ]
-  if (snapshot.lines.length > 0) content.push(transactions(snapshot, money, nameOf))
+  if (snapshot.lines.length > 0) content.push(transactions(snapshot, money, nameOf, print))
+  // The count only, never the text (security-and-privacy.md#personal-data).
+  if (replaced > 0) logProblem('pdf_characters_replaced', { count: replaced })
 
   const doc: TDocumentDefinitions = {
     ...PAGE,
@@ -103,7 +119,8 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
 
 // pdfmake drops the part of a row it may not break that doesn't fit on one page, so rows are
 // kept whole only while every one surely fits: at most this many wrapped lines (about 700 pt of
-// a page), counting a line per 10 characters, which no name or description in Roboto 10 pt beats.
+// a page), counting a line per 10 characters, which no name or description at 10 pt beats in
+// any of the PDF's fonts (Noto Sans CJK, the widest, fits about 20 a line).
 const MAX_ROW_LINES = 45
 const CHARS_PER_LINE = 10
 
@@ -133,6 +150,7 @@ function transactions(
   snapshot: StatementSnapshot,
   money: (cents: number) => ContentText,
   nameOf: (personId: string) => string,
+  print: (text: string) => ContentText[],
 ): Content {
   // A row too tall for a page breaks across pages rather than vanish, heading and all.
   const whole = snapshot.lines.every((line) => wrappedLines(line, nameOf) <= MAX_ROW_LINES)
@@ -161,9 +179,9 @@ function transactions(
             table: {
               widths: ['*', AMOUNT, AMOUNT],
               body: [
-                [{ text: lineText(line), bold: true }, '', ''],
+                [{ text: print(lineText(line)), bold: true }, '', ''],
                 ...line.shares.map((share) => [
-                  { text: nameOf(share.personId), color: MUTED, margin: [10, 0, 0, 0] },
+                  { text: print(nameOf(share.personId)), color: MUTED, margin: [10, 0, 0, 0] },
                   right(money(share.givenCents)),
                   right(money(share.receivedCents)),
                 ]),
