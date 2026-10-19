@@ -17,6 +17,8 @@ vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
 // The viewer's person: Alex (p1).
 vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'p1' } }) }))
+// Settle up has its own tests (settle-up.test.tsx) and its own ledger call.
+vi.mock('./settle-up', () => ({ SettleUp: () => null }))
 
 const call = vi.mocked(callFunction)
 const listRows = vi.mocked(tablesDB.listRows)
