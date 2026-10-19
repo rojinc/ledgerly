@@ -1,6 +1,7 @@
 import { voidTransactionBodySchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
 import {
   activityWrite,
@@ -10,10 +11,10 @@ import {
   invalid,
   ledgerRoute,
   listShares,
+  NO_SUCH_TRANSACTION,
   parseBody,
   readView,
   requireCreatorOrAdmin,
-  requireMemberOf,
   requireNotFinalizing,
   requireUnlocked,
   Unchanged,
@@ -32,9 +33,16 @@ export const voidTransaction = (services: ServicesFor) =>
     ledgerRoute(async () => {
       const { reason } = parseBody(voidTransactionBodySchema, body)
       const found = await getTransaction(db, params.id)
-      const membership = await requireMemberOf(db, services({ headers }).teams, userId, found, {
-        roles: ['admin', 'member'],
-      })
+      const membership = await requireMemberOf(
+        db,
+        services({ headers }).teams,
+        userId,
+        found.groupId,
+        NO_SUCH_TRANSACTION,
+        {
+          roles: ['admin', 'member'],
+        },
+      )
       requireCreatorOrAdmin(membership, found)
       requireUnlocked(found)
 

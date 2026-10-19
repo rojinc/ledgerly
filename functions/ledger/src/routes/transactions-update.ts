@@ -1,6 +1,7 @@
 import { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
 import {
   activityWrite,
@@ -14,12 +15,12 @@ import {
   listShares,
   loadLedger,
   money,
+  NO_SUCH_TRANSACTION,
   parseBody,
   plan,
   readView,
   replaceRows,
   requireCreatorOrAdmin,
-  requireMemberOf,
   requireNotFinalizing,
   requireNotTooFarAhead,
   requireUnlocked,
@@ -47,9 +48,16 @@ export const updateTransaction = (services: ServicesFor) =>
       if (input.id !== params.id) invalid('The body’s id must match the transaction.')
       const found = await getTransaction(db, params.id)
       const { teams, files } = services({ headers })
-      const membership = await requireMemberOf(db, teams, userId, found, {
-        roles: ['admin', 'member'],
-      })
+      const membership = await requireMemberOf(
+        db,
+        teams,
+        userId,
+        found.groupId,
+        NO_SUCH_TRANSACTION,
+        {
+          roles: ['admin', 'member'],
+        },
+      )
       requireCreatorOrAdmin(membership, found)
       if (input.groupId !== found.groupId) invalid('A transaction can’t move to another group.')
       if (input.kind !== found.kind) invalid('A transaction’s kind can’t change.')

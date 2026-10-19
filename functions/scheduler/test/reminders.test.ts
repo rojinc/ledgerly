@@ -24,6 +24,7 @@ const SYDNEY_YESTERDAY = '2026-10-18'
 function transaction(id: string, extra: Partial<Transactions> = {}) {
   return {
     $id: id,
+    $createdAt: '2026-10-01T00:00:00.000Z',
     groupId: 'acme',
     kind: 'shift',
     status: 'scheduled',
@@ -148,7 +149,14 @@ describe('POST / (cron run)', () => {
   it('logs counts only', async () => {
     const services = seeded([transaction('t1')])
     const { body, logs } = await call(services, 'POST', '/', { userId: null, scheduled: true })
-    expect(body).toEqual({ ok: true, data: { reminders: { sent: 1, skipped: 0, failed: 0 } } })
+    expect(body).toEqual({
+      ok: true,
+      data: {
+        expanded: { schedules: 0, created: 0, failed: 0 },
+        posted: { posted: 0, skipped: 0, failed: 0 },
+        reminders: { sent: 1, skipped: 0, failed: 0 },
+      },
+    })
     expect(logs.join('\n')).not.toContain('sam@example.com')
   })
 })
@@ -156,7 +164,7 @@ describe('POST / (cron run)', () => {
 describe('step 3: shift to confirm', () => {
   it('emails the group owner once about a past shift that doesn’t auto-post', async () => {
     const services = seeded([transaction('t1')])
-    expect(await runCron(services)).toEqual({ reminders: { sent: 1, skipped: 0, failed: 0 } })
+    expect((await runCron(services)).reminders).toEqual({ sent: 1, skipped: 0, failed: 0 })
     expect(services.sendEmail).toHaveBeenCalledTimes(1)
     const email = services.sendEmail.mock.calls[0]?.[0]
     expect(email).toMatchObject({
@@ -168,7 +176,7 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
 
     // The next run sends nothing more.
-    expect(await runCron(services)).toEqual({ reminders: { sent: 0, skipped: 0, failed: 0 } })
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 0 })
     expect(services.sendEmail).toHaveBeenCalledTimes(1)
   })
 
@@ -181,6 +189,16 @@ describe('step 3: shift to confirm', () => {
     const services = seeded([transaction('t1', { scheduleId: 'auto' })])
     expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 0 })
     expect(remindedAt(services, 't1')).toBeNull()
+  })
+
+  it('reminds about a shift of an auto-post schedule made after its day, which step 2 leaves', async () => {
+    // Made on Sydney's 19 October (now), for the 18th.
+    const late = transaction('t1', { scheduleId: 'auto', $createdAt: NOW.toISOString() })
+    const services = seeded([late])
+    expect(await runCron(services)).toMatchObject({
+      posted: { posted: 0, skipped: 0, failed: 0 },
+      reminders: { sent: 1, skipped: 0, failed: 0 },
+    })
   })
 
   it('treats a deleted schedule as one that doesn’t auto-post', async () => {

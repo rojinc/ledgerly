@@ -8,10 +8,12 @@ import { VerifyEmailPage } from './features/auth/verify-email-page'
 import { billRoutes } from './features/bills/routes'
 import { CalendarPage } from './features/calendar/calendar-page'
 import { DashboardPage } from './features/dashboard/dashboard-page'
+import { ExportPage } from './features/export/export-page'
 import { groupRoutes } from './features/groups/routes'
 import { houseRoutes } from './features/house/routes'
 import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
+import { scheduleRoutes } from './features/schedules/routes'
 import { shiftRoutes } from './features/shifts/routes'
 import { statementRoutes } from './features/statements/routes'
 import { transactionRoutes } from './features/transactions/routes'
@@ -41,8 +43,10 @@ export const routes: RouteObject[] = [
           statementRoutes,
           peopleRoutes,
           shiftRoutes,
+          scheduleRoutes,
           billRoutes,
           { path: 'activity', element: <ActivityPage /> },
+          { path: 'export', element: <ExportPage /> },
         ],
       },
     ],

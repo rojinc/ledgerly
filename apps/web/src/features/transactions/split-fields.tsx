@@ -11,18 +11,20 @@ import { livesThere, type SplitMode } from './house-expense'
 
 type Member = Pick<Members, 'personId' | 'displayName' | 'joinedOn' | 'leftOn'>
 
-/** Who paid it all: one of the group's members. */
+/** Who paid it all: one of the group's members. A refund says who it was refunded to. */
 export function PaidByField({
   members,
   field,
   error,
+  label = 'Paid by',
 }: {
   members: readonly Member[]
   field: UseFormRegisterReturn
   error?: FieldError
+  label?: string
 }) {
   return (
-    <SelectField id="paidBy" label="Paid by" error={error} {...field}>
+    <SelectField id="paidBy" label={label} error={error} {...field}>
       {members.map((member) => (
         <option key={member.personId} value={member.personId}>
           {member.displayName}
@@ -58,7 +60,7 @@ export function SplitModeField({ field }: { field: UseFormRegisterReturn }) {
 }
 
 /** A group-wide error under a fieldset, tied to it by `id`. */
-function GroupError({ id, message }: { id: string; message?: string }) {
+export function GroupError({ id, message }: { id: string; message?: string }) {
   // An alert: the fieldset's description isn't read when focus moves to a field inside it.
   return message ? (
     <p id={id} role="alert" className="text-sm text-destructive">

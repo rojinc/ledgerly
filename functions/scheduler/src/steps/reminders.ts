@@ -17,11 +17,12 @@ import {
   timerRunningEmail,
 } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
+import { madeLate } from '../occurrences'
+import { pages } from '../pages'
 import type { Services } from '../services'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
 
-const PAGE = 100
 // scheduling.md#step-2-auto-post: shifts older than this wait for the user.
 const FLOOR_DAYS = 7
 const TIMER_HOURS = 12
@@ -52,7 +53,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
 
   // idx_status_date. A shift must be before the group's local today, which is at most a day
   // after the UTC date, so later dates are never reminded yet.
-  const shifts = pages<Transactions>(services, [
+  const shifts = pages<Transactions>(services, TABLES.transactions, [
     Query.equal('status', 'scheduled'),
     Query.between('date', addDays(utcToday, -FLOOR_DAYS), utcToday),
     Query.equal('kind', 'shift'),
@@ -65,9 +66,9 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       if (!isAwake(group, now) || compareDates(shift.date as LocalDate, today(group, now)) >= 0) {
         return
       }
-      // Step 2 posts the shifts of schedules that auto-post.
+      // Step 2 posts the shifts of schedules that auto-post, except one made after its day.
       const schedule = shift.scheduleId ? await schedules(shift.scheduleId) : undefined
-      if (schedule?.autoPost) return
+      if (schedule?.autoPost && !madeLate(shift, group.timezone)) return
       const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
       const content = shiftToConfirmEmail({
         groupName: group.name,
@@ -79,7 +80,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
   }
 
   // idx_status_date, on its status alone: there are few running timers.
-  const timers = pages<Transactions>(services, [
+  const timers = pages<Transactions>(services, TABLES.transactions, [
     Query.equal('status', 'running'),
     Query.lessThan('startedAt', new Date(now.getTime() - TIMER_HOURS * MS_PER_HOUR).toISOString()),
     Query.isNull('remindedAt'),
@@ -222,38 +223,6 @@ async function verifiedEmail(
     // The account was deleted.
     if (error instanceof AppwriteException && error.code === 404) return undefined
     throw error
-  }
-}
-
-/**
- * Every matching transaction, a page of PAGE at a time, until the run's time budget is used
- * up. Pages follow `$id` rather than a cursor row (scaling.md): the rows this step goes
- * through can be deleted meanwhile, and a deleted cursor row fails the query.
- */
-async function* pages<R extends Transactions>(
-  { db, outOfTime }: Services,
-  queries: string[],
-): AsyncGenerator<R> {
-  let after: string | undefined
-  while (!outOfTime()) {
-    const { rows } = await db.listRows<R>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.transactions,
-      queries: [
-        ...queries,
-        ...(after === undefined ? [] : [Query.greaterThan('$id', after)]),
-        Query.orderAsc('$id'),
-        Query.limit(PAGE),
-      ],
-      total: false,
-    })
-    for (const row of rows) {
-      // One row can take several requests, the email among them.
-      if (outOfTime()) return
-      yield row
-    }
-    if (rows.length < PAGE) return
-    after = rows[rows.length - 1]?.$id
   }
 }
 

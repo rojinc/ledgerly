@@ -34,7 +34,6 @@ export async function reissueStatement(
 ): Promise<Statements> {
   const { groupId, periodStart, periodEnd } = parseBody(reissueStatementBodySchema, body)
   const { person, group } = await requireMember(db, teams, userId, groupId, { roles: ['admin'] })
-  if (statementTypeOf(group) === 'divide') throw invalid('House divides are not available yet.')
   const existing = await unfinishedFor(db, groupId, periodStart, periodEnd)
   if (existing) return existing
   const period = { start: periodStart, end: periodEnd }
@@ -55,7 +54,7 @@ export async function reissueStatement(
           rowId: statementId,
           data: {
             groupId,
-            type: 'invoice',
+            type: statementTypeOf(group),
             periodStart,
             periodEnd,
             status: 'draft',

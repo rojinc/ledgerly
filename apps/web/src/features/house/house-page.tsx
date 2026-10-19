@@ -10,6 +10,7 @@ import { ARCHIVED_NOTICE, ArchiveGroup } from '../groups/archive-group'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { useMembers } from '../transactions/use-transactions'
 import { HouseForm } from './house-form'
+import { HouseHistory } from './house-history'
 import {
   type HouseValues,
   memberStatusText,
@@ -17,7 +18,7 @@ import {
   ROLE_LABEL,
   toHouseValues,
 } from './house-values'
-import { AddHousemate, EditMember, MoveOut } from './housemate-forms'
+import { AddHousemate, EditMember, MoveBackIn, MoveOut } from './housemate-forms'
 import { SettleUp } from './settle-up'
 import { GroupsError, useLeaveHouse, useMemberWrites, useUpdateHouse } from './use-house'
 
@@ -128,6 +129,13 @@ function House({
       >
         Statements
       </Link>
+      {/* #44: every role reads the house's bills. */}
+      <Link
+        to={`/bills?groupId=${group.$id}`}
+        className="self-start text-sm underline underline-offset-4"
+      >
+        Bills
+      </Link>
       <section aria-labelledby="housemates" className="flex flex-col gap-2">
         <h2 id="housemates" className="font-medium">
           Housemates
@@ -150,6 +158,11 @@ function House({
         <AddHousemate group={group} isAdmin={role === 'admin'} writes={writes} />
       )}
       <SettleUp group={group} me={me} members={members} />
+      <HouseHistory
+        group={group}
+        members={members}
+        canAdd={role === 'admin' || role === 'member'}
+      />
       {/* Someone who moved out is still in the team until they leave (permissions.md). */}
       {!archived && me && me.status !== 'placeholder' && <LeaveHouse group={group} />}
       {role === 'admin' && <HouseSettings group={group} />}
@@ -158,7 +171,7 @@ function House({
   )
 }
 
-type Mode = 'view' | 'edit' | 'moveOut' | 'remove'
+type Mode = 'view' | 'edit' | 'moveOut' | 'moveBackIn' | 'remove'
 
 function MemberRow({
   group,
@@ -182,14 +195,16 @@ function MemberRow({
   const mode = isAdmin ? chosen : 'view'
   const buttons = {
     edit: useRef<HTMLButtonElement>(null),
-    moveOut: useRef<HTMLButtonElement>(null),
+    // One button moves them out or back in, whichever applies now.
+    move: useRef<HTMLButtonElement>(null),
     remove: useRef<HTMLButtonElement>(null),
   }
 
   function close(from: Exclude<Mode, 'view'>) {
     flushSync(() => setMode('view'))
-    // Moving out takes its button away: focus goes to Change.
-    ;(buttons[from].current ?? buttons.edit.current)?.focus()
+    const trigger = from === 'moveOut' || from === 'moveBackIn' ? buttons.move : buttons[from]
+    // A button that's gone sends focus to Change.
+    ;(trigger.current ?? buttons.edit.current)?.focus()
   }
 
   return (
@@ -213,9 +228,18 @@ function MemberRow({
           >
             Change
           </Button>
-          {!member.leftOn && (
+          {member.leftOn ? (
             <Button
-              ref={buttons.moveOut}
+              ref={buttons.move}
+              variant="outline"
+              aria-describedby={nameId}
+              onClick={() => setMode('moveBackIn')}
+            >
+              Moved back in
+            </Button>
+          ) : (
+            <Button
+              ref={buttons.move}
               variant="outline"
               aria-describedby={nameId}
               onClick={() => setMode('moveOut')}
@@ -241,6 +265,9 @@ function MemberRow({
       )}
       {mode === 'moveOut' && (
         <MoveOut group={group} member={member} writes={writes} onClose={() => close('moveOut')} />
+      )}
+      {mode === 'moveBackIn' && (
+        <MoveBackIn member={member} writes={writes} onClose={() => close('moveBackIn')} />
       )}
       {mode === 'remove' && (
         <ConfirmRemove

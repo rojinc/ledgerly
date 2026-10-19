@@ -99,6 +99,69 @@ export function buildStatementSnapshot(input: SnapshotInput): StatementSnapshot 
 }
 
 /**
+ * Statements core rule 2 after a person merge (identity-and-invites.md#merging-two-persons): a
+ * closing whose person has no member row in the group counts for the person they were merged
+ * into, following `mergedInto` to the first person who has one, and is added to that person's
+ * own closing. A closing that can't be followed that far (corrupt data: a loop, or a
+ * non-member who was never merged) stays as it is, so `buildStatementSnapshot` throws
+ * `INVARIANT_VIOLATION` for it.
+ */
+export function mergedClosings(
+  closings: readonly Net[],
+  inGroup: ReadonlySet<string>,
+  mergedInto: ReadonlyMap<string, string | null>,
+): Net[] {
+  const totals = new Map<string, number>()
+  for (const { personId, netCents } of closings) {
+    const owner = ownerInGroup(personId, inGroup, mergedInto)
+    totals.set(owner, (totals.get(owner) ?? 0) + netCents)
+  }
+  return [...totals].map(([personId, netCents]) => ({ personId, netCents }))
+}
+
+type ShareAmounts = { personId: string; givenCents: number; receivedCents: number }
+
+/**
+ * Rule 2 for shares a merge hasn't moved yet: each share counts for the person found as in
+ * `mergedClosings`, and two shares that then name the same person are combined (I-5), so a
+ * snapshot taken between merge batches still adds up.
+ */
+export function mergedShares(
+  shares: readonly ShareAmounts[],
+  inGroup: ReadonlySet<string>,
+  mergedInto: ReadonlyMap<string, string | null>,
+): ShareAmounts[] {
+  const byOwner = new Map<string, ShareAmounts>()
+  for (const { personId, givenCents, receivedCents } of shares) {
+    const owner = ownerInGroup(personId, inGroup, mergedInto)
+    const total = byOwner.get(owner)
+    byOwner.set(owner, {
+      personId: owner,
+      givenCents: (total?.givenCents ?? 0) + givenCents,
+      receivedCents: (total?.receivedCents ?? 0) + receivedCents,
+    })
+  }
+  return [...byOwner.values()]
+}
+
+function ownerInGroup(
+  personId: string,
+  inGroup: ReadonlySet<string>,
+  mergedInto: ReadonlyMap<string, string | null>,
+): string {
+  const seen = new Set<string>()
+  let current = personId
+  while (!inGroup.has(current)) {
+    const next = mergedInto.get(current)
+    // Not merged, or a loop: leave the closing where it is.
+    if (!next || seen.has(next)) return personId
+    seen.add(current)
+    current = next
+  }
+  return current
+}
+
+/**
  * Finalize step 5 (statements.md#2-finalize): each closing is the opening plus
  * that person's nets over the lines, the closings add up to 0, and they equal
  * `freshBalances`, a fresh sum of every locked share in the group.

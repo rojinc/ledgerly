@@ -17,7 +17,7 @@ This is the same idea as Splitwise's "paid share / owed share". We use *given* a
 
 ## Invariants
 
-These must hold for every posted transaction, always. `packages/core` exports `assertShareInvariants()`; the `ledger` function calls it before every write, and a nightly job re-checks production (M4).
+These must hold for every posted transaction, always. `packages/core` exports `assertShareInvariants()`; the `ledger` function calls it before every write, and the scheduler's [nightly check](scheduling.md#step-6-nightly-check) checks every group again.
 
 1. **I-1 Balanced:** Σ `givenCents` = Σ `receivedCents` = `totalCents`. So the nets in a transaction always add up to 0.
 2. **I-2 Integers:** every amount is an integer number of cents. No floats are ever stored.
@@ -161,7 +161,14 @@ Rule-breaking input fails with `VALIDATION_FAILED`: payers or exact amounts that
 - **Employer balance due** = the worker's balance in the employer group (equal to minus the employer's).
 - The **dashboard** shows each group's balance for the user.
 
-v1 works balances out on read. When that gets slow, the `ledger` function will maintain a `balances` table inside the same transaction (M4). See [Scaling](scaling.md).
+Each group's **`balances` row** ([data model](data-model.md#balances)) holds each person's balance there and how many shares they have, so `GET /balances` reads one row ([why one row per group](scaling.md#the-balances-cache)).
+
+- **Every write of shares keeps it**, in the same database transaction. That covers `ledger`'s create, edit, post, void and timer stop, and the scheduler's auto-post. After staging its guard write on the group row, the write reads the row. It subtracts the shares it replaces and adds the ones it writes (core `applyShares()`), dropping anyone left with no shares, and writes the row back. When nothing changed, there's no write.
+- **A [merge](identity-and-invites.md#merging-two-persons) batch deletes it instead**, for each group whose shares the batch changes. A merge renames a person, which a cache keyed by person can't follow share by share. `/balances` sums the shares until the nightly check builds the row again.
+- **No row** (not built yet, or deleted): the write leaves it alone, and `/balances` sums the shares instead. The [nightly check](scheduling.md#step-6-nightly-check) builds it: a group's first check is the backfill.
+- **No guard of its own:** every writer has staged the group row first, so writes in one group already take turns ([concurrency](#concurrency)). A write that read the row before another one committed fails its commit and runs again.
+- **A row that doesn't fit is deleted.** That's a row that can't be read or fails `balancesPeopleSchema`, or one where someone's share count would go below 0, someone dropped would still have a net that isn't 0, or a net would pass a safe integer. It's a bug, so the write deletes the row in the same transaction instead of failing, and logs an error with the group's ID. `/balances` sums the shares until the nightly check rebuilds the row. A cache never stops a write.
+- **The nightly check** compares the row with a fresh sum and repairs it.
 
 ## Settle up (suggested transfers)
 
@@ -205,11 +212,12 @@ All reports are sums over the user's shares in groups they have joined ([D-016](
 
 ## Concurrency
 
-Every ledger write checks what it depends on only after staging a write to it in its database transaction ([conventions](../engineering/conventions.md#functions)). A change by anyone else after that makes the commit fail with 409 (a delete fails it with 404, which `withTransaction` reports as 409), and the write runs once more from the start.
+Every ledger write checks what it depends on only after staging a write to it in its database transaction ([conventions](../engineering/conventions.md#functions)). A change by anyone else after that makes the commit fail with 409 (a delete fails it with 404, which `withTransaction` reports as 409), and the write runs once more from the start. A row deleted after the request read it but before its update or delete is staged fails the staging with 404 instead; `withTransaction` reports that as 409 too, so the rerun reads again and answers the route's own `NOT_FOUND` if the row is really gone.
 
 - **The transaction row:** edit, post and void stage a write to it first, then read it, its shares, items and stored input. So they never act on a version that another edit, post, void or lock (I-7) has replaced.
-- **The member rows (I-3):** every create, edit and post stages a guard write to the `members` row of each person the transaction names (payers, splits, items, payment, adjustment) or gives a share, then reads it and checks it still belongs to that person (a [merge](identity-and-invites.md#merging-two-persons) gives a member row to another person). This includes a `due` or `scheduled` transaction, which has no shares yet. A member removed meanwhile can't be left with a share, or named in a transaction that would give them one when it's posted. The `groups` function refuses to remove anyone an unposted transaction names, so the two checks together cover both orders.
+- **The member rows (I-3):** every create, edit and post stages a guard write to the `members` row of each person the transaction names (payers, splits, items, payment, adjustment) or gives a share, then reads it and checks it still belongs to that person (a [merge](identity-and-invites.md#merging-two-persons) gives a member row to another person). This includes a `due` or `scheduled` transaction, which has no shares yet, and a schedule's template ([scheduling](scheduling.md#schedule-routes)): creating or editing a schedule, and each batch of occurrences it creates, guard the same rows. A member removed meanwhile can't be left with a share, or named in a transaction that would give them one when it's posted. The `groups` function refuses to remove anyone an unposted transaction names, so the two checks together cover both orders.
 - **The group row:** every create, edit, post and void stages a guard write to the group row, then checks that its currency, archive date, time zone and settings are what the write read. A change to any of them that lands meanwhile makes the write run again with the group as it is now.
+- **The `balances` row:** read only after the group row is staged, so it needs no guard of its own ([balances](#balances)).
 - **Person merges** write shares too ([merging](identity-and-invites.md#merging-two-persons), step 3). Each batch stages a guard write on the row of every group whose shares or inputs it changes, then checks that no statement in the group is `finalizing`, and leaves that group for later if one is. Its member-row writes (step 2) stage both rows before checking them, so a ledger write racing a merge runs again.
 - **Statements being finalized:** the `finalizing` check runs after the group row is staged. Finalize step 1 stages the group row in the same database transaction that sets `finalizing` ([statements](statements.md#2-finalize-post-statementsidfinalize)), so a write that checked just before then fails its commit, runs again and gets `LOCKED`.
 

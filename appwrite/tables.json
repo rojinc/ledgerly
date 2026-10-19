@@ -66,6 +66,12 @@
         "type": "key",
         "columns": ["mergedInto"],
         "orders": ["ASC"]
+      },
+      {
+        "key": "idx_deletedAt",
+        "type": "key",
+        "columns": ["deletedAt"],
+        "orders": ["ASC"]
       }
     ]
   },
@@ -209,6 +215,32 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "hoursCapMinutes",
+        "type": "integer",
+        "required": false,
+        "array": false,
+        "min": 60,
+        "max": 20160,
+        "default": null
+      },
+      {
+        "key": "hoursCapPeriod",
+        "type": "string",
+        "format": "enum",
+        "elements": ["week", "fortnight"],
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "hoursCapStartsOn",
+        "type": "string",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
@@ -302,6 +334,13 @@
         "default": null
       },
       {
+        "key": "nextCheckAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
         "key": "settingsJson",
         "type": "text",
         "required": true,
@@ -329,6 +368,12 @@
         "key": "idx_nextCloseAt",
         "type": "key",
         "columns": ["nextCloseAt"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_nextCheckAt",
+        "type": "key",
+        "columns": ["nextCheckAt"],
         "orders": ["ASC"]
       },
       {
@@ -793,6 +838,24 @@
     ]
   },
   {
+    "$id": "balances",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "balances",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "peopleJson",
+        "type": "mediumtext",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": []
+  },
+  {
     "$id": "schedules",
     "$permissions": [],
     "databaseId": "main",
@@ -1085,6 +1148,14 @@
       },
       {
         "key": "transactionId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "subjectPersonId",
         "type": "varchar",
         "size": 36,
         "required": false,

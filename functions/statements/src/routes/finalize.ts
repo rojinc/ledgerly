@@ -8,17 +8,19 @@ import type {
   Transactions,
 } from '@ledgerly/core/generated/rows'
 import { finalizeStatementBodySchema } from '@ledgerly/core/schemas/statements'
-import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { checkSnapshot } from '@ledgerly/core/statements/snapshot'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { withTransaction, writeInBatches } from '@ledgerly/server/appwrite/transaction'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { renderDividePdf } from '@ledgerly/server/pdf/divide-pdf'
 import { renderInvoicePdf } from '@ledgerly/server/pdf/invoice-pdf'
 import { Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
   activityWrite,
+  chunks,
   conflictAsTryAgain,
   getRowOrNull,
   getStatement,
@@ -26,15 +28,16 @@ import {
   invalid,
   isAppwriteError,
   listAll,
+  NO_SUCH_STATEMENT,
   parseBody,
-  requireMemberOf,
   snapshotOf,
+  statementName,
   teamRead,
   tryAgain,
   updateStatement,
 } from '../shared'
-import { computeSnapshot, sharesOf } from '../snapshot'
-import { sendInvoice } from './send'
+import { computeSnapshot, type Membership, sharesInGroup, sharesOf } from '../snapshot'
+import { sendStatement } from './send'
 
 /**
  * `statements POST /statements/{id}/finalize` (admin; called async): statements.md#2-finalize.
@@ -49,9 +52,14 @@ export async function finalizeRoute(
 ): Promise<Statements> {
   const { send } = parseBody(finalizeStatementBodySchema, body)
   const statement = await getStatement(services.db, statementId)
-  const { person, group } = await requireMemberOf(services.db, services.teams, userId, statement, {
-    roles: ['admin'],
-  })
+  const { person, group } = await requireMemberOf(
+    services.db,
+    services.teams,
+    userId,
+    statement.groupId,
+    NO_SUCH_STATEMENT,
+    { roles: ['admin'] },
+  )
   return finalizeStatement(services, group, statement, person.$id, send)
 }
 
@@ -65,19 +73,21 @@ export async function finalizeStatement(
 ): Promise<Statements> {
   const { db } = services
   if (statement.status === 'void') throw invalid('A void statement can’t be finalized.')
-  if (statement.type !== 'invoice') throw invalid('House divides are not available yet.')
   let current = statement
   return conflictAsTryAgain(async () => {
     if (current.status !== 'final') {
       await requireOldestUnfinished(db, current)
       if (current.status === 'draft') current = await startFinalizing(db, group, current)
-      if (current.number === null) current = await numberInvoice(db, group, current)
+      // A divide has no number, and never touches a profile, on a resume too (step 2).
+      if (current.type === 'invoice' && current.number === null) {
+        current = await numberInvoice(db, group, current)
+      }
       if (current.issuedOn === null) current = await lockAndIssue(services, group, current)
       if (current.pdfFileId === null) current = await renderPdf(services, current)
       current = await markFinal(services, current, actorPersonId)
     }
     if (send && current.sentAt === null)
-      current = await sendInvoice(services, group, current, actorPersonId)
+      current = await sendStatement(services, group, current, actorPersonId)
     // The row as stored, with Appwrite's own fields up to date.
     return getStatement(db, current.$id)
   })
@@ -182,17 +192,15 @@ async function lockAndIssue(
     end: statement.periodEnd as LocalDate,
   }
   await finishVoids(db, group.$id)
-  const { snapshot, unlockedIds } = await computeSnapshot(db, group, period, now, statement.$id)
-  await writeInBatches(
+  const { snapshot, unlockedIds, membership } = await computeSnapshot(
     db,
-    unlockedIds.map((rowId) => ({
-      action: 'update',
-      tableId: TABLES.transactions,
-      rowId,
-      data: { statementId: statement.$id },
-    })),
+    group,
+    period,
+    now,
+    statement.$id,
   )
-  const problems = checkSnapshot(snapshot, await lockedBalances(db, group.$id))
+  await lock(db, statement, unlockedIds)
+  const problems = checkSnapshot(snapshot, await lockedBalances(db, group.$id, membership))
   if (problems.length > 0) {
     // Back to draft only if no other run of this finalize got past its check meanwhile: it
     // would have stored issuedOn, and its locks must stay. That's checked before anything is
@@ -215,14 +223,17 @@ async function lockAndIssue(
   })
 }
 
-/** Every person's balance from all the locked shares in the group (finalize step 5). */
-async function lockedBalances(db: Db, groupId: string) {
+/**
+ * Every person's balance from all the locked shares in the group (finalize step 5), with merged
+ * people counted as the snapshot counted them.
+ */
+async function lockedBalances(db: Db, groupId: string, membership: Membership) {
   const locked = await listAll<Transactions>(db, TABLES.transactions, [
     Query.equal('groupId', groupId),
     Query.isNotNull('statementId'),
   ])
   const shares = await sharesOf(db, locked)
-  return netsFromShares([...shares.values()].flat())
+  return sharesInGroup(db, membership, [...shares.values()].flat())
 }
 
 /**
@@ -241,6 +252,42 @@ async function finishVoids(db: Db, groupId: string): Promise<void> {
 
 // One guard write to the group row, and the rest of a database transaction's 90 writes.
 const UNLOCK_BATCH = 89
+// Times a batch whose commit lost to another write in the group is staged again (statements.md).
+const LOCK_RETRIES = 3
+
+/**
+ * Step 4: locks the transactions to the statement, a batch per database transaction. Each batch
+ * stages a guard write to the group row with its locks, then checks the stored statement is
+ * still finalizing and not yet issued. So a run that read the statement before another run's
+ * check failed, set it back to draft and an admin discarded it, never locks a row to a statement
+ * that's gone (I-7), and the discard, which writes the group row too, fails one of the commits.
+ */
+async function lock(db: Db, statement: Statements, ids: readonly string[]): Promise<void> {
+  for (const batch of chunks(ids, UNLOCK_BATCH)) {
+    for (let misses = 0; ; ) {
+      try {
+        await withTransaction(db, async (tx) => {
+          await tx.write(
+            groupGuard({ $id: statement.groupId }),
+            ...batch.map((rowId) => ({
+              action: 'update' as const,
+              tableId: TABLES.transactions,
+              rowId,
+              data: { statementId: statement.$id },
+            })),
+          )
+          const stored = await getRowOrNull<Statements>(db, TABLES.statements, statement.$id)
+          if (stored?.status !== 'finalizing' || stored.issuedOn !== null) throw tryAgain()
+        })
+        break
+      } catch (error) {
+        // Another write in the group committed first: stage the batch again.
+        if (!isAppwriteError(error, 409) || ++misses > LOCK_RETRIES) throw error
+      }
+    }
+  }
+}
+
 // Batches in a row that found their rows locked again meanwhile, before giving up.
 const UNLOCK_MISSES = 3
 
@@ -302,12 +349,17 @@ export async function unlock(db: Db, statement: Statements): Promise<void> {
 /** Step 7: the PDF, uploaded with the statement's ID as its file ID, readable by the team. */
 async function renderPdf({ db, files }: Services, statement: Statements): Promise<Statements> {
   const snapshot = snapshotOf(statement)
-  const displayNumber = statement.displayNumber ?? ''
-  const pdf = await renderInvoicePdf(snapshot, {
-    displayNumber,
-    issuedOn: statement.issuedOn as LocalDate,
-  })
-  await files.upload(statement.$id, `${displayNumber}.pdf`, pdf, teamRead(statement.groupId))
+  const [pdf, name] =
+    statement.type === 'divide'
+      ? [await renderDividePdf(snapshot), `divide-${statement.periodEnd}.pdf`]
+      : [
+          await renderInvoicePdf(snapshot, {
+            displayNumber: statement.displayNumber ?? '',
+            issuedOn: statement.issuedOn as LocalDate,
+          }),
+          `${statement.displayNumber ?? ''}.pdf`,
+        ]
+  await files.upload(statement.$id, name, pdf, teamRead(statement.groupId))
   return updateStatement(db, statement, { pdfFileId: statement.$id })
 }
 
@@ -322,7 +374,7 @@ async function markFinal(
       statement.groupId,
       actorPersonId,
       'statement.finalized',
-      `Invoice ${statement.displayNumber} finalized`,
+      `${statementName(statement)} finalized`,
       now,
     ),
   ])
