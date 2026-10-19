@@ -15,6 +15,7 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
+import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { guardGroup, Raced } from '@ledgerly/server/ledger/transactions'
 import {
@@ -86,12 +87,12 @@ async function leaveGroup(
       if (!others) return false
       await keep(services, person, member, group)
     }
-    // Then, in this order, on every run once the keep is done (each is safe to repeat): their
+    // Then, in this order, on every run once the keep is done (each is safe to repeat): the
     // schedules, the archive (ending a schedule in an archived group is refused), and leaving
     // the team last, so a crash before it leaves the group to be finished, never with its
     // schedules still running.
     if (!group.archivedAt) {
-      if (!(await endSchedules(services, person.$id, group))) return false
+      if (!(await endSchedules(services, person, group))) return false
       if (!(await hasJoinedAdmin(db, group.$id))) await archive(services, person.$id, group)
     }
     await removeFromTeam(teams, group.$id, userId)
@@ -170,23 +171,38 @@ async function keep(
   })
 }
 
-// The schedules in the group that they created, or whose template names them, end on the
-// earlier of their stored end and today, so no new occurrence names a deleted person. One that
-// hasn't started and has nothing posted is deleted instead, as it would otherwise end before
-// it starts. False when the time budget runs out first.
+// The schedules in the group that they created, or whose template names them, and in a `pair`
+// or `employer` group every schedule made before the deletion, end on the earlier of their
+// stored end and today, so no new occurrence names a deleted person. One that hasn't started
+// and has nothing posted is deleted instead, as it would otherwise end before it starts. False
+// when the time budget runs out first.
 async function endSchedules(
   { db, now, outOfTime }: Services,
-  personId: string,
+  person: Deleting,
   group: Groups,
 ): Promise<boolean> {
   const today = localToday(group.timezone, now)
+  // In those groups, a schedule the other side made can give them a share without naming them
+  // (the default split, or a shift's employer), which no new record may do
+  // (identity-and-invites.md#after-deletion, a lead decision on #320). Only one made before the
+  // deletion: a later one is held to that rule when it is made, and a rerun must decide as the
+  // first run did. Appwrite writes `+00:00`, so the times are compared parsed.
+  const every = group.type === 'pair' || group.type === 'employer'
+  const deletedAt = Date.parse(person.deletedAt)
   // idx_groupId
   const schedules = await allRows<Schedules>(db, TABLES.schedules, [
     Query.equal('groupId', group.$id),
   ])
   for (const schedule of schedules) {
     if (outOfTime()) return false
-    if (schedule.createdBy !== personId && !namedIn(schedule).includes(personId)) continue
+    const before = Date.parse(schedule.$createdAt) <= deletedAt
+    if (
+      !(every && before) &&
+      schedule.createdBy !== person.$id &&
+      !namedIn(schedule).includes(person.$id)
+    ) {
+      continue
+    }
     const storedEnd = schedule.endsOn as LocalDate | null
     const generated = schedule.generatedThrough as LocalDate | null
     // Already ended by today, made up to its end and with nothing left for an end to delete:
@@ -228,7 +244,10 @@ function namedIn(schedule: Schedules): string[] {
   try {
     return everyPersonId(JSON.parse(schedule.templateJson) as TransactionTemplate)
   } catch {
-    console.error(`account: schedule ${schedule.$id} has a template that can't be read`)
+    logProblem('schedule_template_unreadable', {
+      groupId: schedule.groupId,
+      scheduleId: schedule.$id,
+    })
     return []
   }
 }
@@ -258,7 +277,7 @@ async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
 async function archive({ db, now }: Services, personId: string, group: Groups): Promise<void> {
   const finalizing = await finalizingStatement(db, group.$id)
   if (finalizing && isStuck(finalizing, now)) {
-    console.error(`account: group ${group.$id} not archived: statement ${finalizing.$id} is stuck`)
+    logProblem('stuck_finalize_not_archived', { groupId: group.$id, statementId: finalizing.$id })
     return
   }
   await withTransaction(db, async (tx) => {

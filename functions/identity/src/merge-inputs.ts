@@ -26,6 +26,7 @@ import { splitSpecSchema } from '@ledgerly/core/schemas/split'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import {
   activityWrite,
@@ -122,7 +123,7 @@ async function moveGroupInputs(
 ): Promise<'done' | 'putOff' | 'cutOff'> {
   // Step 3 never plans a posted row's items without step 1's dates (#301).
   if (!dates) {
-    console.error(`merge ${merge.from}: no recorded member dates for group ${groupId}`)
+    logProblem('merge_no_member_dates', { personId: merge.from, groupId })
     return 'putOff'
   }
   // An edit after the merge plans a row with the members as step 2 left them, and as they are
@@ -163,9 +164,11 @@ async function moveGroupInputs(
     }
     // Nothing can ever change a locked row, so it doesn't hold the merge open (#263).
     for (const rowId of lockedSkipped) {
-      console.warn(
-        `merge ${merge.from} into ${merge.into} left locked transaction ${rowId} as it is`,
-      )
+      logProblem('merge_left_locked_transaction', {
+        personId: merge.from,
+        intoPersonId: merge.into,
+        transactionId: rowId,
+      })
     }
     return skipped
   }
@@ -209,7 +212,11 @@ async function moveGroupInputs(
     // Usually none of a page's rows is in `left` yet, but two runs at once can store a `left`
     // row past the other's `after` (saveCursor keeps the last writer's): count it once.
     for (const rowId of outcome.filter((id) => !left.includes(id))) {
-      console.warn(`merge ${merge.from} into ${merge.into} left transaction ${rowId} as it is`)
+      logProblem('merge_left_transaction', {
+        personId: merge.from,
+        intoPersonId: merge.into,
+        transactionId: rowId,
+      })
       left.push(rowId)
     }
     after = page.at(-1)?.$id ?? after
@@ -674,9 +681,11 @@ async function moveGroupTemplates(
         mergeInput(raw as z.infer<typeof transactionTemplateSchema>, schedule.kind, merge),
       )
       if (!template) {
-        console.warn(
-          `merge ${merge.from} into ${merge.into} left schedule ${schedule.$id} as it is`,
-        )
+        logProblem('merge_left_schedule', {
+          personId: merge.from,
+          intoPersonId: merge.into,
+          scheduleId: schedule.$id,
+        })
         skipped += 1
         continue
       }
