@@ -187,11 +187,11 @@ Someone owed money in a lend & borrow group can email the other person a reminde
    2. Read both rows again. A recipient with `deletedAt` (a deletion that started meanwhile) gets the same `VALIDATION_FAILED` as a wrong address; a sender with `deletedAt` gets `UNAUTHENTICATED`.
    3. **Rate limits** (`REMINDER_LIMITS`, rolling): at most 1 per sender per group in the last 3 days, 3 per recipient person in the last 7 days from all senders, and 20 per sender in the last 24 hours across groups. Otherwise `RATE_LIMITED`, one message for all three.
 7. **Stage and commit:** the `reminders` row (ID `id`, `channel: 'email'`, `sentAt` now) and a `reminder.sent` [activity](data-model.md#activity) row: `actorPersonId` = the sender, `subjectPersonId` = the recipient, summary `was sent a reminder` (the feed shows "<subject> was sent a reminder"), no `changesJson`. **Commit before sending,** so N parallel requests with different `id`s can't all count 0 and all send: the guards fail every commit but one.
-8. **Send** through Resend with the idempotency key `person-reminder-<id>`. A failed send answers `INTERNAL` and still counts toward the limits, as for invites; the app retries with the same `id` (step 3), and the same key stops a second delivery. On a re-send, Resend's `invalid_idempotent_request` and `concurrent_idempotent_requests` mean the key was taken already: the reminder counts as sent (200), as the scheduler treats them.
+8. **Send** through Resend with the idempotency key `person-reminder-<id>`. A failed send answers `INTERNAL` and still counts toward the limits, as for invites; the app retries with the same `id` (step 3), and the same key stops a second delivery. On a re-send, Resend's `invalid_idempotent_request` means the key was used already, with other content: the reminder counts as sent (200). `concurrent_idempotent_requests` means a parallel call is still sending it and may yet fail, so it answers `INTERNAL`, and the app tries again.
 9. **The email:**
    - **Subject:** "You have a payment reminder", fixed: the sender's name is free text they chose, so it stays out of the subject.
    - **Body:** "{sender} sent you a reminder that you owe them {amount}." and "If you've already paid, let them know so they can record it.", and one link to the app (`APP_URL`).
-   - `{sender}` is the sender's `members.displayName` in that group, cut to 40 characters (with "…") and HTML-escaped. `{amount}` is the whole balance in the group's currency.
+   - `{sender}` is the sender's `members.displayName` in that group, put on one line (each run of spaces and line breaks becomes one space), cut to 40 characters as people see them, so an emoji isn't split (with "…"), and HTML-escaped. `{amount}` is the whole balance in the group's currency.
    - **Nothing else:** no recipient or group name (both are what the sender calls them), no transactions, no note (a phishing risk) and no `replyTo` (it would show the sender's account email).
 
 The response and the email are the same whether the recipient is a placeholder without an account, one with an account, or a joined member. The address typed and the amount are stored nowhere, and logs hold IDs, error codes and Resend's email ID only.
@@ -202,6 +202,28 @@ The response and the email are the same whether the recipient is a placeholder w
 - **The sender's name is free text** in the body, up to 40 characters: enough for a short misleading phrase, not a message. Invites have the same exposure (a follow-up).
 - **One inbox can be several persons** (`a+1@x`, `a+2@x`): each has its own recipient limit. Accepted.
 - **Retention:** `reminders` rows hold person and group IDs only, and are kept until either person's account is deleted (or a purge). Pruning old rows is a later follow-up.
+
+## Password notice
+
+When an account's password is set for the first time or changed, the account's verified email gets a notice, so a stolen session that sets a password is noticed ([#236](https://github.com/rojinc/ledgerly/issues/236)). It goes with the 24-hour [deletion refusal](#refusals).
+
+The `identity` function subscribes to two Appwrite events: `users.*.update.password` (a password set or changed while signed in) and `users.*.recovery.*.update` (a [recovery](https://github.com/rojinc/ledgerly/issues/290) reset). A reset fires only the second, and Appwrite matches event names exactly (Appwrite 1.8.1, `account.php` and `Workers/Functions.php`). **It never subscribes to `users.*.recovery.*.create`, `users.*.recovery.*` or `users.*`:** the create event's payload carries the recovery secret in plain text. Appwrite runs it as `POST /`, an [event run](permissions.md#function-side-checks), with the event's name in `x-appwrite-event` and the user (or, for a reset, the spent token) as the body:
+
+1. **Who:** a signed-in call gets `FORBIDDEN`. Any other call without a JWT gets `UNAUTHENTICATED` before the route, as for a missing JWT.
+2. **The user:** it takes only the user ID: from the event's name (`users.<userId>.…`), or, if that names none, the body's `$id`. Then it reads the user again with `users.get`. It trusts nothing else in the body, and never logs or stores it. Reading the ID from the name also fits a recovery event, whose body is a token, not a user.
+3. **When it sends:** only if the user still exists, `passwordUpdate` is under 60 minutes old (`PASSWORD_NOTICE_WINDOW_MINUTES`), and the account email is verified. Otherwise it sends nothing.
+4. **The email** goes to that verified address, through Resend with the idempotency key `password-notice-<SHA-256 hex of "<userId>:<passwordUpdate>">`, so each change sends at most one email.
+   - It says when the change happened, in the profile's time zone (UTC with no profile), and "If this wasn't you, reset your password now", with a link to the app's sign-in page (`APP_URL`).
+   - It holds no password, token, or link that signs anyone in.
+5. **Logs** hold the user ID and the outcome only: `sent`, `stale`, `unverified`, `gone`, or `failed` with the email error's type.
+
+A forged or replayed call can do nothing new: at worst it asks again, within the hour, for the email the real event already sent, and Resend's key drops that copy. **Accepted:**
+- A phone-only account gets no notice until SMS can carry it (#175).
+- Other sessions are signed out only for a change through the password route, by the project's session invalidation setting ([environments](../engineering/environments-and-deploys.md#environments)). A recovery reset leaves them signed in; [#290](https://github.com/rojinc/ledgerly/issues/290) handles that.
+- A notice to the old address when the email or phone changes is #268.
+- **A first password set through an email or phone change.** Appwrite may set a first password through an email or phone change on an account that has none (made with an email code). That fires only `users.*.update.email` or `.phone`, so no notice goes. #268's notice to the old address covers that path; the 24-hour deletion refusal holds either way, since `passwordUpdate` is set.
+- A send that fails (a Resend outage, say) isn't retried: Appwrite doesn't run an event again. The run logs `failed`.
+- After the deploy, the lead checks on `ledgerly-dev` that setting a first password fires `users.<id>.update.password` and a recovery reset fires `users.<id>.recovery.<tokenId>.update`, each with the user ID in `x-appwrite-event`.
 
 ## Deleting an account (M4)
 

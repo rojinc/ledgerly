@@ -64,7 +64,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-The function has a cron schedule of `5 * * * *` (hourly, at :05, UTC) and runs **asynchronously** with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up ([step 5](#step-5-receipt-clean-up), which has its own time limit), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
+Appwrite runs the function every 60 minutes (`interval: 60`, at a minute it picks; [the plan allows no cron](../engineering/environments-and-deploys.md#function-settings)), **asynchronously** and with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up ([step 5](#step-5-receipt-clean-up), which has its own time limit), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -97,7 +97,7 @@ Occurrences are written in batches of at most 90 operations per database transac
 - it guards the group row and the member row of everyone the template names;
 - after staging, it checks the rows it updates or deletes are still changeable and have no item it didn't read.
 
-An edit, another run, a member removed or an occurrence changed meanwhile makes it run again with things as they are now. A cron run starts no new batch once its 12 minutes are up; the next run carries on from the progress saved. A schedule that still can't be expanded (a template a member change made invalid, say) keeps its `nextRunAt`, is counted as failed in the run's result, and is tried again next run. Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
+An edit, another run, a member removed or an occurrence changed meanwhile makes it run again with things as they are now. A scheduled run starts no new batch once its 12 minutes are up; the next run carries on from the progress saved. A schedule that still can't be expanded (a template a member change made invalid, say) keeps its `nextRunAt`, is counted as failed in the run's result, and is tried again next run. Cost grows with the number of schedules that are **due**, not the number of users ([Scaling](scaling.md)).
 
 ### Step 2: auto-post
 
@@ -130,7 +130,7 @@ Each reminder goes out once. In one database transaction, `remindedAt` is staged
 
 ### Step 4: summary emails
 
-Profiles where `nextSummaryAt <= now` get the summary of the period that just ended ([ledger reports](ledger.md#reports)). `nextSummaryAt` moves forward in the same database transaction that sends the email, as reminders do, so a summary goes out at most once. Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local:
+Profiles where `nextSummaryAt <= now` get the summary of the period that just ended ([ledger reports](ledger.md#reports)). `nextSummaryAt` moves forward in the same database transaction that sends the email, as reminders do, so a summary goes out at most once. Summaries use the profile's timezone, because they cover all of a person's groups; reminders use the group's. All send times are 07:00 local, sent by the first run at or after it:
 
 | Frequency | Sent | Covers |
 | --- | --- | --- |
@@ -195,7 +195,7 @@ Runs last, in what's left of the run's budget. It takes groups where `nextCheckA
 
 Broken shares or transactions are reported, never fixed. They're fixed by hand, with adjustments.
 
-**Repairing the `balances` row.** A missing row (the backfill, or one deleted since) or a wrong one is rewritten in one database transaction: stage the group's guard write, sum the shares after it, then write the row. A wrong row also logs an error. A write of shares that lands meanwhile fails one of the two commits.
+**Repairing the `balances` row.** A missing row (the backfill, or one deleted since) or a wrong one is rewritten in one database transaction: stage the group's guard write, sum the shares after it, then write the row. A wrong row also logs an error. A write of shares that lands meanwhile fails one of the two commits. A rebuild or a `nextCheckAt` write that loses its commit that way counts the group `busy`, an hour on. A sum that makes no valid row (a net past a safe integer, a bug) writes nothing: the group counts as failed and stays due.
 
 **The team.** A team membership is removed when all of these hold:
 - The user's person has no `active` or `left` member row in the group, or only a `left` row they left on their own since that member row was created (`leftOnTheirOwn()`: their own `member.left` is the newest of their `member.left` and `member.joined` rows, [leaving](permissions.md#leaving-a-group)).
@@ -215,7 +215,7 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | --- | --- |
 | `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. `startsOn` is at most 31 days before local today (`VALIDATION_FAILED`, "The start date can be at most 31 days ago."): the past occurrences are made at once and wait for the user (step 2 never posts them), so a mistyped year can't make years of them. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
 | `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` set to yesterday (it stays empty for a schedule that never expanded, which starts from `startsOn` like a new one), then expand again from local today, never filling in past dates, even when reopening an ended schedule: changeable occurrences are updated in place, deleted when the new rule no longer has their date (before a later `startsOn`, say) or they are after its end, and created where missing. `created`, `updated` and `removed` count the ones created, updated in place and deleted. A changed `startsOn` has the same 31-day limit as on `POST`. The group and kind can't change (`VALIDATION_FAILED`) |
-| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended. It sets `nextRunAt` to now, and `generatedThrough` to no earlier than yesterday, so the next cron run deletes any it didn't get to (a timeout, say), or carries on up to a later `endsOn` than before, from today on |
+| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended. It sets `nextRunAt` to now, and `generatedThrough` to no earlier than yesterday, so the next scheduled run deletes any it didn't get to (a timeout, say), or carries on up to a later `endsOn` than before, from today on |
 | `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items, taking their receipts off ([receiptFiles](data-model.md#receiptfiles)). One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
 
@@ -223,7 +223,7 @@ Changes to occurrences themselves (edit, void, post) go through the `ledger` fun
 
 Creating or editing a schedule guards the group row and the member row of everyone its template names, like a ledger write ([ledger.md#concurrency](ledger.md#concurrency)). A template can't commit just after a member's removal was checked, and a removal can't commit just after the template. Every database transaction of these routes that writes occurrences or a schedule's rule guards the group row too, so none lands after an archive. Deleting occurrences stages the deletes, then checks the stored rows. An edit or an end keeps an occurrence edited, posted or voided meanwhile. A delete removes edited and voided ones anyway; one posted meanwhile stops it with `VALIDATION_FAILED`, and the schedule should be ended instead. Schedule templates can't have receipts ([functions-api.md](functions-api.md#scheduler)).
 
-Creating or editing a schedule sets its `nextRunAt` to now in the same transaction that saves it, so if the expansion stops partway (a timeout, or a race lost twice), the next cron run finishes it, with the occurrences from where it stopped brought in line with the new rule. Deleting occurrences also checks their items again after staging, so an item added meanwhile isn't left without its transaction.
+Creating or editing a schedule sets its `nextRunAt` to now in the same transaction that saves it, so if the expansion stops partway (a timeout, or a race lost twice), the next scheduled run finishes it, with the occurrences from where it stopped brought in line with the new rule. Deleting occurrences also checks their items again after staging, so an item added meanwhile isn't left without its transaction.
 
 ## Timer shifts
 

@@ -193,11 +193,14 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
+| `POST /` | the Appwrite user, as the event sends it | `{}` | only an [event run](permissions.md#function-side-checks) of `users.*.update.password` or `users.*.recovery.*.update`; a signed-in call gets `FORBIDDEN` ([password notice](identity-and-invites.md#password-notice)) |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
 Hourly (`interval: 60`), sent as `POST /` with the `schedule` trigger: it carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`. A person calling `POST /` gets `FORBIDDEN`.
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
+
+`POST /` reads only the user ID, from the event's name in `x-appwrite-event` or else the body's `$id`. It never logs or stores the body (Appwrite's user model can carry the password hash), and answers `{}` to an event run whether it sent an email or not (a failed send fails the run).
 
 `linkedGroupIds` (`/bootstrap`, `/claim`) lists only the groups joined in that call, so after a retry it leaves out groups an earlier, interrupted call already joined.
 
@@ -216,7 +219,7 @@ Deleting an account ([#50](https://github.com/rojinc/ledgerly/issues/50)). A fun
 | --- | --- | --- | --- |
 | `POST /delete` | `{ confirm: 'DELETE' }` | `{ deletedAt, finished }` | the user, signed in within the last 10 minutes |
 
-Cron: `35 * * * *`, sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), skipping any started in the last minute. A person calling `POST /` gets `FORBIDDEN`.
+Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), skipping any started in the last minute. A person calling `POST /` gets `FORBIDDEN`.
 
 **`POST /delete`** deletes the caller's account ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). It is synchronous and works for up to 20 seconds; `finished: false` means the hourly job deletes the rest. Refusals change nothing, and are checked in this order:
 
@@ -232,7 +235,7 @@ A call after `deletedAt` is set skips the checks (apart from the body) and carri
 
 ## scheduler
 
-Cron: `5 * * * *`, sent as `POST /` with the `schedule` trigger. A person calling `POST /` gets `FORBIDDEN`, and a call without a JWT `UNAUTHENTICATED`. HTTP routes:
+Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger. A person calling `POST /` gets `FORBIDDEN`, and a call without a JWT `UNAUTHENTICATED`. HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
@@ -263,7 +266,7 @@ Details: [Scheduling](scheduling.md).
 
 ## statements
 
-Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP routes:
+Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |

@@ -41,7 +41,7 @@ The job's period ends on the group's local date 12 hours before the stored `next
                          └── discard ──► (deleted)
 ```
 
-### 1. Draft (statements job, hourly at :15)
+### 1. Draft (statements job, hourly)
 
 Appwrite runs the job as `POST /` on the `statements` function; nobody else can call it. For each group where `nextCloseAt <= now` and that isn't archived, in **one database transaction**:
 

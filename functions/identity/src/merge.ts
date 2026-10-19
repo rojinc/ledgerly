@@ -393,7 +393,7 @@ export async function moveIdentities(
  * Shares moved per transaction: each may take two writes (combine), plus the group's guard and
  * the delete of its `balances` row.
  */
-const SHARES_PER_BATCH = Math.floor((MAX_OPS_PER_DB_TRANSACTION - 2) / 2)
+const SHARES_PER_BATCH = Math.floor((MAX_OPS_PER_DB_TRANSACTION - 3) / 2)
 
 /** What became of the groups whose shares a call looked at. `done`: P has none left there. */
 export type SharesResult = { moved: number; putOff: string[]; done: boolean }
@@ -430,6 +430,9 @@ export async function moveShares(
       if (rows.length === 0) break
       const batch = await moveShareBatch(db, fromId, intoId, groupId, deadline)
       if (batch === 'cutOff') return { moved, putOff, done: false }
+      // U has no joined row here any more: P's shares stay (I-3), and stray() keeps the merge
+      // open while one is left.
+      if (batch === 'unjoined') break
       if (batch === 'putOff') {
         putOff.push(groupId)
         break
@@ -443,11 +446,17 @@ export async function moveShares(
 /** Thrown inside a batch when the group has a statement being finalized. */
 export class Finalizing extends Error {}
 
+/** Thrown inside a share batch when U has no joined row in the group any more. */
+class Unjoined extends Error {}
+
 /**
- * One batch of P's shares in one group: the number moved, `putOff` while it's finalizing, or
- * `cutOff` past the deadline. The group's guard is staged before the shares are read, so a share
- * written meanwhile (another merge into U, a ledger edit) is either read here or fails this
- * batch's commit: two merges can't each give U a share in one transaction (I-5).
+ * One batch of P's shares in one group: the number moved, `putOff` while it's finalizing,
+ * `unjoined` when U has no joined row there (removed, or left on their own), or `cutOff` past the
+ * deadline. The group's guard is staged before the shares are read, so a share written meanwhile
+ * (another merge into U, a ledger edit) is either read here or fails this batch's commit: two
+ * merges can't each give U a share in one transaction (I-5). U's member row is guarded too, then
+ * checked as stored (#242 D/E), so a removal or a leave of U's own fails one of the two commits,
+ * and one that committed first stops the batch: no share moves onto a U with no row (I-3).
  */
 async function moveShareBatch(
   db: Db,
@@ -455,7 +464,7 @@ async function moveShareBatch(
   intoId: string,
   groupId: string,
   deadline: number,
-): Promise<number | 'putOff' | 'cutOff'> {
+): Promise<number | 'putOff' | 'unjoined' | 'cutOff'> {
   for (;;) {
     if (Date.now() >= deadline) return 'cutOff'
     try {
@@ -468,6 +477,15 @@ async function moveShareBatch(
           data: { rev: randomId() },
         })
         if (await isFinalizing(db, groupId)) throw new Finalizing()
+        const own = await memberOf(db, groupId, intoId)
+        if (!own) throw new Unjoined()
+        await tx.write({
+          action: 'update',
+          tableId: TABLES.members,
+          rowId: own.$id,
+          data: { rev: randomId() },
+        })
+        if (!(await joinedHere(db, groupId, intoId))) throw new Unjoined()
         const { rows: theirs } = await db.listRows<Shares>({
           databaseId: DATABASE_ID,
           tableId: TABLES.shares,
@@ -499,6 +517,7 @@ async function moveShareBatch(
       })
     } catch (error) {
       if (error instanceof Finalizing) return 'putOff'
+      if (error instanceof Unjoined) return 'unjoined'
       if (!(error instanceof Raced || isAppwriteError(error, 409))) throw error
     }
   }
