@@ -2,10 +2,12 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
 import { type TransactionInput, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { Transfer } from '@ledgerly/core/settle/suggest-transfers'
+import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
 import { useEffect, useRef, useState } from 'react'
 import { type FieldErrors, get, type Resolver, useForm } from 'react-hook-form'
 import type { z } from 'zod'
+import { queryKeys } from '../../lib/query-keys'
 import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
@@ -101,17 +103,21 @@ function paymentResolver(
 export function PaymentForm({
   group,
   members,
+  personId,
   transfer,
   onRecorded,
   onCancel,
 }: {
   group: Groups
   members: Members[]
+  /** The caller's person, for their member row. */
+  personId: string
   transfer?: Transfer
   onRecorded: () => void
   onCancel: () => void
 }) {
   const create = useCreateTransaction()
+  const queryClient = useQueryClient()
   // One ID per payment, so a retry after an error can't record it twice.
   const [id, setId] = useState(() => ID.unique())
   const ref = useRef<HTMLFormElement>(null)
@@ -134,29 +140,47 @@ export function PaymentForm({
     ref.current?.querySelector<HTMLElement>('select, input')?.focus()
   }, [])
 
+  const submit = form.handleSubmit(async (body) => {
+    try {
+      await create.mutateAsync(body)
+      onRecorded()
+    } catch (error) {
+      const code = error instanceof LedgerError ? error.code : undefined
+      if (code === 'CONFLICT') {
+        // The same ID with different content: an earlier try may have been saved though its
+        // answer was lost. Show what's stored, and use a new ID for the next try.
+        void queryClient.invalidateQueries({ queryKey: queryKeys.balances(group.$id) })
+        void queryClient.invalidateQueries({ queryKey: ['history', group.$id] })
+        void queryClient.invalidateQueries({ queryKey: ['calendar'] })
+        setId(ID.unique())
+      }
+      // Archived, or the caller's role changed, meanwhile: reload them, so the page shows what
+      // they can do now.
+      if (code === 'ARCHIVED' || code === 'FORBIDDEN') {
+        void queryClient.invalidateQueries({ queryKey: queryKeys.group(group.$id) })
+        void queryClient.invalidateQueries({ queryKey: queryKeys.myMember(group.$id, personId) })
+      }
+      // The form keeps what was typed: after LOCKED (a statement is being finalized), the
+      // same payment can be sent again soon.
+      form.setError('root', {
+        message:
+          code === 'CONFLICT'
+            ? 'This may already have been recorded from your last try. Check the balances before recording it again.'
+            : (error as Error).message,
+      })
+    }
+  })
+
   return (
     <form
       ref={ref}
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          await create.mutateAsync(body)
-          onRecorded()
-        } catch (error) {
-          // The same ID with different content: an earlier try may have been saved though its
-          // answer was lost. Use a new ID for the next try.
-          if (error instanceof LedgerError && error.code === 'CONFLICT') setId(ID.unique())
-          // The form keeps what was typed: after LOCKED (a statement is being finalized), the
-          // same payment can be sent again soon.
-          form.setError('root', {
-            message:
-              error instanceof LedgerError && error.code === 'CONFLICT'
-                ? 'This may already have been recorded from your last try. Check the balances before recording it again.'
-                : (error as Error).message,
-          })
-        }
-      })}
+      onSubmit={(event) => {
+        // aria-disabled, not disabled, keeps focus on the button; this guard stops a second send.
+        if (form.formState.isSubmitting) event.preventDefault()
+        else void submit(event)
+      }}
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
       <SelectField id="pay-from" label="From" error={errors.from} {...form.register('from')}>
@@ -203,7 +227,7 @@ export function PaymentForm({
         {...form.register('note')}
       />
       <div className="flex flex-wrap gap-3">
-        <Button type="submit" disabled={isSubmitting}>
+        <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : 'Record payment'}
         </Button>
         <Button type="button" variant="outline" onClick={onCancel}>

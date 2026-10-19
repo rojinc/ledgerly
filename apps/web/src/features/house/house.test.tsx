@@ -18,7 +18,7 @@ vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $i
 // The viewer's person: Alex (p1).
 vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'p1' } }) }))
 // Settle up has its own tests (settle-up.test.tsx) and its own ledger call.
-vi.mock('./settle-up', () => ({ SettleUp: () => null }))
+vi.mock('./settle-up', () => ({ SettleUp: () => <p>Settle up section</p> }))
 
 const call = vi.mocked(callFunction)
 const listRows = vi.mocked(tablesDB.listRows)
@@ -255,6 +255,7 @@ describe('HousePage', () => {
       expect(screen.getByRole('region', { name: 'Settings' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Archive group' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
+      expect(screen.getByText('Settle up section')).toBeTruthy()
     })
 
     it('lets a member add people with the default role, and nothing else', async () => {
