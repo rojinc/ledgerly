@@ -1,0 +1,106 @@
+name: Deploy
+
+# A push to main deploys to dev. A v* tag on main deploys to prod, once the owner approves the
+# `production` environment (docs/engineering/environments-and-deploys.md#cicd-github-actions).
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+
+# One deploy per environment at a time, and never cancelled half-way through a push.
+concurrency:
+  group: deploy-${{ github.ref_type == 'tag' && 'prod' || 'dev' }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: deploy ${{ github.ref_type == 'tag' && 'prod' || 'dev' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: ${{ github.ref_type == 'tag' && 'production' || 'dev' }}
+    env:
+      IS_PROD: ${{ github.ref_type == 'tag' }}
+      CONFIG: ${{ github.ref_type == 'tag' && 'appwrite.config.prod.json' || 'appwrite.config.json' }}
+      APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+      PROJECT_ID: ${{ github.ref_type == 'tag' && secrets.APPWRITE_PROD_PROJECT_ID || secrets.APPWRITE_DEV_PROJECT_ID }}
+      API_KEY: ${{ github.ref_type == 'tag' && secrets.APPWRITE_PROD_API_KEY || secrets.APPWRITE_DEV_API_KEY }}
+    steps:
+      # Until the owner adds the secrets (#3), a dev deploy is skipped with a warning; a prod
+      # deploy never is.
+      - name: Check the secrets
+        id: secrets
+        run: |
+          if [ -n "$APPWRITE_ENDPOINT" ] && [ -n "$PROJECT_ID" ] && [ -n "$API_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [ "$IS_PROD" = "true" ]; then
+            echo "::error::The prod deploy secrets aren't set."
+            exit 1
+          else
+            echo "::warning::Dev deploy skipped: the APPWRITE_* secrets aren't set yet (#3)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+          # The whole history, so a tag can be checked against main.
+          fetch-depth: 0
+
+      - name: Check the tag is on main
+        if: steps.secrets.outputs.ready == 'true' && github.ref_type == 'tag'
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
+
+      # The CLI refuses an endpoint that differs from the config file's, and the config file
+      # names the project, so both must match the secrets.
+      - name: Check the config matches the secrets
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          node -e '
+            const { CONFIG, APPWRITE_ENDPOINT, PROJECT_ID } = process.env
+            const config = require("./" + CONFIG)
+            if (config.endpoint !== APPWRITE_ENDPOINT || config.projectId !== PROJECT_ID) {
+              console.error("::error::" + CONFIG + " names another project or endpoint than the secrets.")
+              process.exit(1)
+            }
+          '
+
+      - uses: actions/setup-node@v6
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - if: steps.secrets.outputs.ready == 'true'
+        run: npm ci
+
+      # Builds the function bundles, and the web app for this project.
+      - if: steps.secrets.outputs.ready == 'true'
+        run: npm run build
+        env:
+          VITE_APPWRITE_ENDPOINT: ${{ env.APPWRITE_ENDPOINT }}
+          VITE_APPWRITE_PROJECT_ID: ${{ env.PROJECT_ID }}
+
+      - name: Install the Appwrite CLI
+        if: steps.secrets.outputs.ready == 'true'
+        run: npm install --global appwrite-cli@28.7.0
+
+      - name: Push tables, buckets, functions and the web site
+        if: steps.secrets.outputs.ready == 'true'
+        run: |
+          appwrite client --endpoint "$APPWRITE_ENDPOINT" --project-id "$PROJECT_ID" --key "$API_KEY"
+          push() {
+            appwrite push "$@" --all --force --config-file "$CONFIG" 2>&1 | tee push.log
+            # The CLI exits 0 even when a resource fails to push, so read what it printed.
+            if grep -q '✗ Error' push.log; then
+              echo "::error::appwrite push $1 failed."
+              exit 1
+            fi
+          }
+          push table
+          push bucket
+          push function
+          push site

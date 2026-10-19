@@ -23,6 +23,7 @@ appwrite.config.prod.json   projectId = prod, includes the same appwrite/*.json
 appwrite/tables.json        every table, column and index (must match data-model.md)
 appwrite/buckets.json
 appwrite/functions.json     runtime, entrypoint (dist/main.js), schedule, execute, timeout
+appwrite/sites.json         the web app (Appwrite Sites), uploaded already built
 ```
 
 The two config files share the resource files through the CLI's `includes` field, so dev and prod can't drift. `appwrite push` rewrites these files with its own formatting; never commit that rewrite, because Biome would fail on it.
@@ -35,10 +36,24 @@ The two config files share the resource files through the CLI's `includes` field
 
 | Trigger | Steps |
 | --- | --- |
-| push to `main` | build → `appwrite client -e $ENDPOINT -p $DEV_PROJECT -k $DEV_KEY` → `appwrite push table --all --force` → `appwrite push bucket --all --force` → `appwrite push function --all --force` → deploy web to Appwrite Sites |
-| tag `v*` | same steps with `--config-file appwrite.config.prod.json` and prod secrets, behind a GitHub environment that needs owner approval |
+| push to `main` | `npm ci` → `npm run build` (the web app with `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID` of dev) → install `appwrite-cli` (pinned) → `appwrite client -e $ENDPOINT -p $DEV_PROJECT -k $DEV_KEY` → `appwrite push table`, `bucket`, `function` and `site`, each with `--all --force` |
+| tag `v*` | the same steps with `--config-file appwrite.config.prod.json` and the prod secrets, in the `production` environment, which needs the owner's approval. The tag must be on `main`. |
+
+- **One deploy per environment at a time,** and a running one is never cancelled.
+- **The CLI exits 0 even when a resource fails to push,** so each push step reads the CLI's output and fails on any `✗ Error`. `appwrite push all` can't be used: it needs a console login, not an API key.
+- **The CLI refuses an endpoint that differs from the config file's,** so `APPWRITE_ENDPOINT` must be exactly the config's `endpoint`, and the project secret must match its `projectId`. The workflow checks both before it pushes.
+- **Until the secrets exist (#3),** a dev deploy is skipped with a warning. A prod deploy fails instead.
+- **The web app** (`appwrite/sites.json`) is a static site.
+  - CI builds it and uploads only `dist/`, so Appwrite never runs `npm install` (the same reason as for functions, below).
+  - Its build command only checks that `dist/index.html` arrived; the CLI skips a site with no build command.
+  - `fallbackFile` is `index.html`, so client routes such as `/shifts/123` load the app.
 
 GitHub secrets: `APPWRITE_ENDPOINT`, `APPWRITE_DEV_PROJECT_ID`, `APPWRITE_DEV_API_KEY`, `APPWRITE_PROD_PROJECT_ID`, `APPWRITE_PROD_API_KEY`.
+
+**Owner setup for deploys (#3):**
+- Give the `production` environment a required reviewer (the owner).
+- Store the two `APPWRITE_PROD_*` secrets as secrets of that environment rather than of the repo, so a prod key is only read after approval.
+- Create the web site's domain once in the Appwrite console, in each project: an API key can't create it.
 
 ## Function settings
 

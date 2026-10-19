@@ -1,0 +1,18 @@
+[
+  {
+    "$id": "web",
+    "name": "web",
+    "framework": "vite",
+    "adapter": "static",
+    "buildRuntime": "node-24",
+    "path": "../apps/web",
+    "installCommand": "",
+    "buildCommand": "test -f dist/index.html",
+    "outputDirectory": "./dist",
+    "fallbackFile": "index.html",
+    "ignore": ["*", "!dist/", "!dist/**"],
+    "timeout": 30,
+    "enabled": true,
+    "logging": true
+  }
+]
