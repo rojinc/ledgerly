@@ -64,8 +64,8 @@ Claiming is what lets "Sam" see the $50 you lent them when Sam finally signs up.
 
 1. Using the server SDK, read the user and collect their **verified** email and phone (`emailVerification`, `phoneVerification`).
 2. For each verified identity key:
-   - **No identity row:** create one pointing at the user's person, with `verified = true`.
-   - **Points at the user's own person:** set `verified = true`.
+   - **No identity row:** create one pointing at the user's person, with `verified = true` and `verifiedAt` now.
+   - **Points at the user's own person:** set `verified = true`, and `verifiedAt` now if it has none: a key keeps the time it was first verified (the [change notice](#email-and-phone-change-notice) ranks old addresses by it).
    - **Points at a person being merged into the user's person** (that person's `mergedInto` is the user's person, mid-merge): skip it; the merge moves it to them last.
    - **Points at a placeholder person P:**
      - If the user's person is brand new and has no data (bootstrap just made it), **adopt P**: in one database transaction, set `P.userId` to the user and `P.claimedAt` to now, and delete P's identities whose key the user hasn't verified ([below](#only-verified-keys-move)); then read P's stored row again and check it's still a placeholder. If another adoption or merge got there first, roll back and leave P alone, as merge step 1 does. Use P as their person.
@@ -224,7 +224,7 @@ When an account's password is set for the first time or changed, the account's v
 The `identity` function subscribes to two Appwrite events: `users.*.update.password` (a password set or changed while signed in) and `users.*.recovery.*.update` (a [recovery](https://github.com/rojinc/ledgerly/issues/290) reset). A reset fires only the second, and Appwrite matches event names exactly (Appwrite 1.8.1, `account.php` and `Workers/Functions.php`). **It never subscribes to `users.*.recovery.*.create`, `users.*.recovery.*` or `users.*`:** the create event's payload carries the recovery secret in plain text. Appwrite runs it as `POST /`, an [event run](permissions.md#function-side-checks), with the event's name in `x-appwrite-event` and the user (or, for a reset, the spent token) as the body:
 
 1. **Who:** a signed-in call gets `FORBIDDEN`. Any other call without a JWT gets `UNAUTHENTICATED` before the route, as for a missing JWT.
-2. **The user:** it takes only the user ID: from the event's name (`users.<userId>.…`), or, if that names none, the body's `$id`. Then it reads the user again with `users.get`. It trusts nothing else in the body, and never logs or stores it. Reading the ID from the name also fits a recovery event, whose body is a token, not a user.
+2. **The user:** it takes only the user ID, from the event's name (`users.<userId>.…`, the whole name matched as the [change notice](#email-and-phone-change-notice)'s step 1 says); a missing or any other name gets `FORBIDDEN`. Then it reads the user again with `users.get`. It trusts nothing else in the body, and never logs or stores it. Reading the ID from the name also fits a recovery event, whose body is a token, not a user.
 3. **When it sends:** only if the user still exists, `passwordUpdate` is under 60 minutes old (`PASSWORD_NOTICE_WINDOW_MINUTES`), and the account email is verified. Otherwise it sends nothing.
 4. **The email** goes to that verified address, through Resend with the idempotency key `password-notice-<SHA-256 hex of "<userId>:<passwordUpdate>">`, so each change sends at most one email.
    - It says when the change happened, in the profile's time zone (UTC with no profile), and "If this wasn't you, reset your password now", with a link to the app's sign-in page (`APP_URL`).
@@ -234,8 +234,8 @@ The `identity` function subscribes to two Appwrite events: `users.*.update.passw
 A forged or replayed call can do nothing new: at worst it asks again, within the hour, for the email the real event already sent, and Resend's key drops that copy. **Accepted:**
 - A phone-only account gets no notice until SMS can carry it (#175).
 - Other sessions are signed out only for a change through the password route, by the project's session invalidation setting ([environments](../engineering/environments-and-deploys.md#environments)). A recovery reset leaves them signed in, so the sign-in after a reset signs them out ([password recovery](#password-recovery)).
-- A notice to the old address when the email or phone changes is #268.
-- **A first password set through an email or phone change.** Appwrite may set a first password through an email or phone change on an account that has none (made with an email code). That fires only `users.*.update.email` or `.phone`, so no notice goes. #268's notice to the old address covers that path; the 24-hour deletion refusal holds either way, since `passwordUpdate` is set.
+- A notice when the email or phone changes is the [email and phone change notice](#email-and-phone-change-notice).
+- **A first password set through an email or phone change.** Appwrite may set a first password through an email or phone change on an account that has none (made with an email code). That fires `users.*.update.email` or `.phone`, so the [email and phone change notice](#email-and-phone-change-notice) covers that path; the 24-hour deletion refusal holds either way, since `passwordUpdate` is set.
 - A send that fails (a Resend outage, say) isn't retried: Appwrite doesn't run an event again. The run logs `failed`.
 - After the deploy, the lead checks on `ledgerly-dev` that setting a first password fires `users.<id>.update.password` and a recovery reset fires `users.<id>.recovery.<tokenId>.update`, each with the user ID in `x-appwrite-event`.
 
@@ -253,6 +253,43 @@ Someone who forgot their password, or whose password someone else set, resets it
 5. **Signing in afterwards signs out the other sessions.** The app then goes to `/login?reset=1` ("Password changed. Sign in to finish."). Signing in from there, with the password or an email code, signs out every **other** session with the helper Profile's **Sign out other devices** uses: `account.listSessions()`, then `account.deleteSession()` for each one that isn't `current`, where a 404 (gone already) counts as done. Never `account.deleteSessions()`, which on Appwrite 1.8.1 deletes the current session too. If that fails, the page says so and offers **Try again** before the app opens.
 
 **Accepted risk:** `createRecovery` answers `user_not_found` (404) for an address with no account and `user_blocked` (401) for a blocked one (for example, mid-deletion), so the API shows whether an account exists, as sign-up already does. The page shows the same message for both and for a sent link: "If that address has an account, we've sent a link. It works for 1 hour."
+
+## Email and phone change notice
+
+When an account's email or phone number changes, a notice goes out by email, so a stolen session that moves the account to someone else's address or number is noticed ([#268](https://github.com/rojinc/ledgerly/issues/268)). It uses the [password notice](#password-notice)'s event route.
+
+`identity` also subscribes to `users.*.update.email` and `users.*.update.phone`. Each runs `POST /` as an [event run](permissions.md#function-side-checks):
+
+1. **Which event:** the route matches the whole name in `x-appwrite-event`: `users.<userId>.update.password` or `users.<userId>.recovery.<tokenId>.update` (the [password notice](#password-notice)), `users.<userId>.update.email` or `users.<userId>.update.phone`, where `<userId>` is everything between `users.` and that ending (an Appwrite user ID can contain `.`; a recovery `<tokenId>` can't, so the match is unambiguous). For the two change events the ID must also equal the body's `$id`: otherwise nothing is sent, the run logs `mismatch` and answers `{}`. The body's `$id` is used for nothing else. An event run with a missing or any other name gets `FORBIDDEN`. #268's build changes the password route's fallback to the body's `$id` (#289) to this rule. A signed-in call gets `FORBIDDEN`, as for the password notice.
+2. **The user:** the route reads it again with `users.get`, and takes nothing else from the event: not the old or new value, even if the payload holds one. It writes nothing, ever: no row stores the change. Checks run in this order, each one ending the run:
+   - the user is gone, or their person has `deletedAt` (`gone`), so a deletion under way changes nothing here;
+   - then, for an email change, the old addresses (step 3); for a phone change, the account's verified email (step 4).
+3. **An email change** notifies the **old** addresses, which come from our own `identities`, never from the event: every identity on the user's person with `type = email` and `verified = true` whose key isn't `identityKey('email', <the account's current email>)`, with no cap (the lead's call, #314): each is an inbox this account verified, and each gets one key per change. They're sent newest `verifiedAt` first (a row with none counts as oldest; equal ones by `$id`), each its own email under its own key. Claim never deletes a verified key and keeps its first `verifiedAt`, so those rows are still there after the change. With no person, or no such identity (the old email was never verified), nothing is sent (`no_old_address`). If the current email is empty, or `identityKey()` throws on it, no key is left out.
+   - **The email** says the account's email was changed to the new address, masked as `j***@example.com`: the first character of the account's email as Appwrite holds it, `***`, then `@` and its domain, HTML-escaped.
+   - **Key:** `email-change-notice-<SHA-256 hex of "<userId>:<that old key>:<the user's $updatedAt>">`. A new change gets a new key, so a change undone and made again is noticed again.
+4. **A phone change** notifies the account's **current verified email** (`emailVerification`), not the old number: SMS needs [#175](https://github.com/rojinc/ledgerly/issues/175). It needs no person beyond the `deletedAt` check. With no verified email, nothing is sent (`unverified`).
+   - **The email** says the account's phone number was changed to a number ending in its last 3 digits (`…678`), or that it was removed if the account has none now.
+   - **Key:** `phone-change-notice-<SHA-256 hex of "<userId>:<the user's $updatedAt>">`. The number isn't in it.
+5. **Both emails** have a fixed subject that holds no address or number. They say "If this wasn't you, write to `<SUPPORT_EMAIL>` from this address right away", with the address as escaped plain text, not a link, or "reply to this email" when the `SUPPORT_EMAIL` variable isn't set. They have one link, the app's sign-in page (`APP_URL`), and no token or link that signs anyone in. Recovering an account someone else has taken over is [#290](https://github.com/rojinc/ledgerly/issues/290).
+6. **Each address is tried, whatever happened to the others.** Resend's answer for a key it has seen (`invalid_idempotent_request`, or `concurrent_idempotent_requests` from a run sending the same notice at that moment) counts as sent. The sends go one after another, at least 500 ms apart, so the run doesn't rate-limit itself (Resend allows 2 a second). A `rate_limit_exceeded` is still tried once more with the same key, after Resend's `retry-after` (capped so the run stays inside its timeout). Any other failed send is logged (`failed`) and the run goes on to the next address, then fails after the last one. No send starts after 12 s of the run, inside identity's 15 s timeout, and each send's own timeout is cut to what's left of 14 s: the addresses left then are logged as `failed (budget)`, with how many, and the run fails, so a long list or a slow Resend never ends the run without a trace. Appwrite doesn't run an event again, so nothing else retries it.
+7. **Logs** hold the user ID, which notice (`email` or `phone`) and the outcome only: `sent`, `gone`, `no_old_address`, `unverified`, `mismatch`, or `failed` with the email error's type or `budget`.
+
+**With the password notice:** an account with no password that changes its email or phone may get a first password from Appwrite. If that fires only this event, this notice is the one that covers it ([accepted](#password-notice)). If it fires `update.password` too, after an email change the password notice finds the new email unverified and sends nothing; after a phone change the email is still verified, so the user gets both notices. Accepted.
+
+**Accepted:**
+- An old address that's the attacker's, verified on the way (A → B, B verified, then B → C), gets a notice too. The rule sends to every old verified address so that the owner's is among them.
+- An `update.email` event with no real change notifies the other verified addresses that the email "was changed to" the current one, masked.
+- A replayed event after Resend's 24-hour key has expired sends the same notice again. Only Appwrite makes an event run ([permissions](permissions.md#function-side-checks)), so that's a replay of a real change.
+- A phone change on an account with no verified email gets no notice until SMS can carry one (#175). The SMS notice to the old number is a follow-up after #175.
+- The new address's domain is text the person who changed it chose, and a mail client may turn the masked address into a link. Accepted, as for a reminder's sender name.
+- An old address may no longer be the user's (a work address given up, then reissued to someone else). It still gets the notice, with the new address masked.
+- Mid-merge, an old key can still be on a person being merged into the user's (step 3 of [merging](#merging-two-persons) moves identities last), so it isn't notified.
+
+**Dev checks, by the lead after the deploy:**
+- an email change and a phone change each fire their event, with the user ID in `x-appwrite-event`;
+- `emailVerification` is false right after an email change (the password notice relies on it, above);
+- whether an account with no password also fires `update.password`;
+- whether a user ID with a `.` is accepted at sign-up (step 1 handles it either way).
 
 ## Deleting an account (M4)
 
