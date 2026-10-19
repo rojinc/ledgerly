@@ -112,17 +112,28 @@ function identity(services: Fakes, id: string) {
 
 let log: ReturnType<typeof vi.spyOn>
 let warn: ReturnType<typeof vi.spyOn>
+let error: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   log = vi.spyOn(console, 'log').mockImplementation(() => {})
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  error = vi.spyOn(console, 'error').mockImplementation(() => {})
 })
 afterEach(() => {
   // No personal data in logs: IDs and counts only.
-  for (const args of [...log.mock.calls, ...warn.mock.calls]) {
+  for (const args of [...log.mock.calls, ...warn.mock.calls, ...error.mock.calls]) {
     expect(String(args)).not.toMatch(/@|\d{6,}|Sam Lee|Sammy/)
   }
   vi.restoreAllMocks()
 })
+
+/** The logProblem lines a spy saw with this event, without `fn`. */
+function events(spy: ReturnType<typeof vi.spyOn>, name: string): Array<Record<string, unknown>> {
+  const lines: Array<Record<string, unknown>> = spy.mock.calls.map(([line]: unknown[]) => {
+    const { fn: _fn, ...event } = JSON.parse(String(line)) as Record<string, unknown>
+    return event
+  })
+  return lines.filter(({ event }) => event === name)
+}
 
 describe('POST / (the hourly run)', () => {
   it('finishes a merge a claim left unfinished, and marks the moved key verified', async () => {
@@ -135,9 +146,12 @@ describe('POST / (the hourly run)', () => {
     })
     expect(services.db.rows('members')[0]).toMatchObject({ personId: 'pSam', status: 'active' })
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
-    expect(log).toHaveBeenCalledWith(
-      'identity: merges 1 unfinished, 1 finished, 0 skipped, 0 cut off (mergedInto rows read: 1)',
-    )
+    expect(events(log, 'merge_run')).toEqual([
+      {
+        event: 'merge_run',
+        counts: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, personsRead: 1 },
+      },
+    ])
     // Finished: the next run finds nothing.
     expect((await hourly(services)).body).toEqual({
       ok: true,
@@ -251,9 +265,12 @@ describe('POST / (the hourly run)', () => {
       ok: true,
       data: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100 },
     })
-    expect(log).toHaveBeenCalledWith(
-      'identity: merges 100 unfinished, 0 finished, 0 skipped, 100 cut off (mergedInto rows read: 100)',
-    )
+    expect(events(log, 'merge_run')).toEqual([
+      {
+        event: 'merge_run',
+        counts: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100, personsRead: 100 },
+      },
+    ])
   })
 
   it('doesn’t count a merge put off with time left as cut off, and waits to verify U’s keys', async () => {
@@ -377,7 +394,9 @@ describe('POST / (the hourly run)', () => {
     }
     expect((await hourly(services)).body).toMatchObject({ ok: true })
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: false })
-    expect(warn).toHaveBeenCalledWith('identity: merges into pSam stopped: NOT_FOUND')
+    expect(events(warn, 'merge_stopped')).toEqual([
+      { event: 'merge_stopped', intoPersonId: 'pSam', cause: 'AppError NOT_FOUND' },
+    ])
   })
 
   it('goes on to the next U when one U’s person row can’t be read', async () => {
@@ -400,7 +419,13 @@ describe('POST / (the hourly run)', () => {
       ok: true,
       data: { unfinished: 2, finished: 1 },
     })
-    expect(warn).toHaveBeenCalledWith('identity: merges into pSam stopped: AppwriteException')
+    expect(events(warn, 'merge_stopped')).toEqual([
+      {
+        event: 'merge_stopped',
+        intoPersonId: 'pSam',
+        cause: 'AppwriteException 500 general_unknown',
+      },
+    ])
     expect(identity(services, 'iAlex')?.personId).toBe('pAlex')
     expect(identity(services, 'iPhone')?.personId).toBe('pP')
   })
@@ -423,7 +448,13 @@ describe('POST / (the hourly run)', () => {
       ok: true,
       data: { unfinished: 2, finished: 2 },
     })
-    expect(warn).toHaveBeenCalledWith('identity: merges into pSam stopped: AppwriteException')
+    expect(events(warn, 'merge_stopped')).toEqual([
+      {
+        event: 'merge_stopped',
+        intoPersonId: 'pSam',
+        cause: 'AppwriteException 500 general_unknown',
+      },
+    ])
     expect(identity(services, 'iAlex')).toMatchObject({ personId: 'pAlex', verified: true })
   })
 })

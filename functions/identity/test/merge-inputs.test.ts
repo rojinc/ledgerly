@@ -11,6 +11,14 @@ import { beforeStaging, NOW } from './harness'
 
 // P (a placeholder) is merged into U; X is someone else.
 const merge = { from: 'pP', into: 'pU' }
+
+/** The logProblem lines a spy saw, without `fn`. */
+function events(spy: { mock: { calls: unknown[][] } }) {
+  return spy.mock.calls.map(([line]) => {
+    const { fn: _fn, ...event } = JSON.parse(String(line)) as Record<string, unknown>
+    return event
+  })
+}
 const FAR = Number.MAX_SAFE_INTEGER
 // A few seconds off, for a test with a locked row: a mutant that gets the lock check wrong can
 // raise Raced on every try, so the run is cut off and the test fails rather than hangs.
@@ -381,7 +389,11 @@ describe('moveInputs (step 3)', () => {
       mode: 'days',
       personIds: ['pP', 'pU', 'pX'],
     })
-    expect(errors).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
+    expect(events(errors)).toContainEqual({
+      event: 'merge_no_member_dates',
+      personId: 'pP',
+      groupId: 'g1',
+    })
   })
 
   it('voids a payment or loan whose two sides are now both U, as the ledger voids one', async () => {
@@ -713,9 +725,9 @@ describe('moveInputs (step 3)', () => {
     const stored = Object.fromEntries(store.rows('transactions').map((row) => [row.$id, row]))
     expect(stored.t1?.inputJson).toBe(heavy.inputJson)
     expect(stored.t2?.inputJson).toBe('{')
-    expect(warn.mock.calls.map(([line]) => line)).toEqual([
-      'merge pP into pU left transaction t1 as it is',
-      'merge pP into pU left transaction t2 as it is',
+    expect(events(warn)).toEqual([
+      { event: 'merge_left_transaction', personId: 'pP', intoPersonId: 'pU', transactionId: 't1' },
+      { event: 'merge_left_transaction', personId: 'pP', intoPersonId: 'pU', transactionId: 't2' },
     ])
   })
 
@@ -878,7 +890,12 @@ describe('moveInputs (step 3)', () => {
     expect(store.rows('transactions').map((row) => row.status)).toEqual(['posted', 'posted'])
     expect(input(store, 't1').split).toEqual({ mode: 'equal', personIds: ['pU'] })
     expect(input(store, 't2')).toEqual({ payment: { fromPersonId: 'pP', toPersonId: 'pU' } })
-    expect(warn).toHaveBeenCalledWith('merge pP into pU left locked transaction t2 as it is')
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_locked_transaction',
+      personId: 'pP',
+      intoPersonId: 'pU',
+      transactionId: 't2',
+    })
   })
 
   it('leaves a locked row it can’t read, says so by ID, and doesn’t hold the merge open', async () => {
@@ -894,7 +911,12 @@ describe('moveInputs (step 3)', () => {
       done: true,
     })
     expect(store.rows('transactions')[0]?.inputJson).toBe('{')
-    expect(warn).toHaveBeenCalledWith('merge pP into pU left locked transaction t1 as it is')
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_locked_transaction',
+      personId: 'pP',
+      intoPersonId: 'pU',
+      transactionId: 't1',
+    })
   })
 
   it('reads a row again when it was edited after it was read, so the edit isn’t lost', async () => {
@@ -1291,7 +1313,12 @@ describe('moveInputs: where the scan got to (#242 G)', () => {
       done: true,
     })
     expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't001', left: [] }])
-    expect(warns).toHaveBeenCalledWith('merge pP into pU left locked transaction t001 as it is')
+    expect(events(warns)).toContainEqual({
+      event: 'merge_left_locked_transaction',
+      personId: 'pP',
+      intoPersonId: 'pU',
+      transactionId: 't001',
+    })
   })
 
   it('leaves a row whose item split can’t be read: an unlocked one holds the merge open, a locked one doesn’t', async () => {

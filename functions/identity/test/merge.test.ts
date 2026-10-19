@@ -136,7 +136,14 @@ describe('markMerged (step 1)', () => {
     expect(await markMerged(store, 'pP', 'pU', [claimedThrough.key])).toBe(true)
     expect(store.rows('identities').map((row) => row.$id)).toEqual(['i2', 'i3'])
     // IDs and counts only.
-    expect(log).toHaveBeenCalledWith('merge pP into pU: 1 typed keys deleted')
+    expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      expect.objectContaining({
+        event: 'merge_typed_keys_deleted',
+        personId: 'pP',
+        intoPersonId: 'pU',
+        count: 1,
+      }),
+    ])
   })
 
   it('deletes a phone typed for P when U verified only an email', async () => {

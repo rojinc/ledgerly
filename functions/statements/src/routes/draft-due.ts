@@ -5,18 +5,12 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { statementReadyEmail } from '@ledgerly/server/email/templates'
+import { logProblem } from '@ledgerly/server/http/log'
 import { ID, Query } from 'node-appwrite'
 import { joinedAdmins, verifiedEmails } from '../people'
 import { closeAfter, closingPeriodOf } from '../period'
 import type { Services } from '../services'
-import {
-  activityWrite,
-  describe,
-  getRowOrNull,
-  isAppwriteError,
-  listAll,
-  teamRead,
-} from '../shared'
+import { activityWrite, getRowOrNull, isAppwriteError, listAll, teamRead } from '../shared'
 import { computeSnapshot, statementTypeOf } from '../snapshot'
 import { finalizeStatement } from './finalize'
 
@@ -49,8 +43,7 @@ export async function draftDueStatements(
       if (await draftFor(services, group as Groups & { nextCloseAt: string })) drafted += 1
     } catch (error) {
       failed += 1
-      // IDs only: no names, amounts or addresses in logs (security-and-privacy.md).
-      console.error(`statements: drafting failed for group ${group.$id}: ${describe(error)}`)
+      logProblem('draft_failed', { groupId: group.$id, error })
     }
   }
   return { drafted, failed }
@@ -134,7 +127,7 @@ async function draftFor(
     await emailAdmins(services, group, statementId, period)
   } catch (error) {
     // The draft is made; the email is a courtesy, even when it can't be built at all.
-    console.error(`statements: ready email failed for statement ${statementId}: ${describe(error)}`)
+    logProblem('ready_email_failed', { statementId, error })
   }
   // An admin may have discarded the new draft already.
   const draft = autoFinalizes(group)
@@ -146,9 +139,7 @@ async function draftFor(
       await finalizeStatement(services, group, draft, null, false)
     } catch (error) {
       // The draft stays for an admin to finalize.
-      console.error(
-        `statements: auto-finalize failed for statement ${statementId}: ${describe(error)}`,
-      )
+      logProblem('auto_finalize_failed', { statementId, error })
     }
   }
   return true
@@ -205,9 +196,7 @@ async function emailAdmins(
       })
     } catch (error) {
       // The draft is made; the email is a courtesy (the app lists drafts too).
-      console.error(
-        `statements: ready email failed for statement ${statementId}: ${describe(error)}`,
-      )
+      logProblem('ready_email_failed', { statementId, error })
     }
   }
 }

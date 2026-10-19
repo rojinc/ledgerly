@@ -2,6 +2,7 @@ import type { Groups, Identities, Members, Persons, Shares } from '@ledgerly/cor
 import { type MergeMembers, mergeMembersSchema } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import { logProblem } from '@ledgerly/server/http/log'
 import { Query } from 'node-appwrite'
 import {
   IntoDeleted,
@@ -53,7 +54,7 @@ export async function finishMerges(
       if (finished) result.finished.push(placeholder.$id)
     } catch (error) {
       if (!(error instanceof IntoDeleted)) throw error
-      console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
+      logProblem('merge_stopped_into_deleted', { personId: placeholder.$id, intoPersonId: intoId })
       break
     }
   }
@@ -87,7 +88,7 @@ async function runSteps(
   // them waits whole, P's row included, and keeps the merge open. A kept group needs none.
   const ready = (groupId: string) => {
     if (recorded.some((entry) => entry.groupId === groupId)) return true
-    console.error(`merge ${fromId}: no recorded member dates for group ${groupId}`)
+    logProblem('merge_no_member_dates', { personId: fromId, groupId })
     return false
   }
   let done = true
@@ -164,7 +165,16 @@ async function runSteps(
     }
   }
   const reminders = await moveReminders(db, fromId, intoId, kept, deadline)
-  const counts = `${joined.length} groups joined, ${moved.inputs} inputs, ${moved.voided} voided, ${moved.shares} shares, ${moved.subjects} activity rows, ${reminders.moved} reminders, ${moved.skipped} left as they are`
+  const counts = {
+    groupsJoined: joined.length,
+    inputs: moved.inputs,
+    voided: moved.voided,
+    shares: moved.shares,
+    subjects: moved.subjects,
+    reminders: reminders.moved,
+    leftAsTheyAre: moved.skipped,
+  }
+  const ids = { personId: fromId, intoPersonId: intoId }
   if (
     done &&
     putOff.size === 0 &&
@@ -173,13 +183,11 @@ async function runSteps(
     !(await stray(db, fromId, intoId, kept))
   ) {
     const identities = await moveIdentities(db, fromId, intoId, deadline)
-    console.log(`merge ${fromId} into ${intoId}: ${counts}, ${identities} identities`)
+    logProblem('merge_finished', { ...ids, counts: { ...counts, identities } })
     // Cut off partway, some identities are still P's, and the next claim moves the rest.
     return { joined, finished: !(await hasIdentity(db, fromId)) }
   }
-  console.log(
-    `merge ${fromId} into ${intoId} carries on next claim: ${counts}, ${putOff.size} groups put off`,
-  )
+  logProblem('merge_carries_on', { ...ids, counts: { ...counts, groupsPutOff: putOff.size } })
   return { joined, finished: false }
 }
 
@@ -208,9 +216,13 @@ async function stray(
     })
     const row = rows[0]
     if (row) {
-      console.warn(
-        `merge ${fromId} into ${intoId} left ${tableId} row ${row.$id} in group ${row.groupId} for a later claim`,
-      )
+      logProblem('merge_left_stray_row', {
+        personId: fromId,
+        intoPersonId: intoId,
+        groupId: row.groupId,
+        table: tableId === TABLES.members ? 'members' : 'shares',
+        rowId: row.$id,
+      })
       return true
     }
   }
@@ -228,7 +240,7 @@ function memberDatesOf(placeholder: Persons): MergeMembers | undefined {
   }
   const parsed = mergeMembersSchema.safeParse(raw)
   if (parsed.success) return parsed.data
-  console.error(`merge ${placeholder.$id}: its recorded member dates are unreadable`)
+  logProblem('merge_member_dates_unreadable', { personId: placeholder.$id })
   return undefined
 }
 
