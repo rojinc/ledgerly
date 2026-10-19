@@ -80,6 +80,7 @@ group('logProblem', () => {
       personId: 'Sam Smith',
       reminderId: '+61412345678',
       userId: 'sam@example.com',
+      membershipId: 'Sam Smith',
     })
     expect(lines()).toEqual([
       {
@@ -92,6 +93,7 @@ group('logProblem', () => {
         personId: 'invalid',
         reminderId: 'invalid',
         userId: 'invalid',
+        membershipId: 'invalid',
       },
     ])
   })
