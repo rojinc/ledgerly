@@ -187,6 +187,18 @@ async function endSchedules(
   for (const schedule of schedules) {
     if (outOfTime()) return false
     if (schedule.createdBy !== personId && !namedIn(schedule).includes(personId)) continue
+    const storedEnd = schedule.endsOn as LocalDate | null
+    const generated = schedule.generatedThrough as LocalDate | null
+    // Already ended by today and made up to its end, as an end leaves it: nothing to do, so a
+    // rerun doesn't write it again.
+    if (
+      storedEnd &&
+      compareDates(storedEnd, today) <= 0 &&
+      generated &&
+      compareDates(generated, storedEnd) >= 0
+    ) {
+      continue
+    }
     if (
       compareDates(schedule.startsOn as LocalDate, today) > 0 &&
       !(await hasOccurrence(db, schedule.$id, [Query.equal('status', 'posted')]))
@@ -194,7 +206,6 @@ async function endSchedules(
       await deleteScheduleRows(db, group, schedule.$id)
       continue
     }
-    const storedEnd = schedule.endsOn as LocalDate | null
     const endsOn = storedEnd && compareDates(storedEnd, today) < 0 ? storedEnd : today
     await endScheduleOn(db, group, schedule, endsOn, now)
   }

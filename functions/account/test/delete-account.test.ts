@@ -554,6 +554,7 @@ describe('POST /delete: each group they joined', () => {
     await setRow(services, 'groups', 'e1', { archivedAt: ARCHIVED_AT })
     const otherBefore = rowOf(services, 'schedules', 'sOther')
     const archivedBefore = rowOf(services, 'schedules', 'sArchived')
+    const endedBefore = rowOf(services, 'schedules', 'sEnded')
     expect((await remove(services)).finished).toBe(true)
 
     expect(rowOf(services, 'schedules', 'sGroceries')).toMatchObject({
@@ -562,11 +563,8 @@ describe('POST /delete: each group they joined', () => {
       nextRunAt: DELETED_AT,
     })
     expect(rowOf(services, 'schedules', 'sNamed')).toMatchObject({ endsOn: TODAY })
-    expect(rowOf(services, 'schedules', 'sEnded')).toMatchObject({
-      endsOn: '2026-10-10',
-      generatedThrough: '2026-10-18',
-      nextRunAt: DELETED_AT,
-    })
+    // Already ended and made up to its end: left as it is.
+    expect(rowOf(services, 'schedules', 'sEnded')).toEqual(endedBefore)
     expect(rowOf(services, 'schedules', 'sOther')).toEqual(otherBefore)
     expect(rowOf(services, 'schedules', 'sArchived')).toEqual(archivedBefore)
     // Only the ones after today that can still change go.
@@ -813,6 +811,36 @@ describe('POST /delete: each group they joined', () => {
       leftOn: TODAY,
     })
     expect(rowOf(services, 'schedules', 'sGroceries')).toMatchObject({ endsOn: TODAY })
+  })
+
+  it('gives the keep to a row already showing its write when no member.left of theirs is dated after deletedAt', async () => {
+    const services = kept()
+    // An admin renamed and demoted the row, and they left long before (no member.left since).
+    await setRow(services, 'members', 'h1-p1', {
+      displayName: 'Former member',
+      status: 'left',
+      role: 'viewer',
+      leftOn: TODAY,
+    })
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(activityIn(services, 'h1')).toEqual([
+      expect.objectContaining({ actorPersonId: 'p1', action: 'member.left', at: DELETED_AT }),
+    ])
+  })
+
+  it('writes an ended schedule only once, however many reruns', async () => {
+    const services = kept()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"deletedAt"'),
+      () => insert(services, 'statements', [finalizing('st1', 'e1')]),
+    )
+    // e1 waits for its finalize, so the deletion runs again.
+    expect((await remove(services)).finished).toBe(false)
+    const ended = rowOf(services, 'schedules', 'sGroceries')
+    expect(ended).toMatchObject({ endsOn: TODAY })
+    expect((await remove(services)).finished).toBe(false)
+    expect(rowOf(services, 'schedules', 'sGroceries')).toEqual(ended)
   })
 
   it('retries the schedules once the keep is done, even when they’re no longer in the team', async () => {
