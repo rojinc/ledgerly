@@ -1,5 +1,5 @@
 import type { Groups, Members } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatNet } from '@ledgerly/core/money/format'
 import type { Transfer } from '@ledgerly/core/settle/suggest-transfers'
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
@@ -15,7 +15,7 @@ const keyOf = (transfer: Transfer) => `${transfer.fromPersonId}>${transfer.toPer
 
 /** "Alice is owed $54.80", "Cara owes $45.20", "Bob is square". */
 export function balanceLine(name: string, net: number, currency: string): string {
-  const amount = formatMoney(Math.abs(net), currency)
+  const amount = formatNet(Math.abs(net), currency)
   return net > 0
     ? `${name} is owed ${amount}`
     : net < 0
@@ -145,7 +145,7 @@ export function SettleUp({
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span>
                     {name(transfer.fromPersonId)} pays {name(transfer.toPersonId)}{' '}
-                    {formatMoney(transfer.cents, group.currency)}
+                    {formatNet(transfer.cents, group.currency)}
                   </span>
                   {canRecord && shown !== keyOf(transfer) && (
                     <Button variant="outline" {...opener(keyOf(transfer))}>
