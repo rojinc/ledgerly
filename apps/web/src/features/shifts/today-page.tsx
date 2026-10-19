@@ -8,6 +8,7 @@ import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroups } from '../groups/use-groups'
+import { HoursCapSummary } from './hours-cap'
 import { elapsedText } from './shift-values'
 import {
   todayKey,
@@ -127,6 +128,7 @@ export function TodayPage() {
       <p role="status" className="sr-only">
         {done}
       </p>
+      <HoursCapSummary running={today.data.running} />
       {open.length === 0 ? (
         <p className="text-muted-foreground">
           Add an employer to record shifts:{' '}

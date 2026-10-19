@@ -10,6 +10,7 @@ import {
   failure,
   fakes,
   job,
+  member,
   NOW,
   ok,
   op,
@@ -59,6 +60,32 @@ const failingCheck = () =>
       ],
     }),
   )
+
+// Acme's shares in `part` name acme-old instead: a merge hasn't moved them yet.
+const asOld = (part: ReturnType<typeof shift>) => ({
+  ...part,
+  shares: part.shares.map((row) =>
+    row.personId === 'acme' ? { ...row, personId: 'acme-old' } : row,
+  ),
+})
+
+/** The person IDs each `persons` list read asks for. */
+function personReads(services: Services): string[][] {
+  const reads: string[][] = []
+  const list = services.db.listRows.bind(services.db)
+  vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+    if (params.tableId === 'persons') {
+      const byId = (params.queries ?? []).map((query) => JSON.parse(query))
+      reads.push(
+        ...byId
+          .filter((query) => query.method === 'equal' && query.attribute === '$id')
+          .map((query) => query.values),
+      )
+    }
+    return list(params)
+  })
+  return reads
+}
 
 const finalize = (services: Services, send = false, id = 'st1', user = 'u-sam') =>
   ok<Statements>(services, 'POST', `/statements/${id}/finalize`, { send }, user)
@@ -156,7 +183,7 @@ describe('POST /statements/{id}/finalize', () => {
   })
 
   it('goes on after an interruption at the lock step, and numbers only once', async () => {
-    // 95 shifts: locking takes two batches of at most 90 writes.
+    // 95 shifts: locking takes two batches of 89 locks and a guard write to the group row.
     const shifts = Array.from({ length: 95 }, (_, index) =>
       shift(`s${String(index).padStart(3, '0')}`, '2026-10-10', 60),
     )
@@ -172,7 +199,7 @@ describe('POST /statements/{id}/finalize', () => {
       (await failure(services, 'POST', '/statements/st1/finalize', { send: false })).code,
     ).toBe('INTERNAL')
     expect(stored(services)).toMatchObject({ status: 'finalizing', number: 10 })
-    expect(Object.values(locks(services)).filter((lock) => lock === 'st1')).toHaveLength(90)
+    expect(Object.values(locks(services)).filter((lock) => lock === 'st1')).toHaveLength(89)
 
     const final = await finalize(services)
     expect(final).toMatchObject({ status: 'final', number: 10, displayNumber: 'INV-0010' })
@@ -196,6 +223,149 @@ describe('POST /statements/{id}/finalize', () => {
     const final = await finalize(services)
     expect(final).toMatchObject({ status: 'final', issuedOn: '2026-11-02', dueOn: '2026-11-16' })
     expect(services.files.stored.has('st1')).toBe(true)
+  })
+
+  it('opens from merged persons’ closings and passes its check after a merge (#39)', async () => {
+    // September named two old placeholders for Acme, merged one into the other and then into
+    // acme. Their member rows and locked shares are acme's now (identity-and-invites.md).
+    const services = fakes(
+      rowsOf(
+        shift('s0', '2026-09-10', 120, { statementId: 'st-sep' }),
+        shift('s1', '2026-10-02', 240),
+        {
+          statements: [
+            statement('st-sep', {
+              periodStart: '2026-09-01',
+              periodEnd: '2026-09-30',
+              status: 'final',
+              snapshotJson: snapshotClosing(
+                { start: '2026-09-01', end: '2026-09-30' },
+                { 'acme-older': -2000, 'acme-old': -3000, sam: 5000 },
+              ),
+            }),
+            statement('st1'),
+          ],
+        },
+      ),
+    )
+    await commitNow(services.db, [
+      op('persons', 'acme-old', { displayName: 'Acme', mergedInto: 'acme' }, 'create'),
+      op('persons', 'acme-older', { displayName: 'Acme', mergedInto: 'acme-old' }, 'create'),
+    ])
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.people).toMatchObject([
+      { personId: 'acme', openingCents: -5000, closingCents: -15000 },
+      { personId: 'sam', openingCents: 5000, closingCents: 15000 },
+    ])
+    expect(errors).toEqual([])
+  })
+
+  it('follows a closing’s merge chain one read at a time, reading only people with no member row (#39)', async () => {
+    // September's closing names only acme-older, merged into acme-old, then into acme.
+    const services = fakes(
+      rowsOf(
+        shift('s0', '2026-09-10', 120, { statementId: 'st-sep' }),
+        shift('s1', '2026-10-02', 240),
+        {
+          statements: [
+            statement('st-sep', {
+              periodStart: '2026-09-01',
+              periodEnd: '2026-09-30',
+              status: 'final',
+              snapshotJson: snapshotClosing(
+                { start: '2026-09-01', end: '2026-09-30' },
+                { 'acme-older': -5000, sam: 5000 },
+              ),
+            }),
+            statement('st1'),
+          ],
+        },
+      ),
+    )
+    await commitNow(services.db, [
+      op('persons', 'acme-old', { displayName: 'Acme', mergedInto: 'acme' }, 'create'),
+      op('persons', 'acme-older', { displayName: 'Acme', mergedInto: 'acme-old' }, 'create'),
+    ])
+    const reads = personReads(services)
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.people).toMatchObject([
+      { personId: 'acme', openingCents: -5000, closingCents: -15000 },
+      { personId: 'sam', openingCents: 5000, closingCents: 15000 },
+    ])
+    expect(reads).toEqual([['acme-older'], ['acme-old']])
+    expect(errors).toEqual([])
+  })
+
+  it('adds up when it runs between merge batches, before old shares are moved (#39)', async () => {
+    // Step 2 gave acme-old's member row to acme, but step 3 hasn't moved its shares yet: the
+    // locked September shift and the October one still name acme-old (statements.md rule 2).
+    const services = fakes(
+      rowsOf(
+        asOld(shift('s0', '2026-09-10', 120, { statementId: 'st-sep' })),
+        asOld(shift('s1', '2026-10-02', 240)),
+        payment('p1', '2026-10-15', 3000),
+        {
+          statements: [
+            statement('st-sep', {
+              periodStart: '2026-09-01',
+              periodEnd: '2026-09-30',
+              status: 'final',
+              snapshotJson: snapshotClosing(
+                { start: '2026-09-01', end: '2026-09-30' },
+                { 'acme-old': -5000, sam: 5000 },
+              ),
+            }),
+            statement('st1'),
+          ],
+        },
+      ),
+    )
+    await commitNow(services.db, [
+      op('persons', 'acme-old', { displayName: 'Acme', mergedInto: 'acme' }, 'create'),
+    ])
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.people).toMatchObject([
+      { personId: 'acme', openingCents: -5000, givenCents: 3000, closingCents: -12000 },
+      { personId: 'sam', openingCents: 5000, closingCents: 12000 },
+    ])
+    expect(snapshot.lines.find((line) => line.transactionId === 's1')?.shares).toEqual([
+      { personId: 'acme', givenCents: 0, receivedCents: 10000 },
+      { personId: 'sam', givenCents: 10000, receivedCents: 0 },
+    ])
+    expect(errors).toEqual([])
+  })
+
+  it('checks against the member rows its snapshot used when a merge deletes one meanwhile (#39)', async () => {
+    // acme-old is merged into acme, but step 2 hasn't reached this group: both have member
+    // rows, so the snapshot keeps them apart. Step 2 deletes acme-old's row while the
+    // transactions are being locked, and the check still counts acme-old on their own.
+    const services = fakes(
+      rowsOf(asOld(shift('s1', '2026-10-02', 240)), payment('p1', '2026-10-15', 3000), {
+        statements: [statement('st1')],
+      }),
+    )
+    const { $id, ...oldRow } = member('m-acme-old', 'job', 'acme-old', 'viewer', 'placeholder')
+    await commitNow(services.db, [
+      op('persons', 'acme-old', { displayName: 'Acme', mergedInto: 'acme' }, 'create'),
+      op('members', $id, oldRow, 'create'),
+    ])
+    // This run's stagings: 1 finalizing, 2 the number, 3 the lock batch.
+    beforeStaging(services.db, [op('members', 'm-acme-old', {}, 'delete')], 3)
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.people).toMatchObject([
+      { personId: 'acme', givenCents: 3000, closingCents: 3000 },
+      { personId: 'acme-old', receivedCents: 10000, closingCents: -10000 },
+      { personId: 'sam', closingCents: 7000 },
+    ])
+    expect(errors).toEqual([])
   })
 
   it('refuses with ARCHIVED when an archive commits before step 1 is staged (#190)', async () => {
@@ -314,17 +484,10 @@ describe('POST /statements/{id}/finalize', () => {
     expect(stored(services).status).toBe('draft')
   })
 
-  it('refuses a house divide until divides come, and a member who is not an admin', async () => {
+  it('refuses a house divide to a member who is not an admin', async () => {
     const services = fakes({
       statements: [statement('st-house', { groupId: 'house', type: 'divide' })],
     })
-    const asAdmin = await failure(
-      services,
-      'POST',
-      '/statements/st-house/finalize',
-      { send: false },
-      'u-alice',
-    )
     const asMember = await failure(
       services,
       'POST',
@@ -332,7 +495,7 @@ describe('POST /statements/{id}/finalize', () => {
       { send: false },
       'u-bob',
     )
-    expect([asAdmin.code, asMember.code]).toEqual(['VALIDATION_FAILED', 'FORBIDDEN'])
+    expect(asMember.code).toBe('FORBIDDEN')
   })
 
   it('emails the invoice when asked to send it', async () => {
