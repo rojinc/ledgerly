@@ -132,10 +132,7 @@ export function teamRead(groupId: string): string[] {
   return [Permission.read(Role.team(groupId))]
 }
 
-/**
- * An `activity` row (data-model.md#activity). `changes` is `{ before, after }`. The app shows the
- * actor's name beside the summary, from their member row, so a summary doesn't start with it.
- */
+/** An `activity` row (data-model.md#activity). `changes` is `{ before, after }`. */
 export function activityWrite(
   groupId: string,
   actorPersonId: string,

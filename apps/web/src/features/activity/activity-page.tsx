@@ -27,8 +27,9 @@ export function ActivityPage() {
   const groups = useGroups()
   const sorted = useSortedByName(groups.data ?? [])
   const [params, setParams] = useSearchParams()
-  const groupId = params.get('groupId')
+  const groupId = params.get('groupId') || null
   // Without a choice, the first group. A link to a group that isn't the user's finds none.
+  // The first can change once, when pair groups' members load and they sort by the name shown.
   const group = groupId === null ? sorted[0] : sorted.find((g) => g.$id === groupId)
 
   let content: ReactNode
@@ -145,11 +146,14 @@ function Feed({ group }: { group: Groups }) {
         <Message alert>We couldn’t load older activity. Try again.</Message>
       )}
       {activity.hasNextPage && (
+        // aria-disabled, not disabled: a disabled button loses focus.
         <Button
           variant="outline"
           className="self-start"
-          disabled={activity.isFetchingNextPage}
-          onClick={() => activity.fetchNextPage()}
+          aria-disabled={activity.isFetchingNextPage}
+          onClick={() => {
+            if (!activity.isFetchingNextPage) void activity.fetchNextPage()
+          }}
         >
           {activity.isFetchingNextPage ? 'Loading…' : 'Show older'}
         </Button>

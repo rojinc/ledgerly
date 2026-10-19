@@ -61,10 +61,16 @@ function mockRows(...pages: Activity[][]) {
   }) as never)
 }
 
+/** listRows' parameters, call by call. */
+function listCalls() {
+  return listRows.mock.calls.map(
+    ([params]) => params as unknown as { tableId: string; queries: string[] },
+  )
+}
+
 /** The activity queries, call by call. */
 function activityQueries() {
-  return listRows.mock.calls
-    .map(([params]) => params as unknown as { tableId: string; queries: string[] })
+  return listCalls()
     .filter((params) => params.tableId === 'activity')
     .map((params) => params.queries)
 }
@@ -93,6 +99,7 @@ const FIRST_PAGE = [
 afterEach(() => {
   cleanup()
   vi.resetAllMocks()
+  vi.unstubAllEnvs()
 })
 
 describe('ActivityPage', () => {
@@ -162,28 +169,24 @@ describe('ActivityPage', () => {
     await screen.findByText('Entry a1')
     expect(document.body.textContent).not.toMatch(/p9|example\.com|0400/)
     expect(activityQueries()[0]?.join()).not.toMatch(/changesJson/)
-    const tables = listRows.mock.calls.map(([params]) => (params as { tableId: string }).tableId)
+    const tables = listCalls().map((params) => params.tableId)
     expect(new Set(tables)).toEqual(new Set(['activity', 'members']))
+    expect(tablesDB.getRow).not.toHaveBeenCalled()
     expect(teams.list).not.toHaveBeenCalled()
   })
 
   it.each(['UTC', 'Australia/Sydney'])(
     "shows the time in the group's time zone on a device in %s",
     async (deviceZone) => {
-      const before = process.env.TZ
-      process.env.TZ = deviceZone
-      try {
-        expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(deviceZone)
-        mockGroups([house])
-        mockRows([entry('a1', { at: '2026-10-18T14:30:00.000Z' })])
-        renderAt('/activity')
-        const time = (await screen.findByText(/2026/)).closest('time')
-        expect(time?.getAttribute('dateTime')).toBe('2026-10-18T14:30:00.000Z')
-        // 19 Oct 2026, 1:30 am in Sydney, in the device's locale.
-        expect(time?.textContent).toMatch(/^(19 Oct 2026, 1:30\sam|Oct 19, 2026, 1:30\sAM)$/)
-      } finally {
-        process.env.TZ = before
-      }
+      vi.stubEnv('TZ', deviceZone)
+      expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBe(deviceZone)
+      mockGroups([house])
+      mockRows([entry('a1', { at: '2026-10-18T14:30:00.000Z' })])
+      renderAt('/activity')
+      const time = (await screen.findByText(/2026/)).closest('time')
+      expect(time?.getAttribute('dateTime')).toBe('2026-10-18T14:30:00.000Z')
+      // 19 Oct 2026, 1:30 am in Sydney, in the device's locale.
+      expect(time?.textContent).toMatch(/^(19 Oct 2026, 1:30\sam|Oct 19, 2026, 1:30\sAM)$/)
     },
   )
 
@@ -220,7 +223,8 @@ describe('ActivityPage', () => {
     expect(router.state.location.search).toBe('?groupId=g1')
   })
 
-  it('shows an archived group to a viewer', async () => {
+  // The page reads no role: whoever can read the group's rows sees its activity.
+  it("shows an archived group's activity", async () => {
     mockGroups([{ ...house, archivedAt: '2026-10-01T00:00:00.000Z' } as Groups])
     mockRows([entry('a1')])
     renderAt('/activity?groupId=g1')
@@ -257,6 +261,37 @@ describe('ActivityPage', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('offers to try again when the members fail to load', async () => {
+    mockGroups([house])
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+      if (tableId === 'members') throw new Error('offline')
+      return { total: 1, rows: [entry('a1')] }
+    }) as never)
+    renderAt('/activity')
+    expect((await screen.findByRole('alert')).textContent).toBe('We couldn’t load the activity.')
+    expect(screen.queryByText('Entry a1')).toBeNull()
+    mockRows([entry('a1')])
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Entry a1')).toBeTruthy()
+  })
+
+  it('says so when an older page fails, and loads it on the next try', async () => {
+    mockGroups([house])
+    const full = Array.from({ length: ACTIVITY_PAGE }, (_, i) => entry(`a${200 - i}`))
+    mockRows(full, [entry('a0')])
+    renderAt('/activity')
+    const older = await screen.findByRole('button', { name: 'Show older' })
+    listRows.mockRejectedValueOnce(new Error('offline'))
+    fireEvent.click(older)
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'We couldn’t load older activity. Try again.',
+    )
+    expect(screen.getAllByRole('listitem')).toHaveLength(ACTIVITY_PAGE)
+    fireEvent.click(screen.getByRole('button', { name: 'Show older' }))
+    expect(await screen.findByText('Entry a0')).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('offers to try again when the groups fail to load', async () => {
     const refetch = vi.fn()
     vi.mocked(useGroups).mockReturnValue({ data: undefined, isError: true, refetch } as never)
@@ -264,6 +299,14 @@ describe('ActivityPage', () => {
     expect(screen.getByRole('alert').textContent).toBe('We couldn’t load your groups.')
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(refetch).toHaveBeenCalled()
+  })
+
+  it('shows the first group for an empty groupId', async () => {
+    mockGroups([house])
+    mockRows([entry('a1')])
+    renderAt('/activity?groupId=')
+    expect(await screen.findByText('Entry a1')).toBeTruthy()
+    expect((screen.getByLabelText('Group') as HTMLSelectElement).value).toBe('g1')
   })
 
   it("says so for a group that isn't one of the user's, and keeps the select", async () => {
