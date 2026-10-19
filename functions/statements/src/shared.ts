@@ -4,7 +4,6 @@ import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { EmailError } from '@ledgerly/server/email/send-email'
 import { periodLabel } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
@@ -224,14 +223,4 @@ export async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
  */
 export function groupGuard(group: Pick<Groups, '$id'>): Write {
   return { action: 'update', tableId: TABLES.groups, rowId: group.$id, data: { rev: randomId() } }
-}
-
-/**
- * An error's name, and Appwrite's code and type or Resend's, never a message: messages can quote
- * stored text (security-and-privacy.md).
- */
-export function describe(error: unknown): string {
-  if (error instanceof AppwriteException) return `AppwriteException ${error.code} ${error.type}`
-  if (error instanceof EmailError) return `EmailError ${error.type} ${error.status ?? ''}`.trim()
-  return error instanceof Error ? error.name : typeof error
 }

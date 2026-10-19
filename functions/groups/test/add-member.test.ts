@@ -241,6 +241,39 @@ describe('POST /groups/{id}/members', () => {
     )
   })
 
+  it('answers CONFLICT when merge step 1 marked the person just before the add guarded them', async () => {
+    const services = houses()
+    const sam = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g1/members',
+      { displayName: 'Sam', email: 'sam@example.com' },
+      'u1',
+    )
+    // Person p1 verified sam@example.com and marked Sam's placeholder as merged into themselves
+    // (step 1). The key is still Sam's: identities move last.
+    beforeStaging(services.db, 1, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'persons',
+          rowId: sam.personId,
+          data: { mergedInto: 'p1' },
+        }),
+      ),
+    )
+    const body = { displayName: 'Sam', email: 'sam@example.com' }
+    expect(await failure(services, 'POST', '/groups/g2/members', body, 'u2')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    // Tried again, resolving follows mergedInto: the add lands on p1, not on Sam's placeholder.
+    expect((await ok<Members>(services, 'POST', '/groups/g2/members', body, 'u2')).personId).toBe(
+      'p1',
+    )
+  })
+
   it('answers CONFLICT when a claim took the key just before the add guarded the person', async () => {
     const services = houses()
     const sam = await ok<Members>(
