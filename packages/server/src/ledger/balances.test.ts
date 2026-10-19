@@ -1,4 +1,5 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
+import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeDb } from '../appwrite/fake'
 import { readGroupNets } from './balances'
@@ -34,6 +35,26 @@ describe('readGroupNets', () => {
     const fake = db(['r1', 'r1'])
     expect(await readGroupNets(fake, GROUP)).toHaveLength(2)
     expect(fake.getRow).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads again when a page’s cursor row was deleted meanwhile', async () => {
+    const fake = db(['r0'])
+    const list = fake.listRows.bind(fake)
+    vi.spyOn(fake, 'listRows')
+      .mockRejectedValueOnce(new AppwriteException('Cursor gone', 400, 'general_cursor_not_found'))
+      .mockImplementation(list)
+    expect(await readGroupNets(fake, GROUP)).toHaveLength(2)
+    expect(fake.listRows).toHaveBeenCalledTimes(2)
+  })
+
+  it('throws any other read error', async () => {
+    const fake = db(['r0'])
+    vi.spyOn(fake, 'listRows').mockRejectedValue(
+      new AppwriteException('Bad', 400, 'general_query_invalid'),
+    )
+    await expect(readGroupNets(fake, GROUP)).rejects.toMatchObject({
+      type: 'general_query_invalid',
+    })
   })
 
   it('gives CONFLICT after 3 torn reads', async () => {

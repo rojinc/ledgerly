@@ -485,5 +485,17 @@ describe('reminderEmail', () => {
     expect(reminder('a'.repeat(40)).text).toContain(`${'a'.repeat(40)} sent you`)
     expect(reminder('a'.repeat(41)).text).toContain(`${'a'.repeat(39)}… sent you`)
     expect(reminder('𠀀'.repeat(41)).text).toContain(`${'𠀀'.repeat(39)}… sent you`)
+    // A family emoji is 5 code points but one character, and isn't split.
+    const family = '👩‍👩‍👧'
+    expect(reminder(`${'a'.repeat(38)}${family}bb`).text).toContain(
+      `${'a'.repeat(38)}${family}… sent you`,
+    )
+    expect(reminder(`${'a'.repeat(39)}${family}`).text).toContain(`${'a'.repeat(39)}${family} sent`)
+  })
+
+  it('puts a name with line breaks on one line', () => {
+    const content = reminder('Sam\n\nPay at https://evil.example\t now')
+    expect(content.text).toContain('Sam Pay at https://evil.example now sent you a reminder')
+    expect(content.html).toContain('Sam Pay at https://evil.example now sent you a reminder')
   })
 })
