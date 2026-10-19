@@ -83,7 +83,15 @@ beforeEach(() => {
   seed()
   getRow.mockImplementation((async () => stored.group) as never)
   // useMyMember asks for one person's row; useMembers for the whole house.
-  listRows.mockImplementation((async ({ queries }: { queries: string[] }) => {
+  listRows.mockImplementation((async ({
+    tableId,
+    queries,
+  }: {
+    tableId: string
+    queries: string[]
+  }) => {
+    // The house's history (#183) has no transactions here.
+    if (tableId !== 'members') return { total: 0, rows: [] }
     const person = queries.map((query) => JSON.parse(query)).find((q) => q.attribute === 'personId')
     const rows = person
       ? stored.members.filter((row) => row.personId === person.values[0])
@@ -117,6 +125,18 @@ function ok(data: unknown): Result<unknown> {
 
 function refused(code: ErrorCode, message = 'Refused.'): Result<unknown> {
   return { ok: false, error: { code, message } }
+}
+
+/** Holds every call until the test answers it, so the test can act while a save is pending. */
+function held() {
+  let answer: (result: Result<unknown>) => void = () => {}
+  call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+  return (result: Result<unknown>) => answer(result)
+}
+
+/** Gives a second send, if one was made, time to reach `call`. */
+function settle() {
+  return new Promise((resolve) => setTimeout(resolve, 50))
 }
 
 function type(label: string | RegExp, value: string) {
@@ -261,10 +281,16 @@ describe('HousePage', () => {
       expect(screen.getByRole('region', { name: 'Settings' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Archive group' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
-      expect(screen.getByRole('link', { name: 'Add expense' }).getAttribute('href')).toBe(
-        '/transactions/new?groupId=g1',
+      // #180's, and the empty history's (#183).
+      await waitFor(() =>
+        expect(screen.getAllByRole('link', { name: 'Add expense' })).toHaveLength(2),
       )
       expect(screen.getByText('Settle up section')).toBeTruthy()
+      const adds = screen.getAllByRole('link', { name: 'Add expense' })
+      expect(adds.map((link) => link.getAttribute('href'))).toEqual([
+        '/transactions/new?groupId=g1',
+        '/transactions/new?groupId=g1',
+      ])
     })
 
     it('lets a member add people with the default role, and nothing else', async () => {
@@ -278,7 +304,12 @@ describe('HousePage', () => {
       expect(screen.queryByRole('region', { name: 'Settings' })).toBeNull()
       expect(screen.queryByRole('region', { name: 'Archive group' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
-      expect(screen.getByRole('link', { name: 'Add expense' })).toBeTruthy()
+      // #180's, and the empty history's (#183).
+      await waitFor(() =>
+        expect(screen.getAllByRole('link', { name: 'Add expense' })).toHaveLength(2),
+      )
+      // Jo has moved out, but only an admin moves them back in.
+      expect(screen.queryByRole('button', { name: 'Moved back in' })).toBeNull()
     })
 
     it('lets a viewer only look, and leave', async () => {
@@ -287,8 +318,12 @@ describe('HousePage', () => {
       await row('Alex')
       expect(screen.queryByRole('region', { name: 'Add a housemate' })).toBeNull()
       expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Moved back in' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+      // The history is for everyone who can open the house (#183).
+      const history = screen.getByRole('region', { name: 'History' })
+      expect(await within(history).findByText('No expenses yet.')).toBeTruthy()
     })
 
     it('makes an archived house read-only for everyone', async () => {
@@ -299,6 +334,8 @@ describe('HousePage', () => {
       expect(screen.queryAllByRole('button')).toEqual([])
       expect(screen.queryByRole('textbox')).toBeNull()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+      const history = screen.getByRole('region', { name: 'History' })
+      expect(await within(history).findByText('No expenses yet.')).toBeTruthy()
     })
   })
 
@@ -328,8 +365,7 @@ describe('HousePage', () => {
     })
 
     it('keeps Add housemate focusable while it saves, and sends once', async () => {
-      let answer: (result: Result<unknown>) => void = () => {}
-      call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+      const answer = held()
       renderAt('/groups/g1')
       await row('Alex')
       type('Name', 'Lee')
@@ -340,7 +376,7 @@ describe('HousePage', () => {
       expect(add.getAttribute('aria-disabled')).toBe('true')
       expect(add.hasAttribute('disabled')).toBe(false)
       fireEvent.click(add)
-      await new Promise((resolve) => setTimeout(resolve, 50))
+      await settle()
       expect(call).toHaveBeenCalledTimes(1)
       answer(ok(member('m4', { displayName: 'Lee', status: 'placeholder' })))
       expect(await screen.findByText('Added Lee.')).toBeTruthy()
@@ -479,6 +515,14 @@ describe('HousePage', () => {
       const jo = await row('Jo')
       fireEvent.click(within(jo).getByRole('button', { name: 'Moved back in' }))
       const role = within(jo).getByLabelText('Role') as HTMLSelectElement
+      // It warns what clearing the date means for splits by days present.
+      expect(
+        within(jo).getByRole('combobox', {
+          name: 'Role',
+          description:
+            /They count as living here since they moved in, including while they were away\.$/,
+        }),
+      ).toBe(role)
       // Moving out made them a viewer: they come back as a member unless the admin picks again.
       expect(role.value).toBe('member')
       expect(document.activeElement).toBe(role)
@@ -565,6 +609,63 @@ describe('HousePage', () => {
       await waitFor(() => expect(screen.queryByText('Sam')).toBeNull())
       expect(sent()).toEqual(['groups', 'DELETE', '/groups/g1/members/m3', undefined])
       expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Flat 3', level: 1 }))
+    })
+
+    it.each([
+      { who: 'Sam', open: 'Change', send: 'Save', name: 'Samira' },
+      { who: 'Sam', open: 'Moved out', send: 'Mark as moved out' },
+      { who: 'Jo', open: 'Moved back in', send: 'Mark as moved back in' },
+    ])(
+      'sends “$send” once, and holds Cancel until it’s saved',
+      async ({ who, open, send, name }) => {
+        const answer = held()
+        renderAt('/groups/g1')
+        const item = await row(who)
+        fireEvent.click(within(item).getByRole('button', { name: open }))
+        if (name) fireEvent.change(within(item).getByLabelText('Name'), { target: { value: name } })
+        const save = within(item).getByRole('button', { name: send })
+        fireEvent.click(save)
+        expect(await within(item).findByRole('button', { name: 'Saving…' })).toBe(save)
+        const cancel = within(item).getByRole('button', { name: 'Cancel' })
+        // aria-disabled, not disabled, so neither loses focus.
+        expect([save, cancel].map((button) => button.getAttribute('aria-disabled'))).toEqual([
+          'true',
+          'true',
+        ])
+        fireEvent.click(save)
+        fireEvent.click(cancel)
+        await settle()
+        expect(call).toHaveBeenCalledTimes(1)
+        // Still open: the save that was sent reports back here, whether it lands or is refused.
+        expect(within(item).getByRole('button', { name: 'Saving…' })).toBe(save)
+        answer(ok({}))
+        await waitFor(() =>
+          expect(document.activeElement).toBe(within(item).getByRole('button', { name: open })),
+        )
+      },
+    )
+
+    it('sends Remove once, and holds Cancel until it’s done', async () => {
+      const answer = held()
+      renderAt('/groups/g1')
+      const sam = await row('Sam')
+      fireEvent.click(within(sam).getByRole('button', { name: 'Remove' }))
+      const remove = within(sam).getByRole('button', { name: 'Remove' })
+      fireEvent.click(remove)
+      expect(await within(sam).findByRole('button', { name: 'Removing…' })).toBe(remove)
+      const cancel = within(sam).getByRole('button', { name: 'Cancel' })
+      expect([remove, cancel].map((button) => button.getAttribute('aria-disabled'))).toEqual([
+        'true',
+        'true',
+      ])
+      fireEvent.click(remove)
+      fireEvent.click(cancel)
+      await settle()
+      expect(call).toHaveBeenCalledTimes(1)
+      expect(within(sam).getByRole('button', { name: 'Removing…' })).toBe(remove)
+      stored.members = stored.members.filter((row) => row.$id !== 'm3')
+      answer(ok({}))
+      await waitFor(() => expect(screen.queryByText('Sam')).toBeNull())
     })
 
     it('says to mark them as moved out when they can’t be removed', async () => {

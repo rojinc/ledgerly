@@ -1,6 +1,6 @@
 import { nextSummaryAt } from '@ledgerly/core/dates/summary-period'
 import type { Profiles } from '@ledgerly/core/generated/rows'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   beforeCommit,
   beforeStaging,
@@ -139,6 +139,78 @@ describe('PATCH /profile', () => {
       timezone: 'Australia/Sydney',
       summaryFrequency: 'weekly',
       nextSummaryAt: NEXT_WEEKLY_SYDNEY,
+    })
+  })
+
+  describe('hoursCap (#53)', () => {
+    const empty = { hoursCapMinutes: null, hoursCapPeriod: null, hoursCapStartsOn: null }
+
+    it('sets a weekly limit, with no start date', async () => {
+      const services = withProfile()
+      const profile = await patch(services, { hoursCap: { minutes: 2400, period: 'week' } })
+      expect(profile).toMatchObject({
+        hoursCapMinutes: 2400,
+        hoursCapPeriod: 'week',
+        hoursCapStartsOn: null,
+      })
+    })
+
+    it('sets a fortnightly limit from its first Monday, replacing a weekly one', async () => {
+      const services = withProfile({ hoursCapMinutes: 2400, hoursCapPeriod: 'week' })
+      const profile = await patch(services, {
+        hoursCap: { minutes: 4800, period: 'fortnight', startsOn: '2026-10-19' },
+      })
+      expect(profile).toMatchObject({
+        hoursCapMinutes: 4800,
+        hoursCapPeriod: 'fortnight',
+        hoursCapStartsOn: '2026-10-19',
+      })
+    })
+
+    it('clears all three with null', async () => {
+      const services = withProfile({
+        hoursCapMinutes: 4800,
+        hoursCapPeriod: 'fortnight',
+        hoursCapStartsOn: '2026-10-19',
+      })
+      expect(await patch(services, { hoursCap: null })).toMatchObject(empty)
+    })
+
+    it('leaves the limit as it is when hoursCap is left out', async () => {
+      const services = withProfile({ hoursCapMinutes: 2400, hoursCapPeriod: 'week' })
+      const profile = await patch(services, { region: 'AU-VIC' })
+      expect(profile).toMatchObject({ hoursCapMinutes: 2400, hoursCapPeriod: 'week' })
+    })
+
+    it.each([
+      [
+        'the stored limit',
+        { hoursCapMinutes: 2400, hoursCapPeriod: 'week' },
+        { minutes: 2400, period: 'week' },
+      ],
+      ['null with no limit stored', {}, null],
+    ])('writes nothing for %s sent again', async (_, stored, hoursCap) => {
+      const services = withProfile(stored)
+      const transactions = vi.spyOn(services.db, 'createTransaction')
+      await patch(services, { hoursCap })
+      expect(transactions).not.toHaveBeenCalled()
+    })
+
+    it.each([
+      ['under an hour', { minutes: 59, period: 'week' }],
+      [
+        'a fortnight from a Tuesday',
+        { minutes: 4800, period: 'fortnight', startsOn: '2026-10-20' },
+      ],
+      ['a week with a start', { minutes: 2400, period: 'week', startsOn: '2026-10-19' }],
+    ])('is VALIDATION_FAILED for %s, and writes nothing', async (_, hoursCap) => {
+      const services = withProfile()
+      const before = services.db.rows('profiles')
+      expect(await failure(services, 'PATCH', '/profile', { hoursCap })).toMatchObject({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+      })
+      expect(services.db.rows('profiles')).toEqual(before)
     })
   })
 

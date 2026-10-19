@@ -8,7 +8,6 @@ import type {
   Transactions,
 } from '@ledgerly/core/generated/rows'
 import { finalizeStatementBodySchema } from '@ledgerly/core/schemas/statements'
-import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { checkSnapshot } from '@ledgerly/core/statements/snapshot'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -34,7 +33,7 @@ import {
   tryAgain,
   updateStatement,
 } from '../shared'
-import { computeSnapshot, sharesOf } from '../snapshot'
+import { computeSnapshot, type Membership, sharesInGroup, sharesOf } from '../snapshot'
 import { sendInvoice } from './send'
 
 /**
@@ -188,7 +187,13 @@ async function lockAndIssue(
     end: statement.periodEnd as LocalDate,
   }
   await finishVoids(db, group.$id)
-  const { snapshot, unlockedIds } = await computeSnapshot(db, group, period, now, statement.$id)
+  const { snapshot, unlockedIds, membership } = await computeSnapshot(
+    db,
+    group,
+    period,
+    now,
+    statement.$id,
+  )
   await writeInBatches(
     db,
     unlockedIds.map((rowId) => ({
@@ -198,7 +203,7 @@ async function lockAndIssue(
       data: { statementId: statement.$id },
     })),
   )
-  const problems = checkSnapshot(snapshot, await lockedBalances(db, group.$id))
+  const problems = checkSnapshot(snapshot, await lockedBalances(db, group.$id, membership))
   if (problems.length > 0) {
     // Back to draft only if no other run of this finalize got past its check meanwhile: it
     // would have stored issuedOn, and its locks must stay. That's checked before anything is
@@ -221,14 +226,17 @@ async function lockAndIssue(
   })
 }
 
-/** Every person's balance from all the locked shares in the group (finalize step 5). */
-async function lockedBalances(db: Db, groupId: string) {
+/**
+ * Every person's balance from all the locked shares in the group (finalize step 5), with merged
+ * people counted as the snapshot counted them.
+ */
+async function lockedBalances(db: Db, groupId: string, membership: Membership) {
   const locked = await listAll<Transactions>(db, TABLES.transactions, [
     Query.equal('groupId', groupId),
     Query.isNotNull('statementId'),
   ])
   const shares = await sharesOf(db, locked)
-  return netsFromShares([...shares.values()].flat())
+  return sharesInGroup(db, membership, [...shares.values()].flat())
 }
 
 /**
