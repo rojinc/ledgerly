@@ -2,7 +2,7 @@
 
 The important architecture decisions, why we made them, and what we gave up. **Don't reopen a decision in code.** If you think one is wrong, open an issue labelled `decision` and propose a new entry that supersedes it.
 
-Format: ID, date, status (`accepted`, `superseded by D-xxx`), decision, why, trade-off.
+Format: ID, date, status (`proposed`, `accepted`, `superseded by D-xxx`), decision, why, trade-off.
 
 ---
 
@@ -118,3 +118,10 @@ Format: ID, date, status (`accepted`, `superseded by D-xxx`), decision, why, tra
 **Why:** Making registered people `active` at once showed the adder whether an email or phone has an account, and put people into groups of strangers without asking.
 This refines [D-004](#d-004-one-appwrite-team-per-group-authority-lives-in-members): `placeholder` members now include registered people who haven't joined.
 **Trade-off:** A registered person added to a group sees only its name, type and whether it's archived (and, for a pair group, the other member's display name, so they can tell who added them; #145), as pending, until they join. The list-and-join routes are needed by M2 pair groups (#34), so they ship there. In M1 this rarely matters, because employers are usually placeholders.
+
+### D-018: Free at launch; one paid plan later, pulled from Stripe
+*2026-10-19 · proposed*
+
+**Decision:** Ledgerly launches free. When the owner decides to charge, it adds one paid plan through Stripe Checkout and the Customer Portal, as designed in [billing](billing.md): only some writes are gated, never reads; the payer is the account making the write; a downgrade deletes nothing. A `billing` function pulls the subscription state from Stripe (on return from Checkout, on request, and hourly after a period ends) instead of taking webhooks, so every function stays execute `users` only.
+**Why:** The launch measures are use, not revenue, and a paywall would slow the shared groups that bring new people. The costs that grow with use are already rate limited. Pulling keeps the rule that no function has a public URL ([permissions](permissions.md#function-execute-permissions)).
+**Trade-off:** Running costs are paid with no income until billing is switched on. When it is, a change made in Stripe shows up to an hour after the period ends, or when the user refreshes, rather than at once. Usage-based charging for SMS alone was rejected as the most work for the least revenue. Prices, tax, refunds and the trial are the owner's ([D-015](#d-015-the-lead-agent-runs-the-project-day-to-day)). This entry becomes `accepted` when the owner and the lead say so on [#55](https://github.com/rojinc/ledgerly/issues/55).
