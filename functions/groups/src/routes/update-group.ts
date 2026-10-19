@@ -1,4 +1,5 @@
 import { type LocalDate, parseLocalDate } from '@ledgerly/core/dates/local-date'
+import { closeAtFor, periodEndClosedAt } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
 import type { GroupSettings } from '@ledgerly/core/schemas/groups'
 import { updateGroupBodySchema } from '@ledgerly/core/schemas/groups'
@@ -70,11 +71,16 @@ export async function updateGroup(
   // then moves it on; without a cycle there is none.
   if ('statementCycle' in after || 'cycleAnchor' in after || 'timezone' in after) {
     const stored = group.nextCloseAt
+    const timeZone = columns.timezone ?? group.timezone
     // Compared as instants: Appwrite may return the stored datetime with an offset, not Z.
     const due = cycle !== 'none' && stored !== null && Date.parse(stored) <= now.getTime()
-    data.nextCloseAt = due
-      ? stored
-      : nextCloseAtFor(cycle, anchor, columns.timezone ?? group.timezone, now)
+    if (!due) data.nextCloseAt = nextCloseAtFor(cycle, anchor, timeZone, now)
+    else if ('timezone' in after) {
+      // The due period's end, read in the time zone the close was made in, closes in the new
+      // one (#126). Kept as it was, a move west of more than 18 hours would split the period in
+      // two, and one east of more than 6 would give it a day of the next.
+      data.nextCloseAt = closeAtFor(periodEndClosedAt(stored, group.timezone), timeZone)
+    } else data.nextCloseAt = stored
   }
   const changed = Object.keys(after)
   await conflictAsTryAgain(() =>

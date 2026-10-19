@@ -14,6 +14,9 @@ import {
   updateRow,
 } from './harness'
 
+// October's close in Sydney: 06:00 on 1 November (AEDT, +11).
+const SYDNEY_OCTOBER = '2026-10-31T19:00:00.000Z'
+
 const EMPLOYER_SETTINGS = {
   type: 'employer',
   defaultRateCents: 3000,
@@ -108,10 +111,57 @@ describe('PATCH /groups/{id}', () => {
     const due = '2026-10-31T19:00:00.000Z'
     const services = setUp('employer', { nextCloseAt: due })
     services.now = new Date('2026-11-01T01:00:00.000Z')
-    const perth = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Perth' })
-    expect(perth).toMatchObject({ timezone: 'Australia/Perth', nextCloseAt: due })
+    const weekly = await ok(services, 'PATCH', '/groups/g1', {
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    expect(weekly).toMatchObject({ nextCloseAt: due })
     const none = await ok(services, 'PATCH', '/groups/g1', { statementCycle: 'none' })
     expect(none).toMatchObject({ nextCloseAt: null })
+  })
+
+  it.each([
+    // West by 21 hours: October closes later, so the cron drafts it then, once.
+    [
+      'Sydney to Honolulu',
+      SYDNEY_OCTOBER,
+      'Australia/Sydney',
+      'Pacific/Honolulu',
+      '2026-11-01T16:00:00.000Z',
+    ],
+    // East by 15 hours: earlier, so it stays due, and October doesn't take 1 November.
+    [
+      'New York to Sydney',
+      '2026-11-01T11:00:00.000Z',
+      'America/New_York',
+      'Australia/Sydney',
+      SYDNEY_OCTOBER,
+    ],
+    [
+      'Perth to Sydney',
+      '2026-10-31T22:00:00.000Z',
+      'Australia/Perth',
+      'Australia/Sydney',
+      SYDNEY_OCTOBER,
+    ],
+  ])('closes a due October in the new time zone, %s (#126)', async (_, due, from, to, closeAt) => {
+    const services = setUp('employer', { nextCloseAt: due, timezone: from })
+    services.now = new Date('2026-11-01T12:00:00.000Z')
+    const moved = await ok(services, 'PATCH', '/groups/g1', { timezone: to })
+    expect(moved).toMatchObject({ timezone: to, nextCloseAt: closeAt })
+  })
+
+  it('keeps a due nextCloseAt exactly as stored when the time zone stays the same', async () => {
+    // Stored before #126: New York's October close, after a move to Sydney.
+    const due = '2026-11-01T11:00:00.000Z'
+    const services = setUp('employer', { nextCloseAt: due })
+    services.now = new Date('2026-11-01T12:00:00.000Z')
+    const weekly = await ok(services, 'PATCH', '/groups/g1', {
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+      timezone: 'Australia/Sydney',
+    })
+    expect(weekly).toMatchObject({ nextCloseAt: due })
   })
 
   it('compares a due nextCloseAt as an instant, whatever its offset', async () => {
@@ -119,8 +169,9 @@ describe('PATCH /groups/{id}', () => {
     const due = '2026-11-01T06:00:00.000+11:00'
     const services = setUp('employer', { nextCloseAt: due })
     services.now = new Date('2026-10-31T20:00:00.000Z')
+    // Due, so October is closed again in Perth: 06:00 on 1 November there.
     const perth = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Perth' })
-    expect(perth).toMatchObject({ nextCloseAt: due })
+    expect(perth).toMatchObject({ nextCloseAt: '2026-10-31T22:00:00.000Z' })
   })
 
   it('keeps nextCloseAt when nothing it depends on changes', async () => {
