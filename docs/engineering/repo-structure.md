@@ -83,6 +83,7 @@ ledgerly/
 │               ├── transactions/
 │               ├── statements/
 │               ├── house/
+│               ├── onboarding/
 │               ├── people/
 │               └── profile/
 │
