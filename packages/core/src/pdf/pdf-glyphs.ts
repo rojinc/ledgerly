@@ -106,24 +106,36 @@ function drawable(codePoint: number): boolean {
 }
 
 /**
- * The code points in `text`, composed (NFC) first, that the PDF font can't draw, in order, once
- * for each time they occur. Roboto has the composed letters but few combining marks, so a
- * decomposed `Ê` (E + U+0302) counts as drawable. A surrogate pair, such as most emoji, is one
- * character; a lone surrogate is missing.
+ * How the PDF font can draw one character of composed (NFC) text: as itself, or else from its
+ * decomposed parts when Roboto has each of them (`ṣ` → s + U+0323), or not at all (undefined).
+ * Roboto has many composed letters but few combining marks (no U+0302), and some letters only
+ * as base + mark, so neither form alone covers what it can draw.
  */
-export function missingGlyphs(text: string): number[] {
-  return Array.from(text.normalize('NFC'), (char) => char.codePointAt(0) as number).filter(
-    (codePoint) => !drawable(codePoint),
-  )
+function drawn(char: string): string | undefined {
+  if (drawable(char.codePointAt(0) as number)) return char
+  const parts = char.normalize('NFD')
+  return Array.from(parts).every((part) => drawable(part.codePointAt(0) as number))
+    ? parts
+    : undefined
 }
 
 /**
- * `text` composed (NFC), so decomposed accents print as the letters Roboto has, with each
- * character the PDF font still can't draw replaced by U+FFFD, so the gap shows:
- * `张三 Pty Ltd` → `�� Pty Ltd`.
+ * The code points in `text`, composed (NFC) first, that the PDF font can't draw, in order, once
+ * for each time they occur. A decomposed `Ê` (E + U+0302) composes to a letter Roboto has, and a
+ * `ṣ` it has no code point for draws from s + U+0323 (see drawn()). A surrogate pair, such as
+ * most emoji, is one character; a lone surrogate is missing.
+ */
+export function missingGlyphs(text: string): number[] {
+  return Array.from(text.normalize('NFC'))
+    .filter((char) => drawn(char) === undefined)
+    .map((char) => char.codePointAt(0) as number)
+}
+
+/**
+ * `text` as the PDF font can draw it: composed (NFC), each character as drawn() gives it, and
+ * each one it still can't draw replaced by U+FFFD, so the gap shows: `张三 Pty Ltd` →
+ * `�� Pty Ltd`.
  */
 export function printable(text: string): string {
-  return Array.from(text.normalize('NFC'), (char) =>
-    drawable(char.codePointAt(0) as number) ? char : '\uFFFD',
-  ).join('')
+  return Array.from(text.normalize('NFC'), (char) => drawn(char) ?? '�').join('')
 }

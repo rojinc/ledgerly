@@ -50,6 +50,26 @@ describe('missingGlyphs and printable', () => {
     expect(printable(decomposed)).toBe(text.normalize('NFC'))
   })
 
+  // Composed letters Roboto has no code point for, but whose base and mark it has: it draws
+  // them from the parts (Yoruba, transliterations, Greek varia), typed either way.
+  it.each([
+    ['s with a dot below', 'ṣ', 'ṣ'],
+    ['D with a dot below', 'Ḍ', 'Ḍ'],
+    ['Greek alpha with varia', 'ὰ', 'ὰ'],
+    // Only Ṣ needs its parts: à and é are in Roboto as they are.
+    ['a Yoruba name', 'Ṣàdé', 'Ṣàdé'],
+  ])('prints %s from its parts', (_, text, printed) => {
+    for (const input of [text, text.normalize('NFD')]) {
+      expect(missingGlyphs(input)).toEqual([])
+      expect(printable(input)).toBe(printed)
+    }
+  })
+
+  it('marks an accent Roboto has neither composed nor on its own', () => {
+    expect(missingGlyphs('x̂')).toEqual([0x0302])
+    expect(printable('x̂')).toBe('x�')
+  })
+
   it('counts each time a character occurs', () => {
     expect(missingGlyphs('张张 and 张')).toEqual([0x5f20, 0x5f20, 0x5f20])
   })
