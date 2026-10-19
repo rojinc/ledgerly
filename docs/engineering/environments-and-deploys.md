@@ -13,6 +13,7 @@ There is no separate prod project for now (owner decision, 2026-10-19). `ledgerl
 - It needs a web platform for its app domain (and `localhost` for local development), Resend as custom SMTP, and email verification turned on.
 - Auth methods: only email + password and email OTP (phone from M3). Team invites, magic URL and anonymous are off, because clients never manage team memberships.
 - Membership privacy: team members see only each other's user ID, not email, phone, name, MFA or last access.
+- Session invalidation (Auth → Security, on since 2026-10-19): a password changed through the password route signs the user out of every other session. A recovery reset doesn't: Appwrite applies the setting only to that route ([#290](https://github.com/rojinc/ledgerly/issues/290)). Like the settings above, no deploy pushes it.
 
 ## Resources as code
 
@@ -96,7 +97,7 @@ The owner confirms these names against the server: a missing scope fails the dep
 | --- | --- | --- | --- | --- |
 | `ledger` | HTTP | `users` | 15 s | `rows.*`, `files.*` (receipt permissions), `teams.read` (whether a `left` member is still in the team, #117) |
 | `groups` | HTTP | `users` | 15 s | `rows.*`, `teams.*` |
-| `identity` | HTTP | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
+| `identity` | HTTP + events `users.*.update.password` and `users.*.recovery.*.update` ([password notice](../architecture/identity-and-invites.md#password-notice); #236 Part 2 adds it to `functions.json` with its code) | `users` | 15 s | `rows.*`, `teams.*`, `users.read` (verified identities) |
 | `account` (#50 Part 3 adds it to `functions.json` with its code) | HTTP + every 60 minutes (`interval: 60`) | `users` | 900 s (the hourly job finishes account deletions; `POST /delete` stops after 20 s, inside the 30 s synchronous limit) | `rows.*`, `teams.*`, `users.read` (the caller's session age and `passwordUpdate`), `users.write` (labelling, blocking and deleting a deleted account's user and sessions), `files.read` and `files.write` (a purged group's receipts and statement PDFs, checked before each delete) |
 | `scheduler` | HTTP + every 60 minutes (`interval: 60`) | `users` | 900 s | `rows.*`, `files.*` (receipt clean-up, on the `receipts` bucket only), `teams.read` (whether a `left` member is still in the team, #117), `teams.write` (only the [nightly check](../architecture/scheduling.md#step-6-nightly-check), removing stale memberships), `users.read` (reminder emails) |
 | `statements` | HTTP + every 60 minutes (`interval: 60`) | `users` | 300 s | `rows.*`, `files.*` (PDFs), `teams.read` (whether a `left` member is still in the team, #117) |

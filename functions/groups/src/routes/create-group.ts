@@ -9,7 +9,7 @@ import {
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, removeFromTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
-import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import {
   type PersonInput,
@@ -29,6 +29,7 @@ import {
   isAppwriteError,
   nextCloseAtFor,
   parseBody,
+  resolveGuarded,
   teamRead,
   today,
 } from '../shared'
@@ -149,7 +150,7 @@ export async function createGroup(
             counterpartInput,
             region,
             creator.$id,
-            tx.id,
+            tx,
           )
           writes.push(
             ...counterpart.writes,
@@ -260,11 +261,14 @@ async function resolveCounterpart(
   input: PersonInput,
   region: string,
   creatorId: string,
-  txId?: string,
+  // In the group's transaction, guarded; without one, only to check the input first.
+  tx?: Tx,
 ) {
   let resolved: ResolvedPerson
   try {
-    resolved = await resolvePerson(db, input, region, txId)
+    resolved = tx
+      ? await resolveGuarded(tx, db, input, region)
+      : await resolvePerson(db, input, region)
   } catch (error) {
     if (error instanceof RangeError) throw invalid('The email or phone number is not valid.')
     throw error
