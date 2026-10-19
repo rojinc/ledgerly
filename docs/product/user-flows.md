@@ -32,7 +32,7 @@ Step-by-step journeys through the product. Each step names the function route it
 | Bought something personal on their card | Expense → *Personal, on their card* | They owe you less |
 | They paid you $500 | Payment received | They owe you $500 less |
 
-To fix a posted entry, the worker opens it and taps **Edit**, which shows the same choices → `ledger PATCH /transactions/{id}`. An expense can switch to another expense choice, and a payment stays a payment. An entry that matches none of the choices, or has items, has no Edit: void it and add it again.
+To fix a posted entry, the worker opens it and taps **Edit**, which shows the same choices → `ledger PATCH /transactions/{id}`. An expense can switch to another expense choice, and a payment stays a payment. An entry that matches none of the choices says so and has no Edit: void it and add it again. An entry with items has no Edit yet.
 
 ## 5. Month-end invoice
 

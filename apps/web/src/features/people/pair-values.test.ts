@@ -137,6 +137,7 @@ function stored(body: ReturnType<typeof toEntryBody>) {
     date,
     description,
     totalCents: totalCents as number,
+    category: null,
     inputJson: JSON.stringify({ payers, split, payment, note }),
   }
 }
@@ -150,9 +151,35 @@ describe('toPairValues', () => {
   ])('gives $type (from $from) back, so saving it unchanged sends the stored input', (values) => {
     const body = toEntryBody(values, ids, 'AUD', people)
     const back = toPairValues(stored(body), people, 'AUD')
-    // A blank description was saved as its default.
-    expect(back).toEqual({ ...values, description: body.description })
+    expect(back).toEqual(values)
     expect(toEntryBody(back as EntryValues, ids, 'AUD', people)).toEqual(body)
+  })
+
+  it('reads a default description as blank, so it follows a new choice', () => {
+    const body = toEntryBody(entry({ type: 'lent' }), ids, 'AUD', people)
+    expect(body.description).toBe('Lent')
+    const back = toPairValues(stored(body), people, 'AUD') as EntryValues
+    expect(back.description).toBe('')
+    expect(toEntryBody({ ...back, type: 'borrowed' }, ids, 'AUD', people).description).toBe(
+      'Borrowed',
+    )
+    // One typed in keeps its words, even the default's.
+    expect(
+      toPairValues({ ...stored(body), description: 'Lent for rent' }, people, 'AUD'),
+    ).toMatchObject({ description: 'Lent for rent' })
+  })
+
+  it('matches no choice for a row with a category, or an empty note, which saving would drop', () => {
+    const body = toEntryBody(entry({}), ids, 'AUD', people)
+    expect(toPairValues({ ...stored(body), category: 'other' }, people, 'AUD')).toBeUndefined()
+    const { payers, split } = body
+    expect(
+      toPairValues(
+        { ...stored(body), inputJson: JSON.stringify({ payers, split, note: '' }) },
+        people,
+        'AUD',
+      ),
+    ).toBeUndefined()
   })
 
   it('reads the amount in the currency’s own format', () => {
@@ -205,6 +232,7 @@ describe('toPairValues', () => {
       date: '2026-10-19',
       description: 'Lent',
       totalCents: 5000,
+      category: null,
       inputJson: typeof input === 'string' ? input : JSON.stringify(input),
     }
     expect(toPairValues(row, people, 'AUD')).toBeUndefined()

@@ -24,7 +24,6 @@ import {
   useCreateTransaction,
   useHistory,
   useMembers,
-  useUpdateTransaction,
 } from '../transactions/use-transactions'
 import {
   balanceText,
@@ -209,18 +208,18 @@ export function EntryForm({
   group,
   people,
   name,
-  net = 0,
+  net,
   edit,
 }: {
   group: Groups
   people: PairPeople
   name: string
   /** The viewer's balance, which a new entry's repayment starts from. */
-  net?: number
+  net: number
   edit?: PairEdit
 }) {
   const create = useCreateTransaction()
-  const update = useUpdateTransaction(edit?.row.$id ?? '', group.$id)
+  const editing = edit !== undefined
   const queryClient = useQueryClient()
   // One ID per entry, so a retry after an error can't add it twice; a new one once it's saved.
   // A change keeps the row's.
@@ -247,8 +246,8 @@ export function EntryForm({
   // The balance moves after each entry: who owes, and so who repays, may change with it. A
   // change keeps who repaid as stored.
   useEffect(() => {
-    if (!edit && !form.getFieldState('from').isDirty) form.setValue('from', debtor(net))
-  }, [form, net, edit])
+    if (!editing && !form.getFieldState('from').isDirty) form.setValue('from', debtor(net))
+  }, [form, net, editing])
   const [type, from, amount] = form.watch(['type', 'from', 'amount'])
   const owed = owedBy(from, net)
   const typed = cents(amount, group.currency)
@@ -263,7 +262,7 @@ export function EntryForm({
     if (edit) {
       try {
         // Saving it unchanged is fine: the function answers with the row as it is.
-        await update.mutateAsync(body)
+        await edit.save(body)
         edit.onDone()
       } catch (error) {
         form.setError('root', { message: (error as Error).message })
@@ -308,7 +307,7 @@ export function EntryForm({
       }}
     >
       {edit ? (
-        <h2 ref={edit.heading} tabIndex={-1} className="font-medium outline-none">
+        <h2 id="edit-heading" ref={edit.heading} tabIndex={-1} className="font-medium outline-none">
           Change this entry
         </h2>
       ) : (
@@ -379,7 +378,15 @@ export function EntryForm({
           {isSubmitting ? 'Saving…' : edit ? 'Save' : 'Add'}
         </Button>
         {edit && (
-          <Button type="button" variant="outline" onClick={edit.onDone}>
+          // Not while saving: the save would still land, after the form had gone.
+          <Button
+            type="button"
+            variant="outline"
+            aria-disabled={isSubmitting}
+            onClick={() => {
+              if (!form.formState.isSubmitting) edit.onDone()
+            }}
+          >
             Cancel
           </Button>
         )}

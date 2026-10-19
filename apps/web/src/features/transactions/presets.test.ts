@@ -103,6 +103,20 @@ describe('toEntryValues', () => {
     expect(toEntryBody(back as EntryValues, IDS, 'AUD', PEOPLE)).toEqual(body)
   })
 
+  it('matches no choice for a payment with a category, or an empty note, which saving would drop', () => {
+    const payment = toEntryBody({ ...BASE, type: 'paymentReceived' }, IDS, 'AUD', PEOPLE)
+    expect(toEntryValues({ ...stored(payment), category: 'work' }, PEOPLE, 'AUD')).toBeUndefined()
+    const expense = toEntryBody(BASE, IDS, 'AUD', PEOPLE)
+    const { payers, split } = expense
+    expect(
+      toEntryValues(
+        { ...stored(expense), inputJson: JSON.stringify({ payers, split, note: '' }) },
+        PEOPLE,
+        'AUD',
+      ),
+    ).toBeUndefined()
+  })
+
   it('reads a row with no note, and an amount in a currency without cents', () => {
     const body = toEntryBody({ ...BASE, amount: '2500', category: '' }, IDS, 'JPY', PEOPLE)
     expect(toEntryValues(stored(body), PEOPLE, 'JPY')).toMatchObject({ amount: '2500', note: '' })

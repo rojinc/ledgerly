@@ -22,13 +22,7 @@ import {
   type EntryValues,
   toEntryBody,
 } from './presets'
-import {
-  employerPeople,
-  LedgerError,
-  useCreateTransaction,
-  useMembers,
-  useUpdateTransaction,
-} from './use-transactions'
+import { employerPeople, LedgerError, useCreateTransaction, useMembers } from './use-transactions'
 
 // The body's fields, as the form names them.
 const ERROR_FIELD: Record<string, keyof EntryValues> = {
@@ -165,6 +159,8 @@ export type EntryEdit = {
   values: EntryValues
   /** The form's heading, which gets focus when it opens (`useSwap`). */
   heading: RefObject<HTMLHeadingElement | null>
+  /** `ledger PATCH /transactions/{id}`, kept by the page: a refusal can outlast the form. */
+  save: (body: TransactionInput) => Promise<unknown>
   /** Called after a save and on Cancel. */
   onDone: () => void
 }
@@ -184,7 +180,6 @@ export function EntryForm({
 }) {
   const navigate = useNavigate()
   const create = useCreateTransaction()
-  const update = useUpdateTransaction(edit?.row.$id ?? '', group.$id)
   // One ID per visit, so a retry after an error can't add it twice. A change keeps the row's.
   const [id] = useState(() => edit?.row.$id ?? ID.unique())
   const types = edit
@@ -207,35 +202,40 @@ export function EntryForm({
   })
   const { errors, isSubmitting } = form.formState
   const type = form.watch('type')
+  const submit = form.handleSubmit(async (body) => {
+    try {
+      if (edit) {
+        // Saving it unchanged is fine: the function answers with the row as it is.
+        await edit.save(body)
+        edit.onDone()
+        return
+      }
+      const view = await create.mutateAsync(body)
+      navigate(`/transactions/${view.transaction.$id}`, { replace: true })
+    } catch (error) {
+      // The same ID again, with different content: an earlier try may have been saved
+      // although its answer was lost. Say so, rather than inviting a duplicate. On a change,
+      // CONFLICT is another write that got there first, and the function says so.
+      const message =
+        !edit && error instanceof LedgerError && error.code === 'CONFLICT'
+          ? 'This may already have been saved from your last try. Check History before adding it again.'
+          : (error as Error).message
+      form.setError('root', { message })
+    }
+  })
 
   return (
     <form
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          if (edit) {
-            // Saving it unchanged is fine: the function answers with the row as it is.
-            await update.mutateAsync(body)
-            edit.onDone()
-            return
-          }
-          const view = await create.mutateAsync(body)
-          navigate(`/transactions/${view.transaction.$id}`, { replace: true })
-        } catch (error) {
-          // The same ID again, with different content: an earlier try may have been saved
-          // although its answer was lost. Say so, rather than inviting a duplicate. On a change,
-          // CONFLICT is another write that got there first, and the function says so.
-          const message =
-            !edit && error instanceof LedgerError && error.code === 'CONFLICT'
-              ? 'This may already have been saved from your last try. Check History before adding it again.'
-              : (error as Error).message
-          form.setError('root', { message })
-        }
-      })}
+      onSubmit={(event) => {
+        // aria-disabled, not disabled, keeps focus on the button; this guard stops a second send.
+        if (form.formState.isSubmitting) event.preventDefault()
+        else void submit(event)
+      }}
     >
       {edit && (
-        <h2 ref={edit.heading} tabIndex={-1} className="font-medium outline-none">
+        <h2 id="edit-heading" ref={edit.heading} tabIndex={-1} className="font-medium outline-none">
           Change this entry
         </h2>
       )}
@@ -296,11 +296,19 @@ export function EntryForm({
       )}
       <TextField id="note" label="Note (optional)" error={errors.note} {...form.register('note')} />
       <div className="flex flex-wrap gap-3">
-        <Button type="submit" disabled={isSubmitting}>
+        <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : edit ? 'Save' : 'Add'}
         </Button>
         {edit && (
-          <Button type="button" variant="outline" onClick={edit.onDone}>
+          // Not while saving: the save would still land, after the form had gone.
+          <Button
+            type="button"
+            variant="outline"
+            aria-disabled={isSubmitting}
+            onClick={() => {
+              if (!form.formState.isSubmitting) edit.onDone()
+            }}
+          >
             Cancel
           </Button>
         )}

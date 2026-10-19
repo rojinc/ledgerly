@@ -95,11 +95,16 @@ export function toEntryBody(
  * matches none of the choices. `toEntryBody()` of the result gives the stored input back.
  */
 export function toPairValues(
-  row: Pick<Transactions, 'kind' | 'totalCents' | 'date' | 'description' | 'inputJson'>,
+  row: Pick<
+    Transactions,
+    'kind' | 'totalCents' | 'date' | 'description' | 'category' | 'inputJson'
+  >,
   { me, them }: PairPeople,
   currency: string,
 ): EntryValues | undefined {
   const { payers, split, payment, note } = readStored(row.inputJson)
+  // The form has no category, and leaves out an empty note: saving would drop either.
+  if (row.category !== null || note === '') return undefined
   let choice: Pick<EntryValues, 'type' | 'from'> | undefined
   if (row.kind === 'payment') {
     if (payment?.fromPersonId === me && payment.toPersonId === them) {
@@ -124,7 +129,8 @@ export function toPairValues(
     ...choice,
     amount: centsToText(row.totalCents, currency),
     date: row.date,
-    description: row.description,
+    // A blank description was saved as the default, which follows the choice if it changes.
+    description: row.description === DEFAULT_DESCRIPTION[choice.type] ? '' : row.description,
     note: typeof note === 'string' ? note : '',
   }
 }

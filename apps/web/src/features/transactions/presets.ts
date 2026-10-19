@@ -147,13 +147,17 @@ export function toEntryValues(
 ): EntryValues | undefined {
   const stored = readStored(row.inputJson)
   const type = entryType(row.kind, row.totalCents, stored, { worker, employer })
-  if (!type) return undefined
+  // A payment has no category in the form, and the form leaves out an empty note: saving would
+  // drop either.
+  if (!type || (type === 'paymentReceived' && row.category !== null) || stored.note === '') {
+    return undefined
+  }
   return {
     type,
     amount: centsToText(row.totalCents, currency),
     date: row.date,
     description: row.description,
-    category: type === 'paymentReceived' ? '' : ((row.category ?? '') as Category | ''),
+    category: (row.category ?? '') as Category | '',
     note: typeof stored.note === 'string' ? stored.note : '',
   }
 }

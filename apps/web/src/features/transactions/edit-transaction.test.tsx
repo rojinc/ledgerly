@@ -1,6 +1,6 @@
 import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
@@ -122,6 +122,29 @@ function ok(data: unknown): Result<unknown> {
   return { ok: true, data }
 }
 
+/** The ledger's answer to a PATCH: the row as it stores the body, its input in `inputJson`. */
+function saves(stored: Transactions) {
+  return (async (_fn: string, _method: string, _path: string, body: Record<string, unknown>) => {
+    const { id, groupId, kind, date, description, totalCents, category, ...input } = body
+    return ok({
+      transaction: {
+        ...stored,
+        date,
+        description,
+        totalCents,
+        category: category ?? null,
+        inputJson: JSON.stringify(input),
+      },
+      shares: [],
+    })
+  }) as never
+}
+
+/** The page's alerts with something in them: the receipts section keeps an empty one mounted. */
+function alerts() {
+  return screen.queryAllByRole('alert').filter((alert) => alert.textContent !== '')
+}
+
 /** The last PATCH body sent. */
 function patched() {
   const last = call.mock.calls.at(-1)
@@ -201,12 +224,7 @@ describe('TransactionPage, an employer entry', () => {
     ],
   ] as const)('opens %s as stored, saves it unchanged, then a new amount', async (type, stored) => {
     mock(stored)
-    call.mockImplementation(async (_fn, _method, _path, body) =>
-      ok({
-        transaction: { ...stored, totalCents: (body as { totalCents: number }).totalCents },
-        shares: [],
-      }),
-    )
+    call.mockImplementation(saves(stored))
     renderPage()
     await openForm()
     expect(
@@ -235,7 +253,7 @@ describe('TransactionPage, an employer entry', () => {
     // It closes with no error, and focus goes back to Edit.
     const edit = await screen.findByRole('button', { name: 'Edit' })
     await waitFor(() => expect(document.activeElement).toBe(edit))
-    expect(screen.queryByRole('alert')).toBeNull()
+    expect(alerts()).toEqual([])
 
     await openForm()
     fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '55.10' } })
@@ -247,8 +265,10 @@ describe('TransactionPage, an employer entry', () => {
       totalCents: 5510,
       ...(before.payers ? { payers: [{ ...before.payers[0], cents: 5510 }] } : {}),
     })
-    // The page shows the saved row.
+    // The page shows the saved row, and Edit opens on it.
     expect(await screen.findByText(/^A?\$55\.10$/)).toBeTruthy()
+    await openForm()
+    expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('55.10')
   })
 
   const reimbursable = row({
@@ -291,14 +311,40 @@ describe('TransactionPage, an employer entry', () => {
     mock(reimbursable)
     renderPage()
     await openForm()
+    // Voiding would take the form, and what was typed, away.
+    expect(screen.queryByRole('button', { name: 'Void' })).toBeNull()
     fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '1' } })
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(screen.queryByRole('heading', { name: 'Change this entry' })).toBeNull()
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }))
     expect(call).not.toHaveBeenCalled()
+    expect(screen.getByRole('button', { name: 'Void' })).toBeTruthy()
     // Opened again, it starts from the row.
     await openForm()
     expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('40.00')
+  })
+
+  it('holds Save and Cancel while saving, keeping focus, and closes once it’s saved', async () => {
+    mock(reimbursable)
+    let answer!: (result: Result<unknown>) => void
+    call.mockReturnValue(
+      new Promise((resolve) => {
+        answer = resolve
+      }),
+    )
+    renderPage()
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    // aria-disabled, not disabled, so focus stays on it if the save fails.
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    expect((saving as HTMLButtonElement).disabled).toBe(false)
+    fireEvent.click(saving)
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('heading', { name: 'Change this entry' })).toBeTruthy()
+    await act(async () => answer(ok({ transaction: reimbursable, shares: [] })))
+    expect(await screen.findByRole('button', { name: 'Edit' })).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it.each([
@@ -319,17 +365,49 @@ describe('TransactionPage, an employer entry', () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     await openForm()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect((await screen.findByRole('alert')).textContent).toBe(shown)
+    await waitFor(() => expect(alerts().map((alert) => alert.textContent)).toEqual([shown]))
     // The form stays open, so nothing typed is lost.
     expect(screen.getByRole('heading', { name: 'Change this entry' })).toBeTruthy()
-    // The first three read the row and its group again.
+    // The first three read the row, its group, the caller's role and the members again.
     const reread = ['LOCKED', 'ARCHIVED', 'FORBIDDEN'].includes(code)
-    expect(invalidate).toHaveBeenCalledTimes(reread ? 2 : 0)
+    expect(invalidate).toHaveBeenCalledTimes(reread ? 4 : 0)
     if (reread) {
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 't1'], exact: true })
       expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g1'] })
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['member', 'g1'] })
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['members', 'g1'] })
     }
   })
+
+  it.each([
+    ['LOCKED', 'It’s on a final invoice.', { row: { ...reimbursable, statementId: 'st1' } }],
+    ['FORBIDDEN', 'Only an admin can change this.', { role: 'viewer' }],
+  ] as const)(
+    'keeps a %s refusal, with focus on it, once the re-read hides the form',
+    async (code, message, after) => {
+      mock(reimbursable)
+      call.mockResolvedValue({ ok: false, error: { code, message } })
+      renderPage()
+      await openForm()
+      // What the re-read finds: the row locked meanwhile, or the caller no longer an admin.
+      if ('row' in after) getRow.mockResolvedValue(after.row as never)
+      if ('role' in after) {
+        vi.mocked(useMyMember).mockReturnValue({
+          data: { role: after.role },
+          isError: false,
+        } as never)
+      }
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() =>
+        expect(screen.queryByRole('heading', { name: 'Change this entry' })).toBeNull(),
+      )
+      const [alert, ...more] = alerts()
+      expect(more).toEqual([])
+      expect(alert?.textContent).toBe(message)
+      expect(document.activeElement).toBe(alert)
+      expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    },
+  )
 
   it('says so, with no Edit, for a stored input that matches no choice', async () => {
     mock(
@@ -381,12 +459,7 @@ describe('TransactionPage, a lend & borrow entry', () => {
     'opens %s as stored, saves it unchanged, then a new amount',
     async (_, stored, radio, from) => {
       mock(stored, pairOptions)
-      call.mockImplementation(async (_fn, _method, _path, body) =>
-        ok({
-          transaction: { ...stored, totalCents: (body as { totalCents: number }).totalCents },
-          shares: [],
-        }),
-      )
+      call.mockImplementation(saves(stored))
       renderPage()
       await openForm()
       expect((screen.getByRole('radio', { name: radio }) as HTMLInputElement).checked).toBe(true)
@@ -416,6 +489,8 @@ describe('TransactionPage, a lend & borrow entry', () => {
         totalCents: 99,
         ...(before.payers ? { payers: [{ ...before.payers[0], cents: 99 }] } : {}),
       })
+      await openForm()
+      expect((screen.getByLabelText('Amount (AUD)') as HTMLInputElement).value).toBe('0.99')
     },
   )
 
@@ -424,10 +499,13 @@ describe('TransactionPage, a lend & borrow entry', () => {
     call.mockResolvedValue(ok({ transaction: lent, shares: [] }))
     renderPage()
     await openForm()
+    // Saved blank, its description was the default, which follows the new choice.
+    expect((screen.getByLabelText('Description (optional)') as HTMLInputElement).value).toBe('')
     fireEvent.click(screen.getByRole('radio', { name: 'I borrowed from Fran' }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(call).toHaveBeenCalled())
     expect(patched()).toMatchObject({
+      description: 'Borrowed',
       payers: [{ personId: 'pf', cents: 4000 }],
       split: { mode: 'equal', personIds: ['pw'] },
     })
@@ -451,16 +529,22 @@ describe('TransactionPage, a lend & borrow entry', () => {
     renderPage()
     await openForm()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    expect((await screen.findByRole('alert')).textContent).toBe('It changed.')
+    await waitFor(() => expect(alerts().map((alert) => alert.textContent)).toEqual(['It changed.']))
   })
 
-  it('closes on Cancel, with focus back on Edit', async () => {
+  it('closes on Cancel, with focus back on Edit, and holds Cancel while saving', async () => {
     mock(lent, pairOptions)
     renderPage()
     await openForm()
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' }))
     expect(call).not.toHaveBeenCalled()
+    call.mockReturnValue(new Promise(() => {}))
+    await openForm()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByRole('button', { name: 'Saving…' })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByRole('heading', { name: 'Change this entry' })).toBeTruthy()
   })
 })
 
@@ -520,8 +604,27 @@ describe('TransactionPage, who sees Edit', () => {
     const { queryClient } = renderPage()
     await settled(queryClient)
     expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(
+      screen.getByText('Only the person this group pays changes expenses and payments here.'),
+    ).toBeTruthy()
     // Void stays, by the creator-or-admin rule.
     expect(screen.getByRole('button', { name: 'Void' })).toBeTruthy()
+  })
+
+  it('says so when it can’t check the row for items', async () => {
+    mock(reimbursable)
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+      if (tableId === 'items') throw new Error('Offline')
+      const rows = tableId === 'members' ? EMPLOYER_MEMBERS : []
+      return { total: rows.length, rows }
+    }) as never)
+    renderPage()
+    expect(
+      await screen.findByText(
+        'We couldn’t check this entry for items. Reload the page to try again.',
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
   })
 
   it('runs no items query for a row it can’t change', async () => {
