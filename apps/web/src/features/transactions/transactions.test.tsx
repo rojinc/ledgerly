@@ -416,7 +416,9 @@ describe('NewTransactionPage, house expense', () => {
     await open()
     expect(ticked()).toEqual(['cara', 'alice', 'bob'].sort((a, b) => a.localeCompare(b)))
     const dan = screen.getByLabelText(/^Dan/) as HTMLInputElement
-    expect(dan.getAttribute('aria-describedby')).toBe('splitBetween-dan-hint')
+    // The line is part of the label, so it isn't read a second time as a description.
+    expect(dan.getAttribute('aria-describedby')).toBeNull()
+    expect(screen.getByLabelText(/^Dan.*not living here on this date$/)).toBe(dan)
     expect(screen.getByText('not living here on this date')).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-09-15' } })
     await waitFor(() => expect(dan.checked).toBe(true))
@@ -531,7 +533,7 @@ describe('NewTransactionPage, house expense', () => {
     const message = await screen.findByText('Tick at least one person to split it between.')
     const alice = screen.getByLabelText(/^Alice/)
     expect(alice.getAttribute('aria-invalid')).toBe('true')
-    expect(alice.getAttribute('aria-describedby')).toBe(`splitBetween-alice-hint ${message.id}`)
+    expect(alice.getAttribute('aria-describedby')).toBe(message.id)
     fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-20' } })
     await waitFor(() =>
       expect(screen.queryByText('Tick at least one person to split it between.')).toBeNull(),
@@ -581,8 +583,141 @@ describe('NewTransactionPage, house expense', () => {
     await open()
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect((await screen.findByRole('alert')).textContent).toBe(
-      'This may already have been saved from your last try. Check History before adding it again.',
+      'This may already have been saved from your last try. Check the calendar before adding it again.',
     )
+  })
+
+  it('sends what several people paid, and refuses amounts that don’t add up', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open()
+    fireEvent.click(screen.getByLabelText('Several people paid'))
+    expect(screen.queryByLabelText('Paid by')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Alice paid (AUD)'), { target: { value: '45' } })
+    fireEvent.change(screen.getByLabelText('Bob paid (AUD)'), { target: { value: '40' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    const message = await screen.findByText(
+      /^The amounts paid add up to A?\$85\.00, but the total is A?\$90\.00\.$/,
+    )
+    expect(
+      screen
+        .getByRole('group', { name: 'How much each person paid' })
+        .getAttribute('aria-describedby'),
+    ).toBe(message.id)
+    expect(call).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Alice paid (AUD)'), { target: { value: '50' } })
+    const preview = await screen.findByRole('region', { name: 'Each person’s part' })
+    expect(within(preview).getByText(/^Alice: paid .*50\.00, share .*30\.00$/)).toBeTruthy()
+    expect(within(preview).getByText(/^Bob: paid .*40\.00, share .*30\.00$/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      totalCents: 9000,
+      payers: [
+        { personId: 'alice', cents: 5000 },
+        { personId: 'bob', cents: 4000 },
+      ],
+      split: { mode: 'equal', personIds: ['alice', 'bob', 'cara'] },
+    })
+  })
+
+  it('splits by amounts, refusing ones that don’t match the total', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open()
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '60' } })
+    fireEvent.click(screen.getByLabelText('By amounts'))
+    expect(screen.getByRole('group', { name: 'Split between' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Cara' }))
+    fireEvent.change(screen.getByLabelText('Alice’s amount (AUD)'), { target: { value: '25' } })
+    expect(screen.queryByLabelText('Cara’s amount (AUD)')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('Required')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Bob’s amount (AUD)'), { target: { value: '30' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(
+      await screen.findByText(/^The amounts add up to A?\$55\.00, but the total is A?\$60\.00\.$/),
+    ).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Bob’s amount (AUD)'), { target: { value: '35' } })
+    const preview = await screen.findByRole('region', { name: 'Each person’s part' })
+    expect(within(preview).getByText(/^Bob: share .*35\.00$/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      split: {
+        mode: 'exact',
+        amounts: [
+          { personId: 'alice', cents: 2500 },
+          { personId: 'bob', cents: 3500 },
+        ],
+      },
+    })
+  })
+
+  it('splits by percentages, which must add up to 100%', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open()
+    fireEvent.click(screen.getByLabelText('By percentages'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Cara' }))
+    fireEvent.change(screen.getByLabelText('Alice’s percentage'), { target: { value: '66.66' } })
+    fireEvent.change(screen.getByLabelText('Bob’s percentage'), { target: { value: '33.333' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('Enter a percentage like 33.33')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Bob’s percentage'), { target: { value: '33.33' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('The percentages add up to 99.99%, not 100%.')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+    fireEvent.change(screen.getByLabelText('Alice’s percentage'), { target: { value: '66.67' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      split: {
+        mode: 'percent',
+        percents: [
+          { personId: 'alice', basisPoints: 6667 },
+          { personId: 'bob', basisPoints: 3333 },
+        ],
+      },
+    })
+  })
+
+  it('splits by shares, previewed by core', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open()
+    fireEvent.click(screen.getByLabelText('By shares'))
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Cara' }))
+    fireEvent.change(screen.getByLabelText('Alice’s shares'), { target: { value: '2' } })
+    fireEvent.change(screen.getByLabelText('Bob’s shares'), { target: { value: '1' } })
+    const preview = await screen.findByRole('region', { name: 'Each person’s part' })
+    expect(within(preview).getByText(/^Alice: paid .*90\.00, share .*60\.00$/)).toBeTruthy()
+    expect(within(preview).getByText(/^Bob: share .*30\.00$/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'alice', weight: 2 },
+          { personId: 'bob', weight: 1 },
+        ],
+      },
+    })
+  })
+
+  it('clears a refusal shown above the form once the form changes', async () => {
+    call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Try again.' } })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Try again.')
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Shopping' } })
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+  })
+
+  it('asks to pick a group when the link names none it knows', async () => {
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES)
+    renderAt('/transactions/new?groupId=nope')
+    expect(await screen.findByText(/^Pick an employer or a house from/)).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Groups' }).getAttribute('href')).toBe('/groups')
   })
 
   it('has no form for a viewer or in an archived house', async () => {
@@ -806,6 +941,29 @@ describe('TransactionPage', () => {
     renderAt('/transactions/t2')
     expect(await screen.findByText('Group')).toBeTruthy()
     expect(screen.queryByText('Split')).toBeNull()
+    cleanup()
+    getRow.mockResolvedValue(
+      row('t3', { groupId: 'house1', inputJson: '{"split":{"mode":"days"}}' }) as never,
+    )
+    renderAt('/transactions/t3')
+    expect(await screen.findByText('Group')).toBeTruthy()
+    expect(screen.queryByText('Split')).toBeNull()
+  })
+
+  it.each([
+    ['exact', 'By amounts'],
+    ['percent', 'By percentages'],
+    ['weights', 'By shares'],
+  ])('words a %s split “%s”', async (mode, text) => {
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES)
+    getRow.mockResolvedValue(
+      row('t4', { groupId: 'house1', inputJson: JSON.stringify({ split: { mode } }) }) as never,
+    )
+    renderAt('/transactions/t4')
+    expect(((await screen.findByText('Split')).nextElementSibling as HTMLElement).textContent).toBe(
+      text,
+    )
   })
 
   const shares = [

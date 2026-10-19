@@ -107,9 +107,9 @@ export function NewTransactionPage() {
   } else if (!group) {
     content = (
       <Message>
-        Pick an employer from{' '}
-        <Link to="/transactions" className="underline underline-offset-4">
-          History
+        Pick an employer or a house from{' '}
+        <Link to="/groups" className="underline underline-offset-4">
+          Groups
         </Link>{' '}
         first.
       </Message>
