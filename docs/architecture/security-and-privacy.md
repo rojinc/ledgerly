@@ -13,6 +13,7 @@ We store people's money records, contact details and bank details. Treat every c
 | Finding out who is a user by adding them to a group (enumeration) | Members added by someone else always start as placeholders, only the person can join, and person IDs carry no timestamp, so adding someone never reveals whether the email or phone has an account ([D-016](decisions.md)). Accepted: Appwrite's own sign-up says when an email is already registered. |
 | Teammates seeing each other's account emails | Appwrite's membership privacy setting hides account email, phone, name, MFA status and last access from team members; only the user ID is shown. Project settings aren't pushed by deploys: the lead set it on `ledgerly-dev` through the Appwrite MCP, and it must be set on prod when prod is created ([how](#membership-privacy)). |
 | Invite spam or SMS cost abuse | Rate limits: 20 invites per inviter in the last 24 hours, 3 per identity in the last 7 days (rolling), guarded so parallel requests can't pass them together. Tokens are hashed, single-use and expire in 14 days. |
+| Reminder spam ("you owe me" to anyone) | Only a joined admin or member of a pair group, with a verified email, whom the other member owes; only to an address the group already holds for that other member (an address the sender added them with). Rate limits: 1 per sender per group in 3 days, 3 per recipient in 7 days, 20 per sender in 24 hours, guarded like invites and committed before the email is sent. The subject is fixed; the only free text is the sender's name, cut to 40 characters, and the only link is the app ([reminders](identity-and-invites.md#reminders)). Accepted, as for invites: the recipient limit and the (uncounted, [#274](https://github.com/rojinc/ledgerly/issues/274)) address check each tell the sender a little, and the short name is free text. |
 | Edited history | Final statements lock transactions; activity is append-only and written only by functions. |
 | Leaked secrets | No secrets in git. Function secrets are Appwrite project variables. CI secrets are GitHub Actions secrets. `.env*` files are git-ignored except `.env.example`. |
 | Malicious uploads | `receipts` accepts only images and PDFs up to 10 MB, from verified users only. Files are only shown as images or downloaded, never run. When a file is attached, the ledger limits it to its group's team ([permissions](permissions.md#storage)). Files that no transaction lists are deleted by the scheduler after 24 hours ([#163](https://github.com/rojinc/ledgerly/issues/163)). Until that ships, it's an accepted risk that a file that's never attached keeps its uploader's permissions, `read("any")` included. |
@@ -40,6 +41,7 @@ Keep the user ID visible; everything else is hidden.
 | Bank details, ABN, address | `profiles.businessJson` | The owner; printed on invoices they send |
 | Receipts | `receipts` bucket | Members of the group |
 | Money records | ledger tables | Members of the group |
+| Reminders sent | `reminders` (who reminded whom, in which group, when; no address and no amount) | Server only. Deleted with either person's account. |
 
 Rules:
 
@@ -78,6 +80,7 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 - **Final statements and their PDFs stay as issued** after the worker deletes their account, ABN and bank details included, because the other side already holds them ([D-010](decisions.md#d-010-closed-periods-never-change)).
 - **A purged group's invoices are deleted** with it. The delete screen tells users to export first.
 - **Backups** follow Appwrite Cloud's retention, so deleted data can stay in a backup for that period.
+- **Reminders** (`reminders`) hold person and group IDs only, and are kept until either person deletes their account; pruning old rows is a later follow-up.
 - **Activity rows written before #50** keep the names in their text, as history; rows written since name no one ([activity](data-model.md#activity)).
 - **Deleting needs a recent sign-in and an old password.** The session must be under 10 minutes old, and `passwordUpdate` over 24 hours old, so a stolen session can't set a first password, sign in fresh and delete the account the same day ([refusals](identity-and-invites.md#refusals)). Accepted risk: signing in with Google (OAuth, later) would make a fresh session without a password change, so this rule must be revisited when OAuth is added. A follow-up emails the account's verified address whenever a password is set or changed.
 
