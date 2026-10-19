@@ -13,7 +13,7 @@ export type ResolvedPerson = { personId: string; writes: Write[] }
 
 /**
  * identity-and-invites.md#adding-someone-to-a-group, step 2: the person an email or phone
- * belongs to, or a new placeholder with one unverified identity row. `region` is the default
+ * belongs to, or a new placeholder with at most one unverified identity row. `region` is the default
  * country for a phone typed without one. Throws a RangeError for an invalid email or phone,
  * which the route turns into VALIDATION_FAILED.
  *

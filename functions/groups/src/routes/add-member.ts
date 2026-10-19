@@ -56,8 +56,9 @@ export async function addMember(
         Query.equal('personId', resolved.personId),
       ])
       if (existing) throw new AppError('CONFLICT', 'This person is already in the group.')
-      // Another request adding the same person, or the same new email, at the same time
-      // fails this commit on a unique index (uniq_group_person, identities.key): CONFLICT.
+      // Another request adding the same person, or the same new key, at the same time fails
+      // this commit on a unique index (uniq_group_person, identities.key), and a claim of the
+      // person found fails it on their guarded row: CONFLICT.
       await tx.write(
         ...resolved.writes,
         {

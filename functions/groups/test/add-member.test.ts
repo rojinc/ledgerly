@@ -184,15 +184,61 @@ describe('POST /groups/{id}/members', () => {
   })
 
   it('answers CONFLICT when a claim of the person found commits while the add commits', async () => {
-    const services = house()
-    // Adopting or merging a person writes their row (identity-and-invites.md#claim).
-    beforeCommit(services.db, () => updateRow(services.db, 'persons', 'p9', { mergedInto: 'p1' }))
-    expect(await addFails(services, { displayName: 'Robin', email: 'reg@example.com' })).toEqual({
+    const services = houses()
+    const sam = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g1/members',
+      { displayName: 'Sam', email: 'sam@example.com' },
+      'u1',
+    )
+    // Adopting a placeholder writes its row (identity-and-invites.md#claim).
+    beforeCommit(services.db, () =>
+      updateRow(services.db, 'persons', sam.personId, { userId: 'u7' }),
+    )
+    const body = { displayName: 'Sam', email: 'sam@example.com' }
+    expect(await failure(services, 'POST', '/groups/g2/members', body, 'u2')).toEqual({
       status: 409,
       code: 'CONFLICT',
       message: TRY_AGAIN,
     })
-    expect(services.db.rows('members')).toHaveLength(4)
+    expect(services.db.rows('members')).toHaveLength(3)
+  })
+
+  it('answers CONFLICT when a merge moved the key just before the add guarded the person', async () => {
+    const services = houses()
+    const sam = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g1/members',
+      { displayName: 'Sam', email: 'sam@example.com' },
+      'u1',
+    )
+    const key = services.db.rows('identities')[0]
+    // Person p1 verified sam@example.com and merged Sam's placeholder into themselves.
+    beforeStaging(services.db, 1, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write(
+          { action: 'update', tableId: 'persons', rowId: sam.personId, data: { mergedInto: 'p1' } },
+          {
+            action: 'update',
+            tableId: 'identities',
+            rowId: key?.$id as string,
+            data: { personId: 'p1', verified: true },
+          },
+        ),
+      ),
+    )
+    const body = { displayName: 'Sam', email: 'sam@example.com' }
+    expect(await failure(services, 'POST', '/groups/g2/members', body, 'u2')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    // Tried again, the key belongs to p1 now.
+    expect((await ok<Members>(services, 'POST', '/groups/g2/members', body, 'u2')).personId).toBe(
+      'p1',
+    )
   })
 
   it('answers CONFLICT when a claim took the key just before the add guarded the person', async () => {

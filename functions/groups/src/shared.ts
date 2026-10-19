@@ -48,8 +48,9 @@ export function tryAgain(): AppError {
  * `resolvePerson` in `tx`, for an add (identity-and-invites.md#adding-someone-to-a-group): a
  * person it finds gets a guard write on `persons.rev`, then the keys are read again. A claim
  * that adopts or merges that person writes their row too, so one that commits after the guard
- * fails this commit, and one that committed before it took the key, which the second read
- * sees. Either way the add answers CONFLICT, and trying again finds who the key belongs to now.
+ * fails this commit, and one that committed before it and moved or removed the key is seen by
+ * the second read: CONFLICT, and trying again finds who the key belongs to now. One-key
+ * placeholders make this rarer, but it still covers placeholders made before them.
  * Throws resolvePerson's RangeError for an invalid email or phone.
  */
 export async function resolveGuarded(

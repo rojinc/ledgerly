@@ -12,6 +12,7 @@ import {
   NOW,
   ok,
   person,
+  placeholder,
   profile,
   TODAY,
   TRY_AGAIN,
@@ -195,14 +196,18 @@ describe('POST /groups', () => {
     ])
   })
 
-  it('answers CONFLICT when a claim of a registered counterpart commits meanwhile', async () => {
+  it.each([
+    ['an employer', EMPLOYER],
+    ['a pair', { ...PAIR, counterpart: { displayName: 'Kim', email: 'boss@example.com' } }],
+  ])('answers CONFLICT when a claim of %s counterpart found commits meanwhile', async (_, body) => {
     const services = fakes({
-      persons: [person(1), person(2)],
+      persons: [person(1), placeholder('pBoss', 'Boss')],
       profiles: [profile(1)],
-      identities: [identity('i2', 'email:boss@example.com', 'p2')],
+      identities: [identity('i2', 'email:boss@example.com', 'pBoss')],
     })
-    beforeCommit(services.db, () => updateRow(services.db, 'persons', 'p2', { mergedInto: 'p1' }))
-    expect(await failure(services, 'POST', '/groups', EMPLOYER)).toMatchObject({
+    // Adopting the placeholder writes its row (identity-and-invites.md#claim).
+    beforeCommit(services.db, () => updateRow(services.db, 'persons', 'pBoss', { userId: 'u7' }))
+    expect(await failure(services, 'POST', '/groups', body)).toMatchObject({
       status: 409,
       code: 'CONFLICT',
     })
