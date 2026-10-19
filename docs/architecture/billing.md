@@ -47,7 +47,7 @@ The proposed gates. They target the gig worker, who bills for work, and the acti
 | Gated write (Pro) | Route that refuses it | Free allows |
 | --- | --- | --- |
 | A second (or later) employer group | `groups POST /groups` with `type: 'employer'` | One employer group that the caller owns (`ownerPersonId`) and that isn't archived |
-| Emailing an invoice | `statements POST /statements/{id}/finalize` with `send: true`, and `POST /statements/{id}/send` | Finalizing without sending, and downloading the PDF to send yourself. A statement left `finalizing` can always be finished with `send: false`, so a downgrade never leaves a period blocked |
+| Emailing an invoice | `statements POST /statements/{id}/finalize` with `send: true`, and `POST /statements/{id}/send`, only for a statement with `type: 'invoice'` | Emailing a house's `divide`, on either route. Finalizing an invoice without sending, and downloading the PDF to send yourself. A statement left `finalizing` can always be finished with `send: false`, so a downgrade never leaves a period blocked |
 | An SMS invite, once [#40](https://github.com/rojinc/ledgerly/issues/40) ships | `identity POST /invites` with `phone` | Email invites |
 | An SMS reminder, once SMS reminders ship | `identity POST /reminders` with a future `channel: 'sms'` | Email reminders |
 
@@ -69,15 +69,16 @@ A new function, **`billing`**, with execute `users` like every other function:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
-| `POST /checkout` | `{ id }` (the client's `ID.unique()`, for the Stripe idempotency key) | `{ url }` | the user; `CONFLICT` if already Pro |
+| `POST /checkout` | `{ id }` (the client's `ID.unique()`, for the Stripe idempotency key) | `{ url }` | the user; `CONFLICT` while they have a live subscription (step 1 below) |
 | `POST /portal` | none | `{ url }` | the user; `NOT_FOUND` if they have no Stripe customer |
 | `POST /sync` | none | `{ plan, status, currentPeriodEnd }` | the user; a sync under 10 seconds old is returned as stored, without calling Stripe |
 | hourly cron | | | scheduled only ([below](#late-changes-and-stripe-being-down)) |
 
 `POST /checkout`:
 
-1. Read the caller's `subscriptions` row. If it has no `stripeCustomerId`, stage a guard write on it (a fresh `rev`), create the Stripe customer with the idempotency key `customer-<personId>` and only `metadata.personId`, then commit the ID. A parallel call with the same key while the first is still running gets Stripe's `idempotency_error` (409), which answers `CONFLICT` (try again); a later one gets the same customer. Stripe keeps keys for at least 24 hours, so a crash between Stripe's answer and the commit, retried after that, can leave an unused customer behind: harmless, as it has no subscription.
-2. Create a Checkout Session: `mode: subscription`, the one price, `customer`, `client_reference_id: personId`, and return URLs on `APP_URL` (`/profile?billing=done` and `/profile?billing=cancelled`). The Stripe idempotency key is `checkout-<id>`.
+1. Read the caller's `subscriptions` row. If it has a `stripeCustomerId`, sync it first, as `POST /sync` does. Then refuse with `CONFLICT` unless its `status` is `none`, `canceled` or `incomplete_expired`. Any other status (`trialing`, `active`, `past_due`, `unpaid`, `incomplete` or `paused`) is a live subscription, managed in the Portal, and the app shows Manage instead of Upgrade for it. Refusing only when the user is Pro isn't enough: a `past_due` user is Free once the grace ends, and a second Checkout would open a second subscription, so they'd pay twice once Stripe's retry of the first invoice succeeds. The sync stops a stale row (a paid Checkout whose return never synced) from letting a second one through.
+2. If the row has no `stripeCustomerId`, stage a guard write on it (a fresh `rev`), create the Stripe customer with the idempotency key `customer-<personId>` and only `metadata.personId`, then commit the ID. A parallel call with the same key while the first is still running gets Stripe's `idempotency_error` (409), which answers `CONFLICT` (try again); a later one gets the same customer. Stripe keeps keys for at least 24 hours, so a crash between Stripe's answer and the commit, retried after that, can leave an unused customer behind: harmless, as it has no subscription.
+3. Create a Checkout Session: `mode: subscription`, the one price, `customer`, `client_reference_id: personId`, and return URLs on `APP_URL` (`/profile?billing=done` and `/profile?billing=cancelled`). The Stripe idempotency key is `checkout-<id>`.
 
 We send Stripe a person ID and nothing else. Checkout asks for the email it sends receipts to.
 
