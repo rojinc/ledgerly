@@ -186,6 +186,56 @@ describe('mergeSplit', () => {
       expect(splitSpecSchema.safeParse(mergeSplit(split, merge)).success).toBe(true)
     }
   })
+
+  it('turns weights that would pass MAX_WEIGHT into exact parts of the amount (#39 Q1)', () => {
+    const heavy: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'X', weight: 1 },
+        { personId: 'P', weight: 6000 },
+        { personId: 'U', weight: 6000 },
+      ],
+    }
+    // allocate(9000, [1, 6000, 6000]) gives X 1, P 4500 and U 4499.
+    const exact = mergeSplit(heavy, merge, 9000)
+    expect(exact).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'X', cents: 1 },
+        { personId: 'U', cents: 8999 },
+      ],
+    })
+    expect(splitSpecSchema.safeParse(exact).success).toBe(true)
+    // A refund is split the same way, then flipped; nothing to split leaves everyone at 0.
+    expect(mergeSplit(heavy, merge, -9000)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'X', cents: -1 },
+        { personId: 'U', cents: -8999 },
+      ],
+    })
+    expect(mergeSplit(heavy, merge, 0)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'X', cents: 0 },
+        { personId: 'U', cents: 0 },
+      ],
+    })
+    // With no amount, the weights stay as they add up, and the schema refuses them.
+    expect(splitSpecSchema.safeParse(mergeSplit(heavy, merge)).success).toBe(false)
+    // At the cap exactly, they stay weights.
+    const atCap: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'P', weight: 5000 },
+        { personId: 'U', weight: 5000 },
+      ],
+    }
+    expect(mergeSplit(atCap, merge, 9000)).toEqual({
+      mode: 'weights',
+      weights: [{ personId: 'U', weight: 10000 }],
+    })
+  })
 })
 
 describe('mergeInput', () => {
@@ -486,6 +536,33 @@ describe('mergeInput', () => {
     }
     expect(mergeInput(items, 'expense', merge, thirds).input.split).toBeUndefined()
     expect(mergeInput(groceries, 'income', merge, thirds).input.split).toBeUndefined()
+  })
+
+  it('splits a template’s heavy weights by its total, and an item’s by its amount', () => {
+    const heavy: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'P', weight: 6000 },
+        { personId: 'U', weight: 6000 },
+      ],
+    }
+    const template: TransactionTemplate = {
+      ...paidByX(9000),
+      totalCents: 9000,
+      split: heavy,
+    }
+    const all = { mode: 'exact', amounts: [{ personId: 'U', cents: 9000 }] }
+    expect(mergeInput(template, 'expense', merge).input.split).toEqual(all)
+    // A stored input's total is on its row.
+    const stored: TransactionTemplate = { ...paidByX(9000), split: heavy }
+    expect(mergeInput(stored, 'expense', merge, undefined, 9000).input.split).toEqual(all)
+    const items: TransactionTemplate = {
+      items: [{ name: 'Milk', amountCents: 300, split: heavy }],
+    }
+    expect(mergeInput(items, 'expense', merge).input.items?.[0]?.split).toEqual({
+      mode: 'exact',
+      amounts: [{ personId: 'U', cents: 300 }],
+    })
   })
 
   it('gives a template the schema accepts', () => {

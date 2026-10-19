@@ -556,36 +556,75 @@ describe('moveInputs (step 3)', () => {
     }
   })
 
-  it('leaves a row it can’t rename as it is, says so by ID, and isn’t done', async () => {
+  it('leaves a row it can’t read as it is, says so by ID, and isn’t done', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // P's and U's weights would add up past MAX_WEIGHT; the other input isn't JSON.
-    const heavy = transaction('t1', {
-      payers: [{ personId: 'pX', cents: 9000 }],
-      split: {
-        mode: 'weights',
-        weights: [
-          { personId: 'pP', weight: 6000 },
-          { personId: 'pU', weight: 6000 },
-          { personId: 'pX', weight: 1 },
-        ],
-      },
-    })
     const broken = { ...transaction('t2', {}), inputJson: '{' }
-    const store = seed([heavy, broken, transaction('t3', EXPENSE)])
+    const store = seed([broken, transaction('t3', EXPENSE)])
     expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
       rewritten: 1,
       voided: 0,
-      skipped: 2,
+      skipped: 1,
       putOff: [],
       done: false,
     })
-    const stored = Object.fromEntries(store.rows('transactions').map((row) => [row.$id, row]))
-    expect(stored.t1?.inputJson).toBe(heavy.inputJson)
-    expect(stored.t2?.inputJson).toBe('{')
+    expect(store.rows('transactions')[0]?.inputJson).toBe('{')
     expect(warn.mock.calls.map(([line]) => line)).toEqual([
-      'merge pP into pU left transaction t1 as it is',
       'merge pP into pU left transaction t2 as it is',
     ])
+  })
+
+  it('writes weights past MAX_WEIGHT out as exact, as allocate() gave them (#264)', async () => {
+    // P's and U's weights would add up to 12,000.
+    const heavy = {
+      mode: 'weights',
+      weights: [
+        { personId: 'pP', weight: 6000 },
+        { personId: 'pU', weight: 6000 },
+        { personId: 'pX', weight: 1 },
+      ],
+    }
+    const store = seed(
+      [
+        transaction('t1', { split: heavy }, { status: 'scheduled' }),
+        transaction('t2', {}, { status: 'scheduled' }),
+      ],
+      {
+        items: [
+          {
+            $id: 'i1',
+            transactionId: 't2',
+            position: 0,
+            name: 'Milk',
+            quantity: 1,
+            amountCents: 500,
+            category: null,
+            splitJson: JSON.stringify(heavy),
+          },
+        ],
+      },
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+      rewritten: 2,
+      skipped: 0,
+      done: true,
+    })
+    // Of the row's 90.00: P 45.00, U 44.99, X 0.01.
+    expect(input(store, 't1').split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 8999 },
+        { personId: 'pX', cents: 1 },
+      ],
+    })
+    // Of the item's 5.00: P 2.50, U 2.50, X nothing.
+    expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 500 },
+        { personId: 'pX', cents: 0 },
+      ],
+    })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 0 })
   })
 
   it('keeps the stored input’s key order, and voids as the void route does', async () => {
@@ -806,6 +845,34 @@ describe('moveTemplates (step 3)', () => {
     })
     expect(store.rows('schedules')[1]?.templateJson).toBe(other.templateJson)
     expect(store.rows('groups')[0]?.rev).not.toBe('r0')
+  })
+
+  it('writes a template’s weights past MAX_WEIGHT out as exact, from its total (#264)', async () => {
+    const heavy = {
+      ...RENT,
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'pP', weight: 6000 },
+          { personId: 'pU', weight: 6000 },
+          { personId: 'pX', weight: 1 },
+        ],
+      },
+    }
+    const store = seed([], { schedules: [schedule('sc1', heavy)] })
+    expect(await moveTemplates(store, merge, ['g1'], FAR)).toMatchObject({
+      rewritten: 1,
+      skipped: 0,
+      done: true,
+    })
+    // Of 900.00: P 449.96, U 449.96, X 0.08.
+    expect(template(store, 'sc1').split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 89992 },
+        { personId: 'pX', cents: 8 },
+      ],
+    })
   })
 
   it('runs again when an expansion moved the schedule on after it was read', async () => {

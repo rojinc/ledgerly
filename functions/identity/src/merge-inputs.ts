@@ -188,7 +188,7 @@ async function planRewrites(
           }
         : undefined
     const input = renamed(row.inputJson, storedInputSchema, (raw) =>
-      mergeInput(raw as StoredInput, row.kind, merge, asPosted),
+      mergeInput(raw as StoredInput, row.kind, merge, asPosted, row.totalCents),
     )
     if (!input) {
       skipped.push(row.$id)
@@ -218,7 +218,7 @@ async function planRewrites(
           return {
             input: splitCtx
               ? mergePostedSplit(split, merge, item.amountCents, splitCtx)
-              : mergeSplit(split, merge),
+              : mergeSplit(split, merge, item.amountCents),
             voided: false,
           }
         }),
@@ -261,8 +261,8 @@ async function planRewrites(
 /**
  * Stored JSON with P renamed: `json` is the new text, undefined when nothing changed, and
  * `voided` as `rename` says. The stored object is renamed as it is, so its keys keep their order.
- * Undefined when the JSON can't be read, or is no longer valid once renamed (weights that add up
- * past `MAX_WEIGHT`, say): nothing invalid is ever written.
+ * Undefined when the JSON can't be read, or is no longer valid once renamed: nothing invalid is
+ * ever written.
  */
 /** A bill's billing period from its stored input, for a `days` split. */
 function billPeriod(row: Transactions): DateRange | undefined {

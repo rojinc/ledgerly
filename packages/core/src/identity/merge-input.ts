@@ -1,4 +1,5 @@
 import type { TransactionKind } from '../constants/domain'
+import { MAX_WEIGHT } from '../constants/limits'
 import type { LocalDate } from '../dates/local-date'
 import {
   buildShares,
@@ -7,6 +8,7 @@ import {
   type ShareInput,
 } from '../ledger/build-shares'
 import { byPersonId, type Part, type SplitContext, splitAmount } from '../ledger/split-amount'
+import { allocate } from '../money/allocate'
 import { everyPersonId, type TransactionTemplate } from '../schemas/ledger'
 import type { SplitSpec } from '../schemas/split'
 
@@ -53,8 +55,11 @@ function mergeIds(personIds: readonly string[], { from, into }: Merge): string[]
  * `percent` basis points and `weights`. An `equal` split with both becomes `weights`, U 2 and
  * everyone else 1. A `days` split lists U once, since presence
  * comes from U's kept member row.
+ *
+ * Weights that would add up past `MAX_WEIGHT` become `exact` when `amountCents`, the amount being
+ * split, is given (lead, #39 Q1): each keeps the part `allocate()` gave them, P's and U's added.
  */
-export function mergeSplit(split: SplitSpec, merge: Merge): SplitSpec {
+export function mergeSplit(split: SplitSpec, merge: Merge, amountCents?: number): SplitSpec {
   switch (split.mode) {
     case 'equal': {
       const both = split.personIds.includes(merge.from) && split.personIds.includes(merge.into)
@@ -82,19 +87,38 @@ export function mergeSplit(split: SplitSpec, merge: Merge): SplitSpec {
           basisPoints: a.basisPoints + b.basisPoints,
         })),
       }
-    case 'weights':
-      return {
-        mode: 'weights',
-        weights: mergeEntries(split.weights, merge, (a, b) => ({
-          ...a,
-          weight: a.weight + b.weight,
-        })),
+    case 'weights': {
+      const weights = mergeEntries(split.weights, merge, (a, b) => ({
+        ...a,
+        weight: a.weight + b.weight,
+      }))
+      if (amountCents === undefined || weights.every((entry) => entry.weight <= MAX_WEIGHT)) {
+        return { mode: 'weights', weights }
       }
+      const parts = allocate(
+        amountCents,
+        split.weights.map((entry) => entry.weight),
+      )
+      return {
+        mode: 'exact',
+        amounts: mergeEntries(
+          split.weights.map((entry, i) => ({
+            personId: entry.personId,
+            cents: parts[i] as number,
+          })),
+          merge,
+          (a, b) => ({ ...a, cents: a.cents + b.cents }),
+        ),
+      }
+    }
   }
 }
 
 /** The parts of a stored input or a schedule template that name people. */
-type Named = Pick<TransactionTemplate, 'payers' | 'split' | 'items' | 'payment' | 'adjustment'>
+type Named = Pick<
+  TransactionTemplate,
+  'totalCents' | 'payers' | 'split' | 'items' | 'payment' | 'adjustment'
+>
 
 // The kinds with a split, or a default one when they name none (ledger.md#default-split).
 const DEFAULT_SPLIT_KINDS: readonly TransactionKind[] = ['expense', 'bill', 'loan']
@@ -162,19 +186,17 @@ export function mergePostedSplit(
   amountCents: number,
   ctx: SplitContext,
 ): SplitSpec {
-  const renamed = mergeSplit(split, merge)
+  const renamed = mergeSplit(split, merge, amountCents)
   let parts: Part[]
   try {
     parts = mergeEntries(splitAmount(split, amountCents, ctx), merge, addCents)
   } catch {
     return renamed
   }
-  try {
-    if (sameParts(splitAmount(renamed, amountCents, ctx), parts)) return renamed
-  } catch {
-    // The renamed split can't be planned (weights past MAX_WEIGHT): the parts still stand.
-  }
-  return { mode: 'exact', amounts: parts }
+  // Renamed, it names only members, and weights past MAX_WEIGHT are already exact.
+  return sameParts(splitAmount(renamed, amountCents, ctx), parts)
+    ? renamed
+    : { mode: 'exact', amounts: parts }
 }
 
 /**
@@ -197,6 +219,8 @@ export function mergeInput<T extends Named>(
   kind: TransactionKind,
   merge: Merge,
   posted?: Posted,
+  // A stored input keeps its total on the row; a template has its own.
+  totalCents = input.totalCents,
 ): { input: T; voided: boolean } {
   const result: T = { ...input }
   if (input.payers) {
@@ -205,7 +229,7 @@ export function mergeInput<T extends Named>(
       cents: a.cents + b.cents,
     }))
   }
-  if (input.split) result.split = mergeSplit(input.split, merge)
+  if (input.split) result.split = mergeSplit(input.split, merge, totalCents)
   // Only a row that is P's: its input names P, or P has a share in it (lead, #242).
   if (
     posted &&
@@ -217,7 +241,10 @@ export function mergeInput<T extends Named>(
     writeOut(result, kind, merge, posted)
   }
   if (input.items) {
-    result.items = input.items.map((item) => ({ ...item, split: mergeSplit(item.split, merge) }))
+    result.items = input.items.map((item) => ({
+      ...item,
+      split: mergeSplit(item.split, merge, item.amountCents),
+    }))
   }
   if (input.payment) {
     const rename = (personId: string) => (personId === merge.from ? merge.into : personId)
