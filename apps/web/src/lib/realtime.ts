@@ -18,11 +18,14 @@ export const NOT_LIVE = ['currentUser', 'bootstrap', 'profile', 'person'] as con
 
 // Not live either: `pendingGroups` (features/groups/pending-groups.tsx). Those are groups the user
 // was only added to (D-016), whose rows they can't read until they join, so no event comes; the
-// list refetches on focus (#48's Out of scope).
+// list refetches on focus (#48's Out of scope). Nor `firstEntry` (features/onboarding/): Home's
+// guide decides once per visit (#52), so someone else's first entry shows on the next one.
 
 /** How long after the last event the collected keys are refreshed. */
 export const FLUSH_MS = 300
 
+// `activity` has no channel of its own: every activity row is written with a row of one of these
+// tables, so each of them refreshes the group's feed (#47).
 const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
   // Every write of shares also sets the group's `rev` (ledger.md#concurrency), so this covers
   // share changes no transaction row shows, such as a merge's.
@@ -33,8 +36,14 @@ const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
     ['history', groupId],
     ['transaction'],
     ['myShares'],
+    ['activity', groupId],
   ],
-  members: (groupId) => [['member', groupId], ['members', groupId], ['myRoles']],
+  members: (groupId) => [
+    ['member', groupId],
+    ['members', groupId],
+    ['myRoles'],
+    ['activity', groupId],
+  ],
   transactions: (groupId, rowId) => [
     ['calendar'],
     ['balances', groupId],
@@ -44,11 +53,13 @@ const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
     // Feature-local keys: the dashboard's shares and the bills lists.
     ['myShares'],
     ['bills', groupId],
+    ['activity', groupId],
   ],
   // `statement` covers an async finalize's status (#32).
   statements: (groupId, rowId) => [
     ['statements', groupId],
     ['statement', rowId],
+    ['activity', groupId],
   ],
 }
 

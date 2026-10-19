@@ -17,11 +17,15 @@ const NAV = [
   { to: '/groups', label: 'Groups' },
   { to: '/people', label: 'People' },
   { to: '/bills', label: 'Bills' },
+  { to: '/activity', label: 'Activity' },
   { to: '/profile', label: 'Profile' },
 ]
 
-/** Tailwind's `md`: the menu moves to the left side from here up (#194). */
-const WIDE = '(min-width: 768px)'
+/**
+ * The menu moves to the left side from here up (#194). In `rem`, so it follows the browser's
+ * font size; the page's left padding comes from this too, so the two never disagree (#205).
+ */
+const WIDE = '(min-width: 48rem)'
 
 function subscribeWide(onChange: () => void) {
   const query = window.matchMedia?.(WIDE)
@@ -43,7 +47,7 @@ export function AppLayout() {
     <Button
       variant="ghost"
       size="sm"
-      className="justify-start"
+      className="shrink-0 justify-start"
       aria-disabled={logOut.isPending}
       onClick={() => {
         if (!logOut.isPending) logOut.mutate()
@@ -53,13 +57,14 @@ export function AppLayout() {
     </Button>
   )
   return (
-    <div className="flex min-h-dvh flex-col md:pl-56">
+    <div className={cn('flex min-h-dvh flex-col', wide && 'pl-56')}>
       {wide ? (
-        <aside className="fixed inset-y-0 left-0 flex w-56 flex-col gap-4 border-r border-border px-3 py-4">
+        // Scrolls on a short screen (a phone on its side), so Log out can always be reached.
+        <div className="fixed inset-y-0 left-0 flex w-56 flex-col gap-4 overflow-y-auto border-r border-border bg-background px-3 py-4">
           <span className="px-3 font-semibold">Ledgerly</span>
           <NavList className="flex-1" />
           {logOutButton}
-        </aside>
+        </div>
       ) : (
         <PhoneMenu logOut={logOutButton} />
       )}
@@ -107,15 +112,16 @@ function NavList({ className, onNavigate }: { className?: string; onNavigate?: (
   )
 }
 
-/** Under 768 px: a slim bar, and a Menu button that opens the list below it. */
+/** Below the wide breakpoint: a slim bar, and a Menu button that opens the list below it. */
 function PhoneMenu({ logOut }: { logOut: ReactNode }) {
   const [open, setOpen] = useState(false)
   const button = useRef<HTMLButtonElement>(null)
-  // Escape closes it and puts focus back on Menu.
+  const header = useRef<HTMLElement>(null)
+  // Escape in the menu closes it and puts focus back on Menu; one typed in a page field doesn't.
   useEffect(() => {
     if (!open) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== 'Escape') return
+      if (event.key !== 'Escape' || !header.current?.contains(event.target as Node)) return
       setOpen(false)
       button.current?.focus()
     }
@@ -124,7 +130,7 @@ function PhoneMenu({ logOut }: { logOut: ReactNode }) {
   }, [open])
 
   return (
-    <header className="border-b border-border">
+    <header ref={header} className="border-b border-border">
       <div className="flex items-center justify-between px-4 py-2">
         <span className="font-semibold">Ledgerly</span>
         <Button

@@ -29,7 +29,8 @@ export const NEW_HOUSE: HouseValues = {
   autoFinalize: false,
 }
 
-function groupFields(values: HouseValues) {
+/** The group fields the house form holds, as `POST` and `PATCH /groups` take them. */
+export function toHouseFields(values: HouseValues) {
   return {
     name: values.name.trim(),
     statementCycle: values.monthlyDivide ? ('monthly' as const) : ('none' as const),
@@ -43,12 +44,31 @@ function groupFields(values: HouseValues) {
 
 /** `groups POST /groups` for a house, with a client ID so a retry is safe. */
 export function toNewHouseBody(values: HouseValues, id: string): CreateGroupBody {
-  return { id, type: 'house', ...groupFields(values) }
+  return { id, type: 'house', ...toHouseFields(values) }
 }
 
-/** `groups PATCH /groups/{id}` from the settings form. */
-export function toHouseSettingsBody(values: HouseValues): UpdateGroupBody {
-  return groupFields(values)
+/**
+ * `groups PATCH /groups/{id}` with only what the settings form changed, so a save doesn't undo
+ * another admin's change to the rest. `settings` is one value, so the half the form didn't
+ * change comes from `stored`: the house as it's stored now.
+ */
+export function toHouseSettingsBody(
+  values: HouseValues,
+  changed: Partial<Record<keyof HouseValues, boolean>>,
+  stored: HouseValues,
+): UpdateGroupBody {
+  const pick = <K extends keyof HouseValues>(key: K) => (changed[key] ? values[key] : stored[key])
+  const fields = toHouseFields({
+    name: pick('name'),
+    defaultBillSplit: pick('defaultBillSplit'),
+    monthlyDivide: pick('monthlyDivide'),
+    autoFinalize: pick('autoFinalize'),
+  })
+  return {
+    ...(changed.name ? { name: fields.name } : {}),
+    ...(changed.monthlyDivide ? { statementCycle: fields.statementCycle } : {}),
+    ...(changed.defaultBillSplit || changed.autoFinalize ? { settings: fields.settings } : {}),
+  }
 }
 
 /**

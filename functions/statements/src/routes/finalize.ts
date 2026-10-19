@@ -105,12 +105,18 @@ async function requireOldestUnfinished(db: Db, statement: Statements): Promise<v
 /**
  * Step 1: `finalizing`, and a guard write to the group row in the same transaction, so a ledger write
  * that checked for finalizing statements before this fails its commit (ledger.md#concurrency),
- * and so does a void or reissue in the group. Rule 5 is checked again after staging.
+ * and so does a void or reissue in the group. Rule 5 is checked again after staging, and so is
+ * the stored group: an archive that committed since the first read would otherwise leave this
+ * statement `finalizing` in a group where no finalize can finish it (#190).
  */
 async function startFinalizing(db: Db, group: Groups, statement: Statements): Promise<Statements> {
-  return updateStatement(db, statement, { status: 'finalizing' }, [groupGuard(group)], () =>
-    requireOldestUnfinished(db, statement),
-  )
+  return updateStatement(db, statement, { status: 'finalizing' }, [groupGuard(group)], async () => {
+    const stored = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
+    if (stored?.archivedAt) {
+      throw new AppError('ARCHIVED', 'This group is archived, so it can no longer be changed.')
+    }
+    await requireOldestUnfinished(db, statement)
+  })
 }
 
 /**
