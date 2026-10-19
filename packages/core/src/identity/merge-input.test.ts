@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { LocalDate } from '../dates/local-date'
 import { buildShares } from '../ledger/build-shares'
+import { splitAmount } from '../ledger/split-amount'
 import { type TransactionTemplate, transactionTemplateSchema } from '../schemas/ledger'
 import { type SplitSpec, splitSpecSchema } from '../schemas/split'
-import { mergeInput, mergePostedSplit, mergeSplit } from './merge-input'
+import { mergeInput, mergePostedSplit, mergeSplit, mergeUnpostedSplit } from './merge-input'
 
 // P is merged into U; X and Y are other people.
 const merge = { from: 'P', into: 'U' }
@@ -588,6 +589,105 @@ describe('mergeInput: a posted row with a 0 total', () => {
     expect(mergeInput(noSplit, 'bill', merge, posted([])).input).toEqual({
       payers: [{ personId: 'U', cents: 0 }],
     })
+  })
+})
+
+// P's and U's weights add up past MAX_WEIGHT once they're one entry (#348).
+const overCap: SplitSpec = {
+  mode: 'weights',
+  weights: [
+    { personId: 'P', weight: 6000 },
+    { personId: 'U', weight: 6000 },
+    { personId: 'X', weight: 1 },
+  ],
+}
+
+describe('mergeUnpostedSplit', () => {
+  it('renames as mergeSplit does where the rename leaves the split valid', () => {
+    const light: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'P', weight: 1 },
+        { personId: 'U', weight: 2 },
+      ],
+    }
+    const equal: SplitSpec = { mode: 'equal', personIds: ['P', 'U', 'X'] }
+    for (const split of [light, equal]) {
+      expect(mergeUnpostedSplit(split, merge, 9000)).toEqual(mergeSplit(split, merge))
+    }
+  })
+
+  it('writes out as exact weights the rename takes past MAX_WEIGHT, as they split before', () => {
+    // 90.00 by 6000, 6000 and 1: P 45.00, U 44.99 (ties go to the first), X 0.01.
+    expect(mergeUnpostedSplit(overCap, merge, 9000)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'U', cents: 8999 },
+        { personId: 'X', cents: 1 },
+      ],
+    })
+    // At the first of P's and U's places.
+    const xFirst: SplitSpec = {
+      mode: 'weights',
+      weights: [
+        { personId: 'X', weight: 1 },
+        { personId: 'U', weight: 6000 },
+        { personId: 'P', weight: 6000 },
+      ],
+    }
+    expect(mergeUnpostedSplit(xFirst, merge, 9000)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'X', cents: 1 },
+        { personId: 'U', cents: 8999 },
+      ],
+    })
+  })
+
+  it('leaves each person the part the split gave before the merge, P’s added to U’s (I-1)', () => {
+    for (const total of [0, 1, 2, -7, 9000, 12_001, -12_001, 99_999_999]) {
+      const before = splitAmount(overCap, total, { members: [] })
+      const merged = mergeUnpostedSplit(overCap, merge, total)
+      expect(splitSpecSchema.safeParse(merged).success).toBe(true)
+      const after = splitAmount(merged, total, { members: [] })
+      const part = (parts: { personId: string; cents: number }[], ...ids: string[]) =>
+        parts.filter((p) => ids.includes(p.personId)).reduce((sum, p) => sum + p.cents, 0)
+      expect([total, part(after, 'U'), part(after, 'X')]).toEqual([
+        total,
+        part(before, 'P', 'U'),
+        part(before, 'X'),
+      ])
+    }
+  })
+})
+
+describe('mergeInput: an unposted row or a template', () => {
+  it('writes out as exact, from the row’s total, a split the rename takes past MAX_WEIGHT', () => {
+    // An unposted transaction's total is a column, not part of its stored input.
+    const due: TransactionTemplate = { split: overCap }
+    expect(mergeInput(due, 'bill', merge, undefined, 9000).input.split).toEqual(
+      mergeUnpostedSplit(overCap, merge, 9000),
+    )
+  })
+
+  it('takes a template’s total from the template, and an item’s from its amount', () => {
+    const rent: TransactionTemplate = { totalCents: 9000, ...paidByX(9000), split: overCap }
+    const { input } = mergeInput(rent, 'expense', merge)
+    expect(input.split).toEqual(mergeUnpostedSplit(overCap, merge, 9000))
+    expect(transactionTemplateSchema.safeParse(input).success).toBe(true)
+    const receipt: TransactionTemplate = {
+      ...paidByX(500),
+      items: [{ name: 'Milk', amountCents: 500, split: overCap }],
+    }
+    const itemised = mergeInput(receipt, 'expense', merge).input
+    expect(itemised.items?.[0]?.split).toEqual(mergeUnpostedSplit(overCap, merge, 500))
+    expect(transactionTemplateSchema.safeParse(itemised).success).toBe(true)
+  })
+
+  it('renames only a split with no total to go by', () => {
+    expect(mergeInput({ split: overCap }, 'expense', merge).input.split).toEqual(
+      mergeSplit(overCap, merge),
+    )
   })
 })
 

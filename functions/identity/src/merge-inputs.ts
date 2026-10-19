@@ -12,7 +12,7 @@ import {
   type Merge,
   mergeInput,
   mergePostedSplit,
-  mergeSplit,
+  mergeUnpostedSplit,
 } from '@ledgerly/core/identity/merge-input'
 import type { LedgerContext } from '@ledgerly/core/ledger/build-shares'
 import type { LedgerMember } from '@ledgerly/core/ledger/split-amount'
@@ -72,12 +72,13 @@ type Rewrite = { row: Transactions; items: Items[]; writes: Write[]; voided: boo
 /**
  * Step 3, inputs: P becomes U inside the stored input (`inputJson`) and the items' `splitJson`
  * of every transaction in `groupIds` that isn't void, locked ones included (I-7's merge
- * exception, #263), as `mergeInput` and `mergeSplit` say. An unlocked payment or loan whose two
- * sides are now both U is voided instead, as the ledger voids one; a locked one never is. Each
- * batch guards its group and checks for a `finalizing` statement first, as for shares, and a
- * group with one is put off, as is a group step 1 recorded no member dates for in `recorded`;
- * then it guards U's person row (`guardInto`). Each group's scan carries on from P's resume point
- * there (`cursors`) and records where it got to. It stops once `deadline` (epoch ms) has passed.
+ * exception, #263), as `mergeInput`, `mergePostedSplit` and `mergeUnpostedSplit` say. An
+ * unlocked payment or loan whose two sides are now both U is voided instead, as the ledger voids
+ * one; a locked one never is. Each batch guards its group and checks for a `finalizing`
+ * statement first, as for shares, and a group with one is put off, as is a group step 1
+ * recorded no member dates for in `recorded`; then it guards U's person row (`guardInto`).
+ * Each group's scan carries on from P's resume point there (`cursors`) and records where it
+ * got to. It stops once `deadline` (epoch ms) has passed.
  */
 export async function moveInputs(
   db: Db,
@@ -348,7 +349,7 @@ async function planRewrites(
           }
         : undefined
     const input = renamed(row.inputJson, storedInputSchema, (raw) => {
-      const merged = mergeInput(raw as StoredInput, row.kind, merge, asPosted)
+      const merged = mergeInput(raw as StoredInput, row.kind, merge, asPosted, row.totalCents)
       return locked ? { input: merged.input, voided: false } : merged
     })
     if (!input) {
@@ -381,7 +382,7 @@ async function planRewrites(
                   members: before,
                   period,
                 })
-              : mergeSplit(split, merge),
+              : mergeUnpostedSplit(split, merge, item.amountCents),
             voided: false,
           }
         }),

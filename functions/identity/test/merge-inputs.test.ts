@@ -731,6 +731,57 @@ describe('moveInputs (step 3)', () => {
     ])
   })
 
+  it('writes out as exact an unposted row’s weights the rename takes past MAX_WEIGHT (#348)', async () => {
+    // P's and U's weights would add up past MAX_WEIGHT. With no shares to go by, the split is
+    // written out from the row's total, or the item's amount, by the weights as they were.
+    const weights = (...entries: [string, number][]) => ({
+      mode: 'weights',
+      weights: entries.map(([personId, weight]) => ({ personId, weight })),
+    })
+    const due = transaction(
+      't1',
+      {
+        payers: [{ personId: 'pX', cents: 9000 }],
+        split: weights(['pP', 6000], ['pU', 6000], ['pX', 1]),
+      },
+      { status: 'due' },
+    )
+    const store = seed([due, transaction('t2', {}, { status: 'scheduled', totalCents: 500 })], {
+      items: [
+        {
+          $id: 'i1',
+          transactionId: 't2',
+          position: 0,
+          name: 'Milk',
+          quantity: 1,
+          amountCents: 500,
+          category: null,
+          splitJson: JSON.stringify(weights(['pP', 6000], ['pU', 6000])),
+        },
+      ],
+    })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
+      rewritten: 2,
+      voided: 0,
+      skipped: 0,
+      putOff: [],
+      cutOff: false,
+      done: true,
+    })
+    // 90.00 by 6000, 6000 and 1 gave P 45.00, U 44.99 and X 0.01.
+    expect(input(store, 't1').split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 8999 },
+        { personId: 'pX', cents: 1 },
+      ],
+    })
+    expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
+      mode: 'exact',
+      amounts: [{ personId: 'pU', cents: 500 }],
+    })
+  })
+
   it('keeps the stored input’s key order, and voids as the void route does', async () => {
     const stored = { note: 'First', split: { mode: 'equal', personIds: ['pP', 'pX'] } }
     const store = seed(
@@ -1606,6 +1657,29 @@ describe('moveTemplates (step 3)', () => {
     })
     expect(store.rows('schedules')[1]?.templateJson).toBe(other.templateJson)
     expect(store.rows('groups')[0]?.rev).not.toBe('r0')
+  })
+
+  it('writes out as exact a template’s weights the rename takes past MAX_WEIGHT (#348)', async () => {
+    const heavy = {
+      ...RENT,
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'pP', weight: 6000 },
+          { personId: 'pU', weight: 6000 },
+        ],
+      },
+    }
+    const store = seed([], { schedules: [schedule('sc1', heavy)] })
+    expect(await moveTemplates(store, merge, ['g1'], FAR)).toMatchObject({
+      rewritten: 1,
+      skipped: 0,
+      done: true,
+    })
+    expect(template(store, 'sc1')).toEqual({
+      ...RENT,
+      split: { mode: 'exact', amounts: [{ personId: 'pU', cents: 90000 }] },
+    })
   })
 
   it('renames no template into a person whose account is being deleted (#246)', async () => {

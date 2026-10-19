@@ -7,6 +7,7 @@ import {
   type ShareInput,
 } from '../ledger/build-shares'
 import { byPersonId, type Part, type SplitContext, splitAmount } from '../ledger/split-amount'
+import { allocate } from '../money/allocate'
 import { everyPersonId, type TransactionTemplate } from '../schemas/ledger'
 import { type SplitSpec, splitPersonIds, splitSpecSchema } from '../schemas/split'
 
@@ -93,8 +94,34 @@ export function mergeSplit(split: SplitSpec, merge: Merge): SplitSpec {
   }
 }
 
-/** The parts of a stored input or a schedule template that name people. */
-type Named = Pick<TransactionTemplate, 'payers' | 'split' | 'items' | 'payment' | 'adjustment'>
+const addCents = (a: Part, b: Part) => ({ ...a, cents: a.cents + b.cents })
+
+/**
+ * A split with P renamed to U, in an unposted row or a schedule template, which has no shares to
+ * go by (#348). Where the rename leaves a `weights` split invalid (U's weight, P's added to it,
+ * past `MAX_WEIGHT`), it's written out as `exact`: `allocate()` splits `amountCents` by the
+ * weights as they were, P's and U's apart, then P's part is added to U's. So each person's part
+ * is what the split gave before the merge, and the row can still be stored and edited.
+ */
+export function mergeUnpostedSplit(split: SplitSpec, merge: Merge, amountCents: number): SplitSpec {
+  const renamed = mergeSplit(split, merge)
+  if (split.mode !== 'weights' || splitSpecSchema.safeParse(renamed).success) return renamed
+  const cents = allocate(
+    amountCents,
+    split.weights.map((entry) => entry.weight),
+  )
+  const parts = split.weights.map((entry, i) => ({
+    personId: entry.personId,
+    cents: cents[i] as number,
+  }))
+  return { mode: 'exact', amounts: mergeEntries(parts, merge, addCents) }
+}
+
+/** The parts of a stored input or a schedule template that name people, and its total. */
+type Named = Pick<
+  TransactionTemplate,
+  'totalCents' | 'payers' | 'split' | 'items' | 'payment' | 'adjustment'
+>
 
 // The kinds with a split, or a default one when they name none (ledger.md#default-split).
 const DEFAULT_SPLIT_KINDS: readonly TransactionKind[] = ['expense', 'bill', 'loan']
@@ -111,8 +138,6 @@ export type Posted = {
   ctx: LedgerContext
   payer: string
 }
-
-const addCents = (a: Part, b: Part) => ({ ...a, cents: a.cents + b.cents })
 
 /** What each person received, P's added to U's, by personId: the parts an edit must keep. */
 function mergedParts(posted: Posted, merge: Merge): Part[] {
@@ -197,6 +222,11 @@ export function mergePostedSplit(
  *   again.
  * With a 0 total there are no parts: the renamed split stays, unless the rename left it invalid
  * (weights past MAX_WEIGHT); then it's `exact` with everyone it names at 0.
+ *
+ * Without `posted`, the split and a template's items are renamed as `mergeUnpostedSplit` says,
+ * with `totalCents`: an unposted transaction's, which its stored input doesn't hold, or else the
+ * template's own. Without either, the split is renamed only.
+ *
  * A loan that becomes U to U is voided.
  */
 export function mergeInput<T extends Named>(
@@ -204,6 +234,7 @@ export function mergeInput<T extends Named>(
   kind: TransactionKind,
   merge: Merge,
   posted?: Posted,
+  totalCents = input.totalCents,
 ): { input: T; voided: boolean } {
   const result: T = { ...input }
   if (input.payers) {
@@ -212,7 +243,12 @@ export function mergeInput<T extends Named>(
       cents: a.cents + b.cents,
     }))
   }
-  if (input.split) result.split = mergeSplit(input.split, merge)
+  if (input.split) {
+    result.split =
+      posted || totalCents === undefined
+        ? mergeSplit(input.split, merge)
+        : mergeUnpostedSplit(input.split, merge, totalCents)
+  }
   // Only a row that is P's: its input names P, or P has a share in it (lead, #242).
   if (
     posted &&
@@ -223,8 +259,12 @@ export function mergeInput<T extends Named>(
   ) {
     writeOut(result, kind, merge, posted)
   }
+  // Only a template holds its items: a transaction's are rows of their own.
   if (input.items) {
-    result.items = input.items.map((item) => ({ ...item, split: mergeSplit(item.split, merge) }))
+    result.items = input.items.map((item) => ({
+      ...item,
+      split: mergeUnpostedSplit(item.split, merge, item.amountCents),
+    }))
   }
   if (input.payment) {
     const rename = (personId: string) => (personId === merge.from ? merge.into : personId)
