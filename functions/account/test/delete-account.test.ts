@@ -38,6 +38,7 @@ const ALL_TABLES = [
   'statements',
   'activity',
   'invites',
+  'reminders',
 ] as const
 
 // Sam (p1, u1) shares the house h1 with Alex (p2, u2), the other admin, and works for Acme (p3,
@@ -118,6 +119,18 @@ function timer(id: string, groupId: string) {
     startedAt: minutesAgo(30),
     createdBy: 'p1',
     updatedBy: 'p1',
+  }
+}
+
+function finalizing(id: string, groupId: string) {
+  return {
+    $id: id,
+    groupId,
+    type: 'invoice',
+    periodStart: '2026-09-01',
+    periodEnd: '2026-09-30',
+    status: 'finalizing',
+    snapshotJson: '{}',
   }
 }
 
@@ -251,6 +264,17 @@ describe('POST /delete: refusals, which change nothing', () => {
     expect((await remove(services)).deletedAt).toBe(DELETED_AT)
   })
 
+  it('refuses while a statement is being finalized where they’re the only joined admin, who alone can finish it', async () => {
+    const services = kept()
+    await insert(services, 'statements', [finalizing('st1', 'e1')])
+    const before = state(services)
+    expect(await failure(services)).toMatchObject({ status: 409, code: 'CONFLICT' })
+    expect(state(services)).toEqual(before)
+    // Another joined admin can finish it instead.
+    await setRow(services, 'members', 'e1-p3', { role: 'admin' })
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+  })
+
   it('refuses the only joined admin of a house with another active member, naming the houses', async () => {
     const services = fakes(
       {
@@ -300,7 +324,7 @@ describe('POST /delete: refusals, which change nothing', () => {
     expect((await remove(services)).deletedAt).toBe(DELETED_AT)
   })
 
-  it('checks in order: the session, the password, a timer, then the houses', async () => {
+  it('checks in order: the session, the password, a timer, a statement, then the houses', async () => {
     const services = kept({
       sessions: [{ $id: 's1', $createdAt: minutesAgo(11) }],
       passwordUpdate: minutesAgo(1),
@@ -312,7 +336,10 @@ describe('POST /delete: refusals, which change nothing', () => {
     expect((await failure(services)).details).toEqual({ reason: 'recent_password_change' })
     services.users = new FakeUsers([account()])
     expect((await failure(services)).code).toBe('CONFLICT')
+    await insert(services, 'statements', [finalizing('st1', 'e1')])
     await setRow(services, 'transactions', 't1', { status: 'void' })
+    expect((await failure(services)).code).toBe('CONFLICT')
+    await setRow(services, 'statements', 'st1', { status: 'final' })
     expect(await failure(services)).toMatchObject({
       code: 'VALIDATION_FAILED',
       details: { groupIds: ['h1'] },
@@ -554,17 +581,12 @@ describe('POST /delete: each group they joined', () => {
 
   it('waits with the archive while a statement is being finalized, then finishes on a later run', async () => {
     const services = kept()
-    await insert(services, 'statements', [
-      {
-        $id: 'st1',
-        groupId: 'e1',
-        type: 'invoice',
-        periodStart: '2026-09-01',
-        periodEnd: '2026-09-30',
-        status: 'finalizing',
-        snapshotJson: '{}',
-      },
-    ])
+    // A finalize that started after step 1 checked (which refuses one they could finish).
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"deletedAt"'),
+      () => insert(services, 'statements', [finalizing('st1', 'e1')]),
+    )
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
     expect(rowOf(services, 'members', 'e1-p1')).toMatchObject({ status: 'left' })
     expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: null })
@@ -585,6 +607,29 @@ describe('POST /delete: each group they joined', () => {
       'group.archived',
     ])
     expect(activityIn(services, 'h1').map((row) => row.action)).toEqual(['member.left'])
+  })
+
+  it('doesn’t wait for a finalize stuck for over an hour: the group stays unarchived, logged by ID', async () => {
+    const services = kept()
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"deletedAt"'),
+      async () => {
+        // Its last write was 61 minutes before this run.
+        vi.useFakeTimers({ toFake: ['Date'] })
+        vi.setSystemTime(NOW.getTime() - 61 * 60 * 1000)
+        await insert(services, 'statements', [finalizing('st1', 'e1')])
+        vi.useRealTimers()
+      },
+    )
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: null })
+    expect(rowOf(services, 'statements', 'st1')).toMatchObject({ status: 'finalizing' })
+    expect(rowOf(services, 'members', 'e1-p1')).toMatchObject({ displayName: 'Former member' })
+    expect(teamOf(services, 'e1')).toEqual(['u3'])
+    expect(errors.mock.calls).toEqual([['account: group e1 not archived: statement st1 is stuck']])
+    errors.mockRestore()
   })
 
   it('leaves a keep for a later run when the group’s time zone changes before it commits', async () => {
@@ -870,6 +915,46 @@ describe('POST /delete: steps 5 to 7', () => {
     ])
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
     expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['i3', 'iO'])
+  })
+
+  it('deletes the invites sent to their rows in groups they joined, and no others', async () => {
+    const services = kept()
+    await insert(services, 'groups', [group('h9', 'house', 'p2')])
+    // In h9 they're a placeholder who never joined: the group is left as it is (D-016).
+    await insert(services, 'members', [member('h9', 'p1', { status: 'placeholder' })])
+    await insert(services, 'invites', [
+      { ...invite('vToSam', 'p2'), memberId: 'h1-p1', identityKey: 'email:sam@example.com' },
+      { ...invite('vToSamE', 'p3'), groupId: 'e1', memberId: 'e1-p1' },
+      { ...invite('vToPlaceholder', 'p2'), groupId: 'h9', memberId: 'h9-p1' },
+      { ...invite('vToAcme', 'p2'), groupId: 'e1', memberId: 'e1-p3' },
+    ])
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(services.db.rows('invites').map((row) => row.$id)).toEqual([
+      'v3',
+      'vToPlaceholder',
+      'vToAcme',
+    ])
+  })
+
+  it('deletes the reminders they sent or were sent, a merging person’s included', async () => {
+    const services = kept()
+    await insert(services, 'persons', [person('pMerging', null, { mergedInto: 'p1' })])
+    const reminder = (id: string, sentBy: string, toPersonId: string) => ({
+      $id: id,
+      groupId: 'h1',
+      sentBy,
+      toPersonId,
+      channel: 'email',
+      sentAt: EARLIER,
+    })
+    await insert(services, 'reminders', [
+      reminder('rSent', 'p1', 'p2'),
+      reminder('rTo', 'p2', 'p1'),
+      reminder('rToMerging', 'p2', 'pMerging'),
+      reminder('rOther', 'p2', 'p3'),
+    ])
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(services.db.rows('reminders').map((row) => row.$id)).toEqual(['rOther'])
   })
 
   it('waits for a group joined or made after step 4 listed their member rows, which a rerun does', async () => {

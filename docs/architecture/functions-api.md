@@ -223,6 +223,7 @@ Cron: `35 * * * *`, sent as `POST /` with the `schedule` trigger: it finishes ac
 | `FORBIDDEN`, `details: { reason: 'reauth' }` | The caller's session (from the JWT's session ID, loaded with `users.listSessions`) was created more than `REAUTH_WINDOW_MINUTES` (10) ago, or can't be found. The app asks them to sign in again and retries. |
 | `FORBIDDEN`, `details: { reason: 'recent_password_change' }` | The user's `passwordUpdate` is less than `RECENT_PASSWORD_CHANGE_HOURS` (24) old. The app says when they can try again. |
 | `CONFLICT` | They have a timer running in a group that isn't archived |
+| `CONFLICT` | A statement is being finalized in a group where they're the only joined admin: "A statement is being finalized. Finish it first." |
 | `VALIDATION_FAILED`, `details: { groupIds }` | They're the only joined admin of a house that isn't archived and has another `active` member. Here `details` names the houses, not schema issues. |
 | `CONFLICT` | Another write to their person landed while step 2 set `deletedAt` (an invite's guard write, say): "Something else changed this at the same time. Try again." |
 
