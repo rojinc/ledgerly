@@ -37,7 +37,7 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 | Trigger | Steps |
 | --- | --- |
 | push to `main` | `npm ci` → `npm run build` (the web app with `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID`) → install `appwrite-cli` (pinned) → `appwrite client -e $ENDPOINT -p $PROJECT -k $KEY` → the table plan and the table check ([schema changes that lose data](#schema-changes-that-lose-data)) → `appwrite push table` and `bucket` (`--all --force`) → every function's and the site's settings (`--no-code`) → code only for what changed (below) |
-| **Run workflow** on `main`, by a person | the same steps: a redeploy of `main`'s latest commit. Agents never run it (AGENTS.md). |
+| **Run workflow** on `main`, by a person | the same steps, but every function and the site get new code: a full redeploy of `main`'s latest commit, one deployment each. Use it after changing a project variable, since Appwrite then marks every function as needing a redeploy. Agents never run it (AGENTS.md). |
 
 - **One deploy at a time,** and a running one is never cancelled.
 - **Only what changed gets new code.** The plan allows **200 deployments a day** (it resets at 00:00 UTC), and every function or site push with code is one, changed or not. So the step "Choose what to deploy" finds the last run whose push step succeeded (through the GitHub API, `actions: read`), and gives new code only to:
@@ -45,7 +45,9 @@ The config file lists the resource files through the CLI's `includes` field. `ap
   - **the site** if `apps/web`, `packages/core` or `appwrite/sites.json` changed;
   - **both,** if `package.json`, `package-lock.json`, `tsconfig.base.json`, `.nvmrc`, `appwrite.config.json` or `deploy.yml` changed.
 
-  Every run still pushes tables and buckets, and every function's and the site's settings with `--no-code`, which makes no deployment. With no such run found, one outside `main`'s history, or the API failing, everything deploys, as before. The comparison starts from that run's own commit, which can be older than what it deployed (it deploys `main`'s latest), so it can only push more than needed, never less. A function that wasn't pushed keeps the commit its last deploy built in `/health`.
+  - **What counts as changed:** every file that any commit since that run's own commit touched (`git log`), not just the difference between the two commits. So a change that a failed run had already pushed, and that was then reverted, gets new code again. That run's commit can be older than what it deployed (it deploys `main`'s latest), which only pushes more than needed.
+  - **Everything deploys, with a warning,** when none of the last 20 successful runs pushed, the run found is outside `main`'s history, or the API fails. The run is found by the push step's name, so renaming that step deploys everything until a run with the new name succeeds.
+  - Every run still pushes tables and buckets, and every function's and the site's settings with `--no-code`, which makes no deployment (the CLI still prints "Successfully deployed"). A function that wasn't pushed keeps the commit its last deploy built in `/health`.
 - **Every run deploys `main`'s latest commit, never an older one.** `push table --force` makes the database match the commit's `tables.json`, so deploying an older commit would drop columns added since, with their data.
   - **A run for an older commit** (or a re-run of one made after #298) deploys `main`'s latest instead, with a notice naming both commits. The checkout step names `ref: main` for this: without it, `actions/checkout` resets `origin/main` to the run's own commit, so the run can't see anything newer.
   - **Why it doesn't skip:** merges that land together can leave an older commit's run as the only one that survives, since `concurrency` keeps one pending run and cancels the rest. A skip would leave `main`'s latest undeployed.

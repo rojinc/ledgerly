@@ -95,19 +95,27 @@ jobs:
         run: |
           runs="repos/$GITHUB_REPOSITORY/actions/workflows/deploy.yml/runs?branch=main&status=success&per_page=20"
           base=""
-          if ! found=$(gh api "$runs" --jq '.workflow_runs[] | "\(.id) \(.head_sha)"'); then
+          since="no deploy found to compare with, so everything"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            # Run workflow is a person's full redeploy, for example after a project variable
+            # changed: Appwrite then marks every function as needing a redeploy.
+            since="Run workflow redeploys everything"
+          elif ! found=$(gh api "$runs" --jq '.workflow_runs[] | "\(.id) \(.head_sha)"'); then
             echo "::warning::Couldn't list the Deploy runs, so everything deploys."
           else
             # A run that skipped the push (no secrets yet) is a success too, so check the step.
+            # It's found by name, so renaming the push step makes every run deploy everything.
+            none="None of the last 20 successful Deploy runs pushed, so everything deploys."
             while read -r id sha; do
               [ -n "$id" ] || continue
               if ! step=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id/jobs" \
                 --jq '[.jobs[].steps[] | select(.name == "Push tables, buckets, functions and the web site") | .conclusion] | first // ""'); then
-                echo "::warning::Couldn't read Deploy run $id, so everything deploys."
+                none="Couldn't read Deploy run $id, so everything deploys."
                 break
               fi
               if [ "$step" = success ]; then base=$sha; break; fi
             done <<< "$found"
+            if [ -z "$base" ]; then echo "::warning::$none"; fi
           fi
           if [ -n "$base" ] && ! git merge-base --is-ancestor "$base" HEAD; then
             echo "::warning::The last deployed commit (${base:0:7}) isn't in main's history, so everything deploys."
@@ -115,13 +123,26 @@ jobs:
           fi
           # Every function builds from packages/core and packages/server; the site from core.
           shared='package\.json|package-lock\.json|tsconfig\.base\.json|\.nvmrc|appwrite\.config\.json|\.github/workflows/deploy\.yml'
-          changed=$(if [ -n "$base" ]; then git diff --name-only "$base" HEAD; fi)
+          # Every file any commit since the base touched, not just the base's diff with HEAD: a
+          # change a failed run already pushed, then reverted, gets new code too. `-z` keeps
+          # unusual file names unquoted, `--no-renames` lists both sides of a rename, and `-m`
+          # includes merge commits' own changes.
+          changed=$(if [ -n "$base" ]; then git log -z -m --no-renames --name-only --format= "$base..HEAD" | tr '\0' '\n'; fi)
           # Outside the loop, so a failure stops the run: an empty list would deploy nothing, and
-          # the next run would count it as deployed.
-          all=$(node -e 'for (const f of require("./appwrite/functions.json")) console.log(f.$id, f.path)')
+          # the next run would count it as deployed. Paths are made relative to the repo, as the
+          # CLI resolves them from appwrite/, and must be plain, since they go into a regex.
+          all=$(node -e '
+            const path = require("node:path")
+            for (const f of require("./appwrite/functions.json")) {
+              const dir = path.relative(".", path.resolve("appwrite", f.path))
+              if (!/^[\w./-]+$/.test(dir) || dir.startsWith("..")) {
+                throw new Error(`${f.$id}: unexpected path ${f.path}`)
+              }
+              console.log(f.$id, dir)
+            }')
           functions=""
           while read -r id path; do
-            if [ -z "$base" ] || grep -qE "^($shared|appwrite/functions\.json|scripts/build-functions\.mjs)$|^(packages/core|packages/server|${path#../})/" <<< "$changed"; then
+            if [ -z "$base" ] || grep -qE "^($shared|appwrite/functions\.json|scripts/build-functions\.mjs)$|^(packages/core|packages/server|$path)/" <<< "$changed"; then
               functions="$functions $id"
             fi
           done <<< "$all"
@@ -132,7 +153,6 @@ jobs:
           functions=${functions# }
           echo "functions=$functions" >> "$GITHUB_OUTPUT"
           echo "site=$site" >> "$GITHUB_OUTPUT"
-          since="no deploy found to compare with, so everything"
           if [ -n "$base" ]; then since="changed since the last deploy, ${base:0:7}"; fi
           echo "::notice::New code for functions: ${functions:-none}; for the site: $site ($since)."
 
@@ -172,6 +192,7 @@ jobs:
         if: steps.latest.outputs.deploy == 'true'
         run: npm install --global appwrite-cli@28.7.0
 
+      # "Choose what to deploy" finds the last good deploy by this step's name: rename both.
       - name: Push tables, buckets, functions and the web site
         if: steps.latest.outputs.deploy == 'true'
         env:
@@ -248,7 +269,8 @@ jobs:
           push table --all
           push bucket --all
           # Every function's and the site's settings, with no deployment (`--no-code`), then code
-          # only for what changed ("Choose what to deploy").
+          # only for what changed ("Choose what to deploy"). The CLI still prints "Successfully
+          # deployed N functions" for the `--no-code` pushes, though they make no deployment.
           push function --all --no-code
           push site --all --no-code
           for id in $FUNCTIONS; do push function --function-id "$id"; done
