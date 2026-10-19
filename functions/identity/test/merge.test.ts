@@ -126,9 +126,10 @@ describe('moveMembers (step 2)', () => {
         ownRow('m4', 'g3'),
       ],
     })
+    // U was in g3 already, so only g1 and g2 are new to them.
     expect(await moveMembers(services, 'u1', 'pP', 'pU')).toEqual({
       kept: new Set(),
-      joined: ['g1', 'g2', 'g3'],
+      joined: ['g1', 'g2'],
     })
     expect(members(services)).toEqual([
       ['m1', 'g1', 'pU', 'active', '2026-09-01'],
@@ -165,7 +166,8 @@ describe('moveMembers (step 2)', () => {
     })
     expect(await moveMembers(services, 'u1', 'pP', 'pU')).toEqual({
       kept: new Set(['g1']),
-      joined: ['g2'],
+      // U's row in g2 was joined already: P's merges into it, but nothing is new to U.
+      joined: [],
     })
     expect(members(services)).toEqual([
       ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],

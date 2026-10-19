@@ -57,7 +57,10 @@ export async function markMerged(db: Db, placeholderId: string, intoId: string):
   }
 }
 
-/** What step 2 did: the kept groups (U left them on their own) and the groups U joined. */
+/**
+ * What step 2 did: the kept groups (U left them on their own), and the groups U joined, where U
+ * had no joined row before (`linkedGroupIds`).
+ */
 export type MembersResult = { kept: Set<string>; joined: string[] }
 
 /**
@@ -90,7 +93,10 @@ export async function moveMembers(
     const own = await memberOf(db, theirs.groupId, intoId)
     if (own && (await leftOnTheirOwn(db, own.groupId, intoId, own.$createdAt))) {
       kept.add(theirs.groupId)
-    } else if (await moveMember(services, userId, theirs, own, intoId)) {
+    } else if (
+      (await moveMember(services, userId, theirs, own, intoId)) &&
+      (!own || own.status === 'placeholder')
+    ) {
       joined.push(theirs.groupId)
     }
   }
