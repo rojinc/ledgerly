@@ -48,7 +48,9 @@ export type NoticeOutcome = 'sent' | 'stale' | 'unverified' | 'gone' | 'failed'
 /** What a nightly-check finding breaks: the `balances` row, or a ledger invariant (ledger.md). */
 export type LogRule = 'balances_row' | `I-${1 | 2 | 3 | 4 | 5 | 6 | 7}` | 'invariant'
 
-/** Row IDs only: an ID is checked for its shape, so a name or number shaped like one gets through. */
+/**
+ * Row IDs only: an ID is checked for its shape, so a name or number shaped like one gets through.
+ */
 export type LogFields = {
   groupId?: string
   statementId?: string
@@ -75,10 +77,10 @@ export type LogFields = {
 /**
  * Writes one JSON line for something that happened inside a route: `{ fn, event, groupId?,
  * statementId?, transactionId?, profileId?, personId?, reminderId?, userId?, membershipId?,
- * scheduleId?, problems?, identityType?, rule?, outcome?, count?, cause? }`, at the event's level (`LEVELS`).
- * Only row IDs, fixed names, counts and error names, never text that could quote what someone
- * typed (security-and-privacy.md). A value passed as an ID that isn't shaped like one is written
- * as `invalid`.
+ * scheduleId?, problems?, identityType?, rule?, outcome?, count?, cause? }`, at the event's
+ * level (`LEVELS`). Only row IDs, fixed names, counts and error names, never text that could quote
+ * what someone typed (security-and-privacy.md). A value passed as an ID that isn't shaped like one
+ * is written as `invalid`.
  */
 export function logProblem(event: LogEvent, fields: LogFields = {}): void {
   const { groupId, statementId, transactionId, profileId, personId, reminderId, userId } = fields
