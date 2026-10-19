@@ -462,6 +462,19 @@ describe('POST /groups', () => {
     expect(services.teams.teamIds()).toEqual([])
   })
 
+  it('refuses a creator whose account is being deleted, making nothing', async () => {
+    const services = fakes({
+      persons: [person(1, { deletedAt: '2026-10-18T20:00:00.000Z' })],
+      profiles: [profile(1)],
+    })
+    expect(await failure(services, 'POST', '/groups', HOUSE)).toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
+    })
+    expect(services.db.rows('groups')).toEqual([])
+    expect(services.teams.teamIds()).toEqual([])
+  })
+
   it('needs a logged-in user', async () => {
     const services = setUp()
     expect(await failure(services, 'POST', '/groups', HOUSE, null)).toMatchObject({
