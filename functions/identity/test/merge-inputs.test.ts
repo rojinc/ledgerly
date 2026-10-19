@@ -85,6 +85,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 0,
       putOff: [],
+      cutOff: false,
       done: true,
     })
     expect(input(store, 't1')).toEqual({
@@ -577,6 +578,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 2,
       putOff: [],
+      cutOff: false,
       done: false,
     })
     const stored = Object.fromEntries(store.rows('transactions').map((row) => [row.$id, row]))
@@ -634,6 +636,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 0,
       putOff: ['g1'],
+      cutOff: false,
       done: false,
     })
     expect(input(store, 't1')).toEqual(EXPENSE)
@@ -837,6 +840,7 @@ describe('moveInputs (step 3)', () => {
       voided: 0,
       skipped: 0,
       putOff: [],
+      cutOff: true,
       done: false,
     })
     expect(input(store, 't1')).toEqual(EXPENSE)
@@ -878,6 +882,7 @@ describe('moveTemplates (step 3)', () => {
       rewritten: 1,
       skipped: 0,
       putOff: [],
+      cutOff: false,
       done: true,
     })
     expect(template(store, 'sc1').split).toEqual({
@@ -943,6 +948,7 @@ describe('moveTemplates (step 3)', () => {
       rewritten: 0,
       skipped: 0,
       putOff: ['g1'],
+      cutOff: false,
       done: false,
     })
     expect(template(finalizing, 'sc1')).toEqual(RENT)
@@ -951,6 +957,7 @@ describe('moveTemplates (step 3)', () => {
       rewritten: 0,
       skipped: 0,
       putOff: [],
+      cutOff: true,
       done: false,
     })
   })

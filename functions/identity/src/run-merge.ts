@@ -63,9 +63,10 @@ async function runMerge(
   const putOff = new Set<string>()
   const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
   let done = true
-  // Only P's groups, as step 1 listed them, can name P; never U's others, so a merge costs what
-  // P had. A P marked before step 1 kept the list has its member rows to go by.
-  const groupIds = placeholder.mergeGroupIds ?? (await groupsOf(db, fromId))
+  // Only P's groups can name P; never U's others, so a merge costs what P had. They're walked in
+  // the order step 1 listed them, so a later claim finishes a part-done group before it starts
+  // another. P's member rows count too, in case an add landed outside the list.
+  const groupIds = new Set([...(placeholder.mergeGroupIds ?? []), ...(await groupsOf(db, fromId))])
   for (const groupId of groupIds) {
     if (Date.now() >= deadline) {
       done = false
@@ -81,21 +82,36 @@ async function runMerge(
       putOff.add(groupId)
       continue
     }
-    // Neither has a row here (U's, once P's, was removed since): moving P's work here would name
-    // someone who isn't a member (I-3), so it's left, and `stray()` keeps the merge open.
-    if (!(await memberOf(db, groupId, intoId))) continue
+    if (!members.done) {
+      done = false
+      break
+    }
     // Templates first, so an expansion from now on names U.
     const templates = await moveTemplates(db, merge, [groupId], deadline)
-    const inputs = await moveInputs(db, merge, [groupId], now, deadline)
-    moved.inputs += templates.rewritten + inputs.rewritten
-    moved.voided += inputs.voided
-    moved.skipped += templates.skipped + inputs.skipped
-    if (templates.putOff.length > 0 || inputs.putOff.length > 0) {
+    moved.inputs += templates.rewritten
+    moved.skipped += templates.skipped
+    if (templates.putOff.length > 0) {
       putOff.add(groupId)
       continue
     }
+    const inputs = await moveInputs(db, merge, [groupId], now, deadline)
+    moved.inputs += inputs.rewritten
+    moved.voided += inputs.voided
+    moved.skipped += inputs.skipped
+    if (inputs.putOff.length > 0) {
+      putOff.add(groupId)
+      continue
+    }
+    if (templates.cutOff || inputs.cutOff) {
+      done = false
+      break
+    }
     // Rows left as they are keep the merge open, but their group's shares can still move.
     if (!templates.done || !inputs.done) done = false
+    // Neither has a row here (U's, once P's, was removed since): a share moved to U would be one
+    // with no member row (I-3), so P's stay, and `stray()` keeps the merge open while one is left.
+    // An input naming P names a non-member already, so renaming it changed nothing there.
+    if (!(await memberOf(db, groupId, intoId))) continue
     // Shares last: the rule for a posted row needs P's share to tell the row was P's.
     const shares = await moveShares(db, fromId, intoId, [groupId], deadline)
     moved.shares += shares.moved

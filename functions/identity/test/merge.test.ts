@@ -93,6 +93,26 @@ describe('markMerged (step 1)', () => {
     expect(log).toHaveBeenCalledWith('merge pP into pU: 1 typed keys deleted')
   })
 
+  it('keeps every key of P that U verified', async () => {
+    const keys = [identity(1), identity(2), { ...identity(3), verified: false }]
+    const store = db([U, P], keys)
+    vi.spyOn(console, 'log').mockImplementation(() => {})
+    expect(
+      await markMerged(store, 'pP', 'pU', ['email:p1@example.com', 'email:p2@example.com']),
+    ).toBe(true)
+    expect(store.rows('identities').map((row) => row.$id)).toEqual(['i1', 'i2'])
+  })
+
+  it('logs no deletes when its commit loses to another claim for U', async () => {
+    const store = db([U, P], [{ ...identity(1), verified: false }])
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    beforeCommit(store, () => updateRow(store, 'persons', 'pP', { mergedInto: 'pU' }))
+    expect(await markMerged(store, 'pP', 'pU', [])).toBe(true)
+    // That claim's own step 1 decides the keys: this one's deletes rolled back.
+    expect(store.rows('identities')).toHaveLength(1)
+    expect(log).not.toHaveBeenCalled()
+  })
+
   it('deletes nothing when P turns out not to be U’s', async () => {
     const store = db([U, { ...P, userId: 'u2' }], [{ ...identity(1), verified: false }])
     expect(await markMerged(store, 'pP', 'pU', [])).toBe(false)
@@ -570,6 +590,7 @@ describe('moveMembers (step 2)', () => {
 
     it('keeps P’s row there, and U out of its team, while the other groups go on', async () => {
       const services = withP([FINALIZING])
+      const adds = vi.spyOn(services.teams, 'createMembership')
       expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
         kept: new Set(),
         joined: ['g2'],
@@ -580,6 +601,8 @@ describe('moveMembers (step 2)', () => {
         ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],
         ['m2', 'g2', 'pU', 'active', '2026-09-01'],
       ])
+      // Never added, so never taken out again.
+      expect(adds.mock.calls.map(([params]) => params.teamId)).toEqual(['g2', 'g2'])
       expect(services.teams.members('g1')).toEqual([])
     })
 

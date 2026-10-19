@@ -38,14 +38,15 @@ export const VOID_REASON = 'Both sides are now the same person.'
 
 /**
  * What became of the groups a call looked at. `skipped`: rows whose stored input can't be renamed
- * (unreadable, or invalid once renamed), left as they are and logged by ID. `done`: every group
- * was read to the end, with nothing put off or skipped.
+ * (unreadable, or invalid once renamed), left as they are and logged by ID. `cutOff`: the
+ * deadline stopped it. `done`: every group was read to the end, with nothing put off or skipped.
  */
 export type InputsResult = {
   rewritten: number
   voided: number
   skipped: number
   putOff: string[]
+  cutOff: boolean
   done: boolean
 }
 
@@ -67,11 +68,19 @@ export async function moveInputs(
   now: Date,
   deadline: number,
 ): Promise<InputsResult> {
-  const result: InputsResult = { rewritten: 0, voided: 0, skipped: 0, putOff: [], done: true }
+  const result: InputsResult = {
+    rewritten: 0,
+    voided: 0,
+    skipped: 0,
+    putOff: [],
+    cutOff: false,
+    done: true,
+  }
   for (const groupId of groupIds) {
     const outcome = await moveGroupInputs(db, merge, groupId, now, deadline, result)
     if (outcome === 'putOff') result.putOff.push(groupId)
     if (outcome === 'cutOff') {
+      result.cutOff = true
       result.done = false
       break
     }
@@ -429,12 +438,14 @@ const SCHEDULE_COLUMNS = [
 
 /**
  * What became of the groups' schedules. `skipped`: templates that can't be renamed, left as they
- * are and logged by ID. `done`: every group was read to the end, with nothing put off or skipped.
+ * are and logged by ID. `cutOff`: the deadline stopped it. `done`: every group was read to the
+ * end, with nothing put off or skipped.
  */
 export type TemplatesResult = {
   rewritten: number
   skipped: number
   putOff: string[]
+  cutOff: boolean
   done: boolean
 }
 
@@ -451,11 +462,18 @@ export async function moveTemplates(
   groupIds: readonly string[],
   deadline: number,
 ): Promise<TemplatesResult> {
-  const result: TemplatesResult = { rewritten: 0, skipped: 0, putOff: [], done: true }
+  const result: TemplatesResult = {
+    rewritten: 0,
+    skipped: 0,
+    putOff: [],
+    cutOff: false,
+    done: true,
+  }
   for (const groupId of groupIds) {
     const outcome = await moveGroupTemplates(db, merge, groupId, deadline, result)
     if (outcome === 'putOff') result.putOff.push(groupId)
     if (outcome === 'cutOff') {
+      result.cutOff = true
       result.done = false
       break
     }

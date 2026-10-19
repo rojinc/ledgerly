@@ -231,6 +231,33 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+/**
+ * The groups part done: Sammy's row is Sam's there, but something still names Sammy, which a
+ * leave, a removal or an edit would count as someone else's.
+ */
+function partDone(services: Fakes) {
+  return ['g1', 'g2'].filter(
+    (groupId) =>
+      !services.db
+        .rows('members')
+        .some((row) => row.groupId === groupId && row.personId === 'pP') &&
+      ['shares', 'transactions', 'schedules'].some((table) =>
+        services.db
+          .rows(table as 'shares')
+          .some((row) => row.groupId === groupId && /\bpP\b/.test(JSON.stringify(row))),
+      ),
+  )
+}
+
+/** Runs the merges into Sam until the clock has been read `cutAt` times, then runs out. */
+async function cutOffAt(services: Fakes, cutAt: number) {
+  const start = Date.now()
+  let reads = 0
+  vi.spyOn(Date, 'now').mockImplementation(() => (++reads > cutAt ? start + 60_000 : start))
+  await finishMerges(services, 'u1', 'pSam', start + 1000)
+  vi.mocked(Date.now).mockRestore()
+}
+
 /** The merges that stopped on an error: none, unless a test makes one. */
 function stopped() {
   return warn.mock.calls.filter(([line]: unknown[]) => /stopped/.test(String(line)))
@@ -550,20 +577,7 @@ describe('POST /claim, merging a placeholder', () => {
       vi.spyOn(Date, 'now').mockImplementation(() => (++reads > cutAt ? start + 60_000 : start))
       await finishMerges(services, 'u1', 'pSam', start + 1000)
       vi.mocked(Date.now).mockRestore()
-      // At most one group is part done: Sammy's row is Sam's there, but something still names
-      // Sammy, which a leave, a removal or an edit would count as someone else's.
-      const partDone = ['g1', 'g2'].filter(
-        (groupId) =>
-          !services.db
-            .rows('members')
-            .some((row) => row.groupId === groupId && row.personId === 'pP') &&
-          ['shares', 'transactions', 'schedules'].some((table) =>
-            services.db
-              .rows(table as 'shares')
-              .some((row) => row.groupId === groupId && /\bpP\b/.test(JSON.stringify(row))),
-          ),
-      )
-      expect(partDone.length).toBeLessThanOrEqual(1)
+      expect(partDone(services).length).toBeLessThanOrEqual(1)
 
       await claim(services)
       expect(namingSammy(services)).toEqual({
@@ -608,13 +622,109 @@ describe('POST /claim, merging a placeholder', () => {
       }),
     )
     await claim(services)
-    // Sam has no row in g3, so nothing there moves: Sammy's share and input stay (I-3), the
-    // share is logged by ID, and the phone waits.
+    // Sam has no row in g3, so Sammy's share stays there (I-3), logged by ID, and the phone
+    // waits. The input names Sam now: it named a non-member before, so nothing changes there.
     expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
-    expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: ['t9'] })
+    expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: [] })
     expect(warn).toHaveBeenCalledWith(
       'merge pP into pSam left shares row s10 in group g3 for a later claim',
     )
+  })
+
+  // Two claims cut off in turn: the second finishes the group the first left part done before
+  // it starts another, since both walk Sammy's groups in step 1's order.
+  it.each(Array.from({ length: 21 }, (_, n) => n + 1))(
+    'leaves at most one group part done after two claims, the first cut off at read %i',
+    async (first) => {
+      for (let second = 1; second <= 21; second += 1) {
+        const services = house()
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pP',
+            data: { mergedInto: 'pSam', mergeGroupIds: ['g1', 'g2'] },
+          }),
+        )
+        await cutOffAt(services, first)
+        await cutOffAt(services, second)
+        expect(partDone(services).length).toBeLessThanOrEqual(1)
+      }
+    },
+  )
+
+  it('keeps the merge open when a row of Sammy’s appears outside the groups it walked', async () => {
+    const services = house({ groups: [group('g9')] })
+    await services.teams.create({ teamId: 'g9', name: 'g9' })
+    // An add that found Sammy before step 1 lands while the merge runs (#252 L2 not yet built).
+    const { $id, $createdAt, ...row } = placeholderRow('m9', 'g9', 'pP', BEFORE)
+    const list = services.db.listRows.bind(services.db)
+    let added = false
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      if (params.tableId === 'reminders' && !added) {
+        added = true
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'create',
+            tableId: 'members',
+            rowId: 'm9',
+            data: row,
+          }),
+        )
+      }
+      return list(params)
+    })
+    await claim(services)
+    expect(added).toBe(true)
+    expect(namingSammy(services).identities).toEqual(['iPhone'])
+    expect(warn).toHaveBeenCalledWith(
+      'merge pP into pSam left members row m9 in group g9 for a later claim',
+    )
+    // The next claim walks Sammy's rows too, so it moves that one and finishes.
+    vi.mocked(services.db.listRows).mockRestore()
+    await claim(services)
+    expect(namingSammy(services).identities).toEqual([])
+  })
+
+  it('moves nothing in a group whose finalize ends just after step 2 put it off', async () => {
+    const services = house({
+      statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' }],
+    })
+    // The finalize ends as soon as step 2 has seen it.
+    const list = services.db.listRows.bind(services.db)
+    let ended = false
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const result = await list(params)
+      if (params.tableId === 'statements' && !ended) {
+        ended = true
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'statements',
+            rowId: 'st1',
+            data: { status: 'final' },
+          }),
+        )
+      }
+      return result
+    })
+    await claim(services)
+    expect(ended).toBe(true)
+    // g1 waits whole for the next claim: Sammy's row, input, schedule and share.
+    expect(namingSammy(services)).toMatchObject({
+      members: ['m1'],
+      shares: ['s2'],
+      transactions: ['t1'],
+      schedules: ['sc1'],
+    })
+  })
+
+  it('keeps the merge open while a row naming Sammy can’t be read', async () => {
+    const unreadable = { ...transaction('t8', 'g1', {}), inputJson: '{"payers":[{"personId":"pP"' }
+    const services = house({ transactions: [unreadable] })
+    await claim(services)
+    expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: ['t8'] })
+    expect(warn).toHaveBeenCalledWith('merge pP into pSam left transaction t8 as it is')
   })
 
   it('still logs the user in, and joins their own rows, when a merge stops on an error', async () => {
