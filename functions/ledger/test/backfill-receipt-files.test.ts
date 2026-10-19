@@ -119,6 +119,70 @@ describe('backfillReceiptFiles', () => {
     expect(receiptFiles(db).f1?.transactionIds).toEqual(['t1'])
   })
 
+  it('only ever creates a row in the sweep, so an attach just before its staging wins', async () => {
+    const db = new FakeDb()
+    const stage = db.createOperations.bind(db)
+    let done = false
+    vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
+      if (!done) {
+        done = true
+        // The ledger attaches f1 after the sweep read no row for it.
+        const other = await db.createTransaction()
+        await stage({
+          transactionId: other.$id,
+          operations: [
+            {
+              action: 'create',
+              databaseId: 'main',
+              tableId: 'receiptFiles',
+              rowId: 'f1',
+              data: { transactionIds: ['t1'], detachedAt: null, deletingAt: null },
+            },
+          ],
+        })
+        await db.updateTransaction({ transactionId: other.$id, commit: true })
+      }
+      return stage(params)
+    })
+    expect(await backfillReceiptFiles(db, bucket('f1'), NOW)).toMatchObject({ swept: 0 })
+    expect(receiptFiles(db).f1?.transactionIds).toEqual(['t1'])
+  })
+
+  it('throws, with no checkpoint, when a file’s row keeps changing', async () => {
+    const db = new FakeDb({
+      transactions: [tx('t1', ['f1'])],
+      receiptFiles: [row('f1', { detachedAt: '2026-10-19T05:00:00.000Z' })],
+    })
+    const stage = db.createOperations.bind(db)
+    let changes = 0
+    vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
+      const rows = (params.operations ?? []).some(
+        (operation) => 'tableId' in operation && operation.tableId === 'receiptFiles',
+      )
+      if (rows) {
+        // Someone changes the row before every staging.
+        const other = await db.createTransaction()
+        await stage({
+          transactionId: other.$id,
+          operations: [
+            {
+              action: 'update',
+              databaseId: 'main',
+              tableId: 'receiptFiles',
+              rowId: 'f1',
+              data: { detachedAt: `2026-10-19T05:0${++changes}:00.000Z` },
+            },
+          ],
+        })
+        await db.updateTransaction({ transactionId: other.$id, commit: true })
+      }
+      return stage(params)
+    })
+    await expect(backfillReceiptFiles(db, bucket('f1'), NOW)).rejects.toThrow()
+    expect(changes).toBe(3)
+    expect(db.rows('checkpoints')).toEqual([])
+  })
+
   it('lists every transaction on each file, and changes nothing when run again', async () => {
     const db = new FakeDb({
       transactions: [tx('t1', ['f1', 'f2']), tx('t2', ['f1']), tx('t3', null)],

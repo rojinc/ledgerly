@@ -416,11 +416,10 @@ export async function removeOccurrences(
         const stored = await allRows<Transactions>(db, TABLES.transactions, [
           Query.equal('$id', ids),
         ])
-        if (stored.length !== ids.length || !stored.every(removable)) throw new Raced()
         const receiptsAsRead = new Map(batch.map(({ row }) => [row.$id, receiptList(row)]))
-        if (stored.some((row) => receiptList(row) !== receiptsAsRead.get(row.$id))) {
-          throw new Raced()
-        }
+        const unchanged = (row: Transactions) =>
+          removable(row) && receiptList(row) === receiptsAsRead.get(row.$id)
+        if (stored.length !== ids.length || !stored.every(unchanged)) throw new Raced()
         const staged = new Set(batch.flatMap(({ row, itemIds }) => [row.$id, ...itemIds]))
         if ((await itemsOf(db, ids)).some((item) => !staged.has(item.$id))) throw new Raced()
       })

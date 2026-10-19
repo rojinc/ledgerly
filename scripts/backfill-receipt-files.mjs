@@ -1,11 +1,13 @@
 // One-off for #163: receiptFiles rows for files uploaded before the ledger kept them
 // (data-model.md#receiptfiles). The lead runs it once in each environment, from main, after the
-// ledger change is deployed there. Scheduler step 5 does nothing until its last write:
+// ledger change is deployed there and a minute has passed, so no execution of the old ledger is
+// still running (they time out after 15 s). Scheduler step 5 does nothing until its last write:
 //   APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/backfill-receipt-files.mjs
 // Use a one-off key with rows.read, rows.write and files.read, and delete it afterwards. It
 // prints counts only. Safe to run again.
-import { rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from 'esbuild'
 import { Client, Query, Storage, TablesDB } from 'node-appwrite'
@@ -29,7 +31,9 @@ const { outputFiles } = await build({
     js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
   },
 })
-const bundle = `${tmpdir()}/backfill-receipt-files-${process.pid}.mjs`
+// A fresh private directory, so nobody else on the machine can swap the bundle.
+const dir = mkdtempSync(join(tmpdir(), 'backfill-receipt-files-'))
+const bundle = join(dir, 'bundle.mjs')
 writeFileSync(bundle, outputFiles[0].text)
 try {
   const { backfillReceiptFiles } = await import(pathToFileURL(bundle).href)
@@ -51,7 +55,13 @@ try {
     })
     return page.map((file) => file.$id)
   }
-  console.log(await backfillReceiptFiles(new TablesDB(client), files, new Date()))
+  const counts = await backfillReceiptFiles(new TablesDB(client), files, new Date())
+  console.log(counts)
+  if (counts.deleting > 0) {
+    // Step 5 is deleting files that transactions list: stop it and look before going on.
+    console.error(`${counts.deleting} receiptFiles rows are being deleted but listed. Check them.`)
+    process.exitCode = 1
+  }
 } finally {
-  rmSync(bundle, { force: true })
+  rmSync(dir, { recursive: true, force: true })
 }

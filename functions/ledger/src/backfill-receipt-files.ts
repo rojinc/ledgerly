@@ -6,7 +6,7 @@ import { receiptRows, writeReceiptRows } from '@ledgerly/server/ledger/receipt-f
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 
-export type BackfillCounts = {
+type BackfillCounts = {
   updated: number
   unchanged: number
   deleting: number
@@ -19,21 +19,24 @@ export type ReceiptsListing = (after: string | undefined) => Promise<string[]>
 
 const PAGE = 100
 // data-model.md#checkpoints: scheduler step 5 waits for this row, then keeps it.
-export const CHECKPOINT = 'receipt-clean-up'
+const CHECKPOINT = 'receipt-clean-up'
 // Times a file's row is read and written again after another write changed it meanwhile.
 const TRIES = 3
 
 /**
  * data-model.md#receiptfiles, for files uploaded before the ledger kept these rows. Run by
- * scripts/backfill-receipt-files.mjs, once in each environment before scheduler step 5 ships:
+ * scripts/backfill-receipt-files.mjs, once in each environment, after the ledger change is
+ * deployed there and the old deployment's executions have finished:
  * - adds every transaction that lists a file to the file's row;
  * - gives every other file with no row a row taken off `now`, so step 5 deletes it a day later;
  * - last, makes the `checkpoints` row that lets step 5 start, `through` = `now`: every file
  *   created by then is in the bucket's listing.
  *
- * Safe to run again, and while the ledger runs: a row that changes meanwhile is read again. A
- * file taken off a transaction during the run can stay listed, which only keeps it. `deleting`
- * counts rows step 5 had already marked: they're left alone, and none should exist yet.
+ * Safe to run again, and while the new ledger runs: a row that changes meanwhile is read again.
+ * A file taken off a transaction during the run can stay listed, which only keeps it. A row that
+ * keeps changing makes it throw, with no checkpoint written. `deleting` counts rows step 5 had
+ * already marked although a transaction lists the file: they're left alone, and the script
+ * reports them.
  */
 export async function backfillReceiptFiles(
   db: Db,
@@ -128,7 +131,8 @@ async function addListing(
     } catch (error) {
       const raced =
         error instanceof Raced ||
-        (error instanceof AppwriteException && (error.code === 409 || error.code === 404))
+        // withTransaction reports a row gone as a 409 too.
+        (error instanceof AppwriteException && error.code === 409)
       if (!raced || tries === TRIES) throw error
     }
   }

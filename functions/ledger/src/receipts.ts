@@ -85,7 +85,7 @@ const usable = (file: ReceiptFile | undefined): file is ReceiptFile =>
   file?.complete === true && RECEIPT_TYPES.includes(file.mimeType)
 
 /** A write's new receipt list for one transaction. */
-export type ReceiptList = {
+type ReceiptList = {
   groupId: string
   transactionId: string
   fileIds: readonly string[]
@@ -97,7 +97,8 @@ export type ReceiptList = {
 /**
  * permissions.md#storage: checks each file in `fileIds` that isn't in `stored` already, and
  * only once every one passes, limits each to the group's team. Then stages the `receiptFiles`
- * row of each file added or taken off, and reads them again as committed (data-model.md#receiptfiles). Routes call it inside their
+ * row of each file added or taken off, and reads them again as committed
+ * (data-model.md#receiptfiles). Routes call it inside their
  * database transaction, just before their own writes, so the reset lands before the commit: a
  * stored ID never points at a file its uploader can still change or delete. A refused list
  * changes no file, and the error names its index only, never anything about the file.
