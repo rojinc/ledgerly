@@ -1,6 +1,7 @@
 import { idSchema } from '@ledgerly/core/schemas/common'
 import type { ErrorCode } from '@ledgerly/core/schemas/envelope'
 import { AppwriteException } from 'node-appwrite'
+import { z } from 'zod'
 import { callerFromJwt, type Db, dbFromRequest } from '../appwrite/client'
 import { AppError } from './app-error'
 
@@ -21,6 +22,12 @@ export type RouteContext<Params = Record<string, string>> = {
    * the route runs. Never `x-appwrite-user-id`, which a client can forge (permissions.md).
    */
   userId: string | null
+  /**
+   * The session the caller's JWT was made for, read from the JWT once Appwrite has accepted it.
+   * Null without a JWT, or when its payload names no session or another user. For checks on
+   * the session itself, such as how recently the caller signed in (`account POST /delete`).
+   */
+  sessionId: string | null
   /** True only when `x-appwrite-trigger` is exactly `schedule`: a cron run, never a person. */
   scheduled: boolean
   /**
@@ -111,14 +118,17 @@ export function createHandler(
       const scheduled = trigger === 'schedule' && !hasJwt
       const event = trigger === 'event' && !hasJwt && match.route.event
       let userId: string | null = null
+      let sessionId: string | null = null
       if (hasJwt) {
         userId = await callerOrUnauthenticated(verifyCaller, jwt)
+        sessionId = sessionIdOf(jwt, userId)
       } else if (!scheduled && !event && !match.route.public) {
         throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
       }
       let db: Db | undefined
       const data = await match.route.handler({
         userId,
+        sessionId,
         scheduled,
         event,
         params: match.params,
@@ -202,6 +212,20 @@ async function callerOrUnauthenticated(
     }
     throw thrown
   }
+}
+
+// An Appwrite JWT's payload is `{ userId, sessionId, exp }`. Read only after Appwrite accepted
+// the JWT, so it can be trusted as far as the caller can; anything else there gives null, so a
+// check on the session fails closed.
+function sessionIdOf(jwt: string, userId: string): string | null {
+  let payload: unknown
+  try {
+    payload = JSON.parse(Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString('utf8'))
+  } catch {
+    return null
+  }
+  const result = z.object({ userId: z.literal(userId), sessionId: idSchema }).safeParse(payload)
+  return result.success ? result.data.sessionId : null
 }
 
 function trimSlashes(path: string): string {

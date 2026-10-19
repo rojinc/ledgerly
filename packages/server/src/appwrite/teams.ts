@@ -75,6 +75,24 @@ export async function isInTeam(
   }
 }
 
+/**
+ * Whether anyone but the user is in the team, or null when the team is gone. A user has one
+ * membership at most, so of any two memberships, one is someone else's.
+ */
+export async function othersInTeam(
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  teamId: string,
+  userId: string,
+): Promise<boolean | null> {
+  try {
+    const { memberships } = await teams.listMemberships({ teamId, queries: [Query.limit(2)] })
+    return memberships.some((membership) => membership.userId !== userId)
+  } catch (error) {
+    if (error instanceof AppwriteException && error.code === 404) return null
+    throw error
+  }
+}
+
 async function doneIfExists(request: Promise<unknown>): Promise<void> {
   try {
     await request

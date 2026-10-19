@@ -52,7 +52,10 @@ export async function createGroup(
   const input = parseBody(createGroupBodySchema, body)
   const profile = await getRowOrNull<Profiles>(db, TABLES.profiles, userId)
   const creator = profile && (await getRowOrNull<Persons>(db, TABLES.persons, profile.personId))
-  if (!profile || !creator) throw new AppError('NOT_FOUND', 'Set up your account first.')
+  // A person being deleted is no person (identity-and-invites.md#deleting-an-account-m4).
+  if (!profile || !creator || creator.deletedAt) {
+    throw new AppError('NOT_FOUND', 'Set up your account first.')
+  }
 
   // functions-api.md#idempotency: the client chose the ID, so a retry finds the group. It is
   // the caller's only while they own it, are still in it, and asked for the same group.
