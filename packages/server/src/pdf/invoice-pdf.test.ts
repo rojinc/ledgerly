@@ -143,7 +143,6 @@ beforeEach(() => {
     reads.push(file)
     return readFileSync(FONT_PATHS[file] as string | URL)
   })
-  vi.spyOn(console, 'info').mockImplementation(() => {})
 })
 
 afterEach(() => {
@@ -351,7 +350,9 @@ describe('renderInvoicePdf', () => {
     expect(text).toContain('Bill to ���� Pty Ltd accounts@acme.example')
     expect(text).toMatch(/^Café Ngọc /)
     // The count only, never the text.
-    expect(warn.mock.calls).toEqual([['invoice PDF: 4 characters print as U+FFFD']])
+    expect(warn.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      { fn: 'unknown', event: 'pdf_characters_replaced', count: 4 },
+    ])
     expect(reads).toEqual([])
   })
 
@@ -491,24 +492,24 @@ describe('renderInvoicePdf', () => {
     expect(text).not.toContain('\u0000')
     expect(text).not.toContain(count > 0 ? char : '�')
     // Once for the invoice number, wherever it prints.
-    expect(warn.mock.calls).toEqual(
-      count > 0 ? [[`invoice PDF: ${count} characters print as U+FFFD`]] : [],
+    expect(warn.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual(
+      count > 0 ? [{ fn: 'unknown', event: 'pdf_characters_replaced', count }] : [],
     )
   })
 
   it('logs nothing when Roboto can draw it all', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
     await renderInvoicePdf(goldenSnapshot(), details)
-    expect(warn).not.toHaveBeenCalled()
+    expect(logged).not.toHaveBeenCalled()
   })
 
   it('prints decomposed accents composed, not as �', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const logged = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const businessName = 'Nguyễn Thị Ánh'.normalize('NFD')
     const snapshot = buildStatementSnapshot(goldenInput({ businessName }))
     const text = await pdfText(await renderInvoicePdf(snapshot, details))
     expect(text).toMatch(/^Nguyễn Thị Ánh /)
-    expect(warn).not.toHaveBeenCalled()
+    expect(logged).not.toHaveBeenCalled()
   })
 
   it('refuses a divide', async () => {

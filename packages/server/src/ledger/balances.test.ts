@@ -59,9 +59,10 @@ describe('balanceWrite', () => {
       await balanceWrite(db(JSON.stringify([alice, bob])), 'g1', [...payment, ...payment], []),
     ).toEqual(deleted)
     expect(await balanceWrite(db('not json'), 'g1', [], payment)).toEqual(deleted)
-    expect(error.mock.calls).toEqual([
-      ["balances: the row of group g1 doesn't fit its shares; deleted"],
-      ["balances: the row of group g1 doesn't fit its shares; deleted"],
+    const deletedLine = { fn: 'unknown', event: 'balances_row_deleted', groupId: 'g1' }
+    expect(error.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      deletedLine,
+      deletedLine,
     ])
   })
 

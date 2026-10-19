@@ -145,8 +145,8 @@ describe('the balances row', () => {
     expect(response.status).toBe(200)
     expect(rows.transactions(db)[0]?.status).toBe('void')
     expect(db.rows('balances')).toEqual([])
-    expect(error.mock.calls).toEqual([
-      ["balances: the row of group house doesn't fit its shares; deleted"],
+    expect(error.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      expect.objectContaining({ event: 'balances_row_deleted', groupId: 'house' }),
     ])
   })
 

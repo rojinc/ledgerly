@@ -585,7 +585,13 @@ describe('identity POST /reminders', () => {
       ...BODY,
       email: 'stranger@example.com',
     })
-    expect(errors).toHaveBeenCalledWith('reminder r1 not sent: EmailError application_error 500')
+    expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      expect.objectContaining({
+        event: 'person_reminder_failed',
+        reminderId: 'r1',
+        cause: 'EmailError application_error 500',
+      }),
+    ])
     const logged = [...first.logs, ...second.logs, ...errors.mock.calls.map(String)].join('\n')
     expect(logged).not.toMatch(/alex@|stranger@|Sam|Alex|50\.00|5000/)
   })

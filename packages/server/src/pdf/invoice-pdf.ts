@@ -3,6 +3,7 @@ import { formatMoney } from '@ledgerly/core/money/format'
 import { fontRuns, missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import type { Content, ContentText, TDocumentDefinitions } from 'pdfmake/interfaces'
+import { logProblem } from '../http/log'
 import { loadFonts } from './fonts'
 import {
   field,
@@ -189,7 +190,7 @@ export async function renderInvoicePdf(
     content.push(heading('Notes'), paragraph(business.invoiceNotes))
   }
   // The count only, never the text (security-and-privacy.md#personal-data).
-  if (replaced > 0) console.warn(`invoice PDF: ${replaced} characters print as U+FFFD`)
+  if (replaced > 0) logProblem('pdf_characters_replaced', { count: replaced })
 
   const doc: TDocumentDefinitions = {
     ...PAGE,

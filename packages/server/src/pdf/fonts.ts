@@ -35,7 +35,6 @@ export function loadFonts(fonts: Iterable<PdfFont>): void {
     const file = FONT_FILES[font as Exclude<PdfFont, 'Roboto'>]
     virtualfs.writeFileSync(file, read(file))
     loaded.add(font)
-    console.info(`PDF font ${font} loaded`)
   }
 }
 

@@ -64,6 +64,23 @@
           }
         }
       }
+    },
+    {
+      "includes": [
+        "functions/*/src/**",
+        "packages/server/src/**",
+        "packages/core/src/**",
+        "apps/web/src/**",
+        "!**/*.test.ts",
+        "!**/*.test.tsx"
+      ],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noConsole": "error"
+          }
+        }
+      }
     }
   ]
 }

@@ -226,8 +226,8 @@ describe('GET /groups/{groupId}/balances', () => {
       { personId: 'alice', netCents: -5100 },
       { personId: 'bob', netCents: 5100 },
     ])
-    expect(error.mock.calls).toEqual([
-      ["balances: the row of group house can't be read or doesn't add up; summed the shares"],
+    expect(error.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      expect.objectContaining({ event: 'balances_row_unusable', groupId: 'house' }),
     ])
     error.mockRestore()
   })

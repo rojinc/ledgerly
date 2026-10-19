@@ -11,6 +11,7 @@ import {
   shiftToConfirmEmail,
   timerRunningEmail,
 } from '@ledgerly/server/email/templates'
+import { logProblem } from '@ledgerly/server/http/log'
 import { AppwriteException, Query } from 'node-appwrite'
 import { findSchedule } from '../schedule-rows'
 import { appBase, type Services } from '../services'
@@ -54,7 +55,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
     Query.isNull('remindedAt'),
   ])
   for await (const shift of shifts) {
-    await counted(counts, async () => {
+    await counted(counts, shift, async () => {
       const group = await groups(shift.groupId)
       if (group.archivedAt) return remind(services, shift, undefined, counts)
       if (!isAwake(group, now) || compareDates(shift.date as LocalDate, today(group, now)) >= 0) {
@@ -82,7 +83,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
     Query.isNull('remindedAt'),
   ])
   for await (const timer of timers) {
-    await counted(counts, async () => {
+    await counted(counts, timer, async () => {
       const group = await groups(timer.groupId)
       if (group.archivedAt) return remind(services, timer, undefined, counts)
       if (!isAwake(group, now)) return
@@ -99,13 +100,18 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
   return counts
 }
 
-// A row that keeps failing mustn't hold up the rows after it: it counts as failed, and the
-// next run tries it again.
-async function counted(counts: ReminderCounts, work: () => Promise<void>): Promise<void> {
+// A row that keeps failing mustn't hold up the rows after it: it counts as failed, is logged
+// (IDs and the error's name only), and the next run tries it again.
+async function counted(
+  counts: ReminderCounts,
+  row: Transactions,
+  work: () => Promise<void>,
+): Promise<void> {
   try {
     await work()
-  } catch {
+  } catch (error) {
     counts.failed += 1
+    logProblem('reminder_failed', { groupId: row.groupId, transactionId: row.$id, error })
   }
 }
 

@@ -489,9 +489,15 @@ describe('step 2: auto-post', () => {
     expect(row(services, `${ID}_20261015`).status).toBe('scheduled')
     expect(services.db.rows('shares')).toEqual([])
     // IDs and codes only.
-    expect(log).toHaveBeenCalledWith(
-      `scheduler: auto-post failed for transaction ${ID}_20261015: AppError INVARIANT_VIOLATION`,
-    )
+    expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'auto_post_failed',
+        groupId: 'acme',
+        transactionId: `${ID}_20261015`,
+        cause: 'AppError INVARIANT_VIOLATION',
+      },
+    ])
   })
 
   it('posts an occurrence once when two runs overlap', async () => {
