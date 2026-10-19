@@ -57,8 +57,13 @@ function shiftResolver(
     if (values.timing === 'times') {
       if (!values.startTime) add('startTime', 'Required')
       if (!values.endTime) add('endTime', 'Required')
-      // A timer stopped within the minute it started is stored with equal times: those can stay.
-      const storedTimes = values.startTime === stored.startTime && values.endTime === stored.endTime
+      // A timer stopped within the minute it started is stored with equal times: those can stay,
+      // with its stored minutes, while the times and break are as stored. A changed break would
+      // count equal times as a whole day (minutesBetween), so then they're refused again.
+      const storedTimes =
+        values.startTime === stored.startTime &&
+        values.endTime === stored.endTime &&
+        values.breakMinutes.trim() === stored.breakMinutes.trim()
       if (values.startTime && values.startTime === values.endTime && !storedTimes) {
         add('endTime', 'The end must differ from the start')
       }

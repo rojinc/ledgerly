@@ -430,7 +430,11 @@ describe('NewShiftPage', () => {
   it('opens the shift saved by an earlier try when a retry with changes gets CONFLICT (#147 O9)', async () => {
     // The first answer was lost, and the form changed before the retry.
     call.mockResolvedValue(failure('A different transaction already has this ID.'))
-    const { router } = await renderNew('/shifts/new')
+    const { router, queryClient } = await renderNew('/shifts/new')
+    const invalidated: unknown[] = []
+    vi.spyOn(queryClient, 'invalidateQueries').mockImplementation(async (filters) => {
+      invalidated.push(filters)
+    })
     getRow.mockImplementation((async ({ rowId }: { rowId: string }) =>
       shiftRow({ $id: rowId, description: 'As first sent' })) as never)
     type('Start', '09:00')
@@ -444,6 +448,10 @@ describe('NewShiftPage', () => {
     })
     expect(await screen.findByRole('heading', { name: 'As first sent' })).toBeTruthy()
     expect(screen.getByText(/already added by an earlier try/)).toBeTruthy()
+    // Its write's answer was lost, so what it changed is reloaded.
+    for (const key of [['balances', 'g1'], ['history', 'g1'], ['today'], ['calendar']]) {
+      expect(invalidated).toContainEqual(expect.objectContaining({ queryKey: key }))
+    }
   })
 
   it('shows a CONFLICT when no shift was saved with the ID', async () => {
@@ -745,6 +753,17 @@ describe('ShiftPage', () => {
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(sentBody().shift).toStrictEqual(timed)
     expect(sentBody().description).toBe('Quick shift')
+  })
+
+  it('refuses equal stored times once the break changes, rather than pay a whole day', async () => {
+    const timed = { minutes: 0, rateCents: 2550, startTime: '09:00', endTime: '09:00' }
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    type('Break (minutes)', '0')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('The end must differ from the start')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('still refuses equal times typed over a stored shift’s', async () => {

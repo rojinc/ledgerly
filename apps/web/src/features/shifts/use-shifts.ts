@@ -163,8 +163,13 @@ function refresh(queryClient: QueryClient, view: TransactionView) {
   const { transaction } = view
   queryClient.setQueryData(queryKeys.transaction(transaction.$id), transaction)
   queryClient.setQueryData(queryKeys.transactionShares(transaction.$id), view.shares)
-  void queryClient.invalidateQueries({ queryKey: queryKeys.balances(transaction.groupId) })
-  void queryClient.invalidateQueries({ queryKey: ['history', transaction.groupId] })
+  markStale(queryClient, transaction.groupId)
+}
+
+/** The group's balance and history, today and the calendar, after a shift was written. */
+export function markStale(queryClient: QueryClient, groupId: string) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.balances(groupId) })
+  void queryClient.invalidateQueries({ queryKey: ['history', groupId] })
   void queryClient.invalidateQueries({ queryKey: ['today'] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
 }
@@ -237,7 +242,9 @@ export function useStartTimer(todayKey: readonly unknown[]) {
   return useMutation({
     mutationFn: (body: StartTimerBody) => ledger<TransactionView>('POST', '/timer/start', body),
     onMutate: async (body) => {
-      // A refetch already on its way would land on top of this and show the old state.
+      // A refetch already on its way would land on top of this and show the old state. While
+      // Today shows the last key's data (a new day or group list), there's nothing to swap: the
+      // timer shows once the write's refresh loads it.
       await queryClient.cancelQueries({ queryKey: ['today'] })
       const before = queryClient.getQueryData<Today>(todayKey)
       if (before) {

@@ -19,7 +19,7 @@ import { useGroup, useGroups, useMyMember } from '../groups/use-groups'
 import { LedgerError, useTransaction } from '../transactions/use-transactions'
 import { ShiftForm } from './shift-form'
 import { type ShiftValues, toShiftValues } from './shift-values'
-import { useConfirmShift, useMyRoles, useSaveShift, useVoidShift } from './use-shifts'
+import { markStale, useConfirmShift, useMyRoles, useSaveShift, useVoidShift } from './use-shifts'
 
 /** The group's default hourly rate as text, or empty when it has none. */
 export function defaultRate(group: Groups): string {
@@ -78,6 +78,8 @@ export function NewShiftPage() {
         throw error
       })
     queryClient.setQueryData(queryKeys.transaction(id), row)
+    // The lost answer's refresh never ran.
+    markStale(queryClient, row.groupId)
     navigate(`/shifts/${id}`, { replace: true, state: { alreadySaved: true } })
   }
 
