@@ -62,7 +62,7 @@ Members who haven't joined (`placeholder`) keep their role but have no access, a
 
 ## Function-side checks
 
-Every HTTP request runs step 1 once, in `createHandler`. Every route that changes data then runs steps 2–5 (helper `requireMember()` in `packages/server`):
+Every HTTP request runs step 1 once, in `createHandler`, except a scheduled run or an event run (below). Every route that changes data then runs steps 2–5 (helper `requireMember()` in `packages/server`):
 
 1. Verify the caller: call Appwrite's `account.get()` with the JWT from the `x-appwrite-user-jwt` header, on a separate node-appwrite client with the function's endpoint and project, `setJWT` and no API key. Pass the header exactly as received; never split or trim it. The returned user's `$id` is the caller. If the JWT is missing, or Appwrite rejects it, return `UNAUTHENTICATED`. Never trust `x-appwrite-user-id` (see [Function execute permissions](#function-execute-permissions)).
 2. Load the caller's person (`persons.userId = caller`).
@@ -73,6 +73,13 @@ Every HTTP request runs step 1 once, in `createHandler`. Every route that change
 Routes that don't act as a joined member of an existing group skip steps 2–5, never step 1: `groups POST /groups`, `identity GET /groups/pending` and `POST /groups/{id}/join` (join needs the caller's own member row instead), and the other identity routes except `POST /invites`, which checks the role as in step 4.
 
 Scheduled jobs run with the server key and no caller. They write as the system and record `actorPersonId = null` in `activity`. A run is a scheduled job only when `x-appwrite-trigger` is exactly `schedule` (`ctx.scheduled` in `createHandler`). A missing JWT never makes a request a scheduled job; on any other request it means `UNAUTHENTICATED`, except on a route declared public. Only `/health` is public, and it returns nothing about the caller or the project. (A forged `X-Appwrite-Trigger: schedule` arrives merged as `schedule, http`, so the exact match fails closed.)
+
+**Event runs** are the third kind of run without a JWT. A run is one only when `x-appwrite-trigger` is exactly `event` and there's no JWT (`ctx.event` in `createHandler`), and only a route that opts in accepts it. Any other route answers it `UNAUTHENTICATED`, as for a missing JWT. Today only `identity POST /` opts in, for the [password notice](identity-and-invites.md#password-notice). It's safe because an event route:
+- trusts nothing in the body but a user ID;
+- reads everything it decides from again, server-side;
+- has an effect that is idempotent.
+
+So a forged or replayed call can do nothing the real event didn't already do. A forged `X-Appwrite-Trigger: event` fails the exact match as for `schedule`, and a call with a JWT is never an event run.
 
 ## Storage
 

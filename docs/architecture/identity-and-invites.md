@@ -167,6 +167,26 @@ The response and the email are the same whether the recipient is a placeholder w
 - **One inbox can be several persons** (`a+1@x`, `a+2@x`): each has its own recipient limit. Accepted.
 - **Retention:** `reminders` rows hold person and group IDs only, and are kept until either person's account is deleted (or a purge). Pruning old rows is a later follow-up.
 
+## Password notice
+
+When an account's password is set for the first time or changed, the account's verified email gets a notice, so a stolen session that sets a password is noticed ([#236](https://github.com/rojinc/ledgerly/issues/236)). It goes with the 24-hour [deletion refusal](#refusals).
+
+The `identity` function subscribes to the Appwrite event `users.*.update.password`. Appwrite runs it as `POST /`, an [event run](permissions.md#function-side-checks), with the user as the body:
+
+1. **Who:** anything but an event run gets `FORBIDDEN`.
+2. **The user:** it takes only `$id` from the body, then reads the user again with `users.get`. It trusts nothing else in the body, and never logs or stores it.
+3. **When it sends:** only if the user still exists, `passwordUpdate` is under 60 minutes old (`PASSWORD_NOTICE_WINDOW_MINUTES`), and the account email is verified. Otherwise it sends nothing.
+4. **The email** goes to that verified address, through Resend with the idempotency key `password-notice-<SHA-256 hex of userId and passwordUpdate>`, so each change sends at most one email.
+   - It says when the change happened, in the profile's time zone (UTC with no profile), and "If this wasn't you, reset your password now", with a link to the app's sign-in page (`APP_URL`).
+   - It holds no password, token, or link that signs anyone in.
+5. **Logs** hold the user ID and the outcome only: `sent`, `stale`, `unverified` or `gone`.
+
+A forged or replayed call can do nothing new: at worst it asks again, within the hour, for the email the real event already sent, and Resend's key drops that copy. **Accepted:**
+- A phone-only account gets no notice until SMS can carry it (#175).
+- Other sessions aren't signed out.
+- A notice to the old address when the email or phone changes is #268.
+- After the deploy, the lead checks on `ledgerly-dev` that setting a first password and a recovery reset both fire the event. If the reset doesn't, the recovery event is added here.
+
 ## Deleting an account (M4)
 
 `account POST /delete` ([functions API](functions-api.md#account)), from the delete screen ([#50](https://github.com/rojinc/ledgerly/issues/50)). Deletion has its own function, `account`, so `identity` (which runs bootstrap for every new user) never holds `users.write` or file access. **Deleting means anonymising.** Shares, statements and balances point at the person ([I-3](ledger.md#invariants)), so the `persons` row stays: `deletedAt` set, `userId` cleared, `displayName` "Former member", and no permissions. Their identities, profile (business details included), the invites they sent and the Appwrite user are deleted. There is no undo or grace period in v1: typing DELETE is the confirmation.
