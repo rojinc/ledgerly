@@ -175,10 +175,11 @@ export async function requireNotFinalizing(
  * CONFLICT, with `merging`, when the row names a person whose merge is still open in its group
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): its shares, stored input or item
  * splits name a P with `mergedInto` set who lists the group in `mergeGroupIds` and has no member
- * row there, while U (P's `mergedInto`) has one. Per group, so it holds whether or not the merge
- * finishes elsewhere. Planning the row again with today's members would count P's part as
- * someone else's before the merge writes it out. Routes call it before planning, and again after
- * staging the group row, so a merge's step 2 that lands meanwhile fails their commit.
+ * row there, while U (P's `mergedInto`) has a joined one (not `placeholder`). Per group, so it
+ * holds whether or not the merge finishes elsewhere. Planning the row again with today's members
+ * would count P's part as someone else's before the merge writes it out. Routes call it before
+ * planning, and again after staging the group row, so a merge's step 2 that lands meanwhile fails
+ * their commit.
  */
 export async function requireNoOpenMerge(
   db: Db,
@@ -195,7 +196,7 @@ export async function requireNoOpenMerge(
   ])
   // A shift names no one, and Appwrite refuses an `equal` with no values.
   if (named.size === 0) return
-  // At most 15 people a transaction, so one read.
+  // Its shares and the people its input names: at most about 30, so one read.
   const { rows: merged } = await db.listRows<Persons>({
     databaseId: DATABASE_ID,
     tableId: TABLES.persons,
@@ -226,7 +227,7 @@ export async function requireNoOpenMerge(
     const details: MergingRefusal = { reason: 'merging' }
     throw new AppError(
       'CONFLICT',
-      'Someone’s accounts are being joined up in this group. Try again shortly.',
+      "Some of this group's records are still being updated. Try again shortly.",
       details,
     )
   }

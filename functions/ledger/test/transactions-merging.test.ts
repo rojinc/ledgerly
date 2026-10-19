@@ -83,7 +83,7 @@ function expectMerging(response: Awaited<ReturnType<typeof call>>) {
   expect(response.status).toBe(409)
   expect(response.body.error).toEqual({
     code: 'CONFLICT',
-    message: 'Someone’s accounts are being joined up in this group. Try again shortly.',
+    message: "Some of this group's records are still being updated. Try again shortly.",
     details: { reason: 'merging' },
   })
 }
@@ -127,6 +127,51 @@ describe('while a merge is open in the row’s group', () => {
       description: 'Power',
     })
     expectMerging(response)
+    expect(ledgerOf(db)).toEqual(before)
+  })
+
+  // A due bill has no shares, so only its stored input or items can name Pat. The edit leaves
+  // Pat out, so a check that missed them would plan Pat's part away.
+  const withoutPat = { mode: 'equal', personIds: ['alice', 'bob'] }
+
+  it('PATCH refuses a due bill only its stored split names the person by', async () => {
+    const due = { ...byDays, split: withPat, bill: { status: 'due', dueOn: '2026-10-25' } }
+    const db = await written(due, marked(), ...stepTwo)
+    expect(rows.shares(db)).toEqual([])
+    const before = ledgerOf(db)
+    expectMerging(await call(db, 'PATCH', '/transactions/b1', { ...due, split: withoutPat }))
+    expect(ledgerOf(db)).toEqual(before)
+  })
+
+  it('PATCH refuses a due bill only an item’s split names the person by', async () => {
+    const item = { name: 'Usage', amountCents: 9000 }
+    const due = {
+      ...byDays,
+      totalCents: undefined,
+      split: undefined,
+      bill: { status: 'due', dueOn: '2026-10-25' },
+      items: [{ ...item, split: withPat }],
+    }
+    const db = await written(due, marked(), ...stepTwo)
+    const before = ledgerOf(db)
+    const response = await call(db, 'PATCH', '/transactions/b1', {
+      ...due,
+      items: [{ ...item, split: withoutPat }],
+    })
+    expectMerging(response)
+    expect(ledgerOf(db)).toEqual(before)
+  })
+
+  it('holds the row when U’s row there is `left`: a former housemate is still joined', async () => {
+    const bobLeft: Write = {
+      action: 'update',
+      tableId: 'members',
+      rowId: 'm-bob',
+      data: { status: 'left', leftOn: '2026-10-05' },
+    }
+    const db = await written(byDays, marked(), ...stepTwo, bobLeft)
+    const before = ledgerOf(db)
+    expectMerging(await call(db, 'PATCH', '/transactions/b1', { ...byDays, description: 'Power' }))
     expect(ledgerOf(db)).toEqual(before)
   })
 
