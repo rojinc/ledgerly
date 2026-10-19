@@ -52,6 +52,28 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "mergeGroupIds",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": true,
+        "default": null
+      },
+      {
+        "key": "mergeMembersJson",
+        "type": "mediumtext",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "mergeCursorsJson",
+        "type": "mediumtext",
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
@@ -65,6 +87,12 @@
         "key": "idx_mergedInto",
         "type": "key",
         "columns": ["mergedInto"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_deletedAt",
+        "type": "key",
+        "columns": ["deletedAt"],
         "orders": ["ASC"]
       }
     ]
@@ -209,6 +237,32 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "hoursCapMinutes",
+        "type": "integer",
+        "required": false,
+        "array": false,
+        "min": 60,
+        "max": 20160,
+        "default": null
+      },
+      {
+        "key": "hoursCapPeriod",
+        "type": "string",
+        "format": "enum",
+        "elements": ["week", "fortnight"],
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "hoursCapStartsOn",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
@@ -302,6 +356,13 @@
         "default": null
       },
       {
+        "key": "nextCheckAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
         "key": "settingsJson",
         "type": "text",
         "required": true,
@@ -329,6 +390,12 @@
         "key": "idx_nextCloseAt",
         "type": "key",
         "columns": ["nextCloseAt"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_nextCheckAt",
+        "type": "key",
+        "columns": ["nextCheckAt"],
         "orders": ["ASC"]
       },
       {
@@ -793,6 +860,82 @@
     ]
   },
   {
+    "$id": "balances",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "balances",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "peopleJson",
+        "type": "mediumtext",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": []
+  },
+  {
+    "$id": "receiptFiles",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "receiptFiles",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "transactionIds",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": true,
+        "default": null
+      },
+      {
+        "key": "detachedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "deletingAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_detachedAt",
+        "type": "key",
+        "columns": ["detachedAt"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "checkpoints",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "checkpoints",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "through",
+        "type": "datetime",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": []
+  },
+  {
     "$id": "schedules",
     "$permissions": [],
     "databaseId": "main",
@@ -1092,6 +1235,14 @@
         "default": null
       },
       {
+        "key": "subjectPersonId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
         "key": "summary",
         "type": "varchar",
         "size": 255,
@@ -1119,6 +1270,12 @@
         "key": "idx_group_at",
         "type": "key",
         "columns": ["groupId", "at"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_group_subject",
+        "type": "key",
+        "columns": ["groupId", "subjectPersonId"],
         "orders": ["ASC", "ASC"]
       }
     ]
@@ -1220,6 +1377,76 @@
         "type": "key",
         "columns": ["identityKey", "sentAt"],
         "orders": ["ASC", "ASC"]
+      }
+    ]
+  },
+  {
+    "$id": "reminders",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "reminders",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "groupId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "sentBy",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "toPersonId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "channel",
+        "type": "string",
+        "format": "enum",
+        "elements": ["email", "sms"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "sentAt",
+        "type": "datetime",
+        "required": true,
+        "array": false,
+        "default": null
+      }
+    ],
+    "indexes": [
+      {
+        "key": "idx_sentBy_sentAt",
+        "type": "key",
+        "columns": ["sentBy", "sentAt"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_toPerson_sentAt",
+        "type": "key",
+        "columns": ["toPersonId", "sentAt"],
+        "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_groupId",
+        "type": "key",
+        "columns": ["groupId"],
+        "orders": ["ASC"]
       }
     ]
   }

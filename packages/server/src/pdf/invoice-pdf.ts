@@ -1,39 +1,21 @@
 import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { formatMoney } from '@ledgerly/core/money/format'
+import { missingGlyphs, printable } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
-import pdfmake from 'pdfmake'
-import vfs from 'pdfmake/build/vfs_fonts.js'
-import type { Content, TableCell, TDocumentDefinitions } from 'pdfmake/interfaces'
-
-// Roboto ships inside pdfmake as base64 in a JavaScript file, so esbuild bundles it like any
-// other module and the function needs no font files on disk. In Node, pdfmake takes fonts only
-// by file name, so they go into its in-memory file system (not in its types).
-const { virtualfs } = pdfmake as unknown as {
-  virtualfs: { writeFileSync(name: string, content: Buffer): void }
-}
-const fonts = { normal: 'Roboto-Regular.ttf', bold: 'Roboto-Medium.ttf' }
-for (const file of Object.values(fonts)) {
-  virtualfs.writeFileSync(file, Buffer.from(vfs[file] as string, 'base64'))
-}
-pdfmake.setFonts({ Roboto: fonts })
-// An invoice uses only the data passed in: never fetch a URL or read a local file.
-pdfmake.setUrlAccessPolicy(() => false)
-pdfmake.setLocalAccessPolicy(() => false)
-
-const LOCALE = 'en-AU'
-const MUTED = '#616e7c'
-// For lines with no description. `kind` is a plain string in old snapshots, so unknown ones print as is.
-const KIND_LABELS: Record<string, string> = {
-  shift: 'Shift',
-  expense: 'Expense',
-  bill: 'Bill',
-  payment: 'Payment',
-  loan: 'Loan',
-  income: 'Income',
-  adjustment: 'Adjustment',
-}
-
-type Line = StatementSnapshot['lines'][number]
+import type { Content, TDocumentDefinitions } from 'pdfmake/interfaces'
+import {
+  field,
+  footer,
+  formatDate,
+  heading,
+  type Line,
+  LOCALE,
+  lineText,
+  MUTED,
+  PAGE,
+  pdfmake,
+  table,
+} from './layout'
 
 /**
  * The statement row's number and issue date, which the snapshot doesn't hold. The due date
@@ -57,6 +39,14 @@ export async function renderInvoicePdf(
   const money = (cents: number) => formatMoney(cents, snapshot.group.currency, LOCALE)
   const dueOn = addDays(details.issuedOn, invoice.paymentTermsDays)
   const business = issuer.business
+  // Roboto can't draw every script, and pdfmake would leave out what it can't draw, so every text
+  // from the snapshot or the profile prints through printable(): a missing character shows as �.
+  let replaced = 0
+  const print = (text: string) => {
+    replaced += missingGlyphs(text).length
+    return printable(text)
+  }
+  const number = print(details.displayNumber)
   const worker = snapshot.people.find((person) => person.personId === issuer.personId)
   const openingCents = worker?.openingCents ?? 0
 
@@ -74,14 +64,14 @@ export async function renderInvoicePdf(
     {
       columns: [
         [
-          { text: business.businessName ?? issuer.name, style: 'issuer' },
+          { text: print(business.businessName ?? issuer.name), style: 'issuer' },
           ...present([
             business.abn &&
               `ABN ${business.abn.replace(/^(\d{2})(\d{3})(\d{3})(\d{3})$/, '$1 $2 $3 $4')}`,
             business.address,
             business.email,
             business.phone,
-          ]),
+          ]).map(print),
         ],
         {
           width: 'auto',
@@ -91,7 +81,7 @@ export async function renderInvoicePdf(
               layout: 'noBorders',
               table: {
                 body: [
-                  field('Number', details.displayNumber),
+                  field('Number', number),
                   field('Issued', formatDate(details.issuedOn)),
                   field('Due', formatDate(dueOn)),
                   field(
@@ -106,8 +96,8 @@ export async function renderInvoicePdf(
       ],
     },
     heading('Bill to'),
-    { text: recipient.name, bold: true },
-    ...recipient.emails,
+    { text: print(recipient.name), bold: true },
+    ...recipient.emails.map(print),
     amountLine('Opening balance (from the previous invoice)', money(openingCents)),
   ]
 
@@ -119,12 +109,12 @@ export async function renderInvoicePdf(
         ['Date', 'Description', 'Hours', 'Rate', 'Amount'],
         charges.map((line) => [
           formatDate(line.date),
-          lineText(line),
+          print(lineText(line)),
           line.shift ? hoursText(line.shift.minutes) : '',
           line.shift ? `${money(line.shift.rateCents)}/h` : '',
           money(owed(line)),
         ]),
-        ['Total work and charges', money(total(charges))],
+        { total: ['Total work and charges', money(total(charges))] },
       ),
     )
   }
@@ -134,8 +124,8 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        credits.map((line) => [formatDate(line.date), lineText(line), money(owed(line))]),
-        ['Total payments and deductions', money(total(credits))],
+        credits.map((line) => [formatDate(line.date), print(lineText(line)), money(owed(line))]),
+        { total: ['Total payments and deductions', money(total(credits))] },
       ),
     )
   }
@@ -156,7 +146,11 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        records.map((line) => [formatDate(line.date), lineText(line), money(line.totalCents)]),
+        records.map((line) => [
+          formatDate(line.date),
+          print(lineText(line)),
+          money(line.totalCents),
+        ]),
       ),
     )
   }
@@ -170,36 +164,22 @@ export async function renderInvoicePdf(
           business.bank &&
             `Bank transfer: ${business.bank.accountName}, BSB ${business.bank.bsb.replace(/^(\d{3})(\d{3})$/, '$1-$2')}, account ${business.bank.accountNumber}`,
           business.payId && `PayID: ${business.payId}`,
-          `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with ${details.displayNumber} as the reference.`,
-        ]),
+          `${terms(invoice.paymentTermsDays)} Please pay by ${formatDate(dueOn)}, with ${number} as the reference.`,
+        ]).map(print),
       ],
     })
   }
   if (business.invoiceNotes) {
     // Not unbreakable: notes taller than a page would be dropped, heading and all.
-    content.push(heading('Notes'), business.invoiceNotes)
+    content.push(heading('Notes'), print(business.invoiceNotes))
   }
+  // The count only, never the text (security-and-privacy.md#personal-data).
+  if (replaced > 0) console.warn(`invoice PDF: ${replaced} characters print as U+FFFD`)
 
   const doc: TDocumentDefinitions = {
+    ...PAGE,
     info: { title: `Invoice ${details.displayNumber}`, creator: 'Ledgerly', producer: 'Ledgerly' },
-    pageSize: 'A4',
-    pageMargins: [40, 40, 40, 50],
-    defaultStyle: { font: 'Roboto', fontSize: 10, lineHeight: 1.15 },
-    styles: {
-      issuer: { fontSize: 14, bold: true, margin: [0, 0, 0, 4] },
-      title: { fontSize: 20, bold: true, alignment: 'right', margin: [0, 0, 0, 6] },
-      heading: { fontSize: 12, bold: true, margin: [0, 14, 0, 4] },
-      balance: { fontSize: 14, bold: true },
-    },
-    // A heading never ends a page: it moves to the next page with what follows it.
-    pageBreakBefore: (node, nodes) =>
-      node.headlineLevel === 1 && nodes.getFollowingNodesOnPage().length === 0,
-    footer: (page, pages) => ({
-      text: `${details.displayNumber} · page ${page} of ${pages}`,
-      alignment: 'center',
-      fontSize: 8,
-      color: MUTED,
-    }),
+    footer: footer(number),
     content,
   }
   return pdfmake.createPdf(doc).getBuffer()
@@ -208,17 +188,6 @@ export async function renderInvoicePdf(
 /** The strings that are set; pdfmake can't draw `undefined`. */
 function present(texts: (string | false | undefined)[]): string[] {
   return texts.filter((text): text is string => Boolean(text))
-}
-
-// A word pdfmake can't break widens its column until the amounts fall off the page, so long
-// runs without a space (a pasted reference or URL) get a zero-width space every 20 characters.
-function lineText(line: Line): string {
-  const text = line.description || KIND_LABELS[line.kind] || line.kind
-  return text.replace(/\S{20}(?=\S)/g, '$&\u200B')
-}
-
-function heading(text: string): Content {
-  return { text, style: 'heading', headlineLevel: 1 }
 }
 
 /** `7:30` for 450 minutes: exact, where decimal hours would print 20 minutes as 0.33. */
@@ -231,38 +200,6 @@ function terms(days: number): string {
   return `Payment terms: ${days} ${days === 1 ? 'day' : 'days'}.`
 }
 
-/** A table of date, description, then numbers, which are right-aligned. */
-function table(
-  widths: (number | string)[],
-  header: string[],
-  rows: string[][],
-  total?: [label: string, amount: string],
-): Content {
-  const row = (texts: string[], style: { bold?: boolean; color?: string } = {}): TableCell[] =>
-    texts.map((text, index) => ({
-      text,
-      ...style,
-      alignment: index >= 2 ? 'right' : 'left',
-    }))
-  const body = [row(header, { bold: true, color: MUTED }), ...rows.map((texts) => row(texts))]
-  if (total) {
-    // A spanned cell still needs its empty placeholders.
-    body.push([
-      { text: total[0], bold: true, colSpan: widths.length - 1 },
-      ...Array.from({ length: widths.length - 2 }, () => ({})),
-      { text: total[1], bold: true, alignment: 'right' },
-    ])
-  }
-  return { layout: 'lightHorizontalLines', table: { headerRows: 1, widths, body } }
-}
-
-function field(label: string, value: string): TableCell[] {
-  return [
-    { text: label, color: MUTED },
-    { text: value, bold: true },
-  ]
-}
-
 /** One label with its amount on the right. */
 function amountLine(label: string, amount: string, style?: string): Content {
   return {
@@ -270,15 +207,4 @@ function amountLine(label: string, amount: string, style?: string): Content {
     style,
     margin: [0, 14, 0, 0],
   }
-}
-
-/** `16 Oct 2026`, read from the `YYYY-MM-DD` parts and shown in UTC, so it never shifts a day. */
-function formatDate(date: string): string {
-  const [year, month, day] = date.split('-').map(Number) as [number, number, number]
-  return new Intl.DateTimeFormat(LOCALE, {
-    timeZone: 'UTC',
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  }).format(Date.UTC(year, month - 1, day))
 }

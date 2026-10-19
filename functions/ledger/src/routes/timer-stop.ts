@@ -1,8 +1,10 @@
 import { stopTimerBodySchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { route } from '@ledgerly/server/http/create-handler'
+import { balanceWrite } from '@ledgerly/server/ledger/balances'
 import {
   activityWrite,
   changedColumns,
@@ -14,11 +16,11 @@ import {
   listShares,
   loadLedger,
   money,
+  NO_SUCH_TRANSACTION,
   parseBody,
   plan,
   readView,
   replaceRows,
-  requireMemberOf,
   requireNotFinalizing,
   requireUnlocked,
   shareColumns,
@@ -45,9 +47,16 @@ export const stopTimer = (services: ServicesFor) =>
     ledgerRoute(async () => {
       const stop = parseBody(stopTimerBodySchema, body)
       const found = await getTransaction(db, stop.transactionId)
-      const membership = await requireMemberOf(db, services({ headers }).teams, userId, found, {
-        roles: ['admin', 'member'],
-      })
+      const membership = await requireMemberOf(
+        db,
+        services({ headers }).teams,
+        userId,
+        found.groupId,
+        NO_SUCH_TRANSACTION,
+        {
+          roles: ['admin', 'member'],
+        },
+      )
       const person = membership.person.$id
       if (found.startedAt === null || !['running', 'posted'].includes(found.status)) {
         invalid('Only a running timer can be stopped.')
@@ -98,14 +107,11 @@ export const stopTimer = (services: ServicesFor) =>
           await requireNotFinalizing(db, existing.groupId, [existing.date])
           // A running shift has no shares (I-6), so this replaces none.
           const oldShares = await listShares(db, existing.$id)
+          const shares = planned.shares.map((share) => shareColumns(existing, share))
+          const balances = await balanceWrite(db, existing.groupId, oldShares, shares)
           await tx.write(
             { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
-            ...replaceRows(
-              TABLES.shares,
-              oldShares,
-              planned.shares.map((share) => shareColumns(existing, share)),
-              teamRead(existing.groupId),
-            ),
+            ...replaceRows(TABLES.shares, oldShares, shares, teamRead(existing.groupId)),
             activityWrite(
               existing,
               person,
@@ -114,6 +120,7 @@ export const stopTimer = (services: ServicesFor) =>
               changedColumns(existing as unknown as Record<string, unknown>, columns),
               now,
             ),
+            ...balances,
           )
         })
       } catch (error) {

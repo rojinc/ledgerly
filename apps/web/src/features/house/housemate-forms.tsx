@@ -14,6 +14,7 @@ import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
+import { linkHint } from '../groups/link-hint'
 import { formatDate } from '../statements/invoice-view'
 import {
   type HousemateValues,
@@ -21,6 +22,7 @@ import {
   ROLE_LABEL,
   toAddHousemateBody,
   toMemberEditBody,
+  toMoveBackInBody,
 } from './house-values'
 import { GroupsError, type useMemberWrites } from './use-house'
 
@@ -162,11 +164,8 @@ export function AddHousemate({
           error={errors.phone}
           {...form.register('phone')}
         />
-        {/* identity-and-invites.md: a sign-up is linked by a verified email or phone. */}
         <p aria-live="polite" className="text-sm text-muted-foreground">
-          {email.trim() === '' && phone.trim() === ''
-            ? 'Without an email or mobile number, they can’t be linked to this house if they sign up later.'
-            : 'Once they join with this email or number, they’ll see the house.'}
+          {linkHint(email, phone, { linked: 'this house', seen: 'the house' })}
         </p>
         {isAdmin && (
           <SelectField id="add-role" label="Role" error={errors.role} {...form.register('role')}>
@@ -208,7 +207,14 @@ function FormButtons({
       <Button type="submit" aria-disabled={pending}>
         {pending ? 'Saving…' : label}
       </Button>
-      <Button type="button" variant="outline" onClick={onCancel}>
+      {/* aria-disabled, not disabled: a disabled button loses focus. A save that's sent still
+          applies, so Cancel waits for it. */}
+      <Button
+        type="button"
+        variant="outline"
+        aria-disabled={pending}
+        onClick={() => !pending && onCancel()}
+      >
         Cancel
       </Button>
     </div>
@@ -340,6 +346,61 @@ export function MoveOut({ group, member, writes, onClose }: RowFormProps & { gro
         {...form.register('leftOn')}
       />
       <FormButtons pending={isSubmitting} label="Mark as moved out" onCancel={onClose} />
+    </form>
+  )
+}
+
+/**
+ * `PATCH { leftOn: null }` (admins): someone who moved out lives here again. Someone who left on
+ * their own can't come back this way, and the function says so (permissions.md#leaving-a-group).
+ */
+export function MoveBackIn({ member, writes, onClose }: RowFormProps) {
+  const ref = useFocusFirst()
+  const form = useForm<{ role: Members['role'] }, unknown, UpdateMemberBody>({
+    resolver: housemateResolver<{ role: Members['role'] }, UpdateMemberBody>(
+      updateMemberBodySchema,
+      (values) => toMoveBackInBody(values.role, member),
+    ),
+    // Moving out made them a viewer.
+    defaultValues: { role: 'member' },
+  })
+  const { errors, isSubmitting } = form.formState
+  const id = member.$id
+  const submit = form.handleSubmit(async (body) => {
+    try {
+      await writes.update.mutateAsync({ memberId: id, body })
+      onClose()
+    } catch (error) {
+      form.setError('root', { message: (error as Error).message })
+    }
+  })
+
+  return (
+    <form
+      ref={ref}
+      noValidate
+      className="flex flex-col gap-4 pt-3"
+      onSubmit={(event) => {
+        // aria-disabled, not disabled, keeps focus on the button; this guard stops a second send.
+        if (form.formState.isSubmitting) event.preventDefault()
+        else void submit(event)
+      }}
+    >
+      {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
+      <SelectField
+        id={`${id}-backInRole`}
+        label="Role"
+        hint="Their move-out date is cleared, and they live here again. They count as living here since they moved in, including while they were away."
+        error={errors.role}
+        {...form.register('role')}
+      >
+        {ROLES.map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </SelectField>
+      <FormButtons pending={isSubmitting} label="Mark as moved back in" onCancel={onClose} />
     </form>
   )
 }

@@ -1,13 +1,8 @@
 import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localTimeToUtc, localToday } from '@ledgerly/core/dates/time-zone'
-import type {
-  Groups,
-  Members,
-  Persons,
-  Schedules,
-  Transactions,
-} from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Persons, Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
+import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
@@ -17,11 +12,11 @@ import {
   timerRunningEmail,
 } from '@ledgerly/server/email/templates'
 import { AppwriteException, Query } from 'node-appwrite'
-import type { Services } from '../services'
+import { findSchedule } from '../schedule-rows'
+import { appBase, type Services } from '../services'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
 
-const PAGE = 100
 // scheduling.md#step-2-auto-post: shifts older than this wait for the user.
 const FLOOR_DAYS = 7
 const TIMER_HOURS = 12
@@ -38,11 +33,11 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
   const { db, now } = services
   const link = linkTo(services.appUrl)
   const counts: ReminderCounts = { sent: 0, skipped: 0, failed: 0 }
-  // Read once per run. Groups are never deleted; schedules can be.
+  // Read once per run. Groups are never deleted.
   const groups = memo((rowId) =>
     db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId }),
   )
-  const schedules = memo((rowId) => getOrUndefined<Schedules>(db, TABLES.schedules, rowId))
+  const autoPosts = memo(async (rowId) => (await findSchedule(db, rowId))?.autoPost === true)
   // `<groupId>/<personId>`: Appwrite IDs have no slash.
   const recipients = memo((key) => {
     const [groupId, personId] = key.split('/') as [string, string]
@@ -52,7 +47,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
 
   // idx_status_date. A shift must be before the group's local today, which is at most a day
   // after the UTC date, so later dates are never reminded yet.
-  const shifts = pages<Transactions>(services, [
+  const shifts = pages<Transactions>(services, TABLES.transactions, [
     Query.equal('status', 'scheduled'),
     Query.between('date', addDays(utcToday, -FLOOR_DAYS), utcToday),
     Query.equal('kind', 'shift'),
@@ -65,10 +60,12 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       if (!isAwake(group, now) || compareDates(shift.date as LocalDate, today(group, now)) >= 0) {
         return
       }
-      // Step 2 posts the shifts of schedules that auto-post.
-      const schedule = shift.scheduleId ? await schedules(shift.scheduleId) : undefined
-      if (schedule?.autoPost) return
+      // Any shift still `scheduled`, auto-post ones too: step 2 runs first every hour from just
+      // after local midnight, so by 07:00 an auto-post shift left here is one it couldn't post.
       const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
+      // Nobody to ask: a shift of a schedule that auto-posts isn't marked, so step 2 keeps trying
+      // it. Step 2 never posts a marked row, so marking it would leave it `scheduled` for good.
+      if (!to && shift.scheduleId && (await autoPosts(shift.scheduleId))) return
       const content = shiftToConfirmEmail({
         groupName: group.name,
         date: shift.date as LocalDate,
@@ -79,7 +76,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
   }
 
   // idx_status_date, on its status alone: there are few running timers.
-  const timers = pages<Transactions>(services, [
+  const timers = pages<Transactions>(services, TABLES.transactions, [
     Query.equal('status', 'running'),
     Query.lessThan('startedAt', new Date(now.getTime() - TIMER_HOURS * MS_PER_HOUR).toISOString()),
     Query.isNull('remindedAt'),
@@ -121,12 +118,8 @@ function isAwake(group: Groups, now: Date): boolean {
   return now.toISOString() >= localTimeToUtc(today(group, now), FIRST_HOUR, group.timezone)
 }
 
-// Checked before any row, so a missing APP_URL fails the run instead of every row.
 function linkTo(appUrl: string): (row: Transactions) => string {
-  if (!/^https?:\/\//.test(appUrl)) {
-    throw new Error('APP_URL is not set. Add it as an Appwrite project variable.')
-  }
-  const base = appUrl.replace(/\/+$/, '')
+  const base = appBase(appUrl)
   return (row) => `${base}/groups/${row.groupId}/transactions/${row.$id}`
 }
 
@@ -164,8 +157,10 @@ async function remind(
       }
       try {
         // Resend delivers one email per key within 24 hours, so the next run's retry after a
-        // failed commit isn't delivered twice.
-        await sendEmail({ to: email.to, ...email.content, idempotencyKey: `reminder-${seen.$id}` })
+        // failed commit isn't delivered twice. The date is in it: an edit that moves the row
+        // clears remindedAt, and the new date needs its own reminder.
+        const idempotencyKey = `reminder-${seen.$id}-${seen.date}`
+        await sendEmail({ to: email.to, ...email.content, idempotencyKey })
         outcome = 'sent'
       } catch (error) {
         // An email Resend will never take is marked too, so it isn't tried every hour.
@@ -184,7 +179,10 @@ async function remind(
 
 // Resend's errors for an email it will never send as asked: a bad address, or the same key
 // with different content (the group was renamed after a send whose mark failed).
-const NEVER_SENT: ReadonlySet<string> = new Set(['validation_error', 'invalid_idempotent_request'])
+export const NEVER_SENT: ReadonlySet<string> = new Set([
+  'validation_error',
+  'invalid_idempotent_request',
+])
 
 // It still needs the reminder the page read it for.
 function stillDue(seen: Transactions, stored: Transactions | undefined): boolean {
@@ -217,7 +215,8 @@ async function verifiedEmail(
   if (!person?.userId) return undefined
   try {
     const user = await users.get({ userId: person.userId })
-    return user.emailVerification && user.email ? user.email : undefined
+    // Not once the account is blocked: deleting it blocks it first (identity-and-invites.md#order).
+    return user.status && user.emailVerification && user.email ? user.email : undefined
   } catch (error) {
     // The account was deleted.
     if (error instanceof AppwriteException && error.code === 404) return undefined
@@ -225,39 +224,7 @@ async function verifiedEmail(
   }
 }
 
-/**
- * Every matching transaction, a page of PAGE at a time, until the run's time budget is used
- * up. Pages follow `$id` rather than a cursor row (scaling.md): the rows this step goes
- * through can be deleted meanwhile, and a deleted cursor row fails the query.
- */
-async function* pages<R extends Transactions>(
-  { db, outOfTime }: Services,
-  queries: string[],
-): AsyncGenerator<R> {
-  let after: string | undefined
-  while (!outOfTime()) {
-    const { rows } = await db.listRows<R>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.transactions,
-      queries: [
-        ...queries,
-        ...(after === undefined ? [] : [Query.greaterThan('$id', after)]),
-        Query.orderAsc('$id'),
-        Query.limit(PAGE),
-      ],
-      total: false,
-    })
-    for (const row of rows) {
-      // One row can take several requests, the email among them.
-      if (outOfTime()) return
-      yield row
-    }
-    if (rows.length < PAGE) return
-    after = rows[rows.length - 1]?.$id
-  }
-}
-
-async function getOrUndefined<R extends Persons | Schedules | Transactions>(
+async function getOrUndefined<R extends Persons | Transactions>(
   db: Db,
   tableId: string,
   rowId: string,

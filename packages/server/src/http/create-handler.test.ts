@@ -168,6 +168,44 @@ describe('createHandler', () => {
     expect(posing.body).toEqual({ ok: true, data: { userId: 'tester', scheduled: false } })
   })
 
+  it('runs an event without a caller only on a route that opts in, and only for an exact event trigger', async () => {
+    const onEvent = route('POST', '/', async ({ userId, event }) => ({ userId, event }), {
+      event: true,
+    })
+    const other = route('POST', '/other', async ({ userId, event }) => ({ userId, event }))
+    const handler = make([onEvent, other])
+    const fired = await call(handler, {
+      method: 'POST',
+      headers: { 'x-appwrite-user-jwt': '', 'x-appwrite-trigger': 'event' },
+    })
+    expect(fired.body).toEqual({ ok: true, data: { userId: null, event: true } })
+    // A route that doesn't opt in answers it as a request without a JWT.
+    const elsewhere = await call(handler, {
+      method: 'POST',
+      path: '/other',
+      headers: { 'x-appwrite-user-jwt': '', 'x-appwrite-trigger': 'event' },
+    })
+    expect(elsewhere.status).toBe(401)
+    // A forged X-Appwrite-Trigger arrives merged with the real one.
+    const forged = await call(handler, {
+      method: 'POST',
+      headers: { 'x-appwrite-user-jwt': '', 'x-appwrite-trigger': 'event, http' },
+    })
+    expect(forged.status).toBe(401)
+    // A schedule isn't an event.
+    const cron = await call(handler, {
+      method: 'POST',
+      headers: { 'x-appwrite-user-jwt': '', 'x-appwrite-trigger': 'schedule' },
+    })
+    expect(cron.body).toEqual({ ok: true, data: { userId: null, event: false } })
+    // With a JWT it's a person, even if the trigger header says event.
+    const posing = await call(handler, {
+      method: 'POST',
+      headers: { 'x-appwrite-trigger': 'event' },
+    })
+    expect(posing.body).toEqual({ ok: true, data: { userId: 'tester', event: false } })
+  })
+
   it('runs a public route without a caller', async () => {
     const health = make([route('GET', '/health', async ({ userId }) => userId, { public: true })])
     const result = await call(health, { path: '/health', headers: { 'x-appwrite-user-jwt': '' } })
@@ -193,6 +231,30 @@ describe('createHandler', () => {
       headers: { 'x-appwrite-user-jwt': 'jwt-me', 'x-appwrite-user-id': 'victim, me' },
     })
     expect(result.body).toMatchObject({ data: { userId: 'me' } })
+  })
+
+  it('reads the session ID from the verified JWT, and gives null for anything else', async () => {
+    // Appwrite's JWTs are `header.payload.signature`, with `{ userId, sessionId, exp }`.
+    const jwt = (payload: unknown) =>
+      `jwt-h.${Buffer.from(JSON.stringify(payload)).toString('base64url')}.sig`
+    const session = route('GET', '/s', async ({ sessionId }) => ({ sessionId }))
+    const handler = createHandler([session], undefined, async () => 'u1')
+    const sessionOf = async (header: string) =>
+      (await call(handler, { path: '/s', headers: { 'x-appwrite-user-jwt': header } })).body
+    expect(await sessionOf(jwt({ userId: 'u1', sessionId: 's1', exp: 1 }))).toEqual({
+      ok: true,
+      data: { sessionId: 's1' },
+    })
+    for (const header of [
+      jwt({ userId: 'u1' }),
+      jwt({ userId: 'u2', sessionId: 's1' }),
+      jwt({ userId: 'u1', sessionId: '' }),
+      jwt('s1'),
+      'jwt-u1',
+      'jwt-h.%%%.sig',
+    ]) {
+      expect(await sessionOf(header)).toEqual({ ok: true, data: { sessionId: null } })
+    }
   })
 
   it('returns UNAUTHENTICATED for a JWT Appwrite rejects, without running the route', async () => {

@@ -1,6 +1,7 @@
 import { receiptsBodySchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
 import {
   activityWrite,
@@ -9,10 +10,10 @@ import {
   guardTransaction,
   invalid,
   ledgerRoute,
+  NO_SUCH_TRANSACTION,
   parseBody,
   readView,
   requireCreatorOrAdmin,
-  requireMemberOf,
   requireNotFinalizing,
   requireUnlocked,
   Unchanged,
@@ -34,9 +35,16 @@ export const updateReceipts = (services: ServicesFor) =>
       const { receiptFileIds } = parseBody(receiptsBodySchema, body)
       const found = await getTransaction(db, params.id)
       const { teams, files } = services({ headers })
-      const membership = await requireMemberOf(db, teams, userId, found, {
-        roles: ['admin', 'member'],
-      })
+      const membership = await requireMemberOf(
+        db,
+        teams,
+        userId,
+        found.groupId,
+        NO_SUCH_TRANSACTION,
+        {
+          roles: ['admin', 'member'],
+        },
+      )
       requireCreatorOrAdmin(membership, found)
       if (found.status === 'void') invalid('A voided transaction can’t be edited.')
       if (found.status === 'running') invalid('Stop the timer before editing this shift.')
@@ -56,7 +64,14 @@ export const updateReceipts = (services: ServicesFor) =>
           if (sameReceipts(before, receiptFileIds)) throw new Unchanged()
           await guardGroup(tx, db, membership.group)
           await requireNotFinalizing(db, existing.groupId, [existing.date])
-          await attachReceipts(files, existing.groupId, receiptFileIds, before)
+          const now = new Date()
+          await attachReceipts(files, db, tx, {
+            groupId: existing.groupId,
+            transactionId: existing.$id,
+            fileIds: receiptFileIds,
+            stored: before,
+            now,
+          })
           await tx.write(
             {
               action: 'update',
@@ -74,7 +89,7 @@ export const updateReceipts = (services: ServicesFor) =>
               'transaction.updated',
               `Changed the receipts on “${existing.description}”`,
               { receiptFileIds: { before, after: receiptFileIds } },
-              new Date(),
+              now,
             ),
           )
         })

@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 import { parseLocalDate } from '../dates/local-date'
 import { LedgerError } from '../ledger/ledger-error'
 import { type StatementSnapshot, statementSnapshotSchema } from '../schemas/statements'
-import { buildStatementSnapshot, checkSnapshot, type SnapshotInput } from './snapshot'
+import {
+  buildStatementSnapshot,
+  checkSnapshot,
+  mergedClosings,
+  mergedShares,
+  type SnapshotInput,
+} from './snapshot'
 
 const d = parseLocalDate
 type Line = StatementSnapshot['lines'][number]
@@ -298,5 +304,99 @@ describe('checkSnapshot', () => {
       { ...worker, openingCents: worker.openingCents + 1, closingCents: worker.closingCents + 1 },
     ])
     expect(checkSnapshot(lopsided, fresh)).toEqual(['balanced', 'fresh'])
+  })
+})
+
+describe('mergedClosings (statements.md#core-rules, rule 2)', () => {
+  const inGroup = new Set(['u', 'x', 'kept'])
+  const merged = new Map<string, string | null>([
+    ['p', 'u'],
+    ['q', 'p'],
+    ['kept', 'u'],
+    ['gone', null],
+    ['loop1', 'loop2'],
+    ['loop2', 'loop1'],
+    ['self', 'self'],
+  ])
+  const nets = (entries: Record<string, number>) =>
+    Object.entries(entries).map(([personId, netCents]) => ({ personId, netCents }))
+
+  it('changes nothing when everyone has a member row', () => {
+    expect(mergedClosings(nets({ u: -300, x: 300 }), inGroup, merged)).toEqual(
+      nets({ u: -300, x: 300 }),
+    )
+  })
+
+  it('adds a merged closing to the person it was merged into, keeping the sum', () => {
+    const closings = mergedClosings(nets({ u: -100, p: -200, x: 300 }), inGroup, merged)
+    expect(closings).toEqual(nets({ u: -300, x: 300 }))
+    expect(closings.reduce((sum, net) => sum + net.netCents, 0)).toBe(0)
+  })
+
+  it('gives a merged closing to someone with no closing of their own', () => {
+    expect(mergedClosings(nets({ p: -200, x: 200 }), inGroup, merged)).toEqual(
+      nets({ u: -200, x: 200 }),
+    )
+  })
+
+  it('follows a chain of merges to the first person with a member row', () => {
+    expect(mergedClosings(nets({ q: -50, x: 50 }), inGroup, merged)).toEqual(
+      nets({ u: -50, x: 50 }),
+    )
+  })
+
+  it('keeps the closing of a merged person who still has a member row (a kept group)', () => {
+    expect(mergedClosings(nets({ kept: -70, x: 70 }), inGroup, merged)).toEqual(
+      nets({ kept: -70, x: 70 }),
+    )
+  })
+
+  it.each([
+    ['not merged', 'gone'],
+    ['unknown', 'nobody'],
+    ['in a loop', 'loop1'],
+    ['merged into itself', 'self'],
+  ])('leaves a closing it cannot follow (%s) where it is', (_, personId) => {
+    expect(mergedClosings(nets({ [personId]: -10, x: 10 }), inGroup, merged)).toEqual(
+      nets({ [personId]: -10, x: 10 }),
+    )
+  })
+})
+
+describe('mergedShares (statements.md#core-rules, rule 2)', () => {
+  const inGroup = new Set(['u', 'x', 'kept'])
+  const merged = new Map<string, string | null>([
+    ['p', 'u'],
+    ['kept', 'u'],
+  ])
+  const share = (personId: string, givenCents: number, receivedCents: number) => ({
+    personId,
+    givenCents,
+    receivedCents,
+  })
+
+  it('changes nothing when everyone has a member row', () => {
+    const shares = [share('u', 900, 300), share('x', 0, 600)]
+    expect(mergedShares(shares, inGroup, merged)).toEqual(shares)
+  })
+
+  it('counts a share a merge has not moved yet for the person it was merged into', () => {
+    expect(mergedShares([share('p', 900, 300), share('x', 0, 600)], inGroup, merged)).toEqual([
+      share('u', 900, 300),
+      share('x', 0, 600),
+    ])
+  })
+
+  it('combines two shares that then name the same person (I-5)', () => {
+    expect(
+      mergedShares([share('u', 900, 300), share('p', 0, 300), share('x', 0, 300)], inGroup, merged),
+    ).toEqual([share('u', 900, 600), share('x', 0, 300)])
+  })
+
+  it('keeps the share of a merged person who still has a member row', () => {
+    expect(mergedShares([share('kept', 50, 0), share('x', 0, 50)], inGroup, merged)).toEqual([
+      share('kept', 50, 0),
+      share('x', 0, 50),
+    ])
   })
 })

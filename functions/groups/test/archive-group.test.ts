@@ -149,6 +149,7 @@ describe('POST /groups/{id}/archive', () => {
         groupId: 'g1',
         actorPersonId: 'p1',
         action: 'group.archived',
+        summary: 'Archived the group',
         at: NOW.toISOString(),
       }),
     ])

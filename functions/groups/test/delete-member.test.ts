@@ -128,7 +128,7 @@ function memberIds(services: Fakes) {
 }
 
 describe('DELETE /groups/{id}/members/{memberId}', () => {
-  it('removes the row and the team membership, and writes member.removed', async () => {
+  it('removes the row and the team membership, and writes member.removed about them', async () => {
     const services = house()
     expect(await remove(services, 'm2')).toEqual({})
     expect(memberIds(services)).toEqual(['m1', 'm3', 'm9'])
@@ -138,7 +138,8 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
         groupId: 'g1',
         actorPersonId: 'p1',
         action: 'member.removed',
-        summary: 'Member m2 was removed',
+        subjectPersonId: 'p2',
+        summary: 'was removed',
         at: NOW.toISOString(),
         $permissions: ['read("team:g1")'],
       }),

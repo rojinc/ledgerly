@@ -3,6 +3,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it } from 'vitest'
 import {
   beforeCommit,
+  beforeStaging,
   type Fakes,
   failure,
   fakes,
@@ -14,6 +15,7 @@ import {
   placeholder,
   TODAY,
   TRY_AGAIN,
+  updateRow,
 } from './harness'
 
 // A registered person (user u9) who is in no group yet, known by email and phone.
@@ -44,6 +46,21 @@ function house(extra: object = {}) {
   )
 }
 
+/** Houses g1 (u1 admin) and g2 (u2 admin), with nobody else. */
+function houses() {
+  return fakes(
+    {
+      groups: [group('g1', 'house'), group('g2', 'house')],
+      persons: [person(1), person(2)],
+      members: [
+        member('m1', 'g1', 'p1', 'admin', 'active'),
+        member('m2', 'g2', 'p2', 'admin', 'active'),
+      ],
+    },
+    { g1: ['u1'], g2: ['u2'] },
+  )
+}
+
 function add(services: Fakes, body: object, userId = 'u1') {
   return ok<Members>(services, 'POST', '/groups/g1/members', body, userId)
 }
@@ -59,7 +76,7 @@ function visible(row: Members) {
 }
 
 describe('POST /groups/{id}/members', () => {
-  it('adds someone unknown as a placeholder, with a new person and unverified identities', async () => {
+  it('adds someone unknown as a placeholder, with a new person and one unverified identity', async () => {
     const services = house()
     const row = await add(services, {
       displayName: ' Sam ',
@@ -80,32 +97,38 @@ describe('POST /groups/{id}/members', () => {
       displayName: 'Sam',
       $permissions: [],
     })
+    // One key: the email, as it was given. The phone isn't stored (#252).
     expect(services.db.rows('identities').slice(1)).toEqual([
-      expect.objectContaining({ key: 'email:sam@example.com', personId: row.personId }),
-      expect.objectContaining({ key: 'phone:+61412345678', personId: row.personId }),
-    ])
-    expect(services.db.rows('identities').slice(1)).toEqual([
-      expect.objectContaining({ verified: false, $permissions: [] }),
-      expect.objectContaining({ verified: false, $permissions: [] }),
+      expect.objectContaining({
+        key: 'email:sam@example.com',
+        personId: row.personId,
+        verified: false,
+        $permissions: [],
+      }),
     ])
     expect(services.teams.members('g1')?.map((m) => m.userId)).toEqual(['u1', 'u2', 'u3'])
   })
 
-  it('writes member.added, naming the person but never their email or phone', async () => {
+  it('writes member.added about the person, never naming them or their email or phone', async () => {
     const services = house()
-    await add(services, { displayName: 'Sam', email: 'sam@example.com', phone: '0412345678' })
+    const row = await add(services, {
+      displayName: 'Sam',
+      email: 'sam@example.com',
+      phone: '0412345678',
+    })
     const [activity] = services.db.rows('activity')
     expect(activity).toMatchObject({
       groupId: 'g1',
       actorPersonId: 'p1',
       action: 'member.added',
-      summary: 'Sam was added',
+      subjectPersonId: row.personId,
+      summary: 'was added as a member',
       at: NOW.toISOString(),
       $permissions: ['read("team:g1")'],
     })
     // Only the text fields can carry them; $id and $createdAt are random, so leave them out.
     const text = `${activity?.summary} ${activity?.changesJson ?? ''}`
-    expect(text).not.toMatch(/example\.com|412\s?345\s?678/)
+    expect(text).not.toMatch(/Sam|example\.com|412\s?345\s?678/)
   })
 
   it('adds a registered person as a placeholder, outside the team, looking like anyone else', async () => {
@@ -113,6 +136,10 @@ describe('POST /groups/{id}/members', () => {
     const registered = await add(services, { displayName: 'Robin', email: 'reg@example.com' })
     expect(registered).toMatchObject({ personId: 'p9', status: 'placeholder' })
     expect(services.teams.members('g1')?.map((m) => m.userId)).not.toContain('u9')
+    // The row is about the person found, not the one adding them (data-model.md#activity).
+    expect(services.db.rows('activity')).toEqual([
+      expect.objectContaining({ action: 'member.added', subjectPersonId: 'p9' }),
+    ])
 
     const unknown = await add(services, { displayName: 'Robin', email: 'new@example.com' })
     expect(unknown.personId).not.toBe('p9')
@@ -131,10 +158,158 @@ describe('POST /groups/{id}/members', () => {
     expect(services.db.rows('persons')).toHaveLength(5)
   })
 
+  it('keeps one key for a new placeholder, so the other key can’t claim what’s added later', async () => {
+    const services = houses()
+    // A types an email they control beside someone else's phone (#252, H1).
+    const typed = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g1/members',
+      { displayName: 'Vic', email: 'a2@example.com', phone: '0412345678' },
+      'u1',
+    )
+    // Another group adds the phone's owner: a new placeholder, which only they can claim.
+    const owner = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g2/members',
+      { displayName: 'Vic', phone: '0412 345 678' },
+      'u2',
+    )
+    expect(owner.personId).not.toBe(typed.personId)
+    expect(services.db.rows('identities')).toEqual([
+      expect.objectContaining({ key: 'email:a2@example.com', personId: typed.personId }),
+      expect.objectContaining({ key: 'phone:+61412345678', personId: owner.personId }),
+    ])
+  })
+
+  it('answers CONFLICT when a claim of the person found commits while the add commits', async () => {
+    const services = houses()
+    const sam = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g1/members',
+      { displayName: 'Sam', email: 'sam@example.com' },
+      'u1',
+    )
+    // Adopting a placeholder writes its row (identity-and-invites.md#claim).
+    beforeCommit(services.db, () =>
+      updateRow(services.db, 'persons', sam.personId, { userId: 'u7' }),
+    )
+    const body = { displayName: 'Sam', email: 'sam@example.com' }
+    expect(await failure(services, 'POST', '/groups/g2/members', body, 'u2')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    expect(services.db.rows('members')).toHaveLength(3)
+  })
+
+  it('answers CONFLICT when a merge moved the key just before the add guarded the person', async () => {
+    const services = houses()
+    const sam = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g1/members',
+      { displayName: 'Sam', email: 'sam@example.com' },
+      'u1',
+    )
+    const key = services.db.rows('identities')[0]
+    // Person p1 verified sam@example.com and merged Sam's placeholder into themselves.
+    beforeStaging(services.db, 1, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write(
+          { action: 'update', tableId: 'persons', rowId: sam.personId, data: { mergedInto: 'p1' } },
+          {
+            action: 'update',
+            tableId: 'identities',
+            rowId: key?.$id as string,
+            data: { personId: 'p1', verified: true },
+          },
+        ),
+      ),
+    )
+    const body = { displayName: 'Sam', email: 'sam@example.com' }
+    expect(await failure(services, 'POST', '/groups/g2/members', body, 'u2')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    // Tried again, the key belongs to p1 now.
+    expect((await ok<Members>(services, 'POST', '/groups/g2/members', body, 'u2')).personId).toBe(
+      'p1',
+    )
+  })
+
+  it('answers CONFLICT when merge step 1 marked the person just before the add guarded them', async () => {
+    const services = houses()
+    const sam = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g1/members',
+      { displayName: 'Sam', email: 'sam@example.com' },
+      'u1',
+    )
+    // Person p1 verified sam@example.com and marked Sam's placeholder as merged into themselves
+    // (step 1). The key is still Sam's: identities move last.
+    beforeStaging(services.db, 1, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'persons',
+          rowId: sam.personId,
+          data: { mergedInto: 'p1' },
+        }),
+      ),
+    )
+    const body = { displayName: 'Sam', email: 'sam@example.com' }
+    expect(await failure(services, 'POST', '/groups/g2/members', body, 'u2')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    // Tried again, resolving follows mergedInto: the add lands on p1, not on Sam's placeholder.
+    expect((await ok<Members>(services, 'POST', '/groups/g2/members', body, 'u2')).personId).toBe(
+      'p1',
+    )
+  })
+
+  it('answers CONFLICT when a claim took the key just before the add guarded the person', async () => {
+    const services = houses()
+    const sam = await ok<Members>(
+      services,
+      'POST',
+      '/groups/g1/members',
+      { displayName: 'Sam', email: 'sam@example.com' },
+      'u1',
+    )
+    const key = services.db.rows('identities')[0]
+    // Someone who never verified sam@example.com adopts Sam's placeholder, so the key goes
+    // (#252); it commits after g2's add read the key, before it staged its guard.
+    beforeStaging(services.db, 1, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write(
+          { action: 'update', tableId: 'persons', rowId: sam.personId, data: { userId: 'u7' } },
+          { action: 'delete', tableId: 'identities', rowId: key?.$id as string },
+        ),
+      ),
+    )
+    const body = { displayName: 'Sam', email: 'sam@example.com' }
+    expect(await failure(services, 'POST', '/groups/g2/members', body, 'u2')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: TRY_AGAIN,
+    })
+    // Tried again, the key belongs to nobody now: a new placeholder, not the claimer.
+    const again = await ok<Members>(services, 'POST', '/groups/g2/members', body, 'u2')
+    expect(again.personId).not.toBe(sam.personId)
+  })
+
   it('takes the role and joinedOn given', async () => {
     const services = house()
     const row = await add(services, { displayName: 'Sam', role: 'viewer', joinedOn: '2026-08-01' })
     expect(row).toMatchObject({ role: 'viewer', joinedOn: '2026-08-01' })
+    expect(services.db.rows('activity')[0]?.summary).toBe('was added as a viewer')
   })
 
   it('joinedOn defaults to today in the group time zone', async () => {

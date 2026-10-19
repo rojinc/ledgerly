@@ -1,12 +1,13 @@
-import type { Activity, Members } from '@ledgerly/core/generated/rows'
+import type { Members } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
-import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { Query } from 'node-appwrite'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import type { Services } from '../services'
 import {
   activityWrite,
@@ -43,10 +44,29 @@ export async function leaveGroup(
   if (group.type === 'personal') throw invalid("You can't leave your personal group.")
   if (member.status === 'left') {
     // Their own leave already committed (its member.left row says so): only the team step is
-    // left, even if a share landed on them since. Someone who moved out still settles up first.
-    // permissions.md#leaving-a-group: leaving on your own is final for that row.
-    if (!(await leftOnTheirOwn(db, groupId, person.$id, member.$createdAt)))
-      await requireSettled(db, groupId, person.$id)
+    // left, even if a share landed on them since. Someone who moved out settles up first, and
+    // their leave is recorded too, so it's final for this row (permissions.md#leaving-a-group).
+    if (!(await leftOnTheirOwn(db, groupId, person.$id, member.$createdAt))) {
+      await conflictAsTryAgain(() =>
+        withTransaction(db, async (tx) => {
+          // A guard write (a fresh `rev`): a move back in racing this leave fails one of them.
+          await tx.write({
+            action: 'update',
+            tableId: TABLES.members,
+            rowId: member.$id,
+            data: { rev: randomId() },
+          })
+          const current = await getRowOrNull<Members>(db, TABLES.members, member.$id)
+          if (current?.personId !== person.$id || current.status !== 'left') throw tryAgain()
+          await requireSettled(db, groupId, person.$id)
+          await tx.write(
+            activityWrite(groupId, person.$id, 'member.left', 'left', now, {
+              subjectPersonId: person.$id,
+            }),
+          )
+        }),
+      )
+    }
   } else {
     const joinedOn = member.joinedOn
     const todayHere = today(group, now)
@@ -85,40 +105,15 @@ export async function leaveGroup(
           )
         }
         await tx.write(
-          activityWrite(groupId, person.$id, 'member.left', `${current.displayName} left`, now),
+          activityWrite(groupId, person.$id, 'member.left', 'left', now, {
+            subjectPersonId: person.$id,
+          }),
         )
       }),
     )
   }
   await removeFromTeam(teams, groupId, userId)
   return {}
-}
-
-// Leaving on your own is final for that row (permissions.md#leaving-a-group): the retry skips
-// the balance check only when the newest member.left or member.joined row for this person,
-// since this member row was created, is member.left. A later member.joined (they came back,
-// say through a merge) means a fresh membership that has to settle up first. Uses
-// idx_group_at (groupId, at).
-async function leftOnTheirOwn(
-  db: Db,
-  groupId: string,
-  personId: string,
-  memberCreatedAt: string,
-): Promise<boolean> {
-  const { rows } = await db.listRows<Activity>({
-    databaseId: DATABASE_ID,
-    tableId: TABLES.activity,
-    queries: [
-      Query.equal('groupId', groupId),
-      Query.equal('action', ['member.left', 'member.joined']),
-      Query.equal('actorPersonId', personId),
-      Query.greaterThanEqual('$createdAt', memberCreatedAt),
-      Query.orderDesc('at'),
-      Query.limit(1),
-    ],
-    total: false,
-  })
-  return rows[0]?.action === 'member.left'
 }
 
 async function requireSettled(db: Db, groupId: string, personId: string): Promise<void> {

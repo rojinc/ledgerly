@@ -28,7 +28,10 @@ export async function requireMember(
   options: { roles?: readonly Role[]; allowArchived?: boolean } = {},
 ): Promise<Membership> {
   const callerId = requireUser(userId)
-  const person = await findOne<Persons>(db, TABLES.persons, [Query.equal('userId', callerId)])
+  const found = await findOne<Persons>(db, TABLES.persons, [Query.equal('userId', callerId)])
+  // A person with deletedAt is never resolved from a userId: the same answer as no person
+  // (identity-and-invites.md#order).
+  const person = found?.deletedAt ? undefined : found
   const member =
     person &&
     (await findOne<Members>(db, TABLES.members, [
@@ -58,6 +61,29 @@ export async function requireMember(
     throw new AppError('ARCHIVED', 'This group is archived, so it can no longer be changed.')
   }
   return { person, member, group }
+}
+
+/**
+ * requireMember for the group of a row that was looked up by ID: a transaction, statement or
+ * schedule. Someone who isn't a member gets the route's `NOT_FOUND`, the same answer as for an
+ * ID that doesn't exist, so IDs can't be probed (#121, #136). Every other error passes through.
+ */
+export async function requireMemberOf(
+  db: Db,
+  teams: Pick<TeamsApi, 'listMemberships'>,
+  userId: string | null,
+  groupId: string,
+  notFound: string,
+  options: { roles?: readonly Role[] } = {},
+): Promise<Membership> {
+  try {
+    return await requireMember(db, teams, userId, groupId, options)
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'NOT_A_MEMBER') {
+      throw new AppError('NOT_FOUND', notFound)
+    }
+    throw error
+  }
 }
 
 async function findOne<R extends Persons | Members>(

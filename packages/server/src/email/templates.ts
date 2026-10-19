@@ -1,6 +1,7 @@
 import { endOfMonth, type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
+import type { PersonalReport } from '@ledgerly/core/reports/personal-report'
 import type { Attachment } from './send-email'
 
 /** What `sendEmail` needs apart from the addresses. */
@@ -48,7 +49,7 @@ export function statementReadyEmail(input: {
       `Your ${period} ${input.type} for ${input.groupName} has been drafted.`,
       'Check it before you finalize it. You can still add or fix transactions until then.',
     ],
-    { label: `Review the ${input.type}`, url: input.url },
+    [{ label: `Review the ${input.type}`, url: input.url }],
   )
 }
 
@@ -84,9 +85,53 @@ export function invoiceEmail(input: {
   }
 }
 
+/** One suggested transfer as one housemate sees it: who to pay, or who pays them. */
+export type DivideTransfer = { name: string; cents: number }
+
 /**
- * To the group owner when a shift that doesn't auto-post is past and still unconfirmed
- * (scheduling.md#step-3-reminders).
+ * To one housemate when a divide is sent: where they stand and their own suggested transfers,
+ * with the divide PDF attached (statements.md#3-send-and-resend). It names no one's address, and
+ * has no reply-to.
+ */
+export function divideEmail(input: {
+  groupName: string
+  periodStart: LocalDate
+  periodEnd: LocalDate
+  currency: string
+  closingCents: number
+  /** Whom they pay. */
+  pays: DivideTransfer[]
+  /** Who pays them. */
+  receives: DivideTransfer[]
+  url: string
+  pdf: Uint8Array
+}): EmailContent {
+  const money = (cents: number) => formatMoney(cents, input.currency, LOCALE)
+  const period = periodLabel(input.periodStart, input.periodEnd)
+  const standing =
+    input.closingCents < 0
+      ? `You owe ${money(-input.closingCents)}.`
+      : input.closingCents > 0
+        ? `You're owed ${money(input.closingCents)}.`
+        : "You're settled up."
+  return {
+    ...message(
+      `Your ${period} divide for ${input.groupName}`,
+      [
+        `Here's the ${period} divide for ${input.groupName}. The PDF is attached.`,
+        standing,
+        ...input.pays.map((to) => `Pay ${to.name} ${money(to.cents)}.`),
+        ...input.receives.map((from) => `${from.name} pays you ${money(from.cents)}.`),
+      ],
+      [{ label: 'Open the divide', url: input.url }],
+    ),
+    attachments: [{ filename: `divide-${input.periodEnd}.pdf`, content: input.pdf }],
+  }
+}
+
+/**
+ * To the group owner when a past shift is still unconfirmed: one that doesn't auto-post, or one
+ * step 2 couldn't post (scheduling.md#step-3-reminders).
  */
 export function shiftToConfirmEmail(input: {
   groupName: string
@@ -100,7 +145,7 @@ export function shiftToConfirmEmail(input: {
       `Your shift in ${input.groupName} on ${day} hasn't been confirmed yet.`,
       'Confirm it, or change the hours if they were different, so it goes on your invoice.',
     ],
-    { label: 'Confirm the shift', url: input.url },
+    [{ label: 'Confirm the shift', url: input.url }],
   )
 }
 
@@ -128,31 +173,194 @@ export function timerRunningEmail(input: {
       `Your timer in ${input.groupName} has been running since ${since}.`,
       "If you've finished, stop it and set the end time so the hours are right.",
     ],
-    { label: 'Open the timer', url: input.url },
+    [{ label: 'Open the timer', url: input.url }],
   )
 }
 
-// The same paragraphs as HTML and as plain text. Names are user-typed, so HTML escapes
-// everything, and the subject is kept to one line. No images, so no tracking pixels
+/**
+ * To the account's verified email when its password is set or changed
+ * (identity-and-invites.md#password-notice). `changedAt` is the user's `passwordUpdate`, shown on
+ * the wall clock in `timeZone`. No password, token or link that signs anyone in: `url` is the
+ * app's sign-in page.
+ */
+export function passwordChangedEmail(input: {
+  changedAt: string
+  timeZone: string
+  url: string
+}): EmailContent {
+  const changed = new Date(input.changedAt)
+  if (!INSTANT.test(input.changedAt) || Number.isNaN(changed.getTime())) {
+    throw new RangeError('changedAt must be an ISO date and time, e.g. 2026-10-15T21:02:00.000Z')
+  }
+  const when = `${dayLabel(localToday(input.timeZone, changed))}, ${clockTime(changed, input.timeZone)}`
+  return message(
+    'Your Ledgerly password was changed',
+    [
+      `The password for your Ledgerly account was set or changed on ${when} (${input.timeZone} time).`,
+      "If this was you, there's nothing to do.",
+      "If this wasn't you, reset your password now.",
+    ],
+    [{ label: 'Go to Ledgerly', url: input.url }],
+  )
+}
+
+/**
+ * A reminder that someone owes the sender money (F-63, identity-and-invites.md#reminders), to
+ * the address the sender typed. `senderName` is the sender's name in that group, free text they
+ * chose, so it stays out of the subject, is one line, and is cut to 40 characters; `amountCents` is the whole
+ * balance owed. Nothing else: no recipient or group name (both are what the sender calls them),
+ * no transactions, no note, and only a link to the app.
+ */
+export function reminderEmail(input: {
+  senderName: string
+  amountCents: number
+  currency: string
+  url: string
+}): EmailContent {
+  // One line, as the subject is, so a line break can't start a paragraph of its own. Cut by
+  // whole character as people see them, so an emoji sequence isn't split.
+  const characters = Array.from(
+    GRAPHEMES.segment(input.senderName.replace(/\s+/g, ' ').trim()),
+    (part) => part.segment,
+  )
+  const sender =
+    characters.length > SENDER_LENGTH
+      ? `${characters
+          .slice(0, SENDER_LENGTH - 1)
+          .join('')
+          .trimEnd()}…`
+      : characters.join('')
+  // A balance is worked out from amounts, so it can pass the amount cap.
+  const amount = formatNet(input.amountCents, input.currency, LOCALE)
+  return message(
+    'You have a payment reminder',
+    [
+      `${sender} sent you a reminder that you owe them ${amount}.`,
+      "If you've already paid, let them know so they can record it.",
+    ],
+    [{ label: 'Open Ledgerly', url: input.url }],
+  )
+}
+
+// The most of a sender's own name a reminder shows.
+const SENDER_LENGTH = 40
+const GRAPHEMES = new Intl.Segmenter(LOCALE, { granularity: 'grapheme' })
+
+/** What one group owes the person (positive) or they owe it (negative), in its currency. */
+export type SummaryBalance = { groupName: string; currency: string; cents: number }
+
+/**
+ * A person's summary for a period (scheduling.md#step-4-summary-emails). For each currency:
+ * what they spent, by category, and their income, from their `reports`; then the groups that
+ * owe them and the groups they owe, from `balances` (leave out the ones at 0). `profileUrl` is
+ * where they turn summaries off.
+ */
+export function summaryEmail(input: {
+  periodStart: LocalDate
+  periodEnd: LocalDate
+  reports: readonly PersonalReport[]
+  balances: readonly SummaryBalance[]
+  url: string
+  profileUrl: string
+}): EmailContent {
+  const period = periodLabel(input.periodStart, input.periodEnd)
+  const currencies = [
+    ...new Set([...input.reports, ...input.balances].map((entry) => entry.currency)),
+  ].sort()
+  return message(
+    `Your ${period} summary`,
+    [
+      `Here is your summary for ${period}.`,
+      ...currencies.flatMap((currency) => summaryBlocks(currency, input, currencies.length > 1)),
+      'You can turn these emails off, or change how often they come, in your profile.',
+    ],
+    [
+      { label: 'Open Ledgerly', url: input.url },
+      { label: 'Change your summary emails', url: input.profileUrl },
+    ],
+  )
+}
+
+function summaryBlocks(
+  currency: string,
+  {
+    reports,
+    balances,
+  }: { reports: readonly PersonalReport[]; balances: readonly SummaryBalance[] },
+  named: boolean,
+): Block[] {
+  const money = (cents: number) => formatMoney(cents, currency, LOCALE)
+  const report = reports.find((entry) => entry.currency === currency)
+  // Biggest first, then by name.
+  const categories = Object.entries(report?.spendingByCategory ?? {})
+    .filter(([, cents]) => cents !== 0)
+    .sort(([a, x], [b, y]) => y - x || (a < b ? -1 : 1))
+  // Biggest first, as for categories.
+  const sorted = balances
+    .filter((entry) => entry.currency === currency)
+    .sort((a, b) => Math.abs(b.cents) - Math.abs(a.cents) || (a.groupName < b.groupName ? -1 : 1))
+  const owed = sorted.filter((entry) => entry.cents > 0)
+  const owing = sorted.filter((entry) => entry.cents < 0)
+  return [
+    ...(named ? [`In ${currency}:`] : []),
+    ...(report
+      ? [
+          `You spent ${money(report.spendingCents)}.`,
+          ...(categories.length > 0
+            ? [categories.map(([category, cents]) => `${categoryName(category)}: ${money(cents)}`)]
+            : []),
+          `Your income was ${money(report.incomeCents)}.`,
+        ]
+      : []),
+    ...(owed.length > 0
+      ? ['Owed to you:', owed.map((entry) => `${entry.groupName}: ${money(entry.cents)}`)]
+      : []),
+    ...(owing.length > 0
+      ? ['You owe:', owing.map((entry) => `${entry.groupName}: ${money(-entry.cents)}`)]
+      : []),
+  ]
+}
+
+// `groceries` → `Groceries`; spending with no category is reported as `none` (ledger.md#reports).
+function categoryName(category: string): string {
+  return category === 'none' ? 'No category' : category.charAt(0).toUpperCase() + category.slice(1)
+}
+
+// A paragraph, or a list of short lines.
+type Block = string | readonly string[]
+type Link = { label: string; url: string }
+
+// The same paragraphs and lists as HTML and as plain text. Names are user-typed, so HTML
+// escapes everything, and the subject is kept to one line. No images, so no tracking pixels
 // (security-and-privacy.md).
 function message(
   subject: string,
-  paragraphs: string[],
-  link?: { label: string; url: string },
+  blocks: readonly Block[],
+  links: readonly Link[] = [],
 ): EmailContent {
   // Links are built from APP_URL; anything else (javascript:, data:) is a bug.
-  if (link && !/^https?:\/\//.test(link.url)) throw new RangeError('Email links must be http(s)')
+  if (links.some((link) => !/^https?:\/\//.test(link.url))) {
+    throw new RangeError('Email links must be http(s)')
+  }
   const html = [
     '<!doctype html>',
     '<html><body style="font-family: system-ui, sans-serif; font-size: 16px; line-height: 1.5; color: #1f2933;">',
-    ...paragraphs.map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`),
-    ...(link ? [`<p><a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a></p>`] : []),
+    ...blocks.map((block) =>
+      typeof block === 'string'
+        ? `<p>${escapeHtml(block)}</p>`
+        : `<ul>${block.map((line) => `<li>${escapeHtml(line)}</li>`).join('')}</ul>`,
+    ),
+    ...links.map(
+      (link) => `<p><a href="${escapeHtml(link.url)}">${escapeHtml(link.label)}</a></p>`,
+    ),
     '<p style="color: #616e7c; font-size: 13px;">Sent with Ledgerly.</p>',
     '</body></html>',
   ].join('\n')
   const text = [
-    ...paragraphs,
-    ...(link ? [`${link.label}: ${link.url}`] : []),
+    ...blocks.map((block) =>
+      typeof block === 'string' ? block : block.map((line) => `- ${line}`).join('\n'),
+    ),
+    ...links.map((link) => `${link.label}: ${link.url}`),
     '--\nSent with Ledgerly.',
   ].join('\n\n')
   return { subject: subject.replace(/\s+/g, ' ').trim(), html, text }
@@ -193,9 +401,10 @@ function dayLabel(date: LocalDate): string {
 
 /**
  * `October` for a whole month, else `16 October`, `1–7 October` or `28 September – 4 October`.
- * A period across a new year names both years: `28 December 2026 – 3 January 2027`.
+ * A period across a new year names both years: `28 December 2026 – 3 January 2027`. Also names
+ * a statement in its activity rows.
  */
-function periodLabel(start: LocalDate, end: LocalDate): string {
+export function periodLabel(start: LocalDate, end: LocalDate): string {
   const from = dateParts(start)
   const to = dateParts(end)
   if (from.year !== to.year) return `${longDate(start)} – ${longDate(end)}`

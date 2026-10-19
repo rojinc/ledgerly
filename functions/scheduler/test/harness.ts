@@ -17,6 +17,7 @@ type SeedRow<R> = Partial<R> & { $id: string }
 
 export type Fakes = Services & {
   db: FakeDb
+  teams: FakeTeams
   sendEmail: ReturnType<typeof vi.fn<(email: Email) => Promise<unknown>>>
 }
 
@@ -40,7 +41,7 @@ export function fakes(
       get: async ({ userId }) => {
         const account = accounts[userId]
         if (!account) throw new AppwriteException('User not found', 404, 'user_not_found')
-        return { $id: userId, email: '', emailVerification: false, ...account }
+        return { $id: userId, email: '', emailVerification: false, status: true, ...account }
       },
     },
     sendEmail: vi.fn(async (_email: Email) => ({ id: 'email1' })),
@@ -157,4 +158,40 @@ export async function failure(
   const { status, body } = await call(services, method, path, options)
   if (body.ok) throw new Error(`Expected an error, got ${JSON.stringify(body.data)}`)
   return { status, code: body.error.code }
+}
+
+/**
+ * Runs `change` just before the first staging whose operations match `when`, as if another
+ * request got there first.
+ */
+export function beforeStaging(
+  db: FakeDb,
+  when: (operations: string) => boolean,
+  change: () => Promise<unknown>,
+) {
+  const stage = db.createOperations.bind(db)
+  let done = false
+  return vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
+    if (!done && when(JSON.stringify(params.operations))) {
+      done = true
+      await change()
+    }
+    return stage(params)
+  })
+}
+
+/**
+ * Runs `change` just before the first commit, after the request staged its writes, so the
+ * commit fails with Appwrite's 409 as it would on a real conflict.
+ */
+export function beforeCommit(db: FakeDb, change: () => Promise<unknown>) {
+  const commit = db.updateTransaction.bind(db)
+  let done = false
+  return vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
+    if (!done && params.commit) {
+      done = true
+      await change()
+    }
+    return commit(params)
+  })
 }

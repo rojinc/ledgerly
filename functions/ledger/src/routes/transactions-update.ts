@@ -1,7 +1,10 @@
 import { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
+import { balanceWrite } from '@ledgerly/server/ledger/balances'
+import { refuseDeletedPeople } from '@ledgerly/server/ledger/deleted-people'
 import {
   activityWrite,
   changedColumns,
@@ -14,16 +17,17 @@ import {
   listShares,
   loadLedger,
   money,
+  NO_SUCH_TRANSACTION,
   parseBody,
   plan,
   readView,
   replaceRows,
   requireCreatorOrAdmin,
-  requireMemberOf,
   requireNotFinalizing,
   requireNotTooFarAhead,
   requireUnlocked,
   shareColumns,
+  storedInput,
   storedInputSchema,
   teamRead,
   transactionColumns,
@@ -47,9 +51,16 @@ export const updateTransaction = (services: ServicesFor) =>
       if (input.id !== params.id) invalid('The body’s id must match the transaction.')
       const found = await getTransaction(db, params.id)
       const { teams, files } = services({ headers })
-      const membership = await requireMemberOf(db, teams, userId, found, {
-        roles: ['admin', 'member'],
-      })
+      const membership = await requireMemberOf(
+        db,
+        teams,
+        userId,
+        found.groupId,
+        NO_SUCH_TRANSACTION,
+        {
+          roles: ['admin', 'member'],
+        },
+      )
       requireCreatorOrAdmin(membership, found)
       if (input.groupId !== found.groupId) invalid('A transaction can’t move to another group.')
       if (input.kind !== found.kind) invalid('A transaction’s kind can’t change.')
@@ -95,8 +106,13 @@ export const updateTransaction = (services: ServicesFor) =>
             receiptFileIds: receiptsColumn(receipts),
             // scheduling.md: an edited occurrence is kept apart from its schedule from now on.
             overridden: existing.scheduleId !== null || existing.overridden,
-            // A new due date gets its own reminder (functions-api.md#ledger).
-            remindedAt: planned.dueOn === existing.dueOn ? existing.remindedAt : null,
+            // A new due date, or a new date for a `scheduled` row, gets its own reminder, and an
+            // auto-post shift moved to a later day can be posted again (functions-api.md#ledger).
+            remindedAt:
+              planned.dueOn === existing.dueOn &&
+              (existing.status !== 'scheduled' || input.date === existing.date)
+                ? existing.remindedAt
+                : null,
           }
           const [oldShares, oldItems] = await Promise.all([
             listShares(db, existing.$id),
@@ -116,8 +132,24 @@ export const updateTransaction = (services: ServicesFor) =>
             throw new Unchanged()
           }
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
+          await refuseDeletedPeople(tx, db, ledger, {
+            kind: input.kind,
+            // As stored: without payers, the payer resolved above (a row's creator) is stored too.
+            input: {
+              ...input,
+              payers: storedInputSchema.parse(JSON.parse(planned.inputJson)).payers,
+            },
+            before: await storedInput(db, existing),
+          })
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
-          await attachReceipts(files, existing.groupId, receipts, storedReceipts)
+          await attachReceipts(files, db, tx, {
+            groupId: existing.groupId,
+            transactionId: existing.$id,
+            fileIds: receipts,
+            stored: storedReceipts,
+            now,
+          })
+          const balances = await balanceWrite(db, existing.groupId, oldShares, shareData)
           await tx.write(
             { action: 'update', tableId: TABLES.transactions, rowId: existing.$id, data: columns },
             ...replaceRows(TABLES.shares, oldShares, shareData, permissions),
@@ -132,6 +164,7 @@ export const updateTransaction = (services: ServicesFor) =>
               changes,
               now,
             ),
+            ...balances,
           )
         })
       } catch (error) {

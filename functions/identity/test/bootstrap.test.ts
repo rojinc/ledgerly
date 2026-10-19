@@ -1,4 +1,5 @@
 import type { BootstrapResult } from '@ledgerly/core/schemas/identity'
+import { resolvePerson } from '@ledgerly/server/identity/resolve-person'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -30,11 +31,11 @@ function identity(id: string, key: string, personId: string) {
 }
 
 // Sam was added to g1 before signing up, and to g2 after.
-function addedBeforeSignUp() {
+function addedBeforeSignUp(typed: ReturnType<typeof identity>[] = []) {
   return fakes(
     {
       persons: [placeholder('pSam')],
-      identities: [identity('iSam', 'email:sam@example.com', 'pSam')],
+      identities: [identity('iSam', 'email:sam@example.com', 'pSam'), ...typed],
       members: [
         placeholderRow('m1', 'g1', 'pSam', BEFORE),
         placeholderRow('m2', 'g2', 'pSam', AFTER),
@@ -45,13 +46,18 @@ function addedBeforeSignUp() {
 }
 
 let warn: ReturnType<typeof vi.spyOn>
+let log: ReturnType<typeof vi.spyOn>
 beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+  log = vi.spyOn(console, 'log').mockImplementation(() => {})
 })
 afterEach(() => {
   // No personal data in logs: no email, phone number or name.
   for (const args of warn.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}|Sam/)
+  // An adoption logs IDs and counts only, never a key.
+  for (const args of log.mock.calls) expect(String(args)).not.toMatch(/@|\+?\d{6,}/)
   warn.mockRestore()
+  log.mockRestore()
 })
 
 describe('POST /bootstrap', () => {
@@ -168,7 +174,8 @@ describe('POST /bootstrap', () => {
         groupId: 'g1',
         actorPersonId: 'pSam',
         action: 'member.joined',
-        summary: 'Sammy joined',
+        subjectPersonId: 'pSam',
+        summary: 'joined',
         at: NOW.toISOString(),
         $permissions: ['read("team:g1")'],
       }),
@@ -176,6 +183,66 @@ describe('POST /bootstrap', () => {
     // Added after claimedAt: left for Sam to join themselves (D-016).
     expect(db.rows('members').find((row) => row.$id === 'm2')?.status).toBe('placeholder')
     expect(teams.members('g2')?.map((membership) => membership.userId)).toEqual(['uAdmin'])
+  })
+
+  describe('only the keys the user verified stay theirs (#252)', () => {
+    // Whoever added Sam typed a phone too, one Sam hasn't verified.
+    const typedPhone = () => identity('iTyped', 'phone:+61400000000', 'pSam')
+
+    it('deletes a typed key when it adopts, in the same transaction, and logs a count', async () => {
+      // Another placeholder's typed key is nothing to do with this adoption.
+      const services = addedBeforeSignUp([
+        typedPhone(),
+        identity('iOther', 'phone:+61400000999', 'pOther'),
+      ])
+      expect((await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)).personId).toBe(
+        'pSam',
+      )
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iOther'])
+      expect(log).toHaveBeenCalledWith('bootstrap adopted pSam; typed keys deleted: 1')
+    })
+
+    it('keeps a key the user verified too, and logs nothing', async () => {
+      const services = addedBeforeSignUp([typedPhone()])
+      services.users.get = async () => account({ phone: '+61400000000', phoneVerification: true })
+      await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)
+      expect(services.db.rows('identities')).toEqual([
+        expect.objectContaining({ $id: 'iSam', personId: 'pSam', verified: true }),
+        expect.objectContaining({ $id: 'iTyped', personId: 'pSam', verified: true }),
+      ])
+      expect(log).not.toHaveBeenCalled()
+    })
+
+    it("drops the victim's typed email when someone adopts by their own phone (#247)", async () => {
+      // Someone added P as the victim's email beside their own phone, then signed up and
+      // verified only the phone.
+      const services = fakes({
+        persons: [placeholder('pP')],
+        identities: [
+          identity('iVictim', 'email:victim@example.com', 'pP'),
+          identity('iPhone', 'phone:+61412345678', 'pP'),
+        ],
+      })
+      services.users.get = async () =>
+        account({
+          email: '',
+          emailVerification: false,
+          phone: '+61412345678',
+          phoneVerification: true,
+        })
+      expect((await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)).personId).toBe('pP')
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iPhone'])
+      // So a group that adds the victim later gets a new placeholder, not the account.
+      const added = await resolvePerson(
+        services.db,
+        { displayName: 'Vic', email: 'victim@example.com' },
+        'AU-NSW',
+      )
+      expect(added.personId).not.toBe('pP')
+      expect(added.writes).toContainEqual(
+        expect.objectContaining({ action: 'create', tableId: 'persons' }),
+      )
+    })
   })
 
   it('ignores an unverified email, even one that matches a placeholder', async () => {
@@ -191,7 +258,7 @@ describe('POST /bootstrap', () => {
     expect(services.teams.members('g1')).toHaveLength(1)
   })
 
-  it("adopts the email's placeholder over the phone's, and leaves the phone's for a merge", async () => {
+  it("adopts the email's placeholder over the phone's, and merges the phone's into it", async () => {
     const services = fakes({
       persons: [placeholder('pEmail'), placeholder('pPhone')],
       identities: [
@@ -203,11 +270,14 @@ describe('POST /bootstrap', () => {
     const result = await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)
     expect(result.personId).toBe('pEmail')
     expect(services.db.rows('identities')).toEqual([
-      expect.objectContaining({ $id: 'i1', personId: 'pPhone', verified: false }),
+      expect.objectContaining({ $id: 'i1', personId: 'pEmail', verified: true }),
       expect.objectContaining({ $id: 'i2', personId: 'pEmail', verified: true }),
     ])
-    expect(services.db.rows('persons').find((row) => row.$id === 'pPhone')?.userId).toBeNull()
-    expect(warn).toHaveBeenCalledWith('claim needs a merge; skipped')
+    expect(services.db.rows('persons').find((row) => row.$id === 'pPhone')).toMatchObject({
+      userId: null,
+      mergedInto: 'pEmail',
+    })
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('names a new person "Me" when the account has no name, and keeps the name an adopted one had', async () => {
@@ -303,7 +373,7 @@ describe('POST /bootstrap', () => {
   ])(
     'says CONFLICT, try again, when another user claims the placeholder first, %s',
     async (_, race) => {
-      const services = addedBeforeSignUp()
+      const services = addedBeforeSignUp([identity('iTyped', 'phone:+61400000000', 'pSam')])
       race(services, () => updateRow(services.db, 'persons', 'pSam', { userId: 'uOther' }))
       expect(await failure(services, 'POST', '/bootstrap', BODY)).toEqual({
         status: 409,
@@ -312,6 +382,10 @@ describe('POST /bootstrap', () => {
       })
       expect(services.db.rows('profiles')).toEqual([])
       expect(services.db.rows('persons')[0]?.userId).toBe('uOther')
+      // Its typed-key delete went with the rest: the placeholder is the other user's to claim.
+      expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iSam', 'iTyped'])
+      // And nothing claims it was adopted.
+      expect(log).not.toHaveBeenCalled()
     },
   )
 
@@ -337,6 +411,76 @@ describe('POST /bootstrap', () => {
       code: 'UNAUTHENTICATED',
     })
   })
+})
+
+// identity-and-invites.md#order: a person with deletedAt is never resolved from a userId.
+describe('POST /bootstrap for a deleted account', () => {
+  const deleted = { status: 401, code: 'UNAUTHENTICATED' }
+
+  it('refuses a user labelled deleted, writing nothing', async () => {
+    const services = fakes({}, { account: account({ labels: ['beta', 'deleted'] }) })
+    expect(await failure(services, 'POST', '/bootstrap', BODY)).toMatchObject(deleted)
+    expect(services.db.rows('persons')).toEqual([])
+    expect(services.db.rows('profiles')).toEqual([])
+    expect(services.teams.teamIds()).toEqual([])
+  })
+
+  it.each([
+    ['with its profile still there', true],
+    ['after its profile was deleted', false],
+  ])('refuses a user whose person has deletedAt, %s, writing nothing', async (_, hasProfile) => {
+    const services = fakes({
+      persons: [{ ...placeholder('p1', 'Former member'), userId: 'u1', deletedAt: AFTER }],
+      profiles: hasProfile
+        ? [{ $id: 'u1', personId: 'p1', timezone: 'Australia/Sydney', region: 'AU-NSW' }]
+        : [],
+    })
+    const persons = services.db.rows('persons')
+    expect(await failure(services, 'POST', '/bootstrap', BODY)).toMatchObject(deleted)
+    expect(services.db.rows('persons')).toEqual(persons)
+    expect(services.db.rows('profiles')).toHaveLength(hasProfile ? 1 : 0)
+    expect(services.db.rows('groups')).toEqual([])
+    expect(services.teams.teamIds()).toEqual([])
+  })
+
+  it('refuses when a deletion passes its point of no return while it sets the person up', async () => {
+    // An interrupted bootstrap left the person without a profile.
+    const services = fakes({ persons: [{ ...placeholder('p1'), userId: 'u1' }] })
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"profiles"'),
+      () => updateRow(services.db, 'persons', 'p1', { deletedAt: AFTER }),
+    )
+    expect(await failure(services, 'POST', '/bootstrap', BODY)).toMatchObject(deleted)
+    expect(services.db.rows('persons')).toEqual([
+      expect.objectContaining({ claimedAt: null, $permissions: [] }),
+    ])
+    expect(services.db.rows('profiles')).toEqual([])
+    expect(services.db.rows('groups')).toEqual([])
+  })
+
+  it.each([
+    ['a new person', fakes],
+    ['an adopted placeholder', addedBeforeSignUp],
+  ])(
+    'refuses when step 3 labels the user while it sets up %s, writing nothing',
+    async (_, setUp) => {
+      const services = setUp()
+      const persons = services.db.rows('persons')
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"profiles"'),
+        async () => {
+          services.account.labels.push('deleted')
+        },
+      )
+      expect(await failure(services, 'POST', '/bootstrap', BODY)).toMatchObject(deleted)
+      expect(services.db.rows('persons')).toEqual(persons)
+      expect(services.db.rows('profiles')).toEqual([])
+      expect(services.db.rows('groups')).toEqual([])
+      expect(services.db.rows('members').filter((row) => row.status !== 'placeholder')).toEqual([])
+    },
+  )
 })
 
 describe('GET /health', () => {

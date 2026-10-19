@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FakeDb } from '../appwrite/fake'
 import { FakeTeams } from '../appwrite/fake-teams'
 import { AppError } from '../http/app-error'
-import { requireMember, requireUser } from './require-member'
+import { requireMember, requireMemberOf, requireUser } from './require-member'
 
 function db() {
   return new FakeDb({
@@ -14,6 +14,8 @@ function db() {
       { $id: 'pLeft', userId: 'uLeft' },
       { $id: 'pQuit', userId: 'uQuit' },
       { $id: 'pOutsider', userId: 'uOutsider' },
+      // Their account is being deleted (identity-and-invites.md#deleting-an-account-m4).
+      { $id: 'pDeleted', userId: 'uDeleted', deletedAt: '2026-10-18T20:00:00.000Z' },
     ],
     members: [
       { $id: 'm1', groupId: 'g1', personId: 'pAdmin', role: 'admin', status: 'active' },
@@ -26,6 +28,7 @@ function db() {
       { $id: 'm8', groupId: 'gArchived', personId: 'pLeft', role: 'viewer', status: 'left' },
       { $id: 'm5', groupId: 'g2', personId: 'pOutsider', role: 'admin', status: 'active' },
       { $id: 'm6', groupId: 'gArchived', personId: 'pAdmin', role: 'admin', status: 'active' },
+      { $id: 'm9', groupId: 'g1', personId: 'pDeleted', role: 'admin', status: 'active' },
     ],
     groups: [
       { $id: 'g1', type: 'house', archivedAt: null },
@@ -35,10 +38,10 @@ function db() {
   })
 }
 
-// Joined members are in their group's team; uQuit left it.
+// Joined members are in their group's team; uQuit left it. uDeleted's deletion hasn't got to g1.
 function teams() {
   return new FakeTeams({
-    g1: ['uAdmin', 'uViewer', 'uLeft'],
+    g1: ['uAdmin', 'uViewer', 'uLeft', 'uDeleted'],
     g2: ['uOutsider'],
     gArchived: ['uAdmin', 'uLeft'],
   })
@@ -70,8 +73,18 @@ describe('requireMember', () => {
     ['a person with no member row in the group', 'uOutsider', 'g1'],
     ['a placeholder, even an admin with an account (D-016)', 'uPlaceholder', 'g1'],
     ['a group that does not exist', 'uAdmin', 'nope'],
+    ['a person with deletedAt, though still an active admin in the team', 'uDeleted', 'g1'],
   ])('is NOT_A_MEMBER for %s', async (_, userId, groupId) => {
     expect(await codeOf(requireMember(db(), teams(), userId, groupId))).toBe('NOT_A_MEMBER')
+  })
+
+  it('answers a deleted person exactly as a user with no person', async () => {
+    const asNobody = await requireMember(db(), teams(), 'uNew', 'g1').catch((error) => error)
+    const asDeleted = await requireMember(db(), teams(), 'uDeleted', 'g1', {
+      roles: ['admin'],
+    }).catch((error) => error)
+    expect(asDeleted).toEqual(asNobody)
+    expect((asDeleted as AppError).message).toBe("You're not a member of this group.")
   })
 
   it('is FORBIDDEN when the role is not allowed', async () => {
@@ -138,6 +151,44 @@ describe('requireMember', () => {
     expect(
       await codeOf(requireMember(viewerOfArchived, teams(), 'u', 'g', { roles: ['admin'] })),
     ).toBe('FORBIDDEN')
+  })
+})
+
+describe('requireMemberOf', () => {
+  const NOT_FOUND = 'This row does not exist.'
+  const of = (userId: string | null, groupId: string, roles?: ('admin' | 'member')[]) =>
+    requireMemberOf(db(), teams(), userId, groupId, NOT_FOUND, roles ? { roles } : {})
+
+  it('returns the membership for a member', async () => {
+    const { person, member } = await of('uAdmin', 'g1', ['admin'])
+    expect([person.$id, member.$id]).toEqual(['pAdmin', 'm1'])
+  })
+
+  it.each([
+    ['someone in another group', 'uOutsider'],
+    ['a placeholder with an account', 'uPlaceholder'],
+    ['someone who left on their own', 'uQuit'],
+    ['a user with no person row', 'uNobody'],
+    ['a person with deletedAt', 'uDeleted'],
+  ])('answers %s with the given NOT_FOUND', async (_case, userId) => {
+    await expect(of(userId, 'g1')).rejects.toEqual(new AppError('NOT_FOUND', NOT_FOUND))
+  })
+
+  it('is NOT_FOUND for an outsider before any role or archive check', async () => {
+    await expect(of('uOutsider', 'gArchived', ['admin'])).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    })
+  })
+
+  it('passes every other error through', async () => {
+    expect(await codeOf(of(null, 'g1'))).toBe('UNAUTHENTICATED')
+    expect(await codeOf(of('uViewer', 'g1', ['admin', 'member']))).toBe('FORBIDDEN')
+    expect(await codeOf(of('uAdmin', 'gArchived'))).toBe('ARCHIVED')
+    const down = teams()
+    vi.spyOn(down, 'listMemberships').mockRejectedValue(new AppwriteException('Server error', 500))
+    await expect(requireMemberOf(db(), down, 'uLeft', 'g1', NOT_FOUND)).rejects.toMatchObject({
+      code: 500,
+    })
   })
 })
 

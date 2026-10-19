@@ -10,10 +10,14 @@ export const TABLES = {
   transactions: 'transactions',
   shares: 'shares',
   items: 'items',
+  balances: 'balances',
+  receiptFiles: 'receiptFiles',
+  checkpoints: 'checkpoints',
   schedules: 'schedules',
   statements: 'statements',
   activity: 'activity',
   invites: 'invites',
+  reminders: 'reminders',
 } as const
 
 export type TableId = (typeof TABLES)[keyof typeof TABLES]
