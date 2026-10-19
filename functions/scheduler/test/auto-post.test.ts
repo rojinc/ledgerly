@@ -236,6 +236,32 @@ describe('step 2: auto-post', () => {
     expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
   })
 
+  it('doesn’t post an expense its creator would pay if they move out just before its guard', async () => {
+    const services = seeded()
+    const forSam = {
+      ...groceries,
+      template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, forSam, 'u2')
+    // The 12th, the first one step 2 posts.
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'members', 'elm-pAlex', { status: 'left', role: 'viewer' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, id).status).toBe('scheduled')
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('still posts a shift whose creator has left, since the owner is paid', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await update(services, 'members', 'acme-pSam', { status: 'left', role: 'viewer' })
+    expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
+  })
+
   it('still posts one that names its payers after its creator moved out', async () => {
     const services = seeded()
     const samPays = {

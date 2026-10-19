@@ -11,6 +11,7 @@ import {
   type Ledger,
   ledgerRoute,
   loadGroupLedger,
+  Raced,
 } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 import { madeLate } from '../occurrences'
@@ -57,8 +58,9 @@ export async function autoPost(services: Services): Promise<PostCounts> {
 /**
  * Posts the occurrence if it is still due to be: still `scheduled`, its schedule auto-posts and
  * isn't waiting for step 1, its group isn't archived and its day has come in the group's time
- * zone. It posts as the schedule's creator, who pays when the template names no payers, with no
- * actor on the activity row (data-model.md#activity). True when it posted.
+ * zone. It posts as the schedule's creator, who pays when the occurrence names no payers (not
+ * once they're no longer an active member), with no actor on the activity row
+ * (data-model.md#activity). True when it posted.
  */
 async function post({ db, now }: Services, rowId: string): Promise<boolean> {
   return ledgerRoute(async () => {
@@ -78,8 +80,8 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
     if (group.archivedAt || !isDue(row, group, now) || forTheUser(row, group)) return false
     const ledger = await loadGroupLedger(db, group, schedule.createdBy)
     if (await creatorWouldPayAfterLeaving(db, row, ledger, schedule.createdBy)) return false
-    await withTransaction(db, (tx) =>
-      postInTransaction(tx, db, {
+    await withTransaction(db, async (tx) => {
+      await postInTransaction(tx, db, {
         rowId,
         group,
         ledger,
@@ -89,8 +91,15 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
         now,
         // Moved, posted or voided since it was read: run again, which reads it again.
         ready: (staged) => isDue(staged, group, now) && !forTheUser(staged, group),
-      }),
-    )
+      })
+      // Again now that the row and the creator's member row (they pay, so they're named) are
+      // staged: an edit that dropped its payers, or the creator moving out, since the check
+      // above makes it run again, and the check above then leaves it.
+      const stored = await findTransaction(db, rowId)
+      if (stored && (await creatorWouldPayAfterLeaving(db, stored, ledger, schedule.createdBy))) {
+        throw new Raced()
+      }
+    })
     return true
   })
 }
