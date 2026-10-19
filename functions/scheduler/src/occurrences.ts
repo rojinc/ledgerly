@@ -48,6 +48,16 @@ export type ScheduleTemplate = Pick<
   '$id' | 'groupId' | 'kind' | 'description' | 'templateJson' | 'createdBy'
 >
 
+/**
+ * Made after its own day, by a run that came late after an edit or a schedule that starts in the
+ * past: step 2 never posts it, so a week an edit moved isn't posted twice, and step 3 reminds the
+ * owner of a shift instead (scheduling.md#step-2-auto-post).
+ */
+export function madeLate(row: Transactions, timeZone: string): boolean {
+  const createdOn = localToday(timeZone, new Date(row.$createdAt))
+  return compareDates(createdOn, row.date as LocalDate) > 0
+}
+
 /** The transaction an occurrence on `date` is (scheduling.md#step-1-expand-due-schedules). */
 export function occurrenceInput(schedule: ScheduleTemplate, date: LocalDate): TransactionInput {
   const template = JSON.parse(schedule.templateJson) as TransactionTemplate
