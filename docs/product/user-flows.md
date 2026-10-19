@@ -7,7 +7,7 @@ Step-by-step journeys through the product. Each step names the function route it
 1. The user signs up with an email and verifies it (Appwrite Auth).
 2. The app calls `identity POST /bootstrap`. This creates their **person**, **profile** and **personal group**. It is safe to call on every login.
 3. If records were already made for their email (for example a friend lent them money), `identity POST /claim` links those records to the new account. The user sees that history straight away.
-4. The user lands on the dashboard. Until they've recorded something, it shows a getting-started guide (F-07): first **What do you want to track first?** (an employer, a lend & borrow, or bills), with any groups waiting for them to join and the time zone, holiday region and currency bootstrap guessed; then, once they've joined another group, **Record your first entry** with a link per group. It goes for good once any of their groups has a transaction, and **Hide** removes it on that device.
+4. The user lands on the dashboard. Until they've recorded something, it shows a getting-started guide (F-07): first **What do you want to track first?** (an employer, a lend & borrow, or bills), with any groups waiting for them to join and the time zone, holiday region and currency bootstrap guessed; then, once they've joined another group, **Record your first entry** with a link for each group they can add to. It goes for good once any of their groups has a transaction, and **Hide** removes it on that device.
 
 ## 2. Set up an employer with a weekly shift
 

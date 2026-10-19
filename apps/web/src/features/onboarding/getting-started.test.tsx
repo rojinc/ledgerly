@@ -1,7 +1,7 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import type { PendingGroup } from '@ledgerly/core/schemas/identity'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { focusManager, QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Query } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -105,14 +105,21 @@ function entryReads() {
 }
 
 function renderHome() {
-  const router = createMemoryRouter([{ path: '/', element: <DashboardPage /> }])
+  const router = createMemoryRouter([
+    { path: '/', element: <DashboardPage /> },
+    { path: '/bills/new', element: <p>New bill</p> },
+  ])
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <RouterProvider router={router} />
     </QueryClientProvider>,
   )
+  return { ...view, router }
 }
+
+/** Lets timers queued now run, as time passes on another page. */
+const later = () => act(() => new Promise((resolve) => setTimeout(resolve, 10)))
 
 const STEP_1 = 'What do you want to track first?'
 const STEP_2 = 'Record your first entry'
@@ -179,12 +186,15 @@ describe('GettingStarted: step 1', () => {
     pending = [KIM as PendingGroup]
     const view = renderHome()
     const join = await screen.findByRole('button', { name: 'Join Kim' })
+    // The status region is there, empty, before the join, so the announcement is read out.
+    const status = screen.getAllByRole('status').find((node) => node.textContent === '')
     const waiting = screen.getByRole('heading', { name: 'Waiting for you to join' })
     const step1 = screen.getByRole('heading', { name: STEP_1 })
     // Pending groups come before the choices.
     expect(waiting.compareDocumentPosition(step1) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
     fireEvent.click(join)
-    await waitFor(() => expect(screen.getByText('Joined Kim.')).toBeTruthy())
+    await waitFor(() => expect(status?.textContent).toBe('Joined Kim.'))
+    expect(status?.isConnected).toBe(true)
     expect(document.activeElement).toBe(view.getByRole('heading', { level: 1 }))
     // The joined pair is empty: record its first entry.
     await screen.findByRole('heading', { name: STEP_2 })
@@ -230,6 +240,31 @@ describe('GettingStarted: step 2', () => {
 })
 
 describe('GettingStarted: done, loading and failures', () => {
+  it('reads afresh on each visit, so it never comes back after the first entry', async () => {
+    const { router } = renderHome()
+    fireEvent.click(await screen.findByRole('link', { name: /^My bills/ }))
+    await screen.findByText('New bill')
+    await later()
+    withEntries = ['g0']
+    await act(() => router.navigate('/'))
+    expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
+    await waitFor(() => expect(entryReads()).toHaveLength(2))
+    await later()
+    expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
+  })
+
+  it('reads once per visit, not again when the window gets focus back', async () => {
+    renderHome()
+    await screen.findByRole('heading', { name: STEP_1 })
+    act(() => {
+      focusManager.setFocused(false)
+      focusManager.setFocused(true)
+    })
+    await later()
+    focusManager.setFocused(undefined)
+    expect(entryReads()).toHaveLength(1)
+  })
+
   it.each([
     ['the personal group', 'g0'],
     ['another group', 'g1'],

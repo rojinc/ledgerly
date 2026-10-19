@@ -12,12 +12,15 @@ const firstEntryKey = (groupIds: readonly string[]) => ['firstEntry', ...groupId
 /**
  * Whether any of the groups has a transaction, in any status: one read of at most one ID, on
  * `transactions.idx_group_date`. True once the user has recorded something, and the guide is done.
- * Not read while `enabled` is false, such as when the guide is hidden.
+ * Not read while `enabled` is false, such as when the guide is hidden. Read once per Home visit
+ * and never kept: a cached "no entry" would show the guide again after the first one.
  */
 export function useHasEntry(groupIds: string[], enabled: boolean) {
   return useQuery({
     queryKey: firstEntryKey(groupIds),
     enabled: enabled && groupIds.length > 0,
+    staleTime: Number.POSITIVE_INFINITY,
+    gcTime: 0,
     queryFn: async () => {
       const { rows } = await tablesDB.listRows<Transactions>({
         databaseId: DATABASE_ID,
