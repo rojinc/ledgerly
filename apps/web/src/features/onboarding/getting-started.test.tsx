@@ -151,7 +151,11 @@ afterEach(() => {
 describe('GettingStarted: step 1', () => {
   it('asks what to track when only the personal group is joined, and it is empty', async () => {
     renderHome()
-    await screen.findByRole('heading', { name: STEP_1 })
+    // The file's first test starts cold. Wait by text, then check the role once: polling the first
+    // role query by name (seconds under load) used up findByRole's 1 s. The dashboard's own cold
+    // first render can take over 1 s under load too.
+    await screen.findByText(STEP_1, {}, { timeout: 3000 })
+    expect(screen.getByRole('heading', { name: STEP_1 })).toBeTruthy()
     expect(links(STEP_1)).toEqual([
       [
         'Hours I work for someoneLog your shifts and send invoices to an employer.',

@@ -27,12 +27,14 @@ persons ──┬── identities                       (server only)
           └── members ── groups ── schedules
                            │
                       transactions ──┬── shares
-                           │         └── items
+                           │         ├── items
+                           │         └── receiptFiles  (server only)
                       statements
                       activity
                       invites                   (server only)
                       reminders                 (server only)
                       balances      (1:1 with a group, server only)
+                      checkpoints               (server only)
 ```
 
 ## persons
@@ -45,6 +47,7 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `displayName` | varchar(100) | Their own name if registered; otherwise the name used by whoever first added them. |
 | `claimedAt` | datetime? | When the person first got a user account (bootstrap or adopt). Claim joins member rows whose `$createdAt` is strictly before it ([identity](identity-and-invites.md#claim-linking-records-to-a-new-account)). |
 | `mergedInto` | varchar(36)? | Set when this person is merged into another ([identity](identity-and-invites.md#merging-two-persons)). Kept for good: old statements and groups the other person left on their own can still name this one. |
+| `mergeGroupIds` | varchar(36)[]? | The groups P had member rows in when it was marked as merged, written once in that step and never changed: the only groups a merge looks in for P's shares, inputs and templates ([identity](identity-and-invites.md#merging-two-persons)). `null` for anyone never merged. Written only by `identity`. |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). Set first, as the point of no return; a person with `deletedAt` and `userId` both set has a deletion still to finish. |
 | `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits, and for adds that find the person. |
 
@@ -167,7 +170,7 @@ Permissions: `read("team:<groupId>")`.
 | `scheduleId` | varchar(36)? | Set on occurrences created by a schedule |
 | `overridden` | boolean | default `false`. The user edited this occurrence. |
 | `statementId` | varchar(36)? | Set when a final statement locks it |
-| `receiptFileIds` | varchar(36)[]? | Files in the `receipts` bucket |
+| `receiptFileIds` | varchar(36)[]? | Files in the `receipts` bucket. Each one has a [`receiptFiles`](#receiptfiles) row. |
 | `startedAt` | datetime? | Timer shifts |
 | `remindedAt` | datetime? | When the last reminder (bill due, shift to confirm, long-running timer) was sent, or was settled without an email (nobody to send to, an archived group, an address Resend refuses; but a shift of a schedule that auto-posts isn't settled with nobody to send to). Cleared when a bill's `dueOn` or a `scheduled` row's `date` changes |
 | `voidReason` | varchar(200)? | |
@@ -233,6 +236,46 @@ A cache of each person's balance in a group, so `GET /groups/{groupId}/balances`
 A group with no row has none built yet, or had it deleted (by a [merge](identity-and-invites.md#merging-two-persons), or because it didn't fit, [ledger](ledger.md#balances)): `/balances` sums its shares instead, and the [nightly check](scheduling.md#step-6-nightly-check) builds the row. Why it isn't one row per person: [Scaling](scaling.md#the-balances-cache).
 Indexes: none (read by ID).
 Permissions: none (server only). Clients get balances from `GET /groups/{groupId}/balances`.
+
+## receiptFiles
+
+Which transactions list each file in the `receipts` bucket, so the scheduler can delete the files no transaction lists ([scheduler step 5](scheduling.md#step-5-receipt-clean-up)). The row ID is the file ID.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `transactionIds` | varchar(36)[]? | The transactions that list the file now. Empty or `null` means none. |
+| `detachedAt` | datetime? | When the last transaction stopped listing the file; empty while one lists it. On a row the scheduler made for a never-attached file, the file's `$createdAt`. |
+| `deletingAt` | datetime? | Set by the scheduler, in a database transaction, before it deletes the file. From then on an attach is refused ([permissions](permissions.md#storage)). |
+
+- **The ledger** writes the row of every file it adds to or takes off a transaction's `receiptFileIds`, in the same database transaction as the list ([concurrency](ledger.md#concurrency)), on every path that attaches or takes off a file (a new path must too):
+  - **adding a file:** it creates the row, or adds the transaction ID and clears `detachedAt`;
+  - **taking a file off:** it drops the transaction ID, and sets `detachedAt` once none is left. A file with no row (attached before these rows existed) gets one, with no transaction listed.
+- **Void** keeps a transaction's `receiptFileIds`, so its files stay listed.
+- **Deleting a transaction row:** code that deletes one that lists receipts takes them off in the same database transaction. Two places do: `DELETE /schedules/{id}`, which deletes a schedule's edited and voided occurrences too (`removeOccurrences`, [schedule routes](scheduling.md#schedule-routes)), and the purge when an account is deleted ([deleting an account](identity-and-invites.md#each-group-they-joined)). Their batches of at most 90 writes count up to 10 receipt rows for each transaction.
+- **Every writer of a row,** the ledger and those above included, stages its write and then reads the row again as committed (not through its transaction), and runs again if it changed. A group guard isn't enough on its own, because two attaches in two groups at once can list one file in both ([#43](https://github.com/rojinc/ledgerly/issues/43)'s accepted race). In one database transaction a file gets at most one row write, however many of its transactions that transaction changes or deletes.
+- **The scheduler** sets `deletingAt`, makes the row for a file that was never attached, deletes the file, and deletes the row once its `deletingAt` is at least an hour old. Until then the row refuses any attach of that ID, including one that read the rows before the scheduler made this one.
+- **Backfill:** `scripts/backfill-receipt-files.mjs` is for files uploaded before the ledger wrote these rows. The lead runs it once in each environment, from `main`, after the ledger change is deployed there and a minute has passed (no execution of the old ledger, which times out after 15 s, can still be attaching files without rows), with a one-off key (`rows.read`, `rows.write`, `files.read`) deleted afterwards. In order:
+  1. **Listed files:** one full pass over `transactions` where `receiptFileIds` isn't null, paged by `$id` (a one-off, so no index). That query also matches `[]` (checked on `ledgerly-dev`), so only a non-empty list counts. For each file, on every attempt, it reads the file's row, then reads the transactions the pass found for it again, as committed, and adds those that still list the file to its row, creating the row if needed and clearing `detachedAt`. It stages that write, then reads the row and those transactions again as committed; on a change or a 409 it starts the file again, and it never skips one. It also stages a [guard write](ledger.md#concurrency) (a fresh `rev`) on the group row of each transaction it adds: every write that takes a file off a transaction guards that group too, so one landing meanwhile fails one of the two commits, even when it leaves the file's row as it was. A transaction that dropped the file since the pass is never added, so a receipt taken off meanwhile is still deleted. When none of them still lists the file, it writes nothing (the sweep then sees the file's row, or gives it one). A row already marked `deletingAt` is left alone and reported, and the script exits non-zero: step 5 is deleting a file a transaction lists.
+  2. **The sweep:** every file in the bucket that still has no row gets one with `detachedAt = now`, so step 5 deletes it a day later. These are uploads that were never attached, files taken off before the rows existed, and listed files whose transactions all dropped them before step 1 got to them. It only creates rows; a 409 means the ledger attached the file first, and the file is skipped.
+  3. **Last,** the [`checkpoints`](#checkpoints) row `receipt-clean-up`, with `through` = when the script started: every file created by then is in the sweep's listing. Step 5 does nothing until it exists.
+
+  Neither pass ever upserts a `receiptFiles` row. The script is safe to run again.
+- **Undoing the ledger's row writes** (reverting that change on `main`) needs step 5 stopped first: revert step 5 first, or delete the `checkpoints/receipt-clean-up` row. Otherwise step 5 would take a file attached after the revert for one never attached, and delete it.
+
+Indexes: `idx_detachedAt (detachedAt)`.
+Permissions: none (server only).
+
+## checkpoints
+
+How far a background job has got, for a job that must not lose its place from one run to the next. One row per job; the row ID names it.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `through` | datetime | The job has dealt with everything up to this time |
+
+- `receipt-clean-up`: made by the [backfill](#receiptfiles) as its last write, then moved forward by [step 5](scheduling.md#step-5-receipt-clean-up)'s pass 1. Step 5 reads it once per run, and does nothing until it exists. Step 5 only ever updates it, never creates it, so deleting it stops even a run already in progress from writing it again.
+
+Permissions: none (server only).
 
 ## schedules
 
@@ -347,6 +390,7 @@ Each item below is written only by the functions listed and can be rebuilt from 
 | `shares.groupId/date/kind/category` | the transaction | rebuilt with the shares |
 | `statements.snapshotJson`, PDFs | transactions and shares at finalize time | `statements` (an intentional historical snapshot) |
 | `balances` rows | shares | every writer of shares, inside the same transaction ([ledger](ledger.md#balances)); created and repaired by the scheduler's [nightly check](scheduling.md#step-6-nightly-check) |
+| `receiptFiles.transactionIds` | `transactions.receiptFileIds` | every writer of a receipt list or a transaction row that lists receipts, inside the same transaction as the list change or the row delete: `ledger`, `scheduler` (`DELETE /schedules/{id}`) and `account` (the purge). The backfill script rebuilds them. `detachedAt`, `deletingAt` and the rows of never-attached files are the scheduler's clean-up state, not a copy. |
 
 ## Categories
 

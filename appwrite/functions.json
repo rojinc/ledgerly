@@ -82,11 +82,19 @@
     "ignore": ["*", "!dist/", "!dist/**", "!package.json"],
     "execute": ["users"],
     "events": [],
-    "schedule": "5 * * * *",
+    "interval": 60,
     "timeout": 900,
     "enabled": true,
     "logging": true,
-    "scopes": ["rows.read", "rows.write", "teams.read", "teams.write", "users.read"]
+    "scopes": [
+      "rows.read",
+      "rows.write",
+      "files.read",
+      "files.write",
+      "teams.read",
+      "teams.write",
+      "users.read"
+    ]
   },
   {
     "$id": "statements",
@@ -98,7 +106,7 @@
     "ignore": ["*", "!dist/", "!dist/**", "!package.json"],
     "execute": ["users"],
     "events": [],
-    "schedule": "15 * * * *",
+    "interval": 60,
     "timeout": 300,
     "enabled": true,
     "logging": true,

@@ -1043,8 +1043,9 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
     expect(screen.queryByLabelText('Item 2 name')).toBeNull()
   })
 
-  // Thirty renders of the whole form: about 4 s alone, more under a full parallel run.
-  it('stops at 30 items', { timeout: 15_000 }, async () => {
+  // CPU-bound, not waiting: each Add renders the whole form twice with every item so far, about
+  // 900 item renders in React's dev build. About 4 s alone, up to 25 s with 3 full runs at once.
+  it('stops at 30 items', { timeout: 30_000 }, async () => {
     await itemise()
     const add = screen.getByRole('button', { name: 'Add item' })
     for (let n = 1; n < 30; n++) fireEvent.click(add)

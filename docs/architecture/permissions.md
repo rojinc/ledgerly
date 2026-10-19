@@ -20,7 +20,7 @@ Keeping authority in one place (`members.role`) means there is one source of tru
 | Table | Row permissions | Set by |
 | --- | --- | --- |
 | `persons` (registered) | `read("user:<userId>")` | `identity`; `account` removes it on deletion |
-| `persons` (placeholder), `identities`, `invites`, `reminders`, `balances` | none | n/a |
+| `persons` (placeholder), `identities`, `invites`, `reminders`, `balances`, `receiptFiles`, `checkpoints` | none | n/a |
 | `profiles` | `read("user:<userId>")` | `identity`; `account` deletes the row |
 | `groups`, `members`, `transactions`, `shares`, `items`, `schedules`, `statements`, `activity` | `read("team:<groupId>")` | the writing function |
 
@@ -80,9 +80,16 @@ Scheduled jobs run with the server key and no caller. They write as the system a
   - the file is in the `receipts` bucket;
   - its permissions include `read("team:<groupId>")` for the transaction's group;
   - its `mimeType` is `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif` or `application/pdf` (`image/heif` because a `.heic` photo can report itself as HEIF; the bucket takes no `.heif` files);
-  - its upload is complete (`chunksUploaded` equals `chunksTotal`). An unfinished upload's remaining chunks could still change its content and permissions.
+  - its upload is complete (`chunksUploaded` equals `chunksTotal`). An unfinished upload's remaining chunks could still change its content and permissions;
+  - the scheduler isn't deleting it: its [`receiptFiles`](data-model.md#receiptfiles) row has no `deletingAt`. The ledger reads the rows before it looks at the files. After staging its writes it reads them again, as committed, and runs again if any changed ([concurrency](ledger.md#concurrency)).
 
-  Any failure gives `VALIDATION_FAILED`, naming `receiptFileIds.<index>`, with the same message for every failure. A missing file and another group's file get the same answer, so the reply never shows whether a file ID exists. Only after every file passes does the ledger set each file's permissions to exactly `read("team:<groupId>")`, and it does so **before** the row commits. That removes any wider read and any `update` or `delete` the uploader granted themselves, so a stored ID never points at a file its uploader can still swap or delete behind a locked transaction. A retry passes the check again. Taking a file off a transaction leaves the file and its permissions as they are. A file no transaction lists keeps the permissions it has until it's cleaned up ([security](security-and-privacy.md#threats-and-controls)).
+  Any failure gives `VALIDATION_FAILED`, naming `receiptFileIds.<index>`, with the same message for every failure. A missing file and another group's file get the same answer, so the reply never shows whether a file ID exists. Only after every file passes does the ledger set each file's permissions to exactly `read("team:<groupId>")`, and it does so **before** the row commits. That removes any wider read and any `update` or `delete` the uploader granted themselves, so a stored ID never points at a file its uploader can still swap or delete behind a locked transaction. A retry passes the check again. Taking a file off a transaction leaves the file and its permissions as they are.
+
+  A file that no transaction lists is deleted by a later scheduler run, once it's past these times ([step 5](scheduling.md#step-5-receipt-clean-up)):
+  - 24 hours after its upload, for a file that was never attached;
+  - 24 hours after it was taken off its last transaction.
+
+  Until then it keeps the permissions it has.
 - `statements`: only the `statements` function writes. Files are readable by the group's team.
 
 ## Function execute permissions
@@ -90,7 +97,7 @@ Scheduled jobs run with the server key and no caller. They write as the system a
 | Function | Execute |
 | --- | --- |
 | `ledger`, `groups`, `identity`, `account` | `users` (any signed-in user; the function checks the rest) |
-| `scheduler`, `statements` | `users` for their HTTP routes; cron runs need no execute permission (`account`'s hourly deletion job too) |
+| `scheduler`, `statements` | `users` for their HTTP routes; scheduled runs need no execute permission (`account`'s hourly deletion job too) |
 
 Execute is `users` only, never `any` or `guests`, and no function gets a custom domain. Appwrite serves a function's domains (the generated `*.appwrite.run` one and any custom one) only when execute includes `any` or `guests`, so the only way in is `createExecution` by a signed-in user. No user is ever made an impersonator, because Appwrite's impersonation headers would let them execute as someone else.
 

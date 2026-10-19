@@ -150,7 +150,7 @@ On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't 
 
 A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `remindedAt`, so the new date gets its own reminder. An auto-post occurrence cleared this way is one step 2 posts again: on its new date, or at the next hourly run if that date has passed, unless step 2's rules hold it back (a date before the day it was made, or more than 7 days ago; [auto-post](scheduling.md#step-2-auto-post)).
 
-**Deleted people.** `POST /transactions`, `PATCH` and `/post` refuse, with `VALIDATION_FAILED`, an input whose people (`everyPersonId()`: payers, the split, items) include a person with `deletedAt` whom the stored input didn't already name, **in a group where that person's member row isn't `placeholder`**. Payments and adjustments are exempt, so balances with a former member can still be settled. Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). The scheduler's `POST` and `PATCH /schedules` apply the same rule to the template.
+**Deleted people.** `POST /transactions`, `PATCH` and `/post` refuse, with `VALIDATION_FAILED`, an input whose people (`everyPersonId()`: payers, the split, items) include a person with `deletedAt` whom the stored input didn't already name, **in a group where that person's member row isn't `placeholder`**. Payments and adjustments are exempt, so balances with a former member can still be settled. Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). The scheduler's `POST` and `PATCH /schedules` apply the same rule to the template, and `PATCH` checks the whole template, people the stored one named included: deleting an account ends the schedules that name them, and an edit could start one again.
 
 **Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
 
@@ -160,7 +160,7 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 
 - Every write that attaches a file (`POST /transactions`, `PATCH` and `/receipts`) checks it and limits it to the group's team first ([permissions](permissions.md#storage)). The check runs after step 1's membership, role, archived and locked checks, so a caller those checks refuse never changes a file.
 - A `PATCH` body without `receiptFileIds` keeps the stored list, so edit forms that don't show receipts don't drop them. `[]` clears it.
-- Taking a file off a list doesn't delete it or change its permissions; the scheduler's clean-up ([#163](https://github.com/rojinc/ledgerly/issues/163)) deletes files no transaction lists. The same file may be on two transactions of one group.
+- Taking a file off a list doesn't delete it or change its permissions. Once no transaction lists it, the scheduler deletes it 24 hours later ([step 5](scheduling.md#step-5-receipt-clean-up)); putting it back on a transaction before then keeps it. A file the scheduler has started deleting is refused like a missing one. The same file may be on two transactions of one group.
 
 ## groups
 
@@ -231,7 +231,7 @@ A call after `deletedAt` is set skips the checks (apart from the body) and carri
 
 ## scheduler
 
-Cron: `5 * * * *`, sent as `POST /` with the `schedule` trigger. A person calling `POST /` gets `FORBIDDEN`, and a call without a JWT `UNAUTHENTICATED`. HTTP routes:
+Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger. A person calling `POST /` gets `FORBIDDEN`, and a call without a JWT `UNAUTHENTICATED`. HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
@@ -262,7 +262,7 @@ Details: [Scheduling](scheduling.md).
 
 ## statements
 
-Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP routes:
+Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
