@@ -8,6 +8,7 @@ import type { TransactionInput, TransactionTemplate } from '@ledgerly/core/schem
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { receiptRows, writeReceiptRows } from '@ledgerly/server/ledger/receipt-files'
 import {
   guardGroup,
   guardGroupAndMembers,
@@ -341,16 +342,18 @@ function groupItems(items: Items[]): Map<string, Items[]> {
  * Deletes the schedule's occurrences dated `from` or later that are still `scheduled` or `due`
  * and not edited (`overridden`), with their items. `all` deletes every one that isn't posted,
  * for `DELETE /schedules/{id}`, voided and edited ones last, so a delete that stops partway
- * leaves the rows that keep their dates from being made again. Each batch guards the group,
- * stages its deletes, then checks the stored rows and items: a row edited, posted or voided
- * meanwhile, an item added to it, or an archive or settings change throws `Raced`
- * (ledger.md#concurrency). Returns how many it deleted.
+ * leaves the rows that keep their dates from being made again; those can list receipts, which
+ * it takes off (data-model.md#receiptfiles). Each batch guards the group, stages its deletes,
+ * then checks the stored rows and items: a row edited, posted or voided meanwhile, an item
+ * added to it, or an archive or settings change throws `Raced` (ledger.md#concurrency).
+ * Returns how many it deleted.
  */
 export async function removeOccurrences(
   db: Db,
   group: Groups,
   scheduleId: string,
   from: LocalDate | null,
+  now: Date,
   options: { all?: boolean } = {},
 ): Promise<number> {
   const removable = (row: Transactions) =>
@@ -372,19 +375,23 @@ export async function removeOccurrences(
       db,
       page.map((row) => row.$id),
     )
-    // Each occurrence goes with its items, in transactions of at most 90 writes, so no item
-    // is ever left without its transaction.
-    const units = page.map((row) => [
-      row.$id,
-      ...items.filter((item) => item.transactionId === row.$id).map((item) => item.$id),
-    ])
-    for (const batch of packed(units)) {
+    // Each occurrence goes with its items and its receipt rows, in transactions of at most 90
+    // writes, so no item is ever left without its transaction.
+    const units = page.map((row) => ({
+      row,
+      itemIds: items.filter((item) => item.transactionId === row.$id).map((item) => item.$id),
+    }))
+    const writesOf = ({ row, itemIds }: (typeof units)[number]) =>
+      1 + itemIds.length + (row.receiptFileIds?.length ?? 0)
+    for (const batch of packed(units, writesOf)) {
       await withTransaction(db, async (tx) => {
         await guardGroup(tx, db, group)
+        const fileIds = batch.flatMap(({ row }) => row.receiptFileIds ?? [])
+        const receipts = await receiptRows(db, [...new Set(fileIds)])
         await goneIsRaced(
           tx.write(
-            ...batch.flatMap(([rowId, ...itemIds]) => [
-              { action: 'delete' as const, tableId: TABLES.transactions, rowId: rowId as string },
+            ...batch.flatMap(({ row, itemIds }) => [
+              { action: 'delete' as const, tableId: TABLES.transactions, rowId: row.$id },
               ...itemIds.map((itemId) => ({
                 action: 'delete' as const,
                 tableId: TABLES.items,
@@ -393,15 +400,27 @@ export async function removeOccurrences(
             ]),
           ),
         )
+        await writeReceiptRows(
+          db,
+          tx,
+          receipts,
+          batch.flatMap(({ row }) =>
+            (row.receiptFileIds ?? []).map((fileId) => ({ fileId, remove: [row.$id] })),
+          ),
+          now,
+        )
         // The stored rows and items, not this transaction's view, where they're already gone.
-        // An item added before the deletes were staged would be left without its transaction;
-        // one added after it also wrote the transaction row, so the commit fails.
-        const ids = batch.map(([rowId]) => rowId as string)
+        // An item or receipt added before the deletes were staged would be left without its
+        // transaction; one added after it also wrote the transaction row, so the commit fails.
+        const ids = batch.map(({ row }) => row.$id)
         const stored = await allRows<Transactions>(db, TABLES.transactions, [
           Query.equal('$id', ids),
         ])
-        if (stored.length !== ids.length || !stored.every(removable)) throw new Raced()
-        const staged = new Set(batch.flat())
+        const receiptsAsRead = new Map(batch.map(({ row }) => [row.$id, receiptList(row)]))
+        const unchanged = (row: Transactions) =>
+          removable(row) && receiptList(row) === receiptsAsRead.get(row.$id)
+        if (stored.length !== ids.length || !stored.every(unchanged)) throw new Raced()
+        const staged = new Set(batch.flatMap(({ row, itemIds }) => [row.$id, ...itemIds]))
         if ((await itemsOf(db, ids)).some((item) => !staged.has(item.$id))) throw new Raced()
       })
     }
@@ -555,21 +574,24 @@ function occurrenceWrites(schedule: Schedules, { input, planned }: Occurrence): 
   ]
 }
 
-// Groups of ids (an occurrence first, then its items) packed into transactions of at most 90
-// writes, after the group's guard. An occurrence has at most 30 items, so each group fits.
-function packed(units: string[][]): string[][][] {
-  const batches: string[][][] = []
+// Units of writes (an occurrence, its items and its receipt rows) packed into transactions of at
+// most 90 writes, after the group's guard. An occurrence has at most 30 items and 10 receipts,
+// so each unit fits.
+function packed<T>(units: readonly T[], writesOf: (unit: T) => number): T[][] {
+  const batches: T[][] = []
   let writes = MAX_OPS_PER_DB_TRANSACTION
   for (const unit of units) {
-    if (writes + unit.length > MAX_OPS_PER_DB_TRANSACTION) {
+    if (writes + writesOf(unit) > MAX_OPS_PER_DB_TRANSACTION) {
       batches.push([])
       writes = 1
     }
     batches.at(-1)?.push(unit)
-    writes += unit.length
+    writes += writesOf(unit)
   }
   return batches
 }
+
+const receiptList = (row: Transactions) => JSON.stringify(row.receiptFileIds ?? [])
 
 /** The later of two dates; `date` when `other` is empty. */
 export function laterOf(date: LocalDate, other: LocalDate | null): LocalDate {

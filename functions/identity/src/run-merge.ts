@@ -79,10 +79,17 @@ async function runSteps(
   const putOff = new Set<string>()
   const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
   let done = true
-  // Only P's groups can name P; never U's others, so a merge costs what P had. They're walked in
-  // the order step 1 listed them, so a later claim finishes a part-done group before it starts
-  // another. P's member rows count too, in case an add landed outside the list.
-  const groupIds = new Set([...(placeholder.mergeGroupIds ?? []), ...(await groupsOf(db, fromId))])
+  // Only P's groups can name P; never U's others, so a merge costs what P had. A group P has no
+  // row in any more comes first: step 2 is done there, so it may be part done, and a later claim
+  // finishes it before starting another, even after one was put off. Then the rest, in the order
+  // step 1 listed them. P's member rows count too, in case an add landed outside the list.
+  const listed = placeholder.mergeGroupIds ?? []
+  const own = await groupsOf(db, fromId)
+  const groupIds = new Set([
+    ...listed.filter((groupId) => !own.includes(groupId)),
+    ...listed,
+    ...own,
+  ])
   for (const groupId of groupIds) {
     if (Date.now() >= deadline) {
       done = false

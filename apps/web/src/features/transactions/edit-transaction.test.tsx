@@ -154,7 +154,10 @@ function patched() {
 
 /** Opens the form and waits for focus on its heading. */
 async function openForm() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+  // The file's first test starts cold: wait for Edit by text, then find its role once. Polling
+  // the first role query by name used up findByRole's 1 s under load.
+  await screen.findByText('Edit', { selector: 'button' }, { timeout: 3000 })
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
   const heading = screen.getByRole('heading', { name: 'Change this entry' })
   expect(document.activeElement).toBe(heading)
   return heading

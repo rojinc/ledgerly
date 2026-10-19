@@ -93,6 +93,34 @@ describe('markMerged (step 1)', () => {
     expect(log).toHaveBeenCalledWith('merge pP into pU: 1 typed keys deleted')
   })
 
+  it('counts P as merged when another claim for U deleted the typed key first', async () => {
+    const store = db(
+      [U, P],
+      [
+        { ...identity(1), verified: false },
+        { ...identity(2), verified: false },
+      ],
+    )
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    // The other claim marks P and deletes the typed key just before this one stages its delete,
+    // which then finds no row: a 404 that withTransaction reports as the race (409) it is.
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"action":"delete"'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write(
+            { action: 'update', tableId: 'persons', rowId: 'pP', data: { mergedInto: 'pU' } },
+            { action: 'delete', tableId: 'identities', rowId: 'i1' },
+          ),
+        ),
+    )
+    expect(await markMerged(store, 'pP', 'pU', ['email:p2@example.com'])).toBe(true)
+    expect(store.rows('identities').map((row) => row.$id)).toEqual(['i2'])
+    // This claim's own step 1 rolled back: it deleted nothing.
+    expect(log).not.toHaveBeenCalled()
+  })
+
   it('keeps every key of P that U verified', async () => {
     const keys = [identity(1), identity(2), { ...identity(3), verified: false }]
     const store = db([U, P], keys)
@@ -719,6 +747,10 @@ describe('moveShares (step 3)', () => {
         { $id: 'g1', type: 'house', name: 'Flat', rev: 'r0' },
         { $id: 'g2', type: 'house', name: 'Old flat', rev: 'r0' },
       ],
+      // Step 2 has joined U to both: each batch guards U's row (#242 D/E).
+      members: ['g1', 'g2'].map((groupId) =>
+        placeholderRow(`mU-${groupId}`, groupId, 'pU', NOW.toISOString(), { status: 'active' }),
+      ),
       shares,
       statements,
       balances,
@@ -848,10 +880,68 @@ describe('moveShares (step 3)', () => {
       ])
     }
     const sizes = [...perTransaction.values()].map((operations) => operations.length)
-    // The first: the guard, the delete and 44 combined shares, two writes each.
-    expect(sizes[0]).toBe(MERGE_BATCH)
+    // The first: the group's guard, U's row guard, the delete and 43 combined shares, two writes
+    // each.
+    expect(sizes[0]).toBe(MERGE_BATCH - 1)
     expect(Math.max(...sizes)).toBeLessThanOrEqual(MERGE_BATCH)
     expect(store.rows('balances')).toEqual([])
+  })
+
+  // #242 D/E: each batch guards U's member row, then checks it as stored.
+  it.each([
+    [
+      'an admin removes U’s row',
+      [{ action: 'delete' as const, tableId: 'members' as const, rowId: 'mU-g1' }],
+    ],
+    [
+      'U leaves on their own',
+      [
+        {
+          action: 'update' as const,
+          tableId: 'members' as const,
+          rowId: 'mU-g1',
+          data: { status: 'left', role: 'viewer', leftOn: '2026-10-18' },
+        },
+        {
+          action: 'create' as const,
+          tableId: 'activity' as const,
+          rowId: 'aLeft',
+          data: {
+            groupId: 'g1',
+            action: 'member.left',
+            summary: 'left',
+            at: '2026-10-18T00:00:00.000Z',
+            actorPersonId: 'pU',
+            subjectPersonId: 'pU',
+          },
+        },
+      ],
+    ],
+  ])('moves no share onto U when %s just before a batch', async (_, writes) => {
+    const store = seed([share('s1', 't1', 'pP', 0, 4500), share('s2', 't1', 'pX', 4500, 0)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('"groups"'),
+      () => withTransaction(store, (tx) => tx.write(...writes)),
+    )
+    expect(await moveShares(store, 'pP', 'pU', ['g1'], FAR)).toEqual({
+      moved: 0,
+      putOff: [],
+      done: true,
+    })
+    // P's share stays P's, and stray() keeps the merge open (run-merge.ts).
+    expect(store.rows('shares').map((row) => row.personId)).toEqual(['pP', 'pX'])
+  })
+
+  it('fails a batch whose U row a removal deletes after it was guarded, and then moves nothing', async () => {
+    const store = seed([share('s1', 't1', 'pP', 0, 4500), share('s2', 't1', 'pX', 4500, 0)])
+    beforeCommit(store, () =>
+      withTransaction(store, (tx) =>
+        tx.write({ action: 'delete', tableId: 'members', rowId: 'mU-g1' }),
+      ),
+    )
+    expect((await moveShares(store, 'pP', 'pU', ['g1'], FAR)).moved).toBe(0)
+    expect(store.rows('shares').map((row) => row.personId)).toEqual(['pP', 'pX'])
   })
 
   it('runs a batch again when the balances row is deleted after it was read', async () => {

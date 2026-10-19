@@ -64,7 +64,14 @@ export const updateReceipts = (services: ServicesFor) =>
           if (sameReceipts(before, receiptFileIds)) throw new Unchanged()
           await guardGroup(tx, db, membership.group)
           await requireNotFinalizing(db, existing.groupId, [existing.date])
-          await attachReceipts(files, existing.groupId, receiptFileIds, before)
+          const now = new Date()
+          await attachReceipts(files, db, tx, {
+            groupId: existing.groupId,
+            transactionId: existing.$id,
+            fileIds: receiptFileIds,
+            stored: before,
+            now,
+          })
           await tx.write(
             {
               action: 'update',
@@ -82,7 +89,7 @@ export const updateReceipts = (services: ServicesFor) =>
               'transaction.updated',
               `Changed the receipts on “${existing.description}”`,
               { receiptFileIds: { before, after: receiptFileIds } },
-              new Date(),
+              now,
             ),
           )
         })

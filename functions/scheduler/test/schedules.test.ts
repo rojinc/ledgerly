@@ -1362,4 +1362,103 @@ describe('DELETE /schedules/{id}', () => {
     expect(services.db.rows('schedules')).toEqual([])
     expect(services.db.rows('transactions')).toEqual([])
   })
+
+  describe('receipts', () => {
+    // A receiptFiles row as the ledger keeps it (data-model.md#receiptfiles).
+    const receiptRow = (services: Fakes, fileId: string, transactionIds: string[]) =>
+      withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'create',
+          tableId: 'receiptFiles',
+          rowId: fileId,
+          data: { transactionIds, detachedAt: null, deletingAt: null },
+          permissions: [],
+        }),
+      )
+    const receiptFile = (services: Fakes, fileId: string) =>
+      services.db.rows('receiptFiles').find((row) => row.$id === fileId)
+    const edited = `${ID}_20261022`
+    const voided = `${ID}_20261029`
+
+    it('takes the receipts of its edited and voided occurrences off, one write per file', async () => {
+      const services = seeded()
+      await create(services, thursdays)
+      await setRow(services, 'transactions', edited, {
+        overridden: true,
+        receiptFileIds: ['r1', 'r2'],
+      })
+      await setRow(services, 'transactions', voided, {
+        status: 'void',
+        voidReason: 'Sick',
+        receiptFileIds: ['r2'],
+      })
+      await receiptRow(services, 'r1', [edited])
+      await receiptRow(services, 'r2', [edited, voided, 'elsewhere0000000001'])
+      const staged = vi.spyOn(services.db, 'createOperations')
+      expect(await ok(services, 'DELETE', `/schedules/${ID}`)).toEqual({})
+      const receiptWrites = staged.mock.calls
+        .flatMap(([params]) => (params.operations ?? []) as { tableId: string; rowId: string }[])
+        .filter((operation) => operation.tableId === 'receiptFiles')
+      expect(receiptWrites.map((operation) => operation.rowId).sort()).toEqual(['r1', 'r2'])
+      expect(receiptFile(services, 'r1')).toMatchObject({
+        transactionIds: null,
+        detachedAt: NOW.toISOString(),
+        deletingAt: null,
+      })
+      // Another transaction still lists it.
+      expect(receiptFile(services, 'r2')).toMatchObject({
+        transactionIds: ['elsewhere0000000001'],
+        detachedAt: null,
+      })
+      expect(occurrences(services)).toEqual([])
+    })
+
+    it('takes off a receipt added to an occurrence just before its deletes are staged', async () => {
+      const services = seeded()
+      await create(services, thursdays)
+      await setRow(services, 'transactions', edited, { overridden: true, receiptFileIds: ['r1'] })
+      await receiptRow(services, 'r1', [edited])
+      // Someone attaches r3 to the edited shift, as the ledger does: the list and its row.
+      beforeStaging(
+        services.db,
+        (operations) =>
+          operations.includes('"action":"delete"') &&
+          operations.includes('"tableId":"transactions"'),
+        async () => {
+          await setRow(services, 'transactions', edited, { receiptFileIds: ['r1', 'r3'] })
+          await receiptRow(services, 'r3', [edited])
+        },
+      )
+      expect(await ok(services, 'DELETE', `/schedules/${ID}`)).toEqual({})
+      for (const fileId of ['r1', 'r3']) {
+        expect(receiptFile(services, fileId)).toMatchObject({
+          transactionIds: null,
+          detachedAt: NOW.toISOString(),
+        })
+      }
+    })
+
+    it('counts the receipt rows in its batches of at most 90 writes', async () => {
+      const services = seeded()
+      await create(services, groceries)
+      // 20 edited occurrences with 10 receipts each: 13 writes apiece with their 2 items.
+      const edits = occurrences(services, groceries.id).slice(0, 20)
+      for (const [at, row] of edits.entries()) {
+        await setRow(services, 'transactions', row.$id, {
+          overridden: true,
+          receiptFileIds: Array.from({ length: 10 }, (_, index) => `g${at}r${index}`),
+        })
+      }
+      const staged = vi.spyOn(services.db, 'createOperations')
+      expect(await ok(services, 'DELETE', `/schedules/${groceries.id}`)).toEqual({})
+      const writes = new Map<string, number>()
+      for (const [params] of staged.mock.calls) {
+        const count = writes.get(params.transactionId) ?? 0
+        writes.set(params.transactionId, count + (params.operations?.length ?? 0))
+      }
+      expect(Math.max(...writes.values())).toBeLessThanOrEqual(90)
+      expect(services.db.rows('receiptFiles')).toHaveLength(200)
+      expect(occurrences(services, groceries.id)).toEqual([])
+    })
+  })
 })
