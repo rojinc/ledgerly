@@ -398,7 +398,7 @@ export function archiveJob(services: Fakes) {
  */
 export async function expectHiddenFromDan(
   services: Fakes,
-  action: 'refresh' | 'finalize' | 'send' | 'void',
+  action: 'refresh' | 'finalize' | 'send' | 'void' | 'discard',
   statementIds: string[],
   body?: unknown,
 ) {
