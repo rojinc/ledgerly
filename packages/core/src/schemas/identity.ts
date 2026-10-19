@@ -208,3 +208,19 @@ export const mergeMembersSchema = z.array(
 )
 
 export type MergeMembers = z.infer<typeof mergeMembersSchema>
+
+/**
+ * `persons.mergeCursorsJson` (data-model.md#persons): where merge step 3's input scan has got to
+ * in each of P's groups, so a later run carries on there (#242 G): the `$id` of the last
+ * transaction scanned (`after`), and the transactions left as they are behind it (`left`), which
+ * keep the merge open (identity-and-invites.md#merging-two-persons).
+ */
+export const mergeCursorsSchema = z.array(
+  z.strictObject({
+    groupId: idSchema,
+    after: idSchema,
+    left: z.array(idSchema),
+  }),
+)
+
+export type MergeCursors = z.infer<typeof mergeCursorsSchema>
