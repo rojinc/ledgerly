@@ -211,6 +211,61 @@ describe('HouseHistory', () => {
     expect(calls('shares')[1]?.[0]).toBe(Query.equal('transactionId', ['t0']))
   })
 
+  it('reads a page’s payers past one read of 100 shares', async () => {
+    // A full page of 25 expenses, each paid by all five housemates: 125 payer shares.
+    const people = ['alice', 'bob', 'cara', 'dan', 'eve']
+    const members = people.map((id) => ({
+      personId: id,
+      displayName: id.toUpperCase(),
+    })) as Members[]
+    const page = Array.from({ length: HISTORY_PAGE }, (_, i) =>
+      row(`t${String(i).padStart(2, '0')}`),
+    )
+    const shares = page.flatMap((tx) =>
+      people.map((personId) => ({ $id: `${tx.$id}-${personId}`, transactionId: tx.$id, personId })),
+    )
+    listRows.mockImplementation((async ({
+      tableId,
+      queries,
+    }: {
+      tableId: string
+      queries: string[]
+    }) => {
+      if (tableId !== 'shares') return { total: page.length, rows: page }
+      // As the database answers: by $id, at most `limit` rows after the cursor.
+      const parsed = queries.map(
+        (query) => JSON.parse(query) as { method: string; values: unknown[] },
+      )
+      const limit = parsed.find((query) => query.method === 'limit')?.values[0] as number
+      const after = parsed.find((query) => query.method === 'cursorAfter')?.values[0] as
+        | string
+        | undefined
+      const rows = shares
+        .filter((share) => after === undefined || share.$id > after)
+        .slice(0, limit)
+      return { total: shares.length, rows }
+    }) as never)
+    const router = createMemoryRouter(
+      [{ path: '/', element: <HouseHistory group={HOUSE} members={members} canAdd={false} /> }],
+      { initialEntries: ['/'] },
+    )
+    render(
+      <QueryClientProvider
+        client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+      >
+        <RouterProvider router={router} />
+      </QueryClientProvider>,
+    )
+    // The last expense's payers all come from the second read.
+    await waitFor(async () =>
+      expect((await rowTexts()).at(-1)).toMatch(/Paid by ALICE, BOB, CARA, DAN,? and EVE/),
+    )
+    expect(calls('shares').map((queries) => queries.at(-1))).toEqual([
+      Query.limit(100),
+      Query.cursorAfter(shares[99]?.$id as string),
+    ])
+  })
+
   it('still lists the rows when the payers can’t be read', async () => {
     mockRows([[row('t1')]])
     listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
