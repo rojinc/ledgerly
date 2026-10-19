@@ -15,6 +15,14 @@ vi.mock('../auth/use-current-user', () => ({
   useCurrentUser: () => ({ data: mockUser, isPending: false, isError: false }),
 }))
 let mockBootstrapped = true
+// The phone step has its own tests: here it only reports a verified number.
+vi.mock('../profile/phone-section', () => ({
+  PhoneSection: ({ onVerified }: { onVerified: () => void }) => (
+    <button type="button" onClick={onVerified}>
+      Phone verified
+    </button>
+  ),
+}))
 vi.mock('../auth/use-bootstrap', () => ({
   useBootstrap: () => ({ data: mockBootstrapped ? { personId: 'p1' } : undefined }),
 }))
@@ -132,11 +140,14 @@ describe('InvitePage', () => {
     expect(call.mock.calls[1]?.[3]).toEqual({ token: TOKEN })
   })
 
-  it('says plainly that joining by phone isn’t ready', async () => {
-    call.mockResolvedValue(answer({ needsVerification: 'phone' }))
+  it('opens the phone step for a phone invite, then accepts again', async () => {
+    call.mockResolvedValueOnce(answer({ needsVerification: 'phone' }))
     renderAt(`/invite#${TOKEN}`)
-    expect(await screen.findByText(/Joining by phone isn’t ready yet/)).toBeTruthy()
-    expect(screen.queryByRole('button')).toBeNull()
+    expect(await screen.findByText(/first add and verify the phone number/)).toBeTruthy()
+    call.mockResolvedValueOnce(answer({ groupId: 'g1' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Phone verified' }))
+    expect(await screen.findByText('Groups')).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(2)
   })
 
   it('says an invalid invite has expired or was used, and forgets it', async () => {

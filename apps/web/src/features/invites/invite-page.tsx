@@ -9,6 +9,7 @@ import { authErrorMessage } from '../auth/auth-error'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { verificationUrl } from '../auth/verify-email-page'
+import { PhoneSection } from '../profile/phone-section'
 
 /** `identity POST /invites/accept`'s answer (functions-api.md#identity). */
 type AcceptResult = { groupId: string } | { needsVerification: 'email' | 'phone' }
@@ -180,10 +181,12 @@ function Accept({ token, userId }: { token: string; userId: string }) {
     return accept.data.needsVerification === 'email' ? (
       <VerifyEmail onVerified={() => accept.mutate()} />
     ) : (
-      <Message>
-        This invite was sent to a phone number. Joining by phone isn’t ready yet; ask whoever added
-        you to invite your email instead.
-      </Message>
+      <>
+        <p className="text-center">
+          To join, first add and verify the phone number this invite was sent to.
+        </p>
+        <PhoneSection onVerified={() => accept.mutate()} />
+      </>
     )
   }
   return <Message>Joining the group…</Message>
