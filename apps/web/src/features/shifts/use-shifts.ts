@@ -8,8 +8,15 @@ import type {
   TransactionView,
   VoidTransactionBody,
 } from '@ledgerly/core/schemas/ledger'
-import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  type QueryClient,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { Query } from 'appwrite'
+import { useEffect, useState } from 'react'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { useCurrentUser } from '../auth/use-current-user'
@@ -27,6 +34,8 @@ export function useMyRoles(groups: Groups[] | undefined, personId: string) {
   return useQuery({
     queryKey: queryKeys.myRoles(personId, ids),
     enabled: groups !== undefined && personId !== '',
+    // A changed group list keeps the roles on screen while the new ones load.
+    placeholderData: keepPreviousData,
     queryFn: async () => {
       const roles = new Map<string, Members['role']>()
       for (let index = 0; index < ids.length; index += PAGE) {
@@ -53,15 +62,45 @@ export type Today = {
   running: Transactions | undefined
 }
 
-/** Today's shifts in `groups` and the person's running timer. */
-export function useToday(groups: Groups[] | undefined, personId: string) {
+/**
+ * Each group's local date today, by group ID. Worked out again every minute, so the screen
+ * moves on to the next day at each group's local midnight.
+ */
+export function useTodayDates(groups: Groups[] | undefined): Map<string, LocalDate> {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000)
+    return () => clearInterval(timer)
+  }, [])
+  return new Map(
+    (groups ?? []).map((group) => [group.$id, localToday(group.timezone, new Date(now))]),
+  )
+}
+
+/** The `useToday` key for `groups` on `dates`. */
+export function todayKey(userId: string, groups: Groups[] | undefined, dates: Map<string, string>) {
+  const ids = (groups ?? []).map((group) => group.$id)
+  return queryKeys.today(
+    userId,
+    ids,
+    ids.map((id) => dates.get(id) ?? ''),
+  )
+}
+
+/** Today's shifts in `groups` on `today`'s dates (from `useTodayDates`) and the person's running timer. */
+export function useToday(
+  groups: Groups[] | undefined,
+  personId: string,
+  today: Map<string, LocalDate>,
+) {
   const userId = useCurrentUser().data?.$id ?? ''
   const ids = (groups ?? []).map((group) => group.$id)
   return useQuery({
-    queryKey: queryKeys.today(userId, ids),
+    queryKey: todayKey(userId, groups, today),
     enabled: groups !== undefined && personId !== '',
+    // A changed group list, or a new day, keeps the last one on screen while it loads.
+    placeholderData: keepPreviousData,
     queryFn: async (): Promise<Today> => {
-      const today = new Map((groups ?? []).map((group) => [group.$id, todayIn(group)]))
       // A timer left running in an archived group doesn't count (scheduling.md#timer-shifts).
       const open = new Set((groups ?? []).filter((group) => !group.archivedAt).map((g) => g.$id))
       const dates = [...today.values()].sort()
@@ -96,10 +135,6 @@ export function useToday(groups: Groups[] | undefined, personId: string) {
   })
 }
 
-function todayIn(group: Groups): LocalDate {
-  return localToday(group.timezone, new Date())
-}
-
 async function listAll(queries: string[]): Promise<Transactions[]> {
   const rows: Transactions[] = []
   let cursor: string | undefined
@@ -128,8 +163,13 @@ function refresh(queryClient: QueryClient, view: TransactionView) {
   const { transaction } = view
   queryClient.setQueryData(queryKeys.transaction(transaction.$id), transaction)
   queryClient.setQueryData(queryKeys.transactionShares(transaction.$id), view.shares)
-  void queryClient.invalidateQueries({ queryKey: queryKeys.balances(transaction.groupId) })
-  void queryClient.invalidateQueries({ queryKey: ['history', transaction.groupId] })
+  markStale(queryClient, transaction.groupId)
+}
+
+/** The group's balance and history, today and the calendar, after a shift was written. */
+export function markStale(queryClient: QueryClient, groupId: string) {
+  void queryClient.invalidateQueries({ queryKey: queryKeys.balances(groupId) })
+  void queryClient.invalidateQueries({ queryKey: ['history', groupId] })
   void queryClient.invalidateQueries({ queryKey: ['today'] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
 }
@@ -202,7 +242,9 @@ export function useStartTimer(todayKey: readonly unknown[]) {
   return useMutation({
     mutationFn: (body: StartTimerBody) => ledger<TransactionView>('POST', '/timer/start', body),
     onMutate: async (body) => {
-      // A refetch already on its way would land on top of this and show the old state.
+      // A refetch already on its way would land on top of this and show the old state. While
+      // Today shows the last key's data (a new day or group list), there's nothing to swap: the
+      // timer shows once the write's refresh loads it.
       await queryClient.cancelQueries({ queryKey: ['today'] })
       const before = queryClient.getQueryData<Today>(todayKey)
       if (before) {
