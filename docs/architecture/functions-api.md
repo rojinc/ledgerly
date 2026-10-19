@@ -242,9 +242,12 @@ Cron: `15 * * * *` (Appwrite calls `POST /`; only a scheduled run may). HTTP rou
 | `POST /statements/{id}/finalize` | `{ send: boolean }` | `statement` (call **async**) | admin |
 | `POST /statements/{id}/send` | none | `{ sentAt }` | admin; final only |
 | `POST /statements/{id}/void` | `{ reason }` | `statement` | admin; latest final only |
+| `POST /statements/{id}/discard` | none | `{}` | admin; drafts only |
 | `POST /statements/reissue` | `{ groupId, periodStart, periodEnd }` | `statement` (draft) | admin |
 
-On the four `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
+On the five `/statements/{id}/…` routes, a caller who isn't a member of the statement's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, as on the ledger's ID routes.
+
+`/discard` deletes the draft ([§5](statements.md#5-discard-post-statementsiddiscard)), so calling it again gets `NOT_FOUND`. The app treats that as done.
 
 Details: [Statements and invoices](statements.md).
 
