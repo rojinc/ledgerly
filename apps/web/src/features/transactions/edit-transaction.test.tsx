@@ -154,7 +154,10 @@ function patched() {
 
 /** Opens the form and waits for focus on its heading. */
 async function openForm() {
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit' }))
+  // The file's first test starts cold: wait for Edit by text, then find its role once. Polling
+  // the first role query by name used up findByRole's 1 s under load.
+  await screen.findByText('Edit', { selector: 'button' }, { timeout: 3000 })
+  fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
   const heading = screen.getByRole('heading', { name: 'Change this entry' })
   expect(document.activeElement).toBe(heading)
   return heading
@@ -1103,6 +1106,33 @@ describe('Edit a house expense (#202)', () => {
       expect(within(list).queryByText(/^Bread:/)).toBeNull()
       expect(within(list).queryByText(/^Discount:/)).toBeNull()
       expect(screen.getByText('Itemised (3 items)')).toBeTruthy()
+    })
+
+    it('puts someone newly sharing the receipt in every item (Q2)', async () => {
+      // Cara is in no item, so she isn't sharing until she's ticked.
+      const noCara: Item[] = [
+        { name: 'Milk', amountCents: 450, split: { mode: 'equal', personIds: ['pa', 'pw'] } },
+        FLOW_7[2] as Item,
+      ]
+      const stored = receipt(noCara)
+      itemised(stored, noCara)
+      call.mockImplementation(savesItems(stored))
+      renderPage()
+      await openHouseForm()
+      const sharing = within(screen.getByRole('group', { name: 'Who’s sharing this receipt' }))
+      expect((sharing.getByRole('checkbox', { name: /^Cara/ }) as HTMLInputElement).checked).toBe(
+        false,
+      )
+      fireEvent.click(sharing.getByRole('checkbox', { name: /^Cara/ }))
+      expect([forItem(1, 'Cara').checked, forItem(2, 'Cara').checked]).toEqual([true, true])
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      expect(patched()).toMatchObject({
+        items: [
+          { name: 'Milk', split: { mode: 'equal', personIds: ['pa', 'pc', 'pw'] } },
+          { name: 'Beer', split: { mode: 'equal', personIds: ['pc', 'pw'] } },
+        ],
+      })
     })
 
     it('refuses a discount that takes someone below 0 (I-4), as on create', async () => {
