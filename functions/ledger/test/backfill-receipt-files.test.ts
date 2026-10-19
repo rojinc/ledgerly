@@ -361,6 +361,50 @@ describe('backfillReceiptFiles', () => {
     expect(receiptFiles(db).f1).toMatchObject({ deletingAt: '2026-10-18T00:00:00.000Z' })
   })
 
+  it('does not report a row being deleted once no transaction lists the file', async () => {
+    const deleting = row('f1', {
+      detachedAt: '2026-10-17T00:00:00.000Z',
+      deletingAt: '2026-10-18T00:00:00.000Z',
+    })
+    const db = fakeDb({ transactions: [tx('t1', ['f1'])], receiptFiles: [deleting] })
+    const list = db.listRows.bind(db)
+    let done = false
+    vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
+      if (!done && params.tableId === 'receiptFiles') {
+        done = true
+        // t1 drops f1 after the pass read it, as on a run again later.
+        await commitNow(db, {
+          action: 'update',
+          tableId: 'transactions',
+          rowId: 't1',
+          data: { receiptFileIds: [] },
+        })
+      }
+      return list(params)
+    })
+    expect(await backfillReceiptFiles(db, noFiles, NOW)).toMatchObject({
+      deleting: 0,
+      unchanged: 1,
+    })
+  })
+
+  it('reads a file’s transactions again 100 IDs at a time, as Appwrite allows', async () => {
+    const ids = Array.from({ length: 150 }, (_, index) => `t${String(index).padStart(3, '0')}`)
+    const db = fakeDb({ transactions: ids.map((id) => tx(id, ['f1'])) })
+    const listRows = vi.spyOn(db, 'listRows')
+    expect(await backfillReceiptFiles(db, noFiles, NOW)).toMatchObject({ updated: 1 })
+    const sizes = listRows.mock.calls.flatMap(([params]) =>
+      (params.queries ?? [])
+        .map(
+          (query) => JSON.parse(query) as { method: string; attribute?: string; values: unknown[] },
+        )
+        .filter((query) => query.method === 'equal' && query.attribute === '$id')
+        .map((query) => query.values.length),
+    )
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(100)
+    expect(receiptFiles(db).f1?.transactionIds).toHaveLength(150)
+  })
+
   it('reads every page of transactions', async () => {
     const transactions = Array.from({ length: 250 }, (_, index) =>
       tx(`t${String(index).padStart(3, '0')}`, ['f1']),

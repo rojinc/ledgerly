@@ -33,9 +33,9 @@ const TRIES = 3
  * - last, makes the `checkpoints` row that lets step 5 start, `through` = `now`: every file
  *   created by then is in the bucket's listing.
  *
- * Safe to run again, and while the new ledger runs: a row that changes meanwhile is read again.
- * A file taken off a transaction during the run can stay listed, which only keeps it. A row that
- * keeps changing makes it throw, with no checkpoint written. `deleting` counts rows step 5 had
+ * Safe to run again, and while the new ledger runs: a row or a transaction that changes meanwhile
+ * is read again, so a transaction that drops a file during the run is never added. A row that keeps
+ * changing makes it throw, with no checkpoint written. `deleting` counts rows step 5 had
  * already marked although a transaction lists the file: they're left alone, and the script
  * reports them.
  */
@@ -121,10 +121,11 @@ async function addListing(
   for (let tries = 1; ; tries++) {
     const rows = await receiptRows(db, [fileId])
     const row = rows.get(fileId)
-    if (row?.deletingAt) return 'deleting'
     // As committed now, not as the pass saw them: one may have dropped the file since, and the
     // code that took it off has written the row already.
     const listing = await stillListing(db, fileId, transactionIds)
+    // Being deleted while a transaction lists it: left alone, and reported.
+    if (row?.deletingAt) return listing.length > 0 ? 'deleting' : 'unchanged'
     const stored = row?.transactionIds ?? []
     const missing = listing.filter(({ $id }) => !stored.includes($id))
     if (missing.length === 0 && (listing.length === 0 || row?.detachedAt === null)) {
@@ -167,9 +168,12 @@ async function stillListing(
   fileId: string,
   transactionIds: readonly string[],
 ): Promise<Transactions[]> {
-  const rows = await listAll<Transactions>(db, TABLES.transactions, [
-    Query.equal('$id', [...transactionIds]),
-  ])
+  const rows: Transactions[] = []
+  // Appwrite takes at most 100 values in one `equal`.
+  for (let start = 0; start < transactionIds.length; start += PAGE) {
+    const page = transactionIds.slice(start, start + PAGE)
+    rows.push(...(await listAll<Transactions>(db, TABLES.transactions, [Query.equal('$id', page)])))
+  }
   return rows
     .filter((row) => (row.receiptFileIds ?? []).includes(fileId))
     .sort((a, b) => (a.$id < b.$id ? -1 : 1))

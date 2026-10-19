@@ -307,7 +307,8 @@ describe('two writes to one file at once', () => {
   })
 
   it('keeps a transaction the backfill adds between the read and the staging', async () => {
-    // The backfill has no group guard, so only the second read of the rows catches it.
+    // Only the row changes, as the backfill's write does in a group this write doesn't guard:
+    // the second read of the rows catches it.
     const db = await withExpense(['f1'])
     await call(db, 'POST', '/transactions', expense({ id: 't2' }))
     const getFile = filesOf(db).getFile.bind(filesOf(db))
