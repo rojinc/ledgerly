@@ -130,6 +130,7 @@ export type Persons = Models.Row & {
     rev: string | null;
     mergeGroupIds: string[] | null;
     mergeMembersJson: string | null;
+    mergeCursorsJson: string | null;
 }
 
 export type Identities = Models.Row & {
