@@ -77,7 +77,7 @@ Scheduled jobs run with the server key and no caller. They write as the system a
 - `receipts`: only verified users can upload (`create("users/verified")`). The client must set `read("team:<groupId>")` on the file. Before a write attaches a file that isn't already on the stored row, the `ledger` function checks that:
   - the file is in the `receipts` bucket;
   - its permissions include `read("team:<groupId>")` for the transaction's group;
-  - its `mimeType` is `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif` or `application/pdf`;
+  - its `mimeType` is `image/jpeg`, `image/png`, `image/webp`, `image/heic`, `image/heif` or `application/pdf` (`image/heif` because a `.heic` photo can report itself as HEIF; the bucket takes no `.heif` files);
   - its upload is complete (`chunksUploaded` equals `chunksTotal`). An unfinished upload's remaining chunks could still change its content and permissions.
 
   Any failure gives `VALIDATION_FAILED`, naming `receiptFileIds.<index>`, with the same message for every failure. A missing file and another group's file get the same answer, so the reply never shows whether a file ID exists. Only after every file passes does the ledger set each file's permissions to exactly `read("team:<groupId>")`, and it does so **before** the row commits. That removes any wider read and any `update` or `delete` the uploader granted themselves, so a stored ID never points at a file its uploader can still swap or delete behind a locked transaction. A retry passes the check again. Taking a file off a transaction leaves the file and its permissions as they are. A file no transaction lists keeps the permissions it has until it's cleaned up ([security](security-and-privacy.md#threats-and-controls)).
