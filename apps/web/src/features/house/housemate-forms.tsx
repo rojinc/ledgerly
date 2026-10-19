@@ -105,6 +105,21 @@ export function AddHousemate({
   })
   const { errors, isSubmitting } = form.formState
   const [email, phone] = form.watch(['email', 'phone'])
+  const submit = form.handleSubmit(async (body) => {
+    setAdded('')
+    try {
+      const member = await writes.add.mutateAsync(body)
+      form.reset(newHousemate(group))
+      setAdded(member.displayName)
+    } catch (error) {
+      form.setError('root', {
+        message:
+          error instanceof GroupsError && error.code === 'CONFLICT'
+            ? 'They’re already in this house.'
+            : (error as Error).message,
+      })
+    }
+  })
 
   return (
     <section aria-labelledby={headingId} className="flex flex-col gap-4">
@@ -118,21 +133,11 @@ export function AddHousemate({
       <form
         noValidate
         className="flex flex-col gap-4"
-        onSubmit={form.handleSubmit(async (body) => {
-          setAdded('')
-          try {
-            const member = await writes.add.mutateAsync(body)
-            form.reset(newHousemate(group))
-            setAdded(member.displayName)
-          } catch (error) {
-            form.setError('root', {
-              message:
-                error instanceof GroupsError && error.code === 'CONFLICT'
-                  ? 'They’re already in this house.'
-                  : (error as Error).message,
-            })
-          }
-        })}
+        onSubmit={(event) => {
+          // aria-disabled, not disabled, keeps focus on the button; this guard stops a second send.
+          if (form.formState.isSubmitting) event.preventDefault()
+          else void submit(event)
+        }}
       >
         {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
         <TextField
@@ -179,7 +184,7 @@ export function AddHousemate({
           error={errors.joinedOn}
           {...form.register('joinedOn')}
         />
-        <Button type="submit" className="self-start" disabled={isSubmitting}>
+        <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Adding…' : 'Add housemate'}
         </Button>
       </form>
@@ -200,7 +205,7 @@ function FormButtons({
 }) {
   return (
     <div className="flex flex-wrap gap-3">
-      <Button type="submit" disabled={pending}>
+      <Button type="submit" aria-disabled={pending}>
         {pending ? 'Saving…' : label}
       </Button>
       <Button type="button" variant="outline" onClick={onCancel}>
@@ -235,22 +240,27 @@ export function EditMember({ member, writes, onClose }: RowFormProps) {
   })
   const { errors, isSubmitting } = form.formState
   const id = member.$id
+  const submit = form.handleSubmit(async (body) => {
+    try {
+      if (Object.keys(body).length > 0) {
+        await writes.update.mutateAsync({ memberId: id, body })
+      }
+      onClose()
+    } catch (error) {
+      form.setError('root', { message: (error as Error).message })
+    }
+  })
 
   return (
     <form
       ref={ref}
       noValidate
       className="flex flex-col gap-4 pt-3"
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          if (Object.keys(body).length > 0) {
-            await writes.update.mutateAsync({ memberId: id, body })
-          }
-          onClose()
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
-        }
-      })}
+      onSubmit={(event) => {
+        // aria-disabled, not disabled, keeps focus on the button; this guard stops a second send.
+        if (form.formState.isSubmitting) event.preventDefault()
+        else void submit(event)
+      }}
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
       <TextField
@@ -300,20 +310,25 @@ export function MoveOut({ group, member, writes, onClose }: RowFormProps & { gro
   })
   const { errors, isSubmitting } = form.formState
   const id = member.$id
+  const submit = form.handleSubmit(async (body) => {
+    try {
+      await writes.update.mutateAsync({ memberId: id, body })
+      onClose()
+    } catch (error) {
+      form.setError('root', { message: (error as Error).message })
+    }
+  })
 
   return (
     <form
       ref={ref}
       noValidate
       className="flex flex-col gap-4 pt-3"
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          await writes.update.mutateAsync({ memberId: id, body })
-          onClose()
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
-        }
-      })}
+      onSubmit={(event) => {
+        // aria-disabled, not disabled, keeps focus on the button; this guard stops a second send.
+        if (form.formState.isSubmitting) event.preventDefault()
+        else void submit(event)
+      }}
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
       <TextField

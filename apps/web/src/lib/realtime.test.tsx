@@ -395,6 +395,7 @@ describe('staleKeys', () => {
         ['history', 'group1'],
         ['transaction'],
         ['myShares'],
+        ['activity', 'group1'],
       ],
     ],
     [
@@ -406,11 +407,21 @@ describe('staleKeys', () => {
         ['history', 'group1'],
         ['transaction'],
         ['myShares'],
+        ['activity', 'group1'],
       ],
     ],
-    ['members.create', [['member', 'group1'], ['members', 'group1'], ['myRoles']]],
-    ['members.update', [['member', 'group1'], ['members', 'group1'], ['myRoles']]],
-    ['members.delete', [['member', 'group1'], ['members', 'group1'], ['myRoles']]],
+    [
+      'members.create',
+      [['member', 'group1'], ['members', 'group1'], ['myRoles'], ['activity', 'group1']],
+    ],
+    [
+      'members.update',
+      [['member', 'group1'], ['members', 'group1'], ['myRoles'], ['activity', 'group1']],
+    ],
+    [
+      'members.delete',
+      [['member', 'group1'], ['members', 'group1'], ['myRoles'], ['activity', 'group1']],
+    ],
     ...(['create', 'update', 'delete'] as const).map((action): [Name, unknown[][]] => [
       `transactions.${action}`,
       [
@@ -421,6 +432,7 @@ describe('staleKeys', () => {
         ['today'],
         ['myShares'],
         ['bills', 'group1'],
+        ['activity', 'group1'],
       ],
     ]),
     [
@@ -428,6 +440,7 @@ describe('staleKeys', () => {
       [
         ['statements', 'group1'],
         ['statement', 'statement1'],
+        ['activity', 'group1'],
       ],
     ],
     [
@@ -435,6 +448,7 @@ describe('staleKeys', () => {
       [
         ['statements', 'group1'],
         ['statement', 'statement1'],
+        ['activity', 'group1'],
       ],
     ],
   ])('maps %s', (name, keys) => {
@@ -536,7 +550,7 @@ describe('useRealtimeSync', () => {
     act(() => vi.advanceTimersByTime(FLUSH_MS - 1))
     expect(invalidate).not.toHaveBeenCalled()
     act(() => vi.advanceTimersByTime(1))
-    expect(invalidate).toHaveBeenCalledTimes(7)
+    expect(invalidate).toHaveBeenCalledTimes(8)
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 'tx1'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] })
   })
@@ -550,7 +564,7 @@ describe('useRealtimeSync', () => {
     act(() => vi.advanceTimersByTime(200))
     expect(invalidate).not.toHaveBeenCalled()
     act(() => vi.advanceTimersByTime(100))
-    expect(invalidate).toHaveBeenCalledTimes(2)
+    expect(invalidate).toHaveBeenCalledTimes(3)
   })
 
   it('waits for a pending write before refreshing', async () => {

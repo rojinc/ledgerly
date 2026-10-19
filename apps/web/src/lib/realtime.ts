@@ -23,6 +23,8 @@ export const NOT_LIVE = ['currentUser', 'bootstrap', 'profile', 'person'] as con
 /** How long after the last event the collected keys are refreshed. */
 export const FLUSH_MS = 300
 
+// `activity` has no channel of its own: every activity row is written with a row of one of these
+// tables, so each of them refreshes the group's feed (#47).
 const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
   // Every write of shares also sets the group's `rev` (ledger.md#concurrency), so this covers
   // share changes no transaction row shows, such as a merge's.
@@ -33,8 +35,14 @@ const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
     ['history', groupId],
     ['transaction'],
     ['myShares'],
+    ['activity', groupId],
   ],
-  members: (groupId) => [['member', groupId], ['members', groupId], ['myRoles']],
+  members: (groupId) => [
+    ['member', groupId],
+    ['members', groupId],
+    ['myRoles'],
+    ['activity', groupId],
+  ],
   transactions: (groupId, rowId) => [
     ['calendar'],
     ['balances', groupId],
@@ -44,11 +52,13 @@ const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
     // Feature-local keys: the dashboard's shares and the bills lists.
     ['myShares'],
     ['bills', groupId],
+    ['activity', groupId],
   ],
   // `statement` covers an async finalize's status (#32).
   statements: (groupId, rowId) => [
     ['statements', groupId],
     ['statement', rowId],
+    ['activity', groupId],
   ],
 }
 

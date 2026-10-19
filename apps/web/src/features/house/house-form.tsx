@@ -10,7 +10,12 @@ import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
-import { type HouseValues, toHouseSettingsBody, toNewHouseBody } from './house-values'
+import {
+  type HouseValues,
+  toHouseFields,
+  toHouseSettingsBody,
+  toNewHouseBody,
+} from './house-values'
 
 type Props = {
   defaultValues: HouseValues
@@ -18,6 +23,8 @@ type Props = {
   | { mode: 'create'; id: string; onSave: (body: CreateGroupBody) => Promise<unknown> }
   | {
       mode: 'settings'
+      /** The house as it's stored now, for what this form didn't change. */
+      stored: HouseValues
       /** Resolves to the values of the house as stored. */
       onSave: (body: UpdateGroupBody) => Promise<HouseValues>
     }
@@ -49,24 +56,37 @@ export function HouseForm(props: Props) {
           )
         : schemaResolver<HouseValues, CreateGroupBody | UpdateGroupBody>(
             updateGroupBodySchema,
-            toHouseSettingsBody,
+            toHouseFields,
           ),
     defaultValues: props.defaultValues,
   })
   const { errors, isDirty, isSubmitting, isSubmitSuccessful } = form.formState
+  const submit = form.handleSubmit(async (body) => {
+    try {
+      if (props.mode === 'create') {
+        await props.onSave(body as CreateGroupBody)
+        return
+      }
+      const changes = toHouseSettingsBody(
+        form.getValues(),
+        form.formState.dirtyFields,
+        props.stored,
+      )
+      // Show what was stored (the trimmed name), not what was typed.
+      form.reset(Object.keys(changes).length > 0 ? await props.onSave(changes) : props.stored)
+    } catch (error) {
+      form.setError('root', { message: (error as Error).message })
+    }
+  })
 
   return (
     <form
       noValidate
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          if (props.mode === 'create') await props.onSave(body as CreateGroupBody)
-          // Show what was stored (the trimmed name), not what was typed.
-          else form.reset(await props.onSave(body as UpdateGroupBody))
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
-        }
-      })}
+      onSubmit={(event) => {
+        // aria-disabled, not disabled, keeps focus on the button; this guard stops a second send.
+        if (form.formState.isSubmitting) event.preventDefault()
+        else void submit(event)
+      }}
       className="flex flex-col gap-4"
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
@@ -90,7 +110,7 @@ export function HouseForm(props: Props) {
         label="Finalize the divide automatically when the month ends"
         {...form.register('autoFinalize')}
       />
-      <Button type="submit" className="self-start" disabled={isSubmitting}>
+      <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : props.mode === 'create' ? 'Create house' : 'Save'}
       </Button>
       {props.mode === 'settings' && isSubmitSuccessful && !isDirty && !errors.root && (
