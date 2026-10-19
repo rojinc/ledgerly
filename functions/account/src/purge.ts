@@ -22,7 +22,7 @@ import {
 } from '@ledgerly/server/ledger/receipt-files'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, type Models, Permission, Query, Role } from 'node-appwrite'
-import { getRowOrNull, isPlaceholder } from './rows'
+import { FORMER_MEMBER, getRowOrNull, isPlaceholder } from './rows'
 import type { FilesApi, Services } from './services'
 
 // data-model.md#storage-buckets
@@ -44,16 +44,19 @@ export async function purge(services: Services, own: Members): Promise<boolean> 
   if (!(await deleteRows(services, own.groupId))) return false
   if (!(await deleteMembers(services, own))) return false
   const { db } = services
-  // A nightly check that read the team before it went may have built the balances row again.
-  const balances = await getRowOrNull<Balances>(db, TABLES.balances, own.groupId)
   const group = await getRowOrNull<Groups>(db, TABLES.groups, own.groupId)
-  await withTransaction(db, (tx) =>
-    tx.write(
-      ...(balances ? [remove(TABLES.balances, balances.$id)] : []),
+  await withTransaction(db, async (tx) => {
+    await tx.write(
       ...(group ? [remove(TABLES.groups, group.$id)] : []),
       remove(TABLES.members, own.$id),
-    ),
-  )
+    )
+    // A nightly check that read the team before it went may have built the balances row again.
+    // Read once the group row is staged: a rebuild writes that row too, so one that commits
+    // after this read fails this commit, and one before it is seen here.
+    if (await getRowOrNull<Balances>(db, TABLES.balances, own.groupId)) {
+      await tx.write(remove(TABLES.balances, own.groupId))
+    }
+  })
   return true
 }
 
@@ -73,26 +76,30 @@ async function deleteFiles(services: Services, groupId: string): Promise<boolean
     transactionIds.add(row.$id)
     for (const fileId of row.receiptFileIds ?? []) fileIds.add(fileId)
   }
-  // A row is checked against all of the group's transactions, so none goes until they're read.
+  // Only to stop on time: with some transactions not read, a row that names one of them counts
+  // as listed elsewhere, so fewer files would go, never more.
   if (services.outOfTime()) return false
   const listed = [...fileIds]
   for (let start = 0; start < listed.length; start += IDS_PER_QUERY) {
     const chunk = listed.slice(start, start + IDS_PER_QUERY)
     const rows = await receiptRows(db, chunk)
     for (const fileId of chunk) {
+      // Each file takes up to two Storage calls. No row has been touched yet, so a rerun is safe.
+      if (services.outOfTime()) return false
       const row = rows.get(fileId)
       if (row && (row.transactionIds ?? []).every((id) => transactionIds.has(id))) {
         await deleteFile(files, RECEIPTS_BUCKET, fileId, groupId)
       }
     }
-    if (services.outOfTime()) return false
   }
   // idx_group_period
   const statements = pages<Statements>(services, TABLES.statements, [
     Query.equal('groupId', groupId),
   ])
   for await (const row of statements) {
-    if (row.pdfFileId) await deleteFile(files, STATEMENTS_BUCKET, row.pdfFileId, groupId)
+    // Finalize uploads the PDF under the statement's ID before it sets `pdfFileId`, so a
+    // finalize stuck in between leaves one there.
+    await deleteFile(files, STATEMENTS_BUCKET, row.pdfFileId ?? row.$id, groupId)
   }
   return !services.outOfTime()
 }
@@ -179,14 +186,15 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
 // Every other member row, once no share is left (I-3), each in a transaction of its own with
 // its person and identities when that person is a placeholder no other member row names. So a
 // crash never leaves a placeholder that a rerun can't find. The person goes only after a staged
-// write, and only if, checked again after it, that still holds: a merged person is kept.
+// write, and only if, checked again after it, that still holds: a merged person is kept. A row
+// that another deletion under way purges the group from itself is left to it (ownPurgeEnds).
 async function deleteMembers(services: Services, own: Members): Promise<boolean> {
   const { db } = services
   // idx_groupId
   for await (const member of pages<Members>(services, TABLES.members, [
     Query.equal('groupId', own.groupId),
   ])) {
-    if (member.$id === own.$id) continue
+    if (member.$id === own.$id || (await ownPurgeEnds(db, member))) continue
     const alone = await isLonePlaceholder(db, member)
     await withTransaction(db, async (tx) => {
       await tx.write(remove(TABLES.members, member.$id))
@@ -204,6 +212,20 @@ async function deleteMembers(services: Services, own: Members): Promise<boolean>
     })
   }
   return !services.outOfTime()
+}
+
+// Whether the row is one whose own deletion purges the group and deletes it last: an `active`
+// or `left` row without the keep's write (step 4 still has it to do), of a person being deleted
+// (`deletedAt` set, `userId` not yet cleared by step 6). Deleting it would fail that purge's last
+// transaction, and two deletions purging one group would each fail the other's, leaving the
+// group row behind for good. Any other row of theirs goes: a placeholder row they never joined,
+// or a kept one, which their deletion doesn't come back to once step 4 is done.
+async function ownPurgeEnds(db: Db, member: Members): Promise<boolean> {
+  const kept =
+    member.status === 'left' && member.role === 'viewer' && member.displayName === FORMER_MEMBER
+  if (kept || (member.status !== 'active' && member.status !== 'left')) return false
+  const person = await getRowOrNull<Persons>(db, TABLES.persons, member.personId)
+  return Boolean(person?.deletedAt && person.userId)
 }
 
 // Whether the member's person is a placeholder (isPlaceholder) with no member row but this one.
