@@ -13,7 +13,6 @@ import { checkSnapshot } from '@ledgerly/core/statements/snapshot'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction, writeInBatches } from '@ledgerly/server/appwrite/transaction'
-import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { renderInvoicePdf } from '@ledgerly/server/pdf/invoice-pdf'
 import { Query } from 'node-appwrite'
@@ -28,6 +27,7 @@ import {
   isAppwriteError,
   listAll,
   parseBody,
+  requireMemberOf,
   snapshotOf,
   teamRead,
   tryAgain,
@@ -49,15 +49,9 @@ export async function finalizeRoute(
 ): Promise<Statements> {
   const { send } = parseBody(finalizeStatementBodySchema, body)
   const statement = await getStatement(services.db, statementId)
-  const { person, group } = await requireMember(
-    services.db,
-    services.teams,
-    userId,
-    statement.groupId,
-    {
-      roles: ['admin'],
-    },
-  )
+  const { person, group } = await requireMemberOf(services.db, services.teams, userId, statement, {
+    roles: ['admin'],
+  })
   return finalizeStatement(services, group, statement, person.$id, send)
 }
 
