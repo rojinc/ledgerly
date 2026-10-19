@@ -46,7 +46,7 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `claimedAt` | datetime? | When the person first got a user account (bootstrap or adopt). Claim joins member rows whose `$createdAt` is strictly before it ([identity](identity-and-invites.md#claim-linking-records-to-a-new-account)). |
 | `mergedInto` | varchar(36)? | Set when this person is merged into another ([identity](identity-and-invites.md#merging-two-persons)). Kept for good: old statements and groups the other person left on their own can still name this one. |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). Set first, as the point of no return; a person with `deletedAt` and `userId` both set has a deletion still to finish. |
-| `rev` | varchar(20)? | A fresh random value on every guard write (invite limits), so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |
+| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits, and for adds that find the person. |
 
 Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`, `idx_deletedAt (deletedAt)` (the hourly job finds deletions to finish).
 Permissions: placeholders have none (server only). A registered person's row gets `read("user:<userId>")`.
@@ -169,7 +169,7 @@ Permissions: `read("team:<groupId>")`.
 | `statementId` | varchar(36)? | Set when a final statement locks it |
 | `receiptFileIds` | varchar(36)[]? | Files in the `receipts` bucket |
 | `startedAt` | datetime? | Timer shifts |
-| `remindedAt` | datetime? | When the last reminder (bill due, shift to confirm, long-running timer) was sent, or was settled without an email (nobody to send to, an archived group, an address Resend refuses) |
+| `remindedAt` | datetime? | When the last reminder (bill due, shift to confirm, long-running timer) was sent, or was settled without an email (nobody to send to, an archived group, an address Resend refuses; but a shift of a schedule that auto-posts isn't settled with nobody to send to). Cleared when a bill's `dueOn` or a `scheduled` row's `date` changes |
 | `voidReason` | varchar(200)? | |
 | `createdBy` | varchar(36) | personId. Schedule occurrences use the schedule's `createdBy`. |
 | `updatedBy` | varchar(36) | personId |
