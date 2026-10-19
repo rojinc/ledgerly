@@ -268,7 +268,9 @@ describe('POST /: finishing deletions', () => {
         scheduled: true,
       })
       expect(crashed.body).toMatchObject({ ok: true, data: { failed: 1 } })
-      expect(errors.mock.calls).toEqual([['account: finishing failed for person p1: Error']])
+      expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+        { fn: 'unknown', event: 'account_finish_failed', personId: 'p1', cause: 'Error' },
+      ])
       expect(crashed.logs.join('\n')).not.toMatch(/Crashed|Sam|@/)
       vi.restoreAllMocks()
       const rerun = await runJob(services)

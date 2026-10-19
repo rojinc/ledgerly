@@ -2,7 +2,8 @@ import type { Persons } from '@ledgerly/core/generated/rows'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { AppwriteException, Query } from 'node-appwrite'
+import { type LogFields, logProblem } from '@ledgerly/server/http/log'
+import { Query } from 'node-appwrite'
 import type { Deleting } from '../groups'
 import { personsOfUser } from '../rows'
 import type { AccountUser, Services } from '../services'
@@ -39,7 +40,7 @@ export async function hourlyJob(scheduled: boolean, services: () => Services): P
   for await (const person of persons) {
     // The query says both are set.
     const deleting = person as Deleting & { userId: string }
-    await counted(counts, `person ${person.$id}`, async () => {
+    await counted(counts, { personId: person.$id }, async () => {
       if (await finish(built, deleting.userId, deleting)) counts.finished += 1
     })
   }
@@ -49,7 +50,7 @@ export async function hourlyJob(scheduled: boolean, services: () => Services): P
     if (!user.labels.includes(DELETED_LABEL) || !(Date.parse(user.$updatedAt) <= settled)) {
       continue
     }
-    await counted(counts, `user ${user.$id}`, async () => {
+    await counted(counts, { userId: user.$id }, async () => {
       if (await deleteLeftUser(built, user.$id)) counts.users += 1
     })
   }
@@ -89,18 +90,17 @@ async function* labelledUsers({ users, outOfTime }: Services): AsyncGenerator<Ac
   }
 }
 
-// One that fails is counted and logged by its ID, and the others still run.
-async function counted(counts: JobResult, what: string, work: () => Promise<void>): Promise<void> {
+// One that fails is counted and logged by its ID (and the error's name), and the others still
+// run.
+async function counted(
+  counts: JobResult,
+  ids: Pick<LogFields, 'personId' | 'userId'>,
+  work: () => Promise<void>,
+): Promise<void> {
   try {
     await work()
   } catch (error) {
     counts.failed += 1
-    console.error(`account: finishing failed for ${what}: ${describe(error)}`)
+    logProblem('account_finish_failed', { ...ids, error })
   }
-}
-
-// Names the error, never its message, which can quote personal data.
-function describe(error: unknown): string {
-  if (error instanceof AppwriteException) return `AppwriteException ${error.code} ${error.type}`
-  return error instanceof Error ? error.name : typeof error
 }
