@@ -18,6 +18,7 @@ import {
   toHouseValues,
 } from './house-values'
 import { AddHousemate, EditMember, MoveOut } from './housemate-forms'
+import { SettleUp } from './settle-up'
 import { GroupsError, useLeaveHouse, useMemberWrites, useUpdateHouse } from './use-house'
 
 function Message({ children, alert = false }: { children: string; alert?: boolean }) {
@@ -141,7 +142,7 @@ function House({
       {(role === 'admin' || role === 'member') && (
         <AddHousemate group={group} isAdmin={role === 'admin'} writes={writes} />
       )}
-      {/* #45: settle up mounts here. */}
+      <SettleUp group={group} me={me} members={members} />
       {/* Someone who moved out is still in the team until they leave (permissions.md). */}
       {!archived && me && me.status !== 'placeholder' && <LeaveHouse group={group} />}
       {role === 'admin' && <HouseSettings group={group} />}
