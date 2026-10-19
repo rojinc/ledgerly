@@ -895,7 +895,9 @@ describe('POST /claim, merging a placeholder', () => {
           },
         }),
       )
-      // Sammy's row in g3 was removed after step 1 listed it.
+      // Sammy's row in g3 was removed after step 1 listed it. An earlier run, while Sam was still
+      // joined there, scanned g3 and left tG3: a group where U isn't joined is done at once,
+      // whatever its cursor says (#347).
       await withTransaction(services.db, (tx) =>
         tx.write({
           action: 'update',
@@ -905,6 +907,7 @@ describe('POST /claim, merging a placeholder', () => {
             mergedInto: 'pSam',
             mergeGroupIds: ['g1', 'g2', 'g3'],
             mergeMembersJson: recorded(services, ['g1', 'g2', 'g3']),
+            mergeCursorsJson: JSON.stringify([{ groupId: 'g3', after: 'tG3', left: ['tG3'] }]),
           },
         }),
       )
@@ -934,6 +937,81 @@ describe('POST /claim, merging a placeholder', () => {
       expect(events(log)).toContainEqual(expect.objectContaining({ event: 'merge_finished' }))
     },
   )
+
+  // The self-review's race on #347: Sam's placeholder row in g3 becomes joined while the claim
+  // is past g3's check. Nothing in g3 moves this run, shares included, so the next run renames
+  // the input before it moves the shares, as everywhere else.
+  it('moves nothing in a group where Sam joins after its check, and the next claim does it all', async () => {
+    const services = house({
+      groups: [group('g3')],
+      members: [placeholderRow('m9', 'g3', 'pSam', BEFORE)],
+      transactions: [
+        transaction(
+          't9',
+          'g3',
+          {
+            payers: [{ personId: 'pX', cents: 3000 }],
+            split: { mode: 'equal', personIds: ['pP', 'pSam', 'pX'] },
+          },
+          3000,
+        ),
+      ],
+      shares: [
+        share('s9', 't9', 'g3', 'pX', 3000, 1000),
+        share('s10', 't9', 'g3', 'pP', 0, 1000),
+        share('s11', 't9', 'g3', 'pSam', 0, 1000),
+      ],
+    })
+    // Sammy's row in g3 was removed after step 1 listed it.
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'persons',
+        rowId: 'pP',
+        data: {
+          mergedInto: 'pSam',
+          mergeGroupIds: ['g1', 'g2', 'g3'],
+          mergeMembersJson: recorded(services, ['g1', 'g2', 'g3']),
+        },
+      }),
+    )
+    // Sam's row in g3 is joined as soon as anything lists g3's shares.
+    const list = services.db.listRows.bind(services.db)
+    let joinedMeanwhile = false
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      if (
+        !joinedMeanwhile &&
+        params.tableId === 'shares' &&
+        JSON.stringify(params.queries).includes('g3')
+      ) {
+        joinedMeanwhile = true
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'members',
+            rowId: 'm9',
+            data: { status: 'active' },
+          }),
+        )
+      }
+      return list(params)
+    })
+    await claim(services)
+    expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
+    vi.mocked(services.db.listRows).mockRestore()
+    // Sam is joined in g3 now (this claim joined Sam's own rows last).
+    await claim(services)
+    expect(namingSammy(services)).toEqual({
+      identities: [],
+      members: [],
+      shares: [],
+      transactions: [],
+      schedules: [],
+      reminders: [],
+      activity: [],
+    })
+    expect(nets(services, 'g3')).toEqual({ pX: 2000, pSam: -2000 })
+  })
 
   // Two claims cut off in turn: the second finishes the group the first left part done before
   // it starts another, since both walk Sammy's groups in step 1's order.

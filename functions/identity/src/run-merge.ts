@@ -64,8 +64,8 @@ export async function finishMerges(
 }
 
 /**
- * Steps 2 and 3 for P, one group at a time: P's member row there, then the group's templates,
- * inputs, activity subjects and shares, before the next group. A cut-off then leaves at most one
+ * Steps 2 and 3 for P, one group at a time: P's member row there, then, where U is joined, the
+ * group's templates, inputs, activity subjects and shares, before the next group. A cut-off then leaves at most one
  * group part done, and a group that can't go on now (a statement being finalized) waits whole.
  * One whose finalize starts after its member row moved waits part done, and a later claim
  * finishes it first. Then reminders, and P's identities once nothing else names P (step 4).
@@ -132,40 +132,42 @@ async function runSteps(
       logProblem('merge_left_inputs', { ...ids, groupId })
       const left = await subjectsOf(db, fromId, groupId)
       if (left > 0) logProblem('merge_left_subjects', { ...ids, groupId, count: left })
-    } else {
-      // Templates first, so an expansion from now on names U.
-      const templates = await moveTemplates(db, merge, [groupId], deadline)
-      moved.inputs += templates.rewritten
-      moved.skipped += templates.skipped
-      if (templates.putOff.length > 0) {
-        putOff.add(groupId)
-        continue
-      }
-      const inputs = await moveInputs(db, merge, [groupId], now, deadline, recorded, cursors)
-      moved.inputs += inputs.rewritten
-      moved.voided += inputs.voided
-      moved.skipped += inputs.skipped
-      if (inputs.putOff.length > 0) {
-        putOff.add(groupId)
-        continue
-      }
-      if (templates.cutOff || inputs.cutOff) {
-        done = false
-        break
-      }
-      // Rows left as they are keep the merge open, but their group's shares can still move.
-      if (!templates.done || !inputs.done) done = false
-      // Activity rows about P are about U from now on (#257): the feed names U, not "A former
-      // member".
-      const subjects = await moveSubjects(db, fromId, intoId, [groupId], deadline)
-      moved.subjects += subjects.moved
-      if (!subjects.done) {
-        done = false
-        break
-      }
+      // Shares wait too: a share batch that saw U join meanwhile would move them while the
+      // inputs still name P, and nothing would come back to rename them.
+      continue
     }
-    // Neither has a row here (U's, once P's, was removed since): a share moved to U would be one
-    // with no member row (I-3), so P's stay, and `stray()` keeps the merge open while one is left.
+    // Templates first, so an expansion from now on names U.
+    const templates = await moveTemplates(db, merge, [groupId], deadline)
+    moved.inputs += templates.rewritten
+    moved.skipped += templates.skipped
+    if (templates.putOff.length > 0) {
+      putOff.add(groupId)
+      continue
+    }
+    const inputs = await moveInputs(db, merge, [groupId], now, deadline, recorded, cursors)
+    moved.inputs += inputs.rewritten
+    moved.voided += inputs.voided
+    moved.skipped += inputs.skipped
+    if (inputs.putOff.length > 0) {
+      putOff.add(groupId)
+      continue
+    }
+    if (templates.cutOff || inputs.cutOff) {
+      done = false
+      break
+    }
+    // Rows left as they are keep the merge open, but their group's shares can still move.
+    if (!templates.done || !inputs.done) done = false
+    // Activity rows about P are about U from now on (#257): the feed names U, not "A former
+    // member".
+    const subjects = await moveSubjects(db, fromId, intoId, [groupId], deadline)
+    moved.subjects += subjects.moved
+    if (!subjects.done) {
+      done = false
+      break
+    }
+    // U's row was removed since the check: a share moved to U would be one with no member row
+    // (I-3), so P's stay, and `stray()` keeps the merge open while one is left.
     if (!(await memberOf(db, groupId, intoId))) continue
     // Shares last: the rule for a posted row needs P's share to tell the row was P's.
     const shares = await moveShares(db, fromId, intoId, [groupId], deadline)
