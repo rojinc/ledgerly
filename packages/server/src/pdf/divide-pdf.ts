@@ -1,0 +1,150 @@
+import { formatMoney } from '@ledgerly/core/money/format'
+import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
+import type { Content, ContentText, TDocumentDefinitions } from 'pdfmake/interfaces'
+import {
+  breakable,
+  field,
+  footer,
+  formatDate,
+  heading,
+  LOCALE,
+  lineText,
+  MUTED,
+  PAGE,
+  pdfmake,
+  table,
+} from './layout'
+
+// Wide enough for -$1,234,567.89 on one line.
+const AMOUNT = 70
+
+/**
+ * The house divide PDF, laid out as statements.md#monthly-divide-pdf-layout-house says: who
+ * paid what, everyone's share and who should pay whom. It's never called an invoice and has
+ * no GST.
+ */
+export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buffer> {
+  if (snapshot.group.type !== 'house') throw new Error('renderDividePdf needs a house snapshot')
+  const money = (cents: number): ContentText => ({
+    text: formatMoney(cents, snapshot.group.currency, LOCALE),
+    noWrap: true,
+  })
+  const names = new Map(snapshot.people.map((person) => [person.personId, breakable(person.name)]))
+  // buildStatementSnapshot lists everyone in a line or a transfer in `people`.
+  const nameOf = (personId: string): string => {
+    const name = names.get(personId)
+    if (name === undefined) throw new Error('A divide names only the people in its snapshot')
+    return name
+  }
+  const period = `${formatDate(snapshot.period.start)} – ${formatDate(snapshot.period.end)}`
+  // In words too, so the sign isn't the only thing that says who owes.
+  const standing = (closingCents: number) =>
+    closingCents > 0
+      ? `is owed ${money(closingCents).text}`
+      : closingCents < 0
+        ? `owes ${money(-closingCents).text}`
+        : 'settled'
+
+  const content: Content[] = [
+    {
+      columns: [
+        { text: breakable(snapshot.group.name), style: 'issuer' },
+        {
+          width: 'auto',
+          stack: [
+            { text: 'Divide', style: 'title' },
+            { layout: 'noBorders', table: { body: [field('Period', period)] } },
+          ],
+        },
+      ],
+    },
+    heading('People'),
+    table(
+      ['*', AMOUNT, AMOUNT, AMOUNT, 90],
+      ['Name', 'Opening', 'Paid', 'Share', 'Closing'],
+      snapshot.people.map((person) => [
+        nameOf(person.personId),
+        money(person.openingCents),
+        money(person.givenCents),
+        money(person.receivedCents),
+        {
+          stack: [
+            money(person.closingCents),
+            { text: standing(person.closingCents), fontSize: 8, color: MUTED },
+          ],
+        },
+      ]),
+      { numbersFrom: 1 },
+    ),
+    heading('Suggested transfers'),
+    ...(snapshot.transfers.length > 0
+      ? snapshot.transfers.map(
+          (transfer) =>
+            `${nameOf(transfer.fromPersonId)} pays ${nameOf(transfer.toPersonId)} ${money(transfer.cents).text}`,
+        )
+      : ['Everyone is settled up.']),
+  ]
+  if (snapshot.lines.length > 0) content.push(transactions(snapshot, money, nameOf))
+
+  const doc: TDocumentDefinitions = {
+    ...PAGE,
+    info: { title: `Divide ${period}`, creator: 'Ledgerly', producer: 'Ledgerly' },
+    footer: footer(`Divide ${period}`),
+    content,
+  }
+  return pdfmake.createPdf(doc).getBuffer()
+}
+
+/**
+ * Each transaction is one row, with its people in a table of their own under the description,
+ * so a page never breaks inside one (15 people at most, so one always fits a page). The
+ * heading is the table's first header row, so it's never left alone at the foot of a page;
+ * it repeats on each page the table runs onto.
+ */
+function transactions(
+  snapshot: StatementSnapshot,
+  money: (cents: number) => ContentText,
+  nameOf: (personId: string) => string,
+): Content {
+  const right = (cell: ContentText): ContentText => ({ ...cell, alignment: 'right' })
+  const header = ['Date', 'Description', 'Paid', 'Share', 'Total'].map((text, index) => ({
+    text,
+    bold: true,
+    color: MUTED,
+    alignment: index >= 2 ? 'right' : 'left',
+  }))
+  return {
+    layout: 'lightHorizontalLines',
+    table: {
+      headerRows: 2,
+      keepWithHeaderRows: 1,
+      dontBreakRows: true,
+      widths: [60, '*', AMOUNT, AMOUNT, AMOUNT],
+      body: [
+        [{ text: 'Transactions', style: 'heading', colSpan: 5 }, {}, {}, {}, {}],
+        header,
+        ...snapshot.lines.map((line) => [
+          formatDate(line.date),
+          {
+            colSpan: 3,
+            layout: 'noBorders',
+            table: {
+              widths: ['*', AMOUNT, AMOUNT],
+              body: [
+                [{ text: lineText(line), bold: true }, '', ''],
+                ...line.shares.map((share) => [
+                  { text: nameOf(share.personId), color: MUTED, margin: [10, 0, 0, 0] },
+                  right(money(share.givenCents)),
+                  right(money(share.receivedCents)),
+                ]),
+              ],
+            },
+          },
+          {},
+          {},
+          right(money(line.totalCents)),
+        ]),
+      ],
+    },
+  } as Content
+}
