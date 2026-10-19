@@ -162,7 +162,7 @@ Runs last, in what's left of the run's budget. It takes groups where `nextCheckA
 **Checks.** Each finding is one error log line with the event, the `groupId`, and the `transactionId`, `membershipId` or rule. IDs only ([personal data](security-and-privacy.md#personal-data)).
 - The `balances` row, if the group has one, equals the one built fresh from the shares (core `balancesFromShares()`).
 - Every posted transaction passes `assertShareInvariants()` (I-1, I-2, I-4, I-5), with each of its shares' persons counted as a member, so I-3 below doesn't stop the other checks.
-- Every share's person has a member row in the group (I-3). A share of a person whose merge isn't finished (`mergedInto` set, and the person still has an identity) counts as `merging`, not as broken: a merge cut off partway leaves shares on P ([merging](identity-and-invites.md#merging-two-persons)). Once P has no identity, a share left on P is broken.
+- Every share's person has a member row in the group (I-3). A share of a person whose merge isn't finished (`mergedInto` set, and the person still has an identity) counts as `merging`, not as broken: a merge cut off partway leaves shares on P ([merging](identity-and-invites.md#merging-two-persons)). So does a share of a person whose `mergedInto` person has `deletedAt` set: deleting an account deletes the identities of a person still being merged into it ([order](identity-and-invites.md#order), step 5), and that merge is never finished. Otherwise, once P has no identity, a share left on P is broken.
 - Every share belongs to a posted transaction of this group (I-6).
 
 Broken shares or transactions are reported, never fixed. They're fixed by hand, with adjustments.
