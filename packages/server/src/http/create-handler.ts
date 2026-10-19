@@ -17,9 +17,9 @@ export type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 
 export type RouteContext<Params = Record<string, string>> = {
   /**
-   * From the JWT in `x-appwrite-user-jwt`, verified with Appwrite. Null only on a scheduled run
-   * or a public route; any other request without a JWT gets UNAUTHENTICATED before the route
-   * runs. Never `x-appwrite-user-id`, which a client can forge (permissions.md).
+   * From the JWT in `x-appwrite-user-jwt`, verified with Appwrite. Null only on a scheduled run,
+   * an event run or a public route; any other request without a JWT gets UNAUTHENTICATED before
+   * the route runs. Never `x-appwrite-user-id`, which a client can forge (permissions.md).
    */
   userId: string | null
   /**
@@ -30,10 +30,15 @@ export type RouteContext<Params = Record<string, string>> = {
   sessionId: string | null
   /** True only when `x-appwrite-trigger` is exactly `schedule`: a cron run, never a person. */
   scheduled: boolean
+  /**
+   * True only when `x-appwrite-trigger` is exactly `event` and there is no JWT: an Appwrite
+   * event, never a person. Only a route declared with `event: true` gets one.
+   */
+  event: boolean
   params: Params
   /** The parsed JSON body, or undefined when there is none. Validate it with the route's schema. */
   body: unknown
-  /** Lower-cased request headers, without the caller and trigger headers (use `userId` and `scheduled`). */
+  /** Lower-cased request headers, without the caller and trigger headers (use `userId`, `scheduled` and `event`). */
   headers: Record<string, string>
   /** Created on first use, so routes that don't touch the database don't need a key. */
   db: Db
@@ -45,6 +50,8 @@ export type Route = {
   handler: (ctx: RouteContext) => Promise<unknown>
   /** Runs without a caller. Only `/health` is public. */
   public: boolean
+  /** Also runs for an event run, without a caller (permissions.md#function-side-checks). */
+  event: boolean
 }
 
 // '/transactions/:id/post' → { id: string }
@@ -59,7 +66,7 @@ export function route<P extends string>(
   method: Method,
   path: P,
   handler: (ctx: RouteContext<PathParams<P>>) => Promise<unknown>,
-  options: { public?: boolean } = {},
+  options: { public?: boolean; event?: boolean } = {},
 ): Route {
   // Matching guarantees every :param in `path` is present.
   return {
@@ -67,6 +74,7 @@ export function route<P extends string>(
     path,
     handler: (ctx) => handler(ctx as RouteContext<PathParams<P>>),
     public: options.public ?? false,
+    event: options.event ?? false,
   }
 }
 
@@ -104,15 +112,17 @@ export function createHandler(
       if (!match) throw new AppError('NOT_FOUND', `There is no ${method} ${req.path} route.`)
       routeName = `${method} ${match.route.path}`
       // permissions.md#function-side-checks, step 1: a person proves who they are with a JWT;
-      // only an exact `schedule` trigger or a public route runs without one.
-      // A person's request is never a scheduled run, whatever its trigger header says.
+      // only an exact `schedule` trigger, an exact `event` trigger on a route that opts in, or
+      // a public route runs without one. A person's request is never a scheduled or event run,
+      // whatever its trigger header says.
       const scheduled = trigger === 'schedule' && !hasJwt
+      const event = trigger === 'event' && !hasJwt && match.route.event
       let userId: string | null = null
       let sessionId: string | null = null
       if (hasJwt) {
         userId = await callerOrUnauthenticated(verifyCaller, jwt)
         sessionId = sessionIdOf(jwt, userId)
-      } else if (!scheduled && !match.route.public) {
+      } else if (!scheduled && !event && !match.route.public) {
         throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
       }
       let db: Db | undefined
@@ -120,6 +130,7 @@ export function createHandler(
         userId,
         sessionId,
         scheduled,
+        event,
         params: match.params,
         body: parseBody(req.bodyText),
         headers: routeHeaders,
