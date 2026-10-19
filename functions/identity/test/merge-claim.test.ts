@@ -32,7 +32,7 @@ const EMAIL = {
   verifiedAt: CLAIMED_AT,
 }
 
-function transaction(id: string, groupId: string, input: object) {
+function transaction(id: string, groupId: string, input: object, totalCents = 0) {
   return {
     $id: id,
     groupId,
@@ -41,7 +41,7 @@ function transaction(id: string, groupId: string, input: object) {
     statementId: null,
     date: '2026-10-01',
     description: 'Groceries',
-    totalCents: 0,
+    totalCents,
     inputJson: JSON.stringify(input),
   }
 }
@@ -68,7 +68,13 @@ function share(
 }
 
 function group(id: string) {
-  return { $id: id, type: 'house', name: 'Flat', rev: 'r0' }
+  return {
+    $id: id,
+    type: 'house',
+    name: 'Flat',
+    rev: 'r0',
+    settingsJson: '{"type":"house","autoFinalize":false,"defaultBillSplit":"days"}',
+  }
 }
 
 /**
@@ -83,7 +89,7 @@ function house(more: Record<string, object[]> = {}): Fakes {
       groups: [
         group('g1'),
         group('g2'),
-        { ...group('gMe'), type: 'personal' },
+        { ...group('gMe'), type: 'personal', settingsJson: '{"type":"personal"}' },
         ...(more.groups ?? []),
       ],
       members: [
@@ -104,14 +110,24 @@ function house(more: Record<string, object[]> = {}): Fakes {
         ...(more.members ?? []),
       ],
       transactions: [
-        transaction('t1', 'g1', {
-          payers: [{ personId: 'pX', cents: 9000 }],
-          split: { mode: 'equal', personIds: ['pP', 'pX'] },
-        }),
-        transaction('t2', 'g2', {
-          payers: [{ personId: 'pSam', cents: 6000 }],
-          split: { mode: 'equal', personIds: ['pP', 'pSam'] },
-        }),
+        transaction(
+          't1',
+          'g1',
+          {
+            payers: [{ personId: 'pX', cents: 9000 }],
+            split: { mode: 'equal', personIds: ['pP', 'pX'] },
+          },
+          9000,
+        ),
+        transaction(
+          't2',
+          'g2',
+          {
+            payers: [{ personId: 'pSam', cents: 6000 }],
+            split: { mode: 'equal', personIds: ['pP', 'pSam'] },
+          },
+          6000,
+        ),
         ...(more.transactions ?? []),
       ],
       shares: [

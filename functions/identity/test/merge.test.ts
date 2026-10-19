@@ -485,8 +485,8 @@ describe('moveShares (step 3)', () => {
     return new FakeDb({
       persons: [U, P],
       groups: [
-        { $id: 'g1', type: 'house', name: 'Flat', rev: 'r0' },
-        { $id: 'g2', type: 'house', name: 'Old flat', rev: 'r0' },
+        { $id: 'g1', type: 'house', name: 'Flat', rev: 'r0', settingsJson: '{}' },
+        { $id: 'g2', type: 'house', name: 'Old flat', rev: 'r0', settingsJson: '{}' },
       ],
       shares,
       statements,

@@ -1,4 +1,12 @@
 import type { TransactionKind } from '../constants/domain'
+import type { LocalDate } from '../dates/local-date'
+import {
+  buildShares,
+  type LedgerContext,
+  type Share,
+  type ShareInput,
+} from '../ledger/build-shares'
+import { byPersonId, type Part } from '../ledger/split-amount'
 import { everyPersonId, type TransactionTemplate } from '../schemas/ledger'
 import type { SplitSpec } from '../schemas/split'
 
@@ -88,44 +96,68 @@ export function mergeSplit(split: SplitSpec, merge: Merge): SplitSpec {
 /** The parts of a stored input or a schedule template that name people. */
 type Named = Pick<TransactionTemplate, 'payers' | 'split' | 'items' | 'payment' | 'adjustment'>
 
-// The kinds that get a default split when they name none (ledger.md#default-split).
+// The kinds with a split, or a default one when they name none (ledger.md#default-split).
 const DEFAULT_SPLIT_KINDS: readonly TransactionKind[] = ['expense', 'bill', 'loan']
 
 /**
- * Whether the row's default split would give different parts once P is U: both had a part, or,
- * for a loan, one of them lent and the other borrowed (a loan's default leaves out its lenders, so
- * the borrower's part would move to the others).
+ * A posted transaction, for `mergeInput` to check that an edit after the merge keeps every net:
+ * its date and total, its shares (P's still on P), and its group as step 2 left it.
  */
-function defaultChanges(
-  input: Named,
-  kind: TransactionKind,
-  { from, into }: Merge,
-  splitPeople: readonly string[],
-): boolean {
-  if (splitPeople.includes(from) && splitPeople.includes(into)) return true
-  if (kind !== 'loan') return false
-  const lent = (personId: string) =>
-    input.payers?.some((payer) => payer.personId === personId) ?? false
-  return (splitPeople.includes(from) && lent(into)) || (splitPeople.includes(into) && lent(from))
+export type Posted = {
+  date: LocalDate
+  totalCents: number
+  shares: readonly Pick<Share, 'personId' | 'receivedCents'>[]
+  ctx: LedgerContext
+}
+
+/** What each person received, P's added to U's, by personId: the parts an edit must keep. */
+function mergedParts(posted: Posted, merge: Merge): Part[] {
+  const parts = posted.shares
+    .filter((share) => share.receivedCents !== 0)
+    .map((share) => ({ personId: share.personId, cents: share.receivedCents }))
+  return mergeEntries(parts, merge, (a, b) => ({ ...a, cents: a.cents + b.cents })).sort(byPersonId)
+}
+
+/** Whether `input`, planned again as an edit would plan it, gives exactly `parts`. */
+function plansTo(input: Named, kind: TransactionKind, posted: Posted, parts: readonly Part[]) {
+  try {
+    const { shares } = buildShares(
+      { ...input, kind, date: posted.date, totalCents: posted.totalCents } as ShareInput,
+      posted.ctx,
+    )
+    const received = shares.filter((share) => share.receivedCents !== 0)
+    return (
+      received.length === parts.length &&
+      received.every((share, i) => {
+        const part = parts[i] as Part
+        return share.personId === part.personId && share.receivedCents === part.cents
+      })
+    )
+  } catch {
+    return false
+  }
 }
 
 /**
  * A transaction's stored input, or a schedule's template, with P renamed to U. `voided` is true
  * for a payment or loan whose two sides would both be U: the merge voids it instead.
  *
- * `splitPeople`, for a posted row that names no split and has no items, lists who its default
- * split gave a part (its shares with something received). Where both P and U had one, the split is
- * written out as an `equal` split of those people would merge: `weights`, U 2 and everyone else 1.
- * The default would now count U once, so a later edit would move money between other people. So
- * is a loan where one of them lent and the other borrowed: as `equal` with U in P's place, or, if
- * U borrowed from no one else, voided as U to U. A row where only one of them had a part keeps the
- * default.
+ * `posted` is given for a posted transaction without items (lead, #39 Q2). If the renamed input,
+ * planned again, wouldn't give each person their part (P's and U's added up), an edit after the
+ * merge would move money between people: a default split would count U once, a `days` split
+ * would count the days of U's kept member row, a loan's default would leave out a U who lent, a
+ * leftover cent would fall elsewhere. So the split is written out:
+ * - with no split, as an `equal` split of those who had a part merges (`weights`, U at 2, or U in
+ *   P's place for a loan), if that plans the same parts;
+ * - otherwise as `exact`, from the parts. An edit that changes the total then picks the split
+ *   again.
+ * A loan that becomes U to U is voided.
  */
 export function mergeInput<T extends Named>(
   input: T,
   kind: TransactionKind,
   merge: Merge,
-  splitPeople: readonly string[] = [],
+  posted?: Posted,
 ): { input: T; voided: boolean } {
   const result: T = { ...input }
   if (input.payers) {
@@ -134,16 +166,9 @@ export function mergeInput<T extends Named>(
       cents: a.cents + b.cents,
     }))
   }
-  if (input.split) {
-    result.split = mergeSplit(input.split, merge)
-  } else if (
-    !input.items &&
-    DEFAULT_SPLIT_KINDS.includes(kind) &&
-    defaultChanges(input, kind, merge, splitPeople)
-  ) {
-    // As the default lists them: by personId (ledger.md#default-split).
-    const personIds = [...new Set(splitPeople)].sort((a, b) => (a < b ? -1 : 1))
-    result.split = mergeSplit({ mode: 'equal', personIds }, merge)
+  if (input.split) result.split = mergeSplit(input.split, merge)
+  if (posted && !input.items && DEFAULT_SPLIT_KINDS.includes(kind)) {
+    writeOut(result, kind, merge, posted)
   }
   if (input.items) {
     result.items = input.items.map((item) => ({ ...item, split: mergeSplit(item.split, merge) }))
@@ -166,6 +191,22 @@ export function mergeInput<T extends Named>(
     }
   }
   return { input: result, voided: fromItselfToItself(result, kind, merge.into) }
+}
+
+/** Writes `input`'s split out where the renamed input wouldn't plan the parts again. */
+function writeOut(input: Named, kind: TransactionKind, merge: Merge, posted: Posted) {
+  const parts = mergedParts(posted, merge)
+  if (parts.length === 0 || plansTo(input, kind, posted, parts)) return
+  if (!input.split) {
+    // As the default lists them: by personId (ledger.md#default-split).
+    const personIds = posted.shares
+      .filter((share) => share.receivedCents !== 0)
+      .map((share) => share.personId)
+      .sort((a, b) => (a < b ? -1 : 1))
+    input.split = mergeSplit({ mode: 'equal', personIds }, merge)
+    if (plansTo(input, kind, posted, parts)) return
+  }
+  input.split = { mode: 'exact', amounts: parts }
 }
 
 /**

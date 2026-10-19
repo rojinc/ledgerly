@@ -5,12 +5,14 @@ import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { moveShares } from '../src/merge'
 import { moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
 import { beforeStaging, NOW } from './harness'
 
 // P (a placeholder) is merged into U; X is someone else.
 const merge = { from: 'pP', into: 'pU' }
 const FAR = Number.MAX_SAFE_INTEGER
+const HOUSE = JSON.stringify({ type: 'house', autoFinalize: false, defaultBillSplit: 'days' })
 
 function transaction(id: string, input: object, extra: object = {}) {
   return {
@@ -35,7 +37,7 @@ const EXPENSE = {
 
 function seed(transactions: object[], more: Record<string, object[]> = {}) {
   return new FakeDb({
-    groups: [{ $id: 'g1', type: 'house', name: 'Flat', rev: 'r0' }],
+    groups: [{ $id: 'g1', type: 'house', name: 'Flat', rev: 'r0', settingsJson: HOUSE }],
     transactions,
     ...more,
   } as ConstructorParameters<typeof FakeDb>[0])
@@ -109,6 +111,63 @@ describe('moveInputs (step 3)', () => {
     expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 0 })
   })
 
+  it('leaves an itemised row’s split to its items, posted or not', async () => {
+    const store = seed([transaction('t1', { payers: [{ personId: 'pX', cents: 500 }] })], {
+      items: [
+        {
+          $id: 'i1',
+          transactionId: 't1',
+          position: 0,
+          name: 'Milk',
+          quantity: 1,
+          amountCents: 500,
+          category: null,
+          splitJson: JSON.stringify({ mode: 'equal', personIds: ['pP', 'pU'] }),
+        },
+      ],
+      shares: [
+        {
+          $id: 's1',
+          transactionId: 't1',
+          groupId: 'g1',
+          personId: 'pX',
+          givenCents: 500,
+          receivedCents: 0,
+        },
+        {
+          $id: 's2',
+          transactionId: 't1',
+          groupId: 'g1',
+          personId: 'pP',
+          givenCents: 0,
+          receivedCents: 250,
+        },
+        {
+          $id: 's3',
+          transactionId: 't1',
+          groupId: 'g1',
+          personId: 'pU',
+          givenCents: 0,
+          receivedCents: 250,
+        },
+      ],
+      members: ['pU', 'pX'].map((personId) => ({
+        $id: `m${personId}`,
+        groupId: 'g1',
+        personId,
+        status: 'active',
+        joinedOn: '2026-01-01',
+        leftOn: null,
+      })),
+    })
+    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    expect(input(store, 't1')).toEqual({ payers: [{ personId: 'pX', cents: 500 }] })
+    expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
+      mode: 'weights',
+      weights: [{ personId: 'pU', weight: 2 }],
+    })
+  })
+
   it('voids a payment or loan whose two sides are now both U, as the ledger voids one', async () => {
     const store = seed(
       [
@@ -168,15 +227,9 @@ describe('moveInputs (step 3)', () => {
     expect(input(store, 't1')).toEqual({ payers: [{ personId: 'pU', cents: 900 }] })
   })
 
-  it('writes out a default split P and U both had a part of, so an edit keeps every net', async () => {
-    const share = (
-      id: string,
-      transactionId: string,
-      personId: string,
-      given: number,
-      got: number,
-    ) => ({
-      $id: id,
+  it('writes out a split the merge would change, so an edit after it keeps every net', async () => {
+    const share = (transactionId: string, personId: string, given: number, got: number) => ({
+      $id: `s-${transactionId}-${personId}`,
       transactionId,
       personId,
       givenCents: given,
@@ -186,22 +239,128 @@ describe('moveInputs (step 3)', () => {
       kind: 'expense',
       category: null,
     })
+    // X paid $90 for each row but t4, and each person's part is the shares' received.
+    const paidByX = (transactionId: string, parts: [string, number][]) => [
+      share(transactionId, 'pX', 9000, parts.find(([id]) => id === 'pX')?.[1] ?? 0),
+      ...parts.filter(([id]) => id !== 'pX').map(([id, got]) => share(transactionId, id, 0, got)),
+    ]
     const paid = { payers: [{ personId: 'pX', cents: 9000 }] }
     const period = { periodStart: '2026-09-01', periodEnd: '2026-09-30' }
-    const store = seed(
+    const thirds: [string, number][] = [
+      ['pP', 3000],
+      ['pU', 3000],
+      ['pX', 3000],
+    ]
+    const byDays: [string, number][] = [
+      ['pP', 2000],
+      ['pU', 3000],
+      ['pX', 4000],
+    ]
+    const rows: [string, string, object, object[]][] = [
+      // The default split, with P and U both in it.
+      ['t1', 'expense', paid, paidByX('t1', thirds)],
+      // The default split, with P alone: U counts once, which is right.
       [
-        // X paid $90 with no split: X, P and U had $30 each.
-        transaction('t1', paid),
-        // Only X and P had a part.
-        transaction('t2', paid),
-        // A bill for September, which this house splits by days when it names no split.
-        transaction('t3', { ...paid, bill: period }, { kind: 'bill' }),
-        // U lent $90 to P and X: once P is U, the default (everyone but the lender) would make X
-        // owe it all, so the borrowers are written out, U in P's place.
-        transaction('t4', { payers: [{ personId: 'pU', cents: 9000 }] }, { kind: 'loan' }),
-        // An itemised receipt: each item has its own split.
-        transaction('t5', paid),
+        't2',
+        'expense',
+        paid,
+        paidByX('t2', [
+          ['pP', 4500],
+          ['pX', 4500],
+        ]),
       ],
+      // A September bill this house splits by days when it names no split.
+      ['t3', 'bill', { ...paid, bill: period }, paidByX('t3', thirds)],
+      // U lent $90 to P and X, with no split.
+      [
+        't4',
+        'loan',
+        { payers: [{ personId: 'pU', cents: 9000 }] },
+        [share('t4', 'pU', 9000, 0), share('t4', 'pP', 0, 4500), share('t4', 'pX', 0, 4500)],
+      ],
+      [
+        't6',
+        'expense',
+        { ...paid, split: { mode: 'equal', personIds: ['pP', 'pU', 'pX'] } },
+        paidByX('t6', thirds),
+      ],
+      [
+        't7',
+        'expense',
+        {
+          ...paid,
+          split: {
+            mode: 'weights',
+            weights: [
+              { personId: 'pP', weight: 1 },
+              { personId: 'pU', weight: 2 },
+              { personId: 'pX', weight: 3 },
+            ],
+          },
+        },
+        paidByX('t7', [
+          ['pP', 1500],
+          ['pU', 3000],
+          ['pX', 4500],
+        ]),
+      ],
+      [
+        't8',
+        'expense',
+        {
+          ...paid,
+          split: {
+            mode: 'exact',
+            amounts: byDays.map(([personId, cents]) => ({ personId, cents })),
+          },
+        },
+        paidByX('t8', byDays),
+      ],
+      [
+        't9',
+        'expense',
+        {
+          ...paid,
+          split: {
+            mode: 'percent',
+            percents: [
+              { personId: 'pP', basisPoints: 2500 },
+              { personId: 'pU', basisPoints: 2500 },
+              { personId: 'pX', basisPoints: 5000 },
+            ],
+          },
+        },
+        paidByX('t9', [
+          ['pP', 2250],
+          ['pU', 2250],
+          ['pX', 4500],
+        ]),
+      ],
+      [
+        't10',
+        'bill',
+        { ...paid, bill: period, split: { mode: 'days', personIds: ['pP', 'pU', 'pX'] } },
+        paidByX('t10', byDays),
+      ],
+      // U came on 16 September, but U's kept row now starts when P's did, in January.
+      [
+        't11',
+        'bill',
+        { ...paid, bill: period },
+        paidByX('t11', [
+          ['pU', 3000],
+          ['pX', 6000],
+        ]),
+      ],
+    ]
+    // The members as step 2 leaves them: P's row is gone, and U's starts at the earlier date.
+    const members = ['pU', 'pX'].map((personId) => ({
+      personId,
+      joinedOn: '2026-01-01' as LocalDate,
+      leftOn: null,
+    }))
+    const store = seed(
+      rows.map(([id, kind, input]) => transaction(id, input, { kind })),
       {
         groups: [
           {
@@ -216,83 +375,61 @@ describe('moveInputs (step 3)', () => {
             }),
           },
         ],
-        shares: [
-          share('s1', 't1', 'pX', 9000, 3000),
-          share('s2', 't1', 'pP', 0, 3000),
-          share('s3', 't1', 'pU', 0, 3000),
-          share('s4', 't2', 'pX', 9000, 4500),
-          share('s5', 't2', 'pP', 0, 4500),
-          share('s6', 't3', 'pX', 9000, 3000),
-          share('s7', 't3', 'pP', 0, 3000),
-          share('s8', 't3', 'pU', 0, 3000),
-          share('s9', 't4', 'pU', 9000, 0),
-          share('s10', 't4', 'pP', 0, 4500),
-          share('s11', 't4', 'pX', 0, 4500),
-          share('s12', 't5', 'pX', 9000, 3000),
-          share('s13', 't5', 'pP', 0, 3000),
-          share('s14', 't5', 'pU', 0, 3000),
-        ],
-        items: [
-          {
-            $id: 'i1',
-            transactionId: 't5',
-            position: 0,
-            name: 'Food',
-            quantity: 1,
-            amountCents: 9000,
-            category: null,
-            splitJson: JSON.stringify({ mode: 'equal', personIds: ['pP', 'pU', 'pX'] }),
-          },
-        ],
+        shares: rows.flatMap(([, , , shares]) => shares),
+        members: members.map((member) => ({
+          $id: `m${member.personId}`,
+          groupId: 'g1',
+          status: 'active',
+          ...member,
+        })),
       },
     )
     await moveInputs(store, merge, ['g1'], NOW, FAR)
-    expect(input(store, 't1')).toEqual({
-      ...paid,
-      split: {
-        mode: 'weights',
-        weights: [
-          { personId: 'pU', weight: 2 },
-          { personId: 'pX', weight: 1 },
-        ],
-      },
-    })
-    // U counts once in the default now, which is right where P alone had a part; a days split
-    // lists U once anyway.
-    expect(input(store, 't2')).toEqual(paid)
-    expect(input(store, 't3')).toEqual({ ...paid, bill: period })
-    expect(input(store, 't4')).toEqual({
-      payers: [{ personId: 'pU', cents: 9000 }],
-      split: { mode: 'equal', personIds: ['pU', 'pX'] },
-    })
-    expect(input(store, 't5')).toEqual(paid)
+    await moveShares(store, 'pP', 'pU', new Set(), FAR)
 
-    // An edit plans the input again with the members as they are after the merge, X and U: every
-    // net is the one the merged shares give (X +6000; P's −3000 and U's −3000 now U's).
+    // What each split became.
+    expect(input(store, 't1').split).toEqual({
+      mode: 'weights',
+      weights: [
+        { personId: 'pU', weight: 2 },
+        { personId: 'pX', weight: 1 },
+      ],
+    })
+    expect(input(store, 't2').split).toBeUndefined()
+    // By days, P and U had a third each: weights plan that again.
+    expect(input(store, 't3').split).toEqual(input(store, 't1').split)
+    expect(input(store, 't4').split).toEqual({ mode: 'equal', personIds: ['pU', 'pX'] })
+    expect(input(store, 't10').split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 5000 },
+        { personId: 'pX', cents: 4000 },
+      ],
+    })
+    expect(input(store, 't11').split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 3000 },
+        { personId: 'pX', cents: 6000 },
+      ],
+    })
+
+    // An edit plans each row again with the members as they are after the merge, X and U: every
+    // net is the one its merged shares give.
     const after = {
       groupType: 'house' as const,
       ownerPersonId: 'pX',
       callerPersonId: 'pX',
-      members: ['pU', 'pX'].map((personId) => ({
-        personId,
-        joinedOn: '2026-01-01' as LocalDate,
-        leftOn: null,
-      })),
+      members,
     }
-    const replan = (id: string, kind: 'expense' | 'loan') =>
-      netsFromShares(
-        buildShares({ ...input(store, id), kind, date: '2026-10-01', totalCents: 9000 }, after)
-          .shares,
-      )
-    expect(replan('t1', 'expense')).toEqual([
-      { personId: 'pU', netCents: -6000 },
-      { personId: 'pX', netCents: 6000 },
-    ])
-    // U lent 9000, and P's 4500 was U's own: U is owed 4500, by X.
-    expect(replan('t4', 'loan')).toEqual([
-      { personId: 'pU', netCents: 4500 },
-      { personId: 'pX', netCents: -4500 },
-    ])
+    for (const [id, kind] of rows) {
+      const replanned = buildShares(
+        { ...input(store, id), kind: kind as 'expense', date: '2026-10-01', totalCents: 9000 },
+        after,
+      ).shares
+      const stored = store.rows('shares').filter((row) => row.transactionId === id) as never
+      expect([id, netsFromShares(replanned)]).toEqual([id, netsFromShares(stored)])
+    }
   })
 
   it('leaves a row it can’t rename as it is, says so by ID, and isn’t done', async () => {

@@ -8,6 +8,44 @@ import { mergeInput, mergeSplit } from './merge-input'
 // P is merged into U; X and Y are other people.
 const merge = { from: 'P', into: 'U' }
 
+const JAN = '2026-01-01'
+
+/**
+ * A house as step 2 leaves it, splitting bills by days: U (P's row gone) and X, there since
+ * January unless `members` says otherwise, as [person, joinedOn, leftOn].
+ */
+function house(
+  members: [string, string, string | null][] = [
+    ['U', JAN, null],
+    ['X', JAN, null],
+  ],
+) {
+  return {
+    groupType: 'house' as const,
+    ownerPersonId: 'X',
+    callerPersonId: 'U',
+    defaultBillSplit: 'days' as const,
+    members: members.map(([personId, joinedOn, leftOn]) => ({
+      personId,
+      joinedOn: joinedOn as LocalDate,
+      leftOn: leftOn as LocalDate | null,
+    })),
+  }
+}
+
+/** A posted row dated 1 October, with what its shares gave each person as [person, cents]. */
+function posted(parts: [string, number][], ctx = house()) {
+  return {
+    date: '2026-10-01' as LocalDate,
+    totalCents: parts.reduce((sum, [, cents]) => sum + cents, 0),
+    shares: parts.map(([personId, receivedCents]) => ({ personId, receivedCents })),
+    ctx,
+  }
+}
+
+const paidByX = (cents: number) => ({ payers: [{ personId: 'X', cents }] })
+const SEPTEMBER = { status: 'paid' as const, periodStart: '2026-09-01', periodEnd: '2026-09-30' }
+
 describe('mergeSplit', () => {
   it('renames P in an equal split, and leaves a split without P alone', () => {
     expect(mergeSplit({ mode: 'equal', personIds: ['X', 'P'] }, merge)).toEqual({
@@ -235,74 +273,212 @@ describe('mergeInput', () => {
   })
 
   it('writes out a default split both P and U had a part of, as weights with U at 2', () => {
-    const groceries: TransactionTemplate = {
-      totalCents: 9000,
-      payers: [{ personId: 'X', cents: 9000 }],
-    }
-    expect(mergeInput(groceries, 'expense', merge, ['X', 'U', 'P', 'X']).input).toEqual({
-      ...groceries,
-      split: {
-        mode: 'weights',
-        weights: [
-          { personId: 'U', weight: 2 },
-          { personId: 'X', weight: 1 },
-        ],
+    const groceries: TransactionTemplate = paidByX(9000)
+    // In any order.
+    const thirds = posted([
+      ['X', 3000],
+      ['U', 3000],
+      ['P', 3000],
+    ])
+    expect(mergeInput(groceries, 'expense', merge, thirds)).toEqual({
+      input: {
+        ...groceries,
+        split: {
+          mode: 'weights',
+          weights: [
+            { personId: 'U', weight: 2 },
+            { personId: 'X', weight: 1 },
+          ],
+        },
       },
+      voided: false,
     })
-    // A loan's default goes to its borrowers, which is who splitPeople lists.
-    const loan: TransactionTemplate = { totalCents: 100 }
-    expect(mergeInput(loan, 'loan', merge, ['P', 'U']).input.split).toEqual({
+  })
+
+  it('writes out a loan’s default where one of P and U lent and the other borrowed', () => {
+    // U lent 90 to P and X: once P is U, the default would make X owe it all.
+    const lentByU: TransactionTemplate = { payers: [{ personId: 'U', cents: 9000 }] }
+    const toPAndX = posted([
+      ['P', 4500],
+      ['X', 4500],
+    ])
+    expect(mergeInput(lentByU, 'loan', merge, toPAndX)).toEqual({
+      input: { ...lentByU, split: { mode: 'equal', personIds: ['U', 'X'] } },
+      voided: false,
+    })
+    const lentByP: TransactionTemplate = { payers: [{ personId: 'P', cents: 9000 }] }
+    const toUAndX = posted([
+      ['U', 4500],
+      ['X', 4500],
+    ])
+    expect(mergeInput(lentByP, 'loan', merge, toUAndX).input.split).toEqual({
+      mode: 'equal',
+      personIds: ['U', 'X'],
+    })
+    // U lent to P alone: a loan from U to U, voided.
+    expect(mergeInput(lentByU, 'loan', merge, posted([['P', 9000]])).voided).toBe(true)
+  })
+
+  it('writes out as exact a split whose leftover cent would fall elsewhere once merged', () => {
+    // 1.00 split equally by A, P and U: A 34, P 33, U 33. As weights A 1, U 2, A would get 33.
+    const split: TransactionTemplate = {
+      ...paidByX(100),
+      split: { mode: 'equal', personIds: ['A', 'P', 'U'] },
+    }
+    const ctx = house([
+      ['A', JAN, null],
+      ['U', JAN, null],
+      ['X', JAN, null],
+    ])
+    const parts = posted(
+      [
+        ['A', 34],
+        ['P', 33],
+        ['U', 33],
+      ],
+      ctx,
+    )
+    const exact = {
+      mode: 'exact',
+      amounts: [
+        { personId: 'A', cents: 34 },
+        { personId: 'U', cents: 66 },
+      ],
+    }
+    expect(mergeInput(split, 'expense', merge, parts).input.split).toEqual(exact)
+    // The default split of the same people, too.
+    expect(mergeInput(paidByX(100), 'expense', merge, parts).input.split).toEqual(exact)
+  })
+
+  it('writes out as exact a days split, stated or by default, that U’s kept row would change', () => {
+    // A September bill of 90 split by days: P 20, U 30, X 40.
+    const byDays = posted([
+      ['P', 2000],
+      ['U', 3000],
+      ['X', 4000],
+    ])
+    const days: TransactionTemplate = {
+      ...paidByX(9000),
+      bill: SEPTEMBER,
+      split: { mode: 'days', personIds: ['P', 'U', 'X'] },
+    }
+    const exact = (amounts: [string, number][]) => ({
+      mode: 'exact',
+      amounts: amounts.map(([personId, cents]) => ({ personId, cents })),
+    })
+    expect(mergeInput(days, 'bill', merge, byDays).input.split).toEqual(
+      exact([
+        ['U', 5000],
+        ['X', 4000],
+      ]),
+    )
+    const byDefault: TransactionTemplate = { ...paidByX(9000), bill: SEPTEMBER }
+    expect(mergeInput(byDefault, 'bill', merge, byDays).input.split).toEqual(
+      exact([
+        ['U', 5000],
+        ['X', 4000],
+      ]),
+    )
+    // P lived there until March, and U came on 16 September. U's kept row starts in January, so
+    // a bill U alone had a part of would give U all of September, and so would one neither had:
+    // that one keeps X alone, as `equal`.
+    const fromJanuary = house([
+      ['U', JAN, null],
+      ['X', JAN, null],
+    ])
+    const uFromThe16th = posted(
+      [
+        ['U', 3000],
+        ['X', 6000],
+      ],
+      fromJanuary,
+    )
+    expect(mergeInput(byDefault, 'bill', merge, uFromThe16th).input.split).toEqual(
+      exact([
+        ['U', 3000],
+        ['X', 6000],
+      ]),
+    )
+    expect(mergeInput(byDefault, 'bill', merge, posted([['X', 9000]])).input.split).toEqual({
+      mode: 'equal',
+      personIds: ['X'],
+    })
+  })
+
+  it('keeps a split that plans the same parts once merged', () => {
+    // P alone had a part of the default: U counts once, which is right.
+    const groceries: TransactionTemplate = paidByX(9000)
+    const halves = posted([
+      ['P', 4500],
+      ['X', 4500],
+    ])
+    expect(mergeInput(groceries, 'expense', merge, halves).input).toEqual(groceries)
+    // U wasn't a member, so P's row became U's with P's dates: the days come out the same.
+    const days: TransactionTemplate = {
+      ...paidByX(9000),
+      bill: SEPTEMBER,
+      split: { mode: 'days', personIds: ['P', 'X'] },
+    }
+    expect(mergeInput(days, 'bill', merge, halves).input.split).toEqual({
+      mode: 'days',
+      personIds: ['U', 'X'],
+    })
+    // X paid for P and U alone: X's share received nothing.
+    const forBoth: TransactionTemplate = {
+      ...paidByX(9000),
+      split: { mode: 'equal', personIds: ['P', 'U'] },
+    }
+    const paidFor = posted([
+      ['P', 4500],
+      ['U', 4500],
+      ['X', 0],
+    ])
+    expect(mergeInput(forBoth, 'expense', merge, paidFor).input.split).toEqual({
       mode: 'weights',
       weights: [{ personId: 'U', weight: 2 }],
     })
   })
 
-  it('writes out a loan’s default split where one of P and U lent and the other borrowed', () => {
-    // U lent 90 to P and X: once P is U, the default would make X owe it all.
-    const lentByU: TransactionTemplate = {
-      totalCents: 9000,
-      payers: [{ personId: 'U', cents: 9000 }],
+  it('writes out as exact a split the rename leaves invalid', () => {
+    const heavy: TransactionTemplate = {
+      ...paidByX(9000),
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'P', weight: 6000 },
+          { personId: 'U', weight: 6000 },
+        ],
+      },
     }
-    expect(mergeInput(lentByU, 'loan', merge, ['X', 'P'])).toEqual({
-      input: { ...lentByU, split: { mode: 'equal', personIds: ['U', 'X'] } },
-      voided: false,
-    })
-    const lentByP: TransactionTemplate = {
-      totalCents: 9000,
-      payers: [{ personId: 'P', cents: 9000 }],
-    }
-    expect(mergeInput(lentByP, 'loan', merge, ['U', 'X']).input.split).toEqual({
-      mode: 'equal',
-      personIds: ['U', 'X'],
-    })
-    // U lent to P alone: a loan from U to U, voided.
-    expect(mergeInput(lentByU, 'loan', merge, ['P']).voided).toBe(true)
-    // A loan that stores no payers was lent by whoever posted it, never a placeholder.
-    const unstated: TransactionTemplate = { totalCents: 9000 }
-    expect(mergeInput(unstated, 'loan', merge, ['P']).input.split).toBeUndefined()
-    // Not for an expense, whose default includes whoever paid.
-    expect(mergeInput(lentByU, 'expense', merge, ['X', 'P']).input.split).toBeUndefined()
+    expect(
+      mergeInput(
+        heavy,
+        'expense',
+        merge,
+        posted([
+          ['P', 4500],
+          ['U', 4500],
+        ]),
+      ).input.split,
+    ).toEqual({ mode: 'exact', amounts: [{ personId: 'U', cents: 9000 }] })
   })
 
-  it('keeps the default where only one of them had a part, or the row has a split or items', () => {
-    const groceries: TransactionTemplate = { totalCents: 9000 }
-    expect(mergeInput(groceries, 'expense', merge, ['X', 'P']).input).toEqual(groceries)
-    expect(mergeInput(groceries, 'expense', merge, ['X', 'U']).input).toEqual(groceries)
+  it('checks only posted rows with a split of their own to keep', () => {
+    const groceries: TransactionTemplate = paidByX(9000)
+    const thirds = posted([
+      ['P', 3000],
+      ['U', 3000],
+      ['X', 3000],
+    ])
+    // Unposted, or with no shares to go by: renamed only.
     expect(mergeInput(groceries, 'expense', merge).input).toEqual(groceries)
-    const split: TransactionTemplate = {
-      totalCents: 9000,
-      split: { mode: 'equal', personIds: ['X', 'P'] },
-    }
-    expect(mergeInput(split, 'expense', merge, ['X', 'P', 'U']).input.split).toEqual({
-      mode: 'equal',
-      personIds: ['X', 'U'],
-    })
+    expect(mergeInput(groceries, 'expense', merge, posted([])).input).toEqual(groceries)
+    // Items have splits of their own, and only expenses, bills and loans have a split.
     const items: TransactionTemplate = {
       items: [{ name: 'Milk', amountCents: 300, split: { mode: 'equal', personIds: ['P'] } }],
     }
-    expect(mergeInput(items, 'expense', merge, ['P', 'U']).input.split).toBeUndefined()
-    // Only expenses, bills and loans have a default split.
-    expect(mergeInput(groceries, 'income', merge, ['P', 'U']).input.split).toBeUndefined()
+    expect(mergeInput(items, 'expense', merge, thirds).input.split).toBeUndefined()
+    expect(mergeInput(groceries, 'income', merge, thirds).input.split).toBeUndefined()
   })
 
   it('gives a template the schema accepts', () => {
