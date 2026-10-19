@@ -195,7 +195,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
-Cron: `25 * * * *`, sent as `POST /` with the `schedule` trigger: it carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`. A person calling `POST /` gets `FORBIDDEN`.
+Hourly (`interval: 60`), sent as `POST /` with the `schedule` trigger: it carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`. A person calling `POST /` gets `FORBIDDEN`.
 
 `PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
 

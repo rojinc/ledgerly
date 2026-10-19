@@ -142,7 +142,7 @@ Each writer checks after its own guard writes: the member row for a leave or a r
 
 ### Finishing merges
 
-A merge cut off partway carries on within about an hour, even if U never calls `/claim` again, and a big one over several runs ([#246](https://github.com/rojinc/ledgerly/issues/246)). `identity`'s cron runs hourly at `:25`, sent as `POST /` with the `schedule` trigger ([functions API](functions-api.md#identity)):
+A merge cut off partway carries on within about an hour, even if U never calls `/claim` again, and a big one over several runs ([#246](https://github.com/rojinc/ledgerly/issues/246)). `identity` runs every hour on a schedule (`interval: 60`: the plan allows intervals of 60 minutes or more but no cron, so Appwrite picks the minute), sent as `POST /` with the `schedule` trigger ([functions API](functions-api.md#identity)):
 
 1. **A scheduled run finishes merges.** A signed-in call gets `FORBIDDEN`. Other runs without a JWT are handled as [function-side checks](permissions.md#function-side-checks) says.
 2. **The budget** is the same as `/claim`'s, well inside the function's timeout, and it counts the walk below.
