@@ -345,8 +345,9 @@ const AU_HOLIDAYS: Record<string, string[]> = {
     '2030-12-26', // Proclamation Day
   ],
   // 2026–2027: wa.gov.au/service/employment/workplace-arrangements/public-holidays-western-australia.
-  // 2028–2030: Public and Bank Holidays Act 1972 (WA) s 5 and Second Schedule. A Bill before
-  // Parliament would move several of those days from 2028; re-check once it's decided.
+  // 2028–2030: Public and Bank Holidays Act 1972 (WA) s 5 and Second Schedule. They may change:
+  // the Public and Bank Holidays Amendment Bill 2025, not passed yet, would move Labour Day, WA
+  // Day and the King's Birthday, and add Easter Saturday and a Show Day, from 2028.
   'AU-WA': [
     '2026-01-01', // New Year's Day
     '2026-01-26', // Australia Day
@@ -414,7 +415,7 @@ const AU_HOLIDAYS: Record<string, string[]> = {
   // Statutory Holidays Act 2000 (Tas) s 4. Easter Tuesday is for the public service only.
   // Unverified: Easter Sunday from 2027. legislation.tas.gov.au lists a Statutory Holidays
   // Amendment Act 2026 (bill 14 of 2026, reported to add it), but its text and start date
-  // couldn't be read, and WorkSafe's 2027 table doesn't show it. So it isn't added yet.
+  // couldn't be read, and WorkSafe's 2027 table doesn't show it. So it isn't added yet (#296).
   'AU-TAS': [
     '2026-01-01', // New Year's Day
     '2026-01-26', // Australia Day
@@ -432,7 +433,7 @@ const AU_HOLIDAYS: Record<string, string[]> = {
     '2027-03-29', // Easter Monday
     '2027-04-25', // Anzac Day
     '2027-06-14', // King's Birthday
-    '2027-12-25', // Christmas Day
+    '2027-12-25', // Christmas Day (unverified: WorkSafe's 2027 table shows only Mon 27 Dec, its rule text both days; #296)
     '2027-12-27', // Christmas Day (substitute day)
     '2027-12-28', // Boxing Day
     '2028-01-03', // New Year's Day
