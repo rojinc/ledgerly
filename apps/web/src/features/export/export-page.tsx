@@ -11,22 +11,45 @@ import { useGroups } from '../groups/use-groups'
 import { usePerson, useProfile } from '../profile/use-profile'
 import { download, fileUrl, groupExport, myRecordsExport, profileExport } from './export-data'
 
-// Long names make file names some systems refuse.
+// Long names make file names some systems refuse: 255 bytes is the usual limit, and the dates
+// and `.csv` take 29.
 const NAME_LENGTH = 60
+const NAME_BYTES = 180
 
 /**
- * A file name from the group's name: letters (any script, accents dropped), digits and dashes,
- * up to 60 characters.
+ * A file name from the group's name: letters of any script, digits and dashes, up to 60
+ * characters. Accents come off Latin letters only: elsewhere, as in Hindi or Thai, a mark is part
+ * of the word.
  */
 export function fileName(name: string): string {
   const slug = name
     .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
+    .replace(/(\p{Script=Latin})[\u0300-\u036f]+/gu, '$1')
+    .normalize('NFC')
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}]+/gu, '-')
+    .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')
     .replace(/^-/, '')
-  // By code point, so a letter outside the BMP isn't cut in half.
-  return Array.from(slug).slice(0, NAME_LENGTH).join('').replace(/-$/, '') || 'group'
+  const encoder = new TextEncoder()
+  let kept = ''
+  let bytes = 0
+  for (const character of characters(slug).slice(0, NAME_LENGTH)) {
+    bytes += encoder.encode(character).length
+    if (bytes > NAME_BYTES) break
+    kept += character
+  }
+  kept = kept.replace(/-$/, '')
+  // Marks alone aren't a name.
+  return /[\p{L}\p{N}]/u.test(kept) ? kept : 'group'
+}
+
+/**
+ * `text` by what reads as one character, so a syllable or a letter with its marks isn't cut in
+ * half; by code point where the browser has no `Intl.Segmenter` (Firefox before 125).
+ */
+function characters(text: string): string[] {
+  if (typeof Intl.Segmenter !== 'function') return Array.from(text)
+  const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text)
+  return Array.from(graphemes, ({ segment }) => segment)
 }
 
 function GroupOption({ group }: { group: Groups }) {
