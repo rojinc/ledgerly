@@ -1,7 +1,7 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { finishMerges } from '../src/run-merge'
-import { account, BEFORE, call, type Fakes, fakes, placeholderRow } from './harness'
+import { account, BEFORE, beforeCommit, call, type Fakes, fakes, placeholderRow } from './harness'
 
 // Sam (pSam, with an account) verifies a phone that Sammy (pP), a placeholder, holds: Sammy is
 // merged into Sam. Alex (pX) is a housemate.
@@ -555,6 +555,59 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     expect(namingSammy(services).identities).toEqual([])
     expect(stopped()).toEqual([])
+  })
+
+  it('stops a merge into an account being deleted, and joins it to nothing (#246)', async () => {
+    const services = house()
+    await withTransaction(services.db, (tx) =>
+      tx.write(
+        { action: 'update', tableId: 'persons', rowId: 'pP', data: { mergedInto: 'pSam' } },
+        {
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pSam',
+          data: { deletedAt: '2026-10-18T00:00:00.000Z' },
+        },
+      ),
+    )
+    expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
+      joined: [],
+      finished: 0,
+    })
+    // Sammy's rows stay Sammy's, and Sam was taken out of g1's team again.
+    expect(services.db.rows('members').find((row) => row.$id === 'm1')?.personId).toBe('pP')
+    expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u2'])
+    expect(log).toHaveBeenCalledWith('merge pP into pSam stopped: that account is being deleted')
+  })
+
+  it('fails the step 2 write a deletion lands on, and takes back the team membership', async () => {
+    const services = house()
+    await withTransaction(services.db, (tx) =>
+      tx.write({ action: 'update', tableId: 'persons', rowId: 'pP', data: { mergedInto: 'pSam' } }),
+    )
+    // Deletion step 2 marks Sam just before the first member row's commit.
+    beforeCommit(services.db, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pSam',
+          data: { deletedAt: '2026-10-18T00:00:00.000Z', rev: 'rDeleted' },
+        }),
+      ),
+    )
+    await expect(
+      finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER),
+    ).rejects.toMatchObject({
+      code: 'CONFLICT',
+    })
+    expect(services.db.rows('members').filter((row) => row.personId === 'pP')).toHaveLength(2)
+    // Tried again, the merge stops before it joins anything.
+    expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
+      joined: [],
+      finished: 0,
+    })
+    expect(services.db.rows('members').filter((row) => row.personId === 'pP')).toHaveLength(2)
   })
 
   it('never carries on a merge of a person who has an account now, or was deleted', async () => {

@@ -2,7 +2,7 @@ import type { Groups, Identities, Members, Persons } from '@ledgerly/core/genera
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
-import { moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
+import { IntoDeleted, moveIdentities, moveMembers, moveReminders, moveShares } from './merge'
 import { moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
 
@@ -52,7 +52,15 @@ async function runMerge(
 ): Promise<{ joined: string[]; finished: boolean }> {
   const { db, now } = services
   const merge = { from: fromId, into: intoId }
-  const members = await moveMembers(services, userId, fromId, intoId, deadline)
+  let members: Awaited<ReturnType<typeof moveMembers>>
+  try {
+    members = await moveMembers(services, userId, fromId, intoId, deadline)
+  } catch (error) {
+    // U's account is being deleted: the merge stops here, and deletion ends it (step 5).
+    if (!(error instanceof IntoDeleted)) throw error
+    console.log(`merge ${fromId} into ${intoId} stopped: that account is being deleted`)
+    return { joined: [], finished: false }
+  }
   // P's groups are U's now, so every group of U's but the kept ones may still name P.
   const groupIds = (await groupsOf(db, intoId)).filter((groupId) => !members.kept.has(groupId))
   // Templates first, so an expansion from now on names U.
