@@ -196,7 +196,8 @@ describe('moveInputs (step 3)', () => {
         transaction('t2', paid),
         // A bill for September, which this house splits by days when it names no split.
         transaction('t3', { ...paid, bill: period }, { kind: 'bill' }),
-        // U lent $90 to P and X: U gave and got nothing back, so U had no part.
+        // U lent $90 to P and X: once P is U, the default (everyone but the lender) would make X
+        // owe it all, so the borrowers are written out, U in P's place.
         transaction('t4', { payers: [{ personId: 'pU', cents: 9000 }] }, { kind: 'loan' }),
         // An itemised receipt: each item has its own split.
         transaction('t5', paid),
@@ -260,27 +261,37 @@ describe('moveInputs (step 3)', () => {
     // lists U once anyway.
     expect(input(store, 't2')).toEqual(paid)
     expect(input(store, 't3')).toEqual({ ...paid, bill: period })
-    expect(input(store, 't4')).toEqual({ payers: [{ personId: 'pU', cents: 9000 }] })
+    expect(input(store, 't4')).toEqual({
+      payers: [{ personId: 'pU', cents: 9000 }],
+      split: { mode: 'equal', personIds: ['pU', 'pX'] },
+    })
     expect(input(store, 't5')).toEqual(paid)
 
     // An edit plans the input again with the members as they are after the merge, X and U: every
     // net is the one the merged shares give (X +6000; P's −3000 and U's −3000 now U's).
-    const { shares } = buildShares(
-      { ...input(store, 't1'), kind: 'expense', date: '2026-10-01', totalCents: 9000 },
-      {
-        groupType: 'house',
-        ownerPersonId: 'pX',
-        callerPersonId: 'pX',
-        members: ['pU', 'pX'].map((personId) => ({
-          personId,
-          joinedOn: '2026-01-01' as LocalDate,
-          leftOn: null,
-        })),
-      },
-    )
-    expect(netsFromShares(shares)).toEqual([
+    const after = {
+      groupType: 'house' as const,
+      ownerPersonId: 'pX',
+      callerPersonId: 'pX',
+      members: ['pU', 'pX'].map((personId) => ({
+        personId,
+        joinedOn: '2026-01-01' as LocalDate,
+        leftOn: null,
+      })),
+    }
+    const replan = (id: string, kind: 'expense' | 'loan') =>
+      netsFromShares(
+        buildShares({ ...input(store, id), kind, date: '2026-10-01', totalCents: 9000 }, after)
+          .shares,
+      )
+    expect(replan('t1', 'expense')).toEqual([
       { personId: 'pU', netCents: -6000 },
       { personId: 'pX', netCents: 6000 },
+    ])
+    // U lent 9000, and P's 4500 was U's own: U is owed 4500, by X.
+    expect(replan('t4', 'loan')).toEqual([
+      { personId: 'pU', netCents: 4500 },
+      { personId: 'pX', netCents: -4500 },
     ])
   })
 

@@ -257,6 +257,33 @@ describe('mergeInput', () => {
     })
   })
 
+  it('writes out a loan’s default split where one of P and U lent and the other borrowed', () => {
+    // U lent 90 to P and X: once P is U, the default would make X owe it all.
+    const lentByU: TransactionTemplate = {
+      totalCents: 9000,
+      payers: [{ personId: 'U', cents: 9000 }],
+    }
+    expect(mergeInput(lentByU, 'loan', merge, ['X', 'P'])).toEqual({
+      input: { ...lentByU, split: { mode: 'equal', personIds: ['U', 'X'] } },
+      voided: false,
+    })
+    const lentByP: TransactionTemplate = {
+      totalCents: 9000,
+      payers: [{ personId: 'P', cents: 9000 }],
+    }
+    expect(mergeInput(lentByP, 'loan', merge, ['U', 'X']).input.split).toEqual({
+      mode: 'equal',
+      personIds: ['U', 'X'],
+    })
+    // U lent to P alone: a loan from U to U, voided.
+    expect(mergeInput(lentByU, 'loan', merge, ['P']).voided).toBe(true)
+    // A loan that stores no payers was lent by whoever posted it, never a placeholder.
+    const unstated: TransactionTemplate = { totalCents: 9000 }
+    expect(mergeInput(unstated, 'loan', merge, ['P']).input.split).toBeUndefined()
+    // Not for an expense, whose default includes whoever paid.
+    expect(mergeInput(lentByU, 'expense', merge, ['X', 'P']).input.split).toBeUndefined()
+  })
+
   it('keeps the default where only one of them had a part, or the row has a split or items', () => {
     const groceries: TransactionTemplate = { totalCents: 9000 }
     expect(mergeInput(groceries, 'expense', merge, ['X', 'P']).input).toEqual(groceries)

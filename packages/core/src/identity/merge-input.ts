@@ -92,14 +92,34 @@ type Named = Pick<TransactionTemplate, 'payers' | 'split' | 'items' | 'payment' 
 const DEFAULT_SPLIT_KINDS: readonly TransactionKind[] = ['expense', 'bill', 'loan']
 
 /**
+ * Whether the row's default split would give different parts once P is U: both had a part, or,
+ * for a loan, one of them lent and the other borrowed (a loan's default leaves out its lenders, so
+ * the borrower's part would move to the others).
+ */
+function defaultChanges(
+  input: Named,
+  kind: TransactionKind,
+  { from, into }: Merge,
+  splitPeople: readonly string[],
+): boolean {
+  if (splitPeople.includes(from) && splitPeople.includes(into)) return true
+  if (kind !== 'loan') return false
+  const lent = (personId: string) =>
+    input.payers?.some((payer) => payer.personId === personId) ?? false
+  return (splitPeople.includes(from) && lent(into)) || (splitPeople.includes(into) && lent(from))
+}
+
+/**
  * A transaction's stored input, or a schedule's template, with P renamed to U. `voided` is true
  * for a payment or loan whose two sides would both be U: the merge voids it instead.
  *
  * `splitPeople`, for a posted row that names no split and has no items, lists who its default
  * split gave a part (its shares with something received). Where both P and U had one, the split is
  * written out as an `equal` split of those people would merge: `weights`, U 2 and everyone else 1.
- * The default would now count U once, so a later edit would move money between other people. A
- * row where only one of them had a part keeps the default.
+ * The default would now count U once, so a later edit would move money between other people. So
+ * is a loan where one of them lent and the other borrowed: as `equal` with U in P's place, or, if
+ * U borrowed from no one else, voided as U to U. A row where only one of them had a part keeps the
+ * default.
  */
 export function mergeInput<T extends Named>(
   input: T,
@@ -119,8 +139,7 @@ export function mergeInput<T extends Named>(
   } else if (
     !input.items &&
     DEFAULT_SPLIT_KINDS.includes(kind) &&
-    splitPeople.includes(merge.from) &&
-    splitPeople.includes(merge.into)
+    defaultChanges(input, kind, merge, splitPeople)
   ) {
     // As the default lists them: by personId (ledger.md#default-split).
     const personIds = [...new Set(splitPeople)].sort((a, b) => (a < b ? -1 : 1))
