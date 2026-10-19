@@ -4,6 +4,7 @@ import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
 import {
   IntoDeleted,
+  intoDeleted,
   memberOf,
   moveIdentities,
   moveMembers,
@@ -42,28 +43,19 @@ export async function finishMerges(
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
     if (placeholder.userId || placeholder.deletedAt) continue
     if (!(await hasIdentity(services.db, placeholder.$id))) continue
-    const { joined, finished } = await runMerge(services, userId, placeholder, intoId, deadline)
-    result.joined.push(...joined)
-    if (finished) result.finished += 1
+    try {
+      // A deletion ends every merge into U (step 2), one with only unguarded writes left too.
+      if (await intoDeleted(services.db, intoId)) throw new IntoDeleted()
+      const { joined, finished } = await runSteps(services, userId, placeholder, intoId, deadline)
+      result.joined.push(...joined)
+      if (finished) result.finished += 1
+    } catch (error) {
+      if (!(error instanceof IntoDeleted)) throw error
+      console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
+      break
+    }
   }
   return result
-}
-
-/** `runSteps`, stopped when U's account is being deleted: deletion ends that merge (step 5). */
-async function runMerge(
-  services: Services,
-  userId: string,
-  placeholder: Persons,
-  intoId: string,
-  deadline: number,
-): Promise<{ joined: string[]; finished: boolean }> {
-  try {
-    return await runSteps(services, userId, placeholder, intoId, deadline)
-  } catch (error) {
-    if (!(error instanceof IntoDeleted)) throw error
-    console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
-    return { joined: [], finished: false }
-  }
 }
 
 /**

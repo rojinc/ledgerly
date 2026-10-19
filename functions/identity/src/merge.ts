@@ -37,18 +37,21 @@ export class IntoDeleted extends Error {}
  */
 export async function guardInto(tx: Tx, db: Db, intoId: string): Promise<void> {
   // Read first: a row that's gone can't be staged, and staging it would read as a race.
-  const deleted = async () => {
-    const into = await getRowOrNull<Persons>(db, TABLES.persons, intoId)
-    return !into || into.deletedAt !== null
-  }
-  if (await deleted()) throw new IntoDeleted()
+  if (await intoDeleted(db, intoId)) throw new IntoDeleted()
   await tx.write({
     action: 'update',
     tableId: TABLES.persons,
     rowId: intoId,
     data: { rev: randomId() },
   })
-  if (await deleted()) throw new IntoDeleted()
+  // Again, as stored: a deletion that committed before the write was staged doesn't fail it.
+  if (await intoDeleted(db, intoId)) throw new IntoDeleted()
+}
+
+/** Whether U's account is being deleted (`deletedAt` set), or U's row is gone. */
+export async function intoDeleted(db: Db, intoId: string): Promise<boolean> {
+  const into = await getRowOrNull<Persons>(db, TABLES.persons, intoId)
+  return !into || into.deletedAt !== null
 }
 
 /** Thrown inside a transaction when another claim for U marked P first. */
@@ -206,7 +209,8 @@ export async function memberOf(
  * is kept (with the earlier `joinedOn`) and P's deleted, or P's row is repointed to U, with the
  * status as in joining and `member.joined` by U. Each write carries a fresh `rev`, so it's a
  * real change that guards the row (ledger.md#concurrency) even when nothing else on it changes.
- * True if this call moved it and U is joined there; false if a merge running at the same time
+ * The same transaction guards U's person row (`guardInto`), so no merge joins a person whose
+ * account is being deleted. True if this call moved it and U is joined there; false if a merge running at the same time
  * moved it, or a leave of U's own landed just after (so the group isn't one U joined).
  */
 async function moveMember(

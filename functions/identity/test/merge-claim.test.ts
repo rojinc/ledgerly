@@ -814,6 +814,45 @@ describe('POST /claim, merging a placeholder', () => {
     expect(log).toHaveBeenCalledWith('merge pP into pSam stopped: that account is being deleted')
   })
 
+  it('stops every merge into an account being deleted, ones with only their identities left too', async () => {
+    const services = house()
+    // pA0 sorts before Sammy and pZ after; both have nothing left to move but an identity.
+    const rest = (id: string) => ({
+      userId: null,
+      displayName: id,
+      claimedAt: null,
+      mergedInto: 'pSam',
+      mergeGroupIds: [],
+      deletedAt: null,
+    })
+    const key = (id: string) => ({
+      action: 'create' as const,
+      tableId: 'identities' as const,
+      rowId: `i${id}`,
+      data: { key: `email:${id.toLowerCase()}@x.test`, type: 'email', personId: id },
+    })
+    await withTransaction(services.db, (tx) =>
+      tx.write(
+        { action: 'create', tableId: 'persons', rowId: 'pA0', data: rest('pA0') },
+        { action: 'create', tableId: 'persons', rowId: 'pZ', data: rest('pZ') },
+        key('pA0'),
+        key('pZ'),
+        { action: 'update', tableId: 'persons', rowId: 'pP', data: { mergedInto: 'pSam' } },
+        {
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pSam',
+          data: { deletedAt: '2026-10-18T00:00:00.000Z' },
+        },
+      ),
+    )
+    await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)
+    const owner = (id: string) =>
+      services.db.rows('identities').find((row) => row.$id === id)?.personId
+    expect([owner('ipA0'), owner('ipZ')]).toEqual(['pA0', 'pZ'])
+    expect(log).toHaveBeenCalledTimes(1)
+  })
+
   it('fails the step 2 write a deletion lands on, and takes back the team membership', async () => {
     const services = house()
     await withTransaction(services.db, (tx) =>

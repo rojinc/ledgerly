@@ -38,8 +38,10 @@ export const VOID_REASON = 'Both sides are now the same person.'
 
 /**
  * What became of the groups a call looked at. `skipped`: rows whose stored input can't be renamed
- * (unreadable, or invalid once renamed), left as they are and logged by ID. `cutOff`: the
- * deadline stopped it. `done`: every group was read to the end, with nothing put off or skipped.
+ * (unreadable, or invalid once renamed), left as they are and logged by ID. A locked row like that
+ * is logged and left too, but not counted: nothing can change it, so it doesn't hold the merge
+ * open. `cutOff`: the deadline stopped it. `done`: every group was read to the end, with nothing
+ * put off or skipped.
  */
 export type InputsResult = {
   rewritten: number
@@ -57,9 +59,10 @@ type Rewrite = { row: Transactions; items: Items[]; writes: Write[]; voided: boo
  * Step 3, inputs: P becomes U inside the stored input (`inputJson`) and the items' `splitJson`
  * of every transaction in `groupIds` that isn't void, locked ones included (I-7's merge
  * exception, #263), as `mergeInput` and `mergeSplit` say. An unlocked payment or loan whose two
- * sides are now both U is voided instead, as the ledger voids one; a locked one never is. Each batch guards its group and checks for a `finalizing`
- * statement first, as for shares, and a group with one is put off. It stops once `deadline`
- * (epoch ms) has passed.
+ * sides are now both U is voided instead, as the ledger voids one; a locked one never is. Each
+ * batch guards its group and checks for a `finalizing` statement first, as for shares, and a
+ * group with one is put off; then it guards U's person row (`guardInto`). It stops once
+ * `deadline` (epoch ms) has passed.
  */
 export async function moveInputs(
   db: Db,
@@ -352,8 +355,8 @@ function voidWrites(row: Transactions, shares: Shares[], by: string, now: Date):
 const OWN_WRITES = 3
 
 /**
- * Rewrites packed into batches of at most 90 writes, the group's guard and the delete of its
- * `balances` row included.
+ * Rewrites packed into batches of at most 90 writes, the group's guard, U's guard and the delete
+ * of its `balances` row included.
  */
 function batches(rewrites: readonly Rewrite[]): Rewrite[][] {
   const result: Rewrite[][] = []
@@ -373,9 +376,9 @@ function batches(rewrites: readonly Rewrite[]): Rewrite[][] {
 }
 
 /**
- * One batch: the guard first (ledger.md#concurrency), then the finalizing check, the writes, and
- * the rows read again as stored, so one posted, edited, voided, locked or unlocked meanwhile runs
- * it again.
+ * One batch: the group's guard first (ledger.md#concurrency), then the finalizing check, U's
+ * guard (`IntoDeleted` if U's account is being deleted), the writes, and the rows read again as
+ * stored, so one posted, edited, voided, locked or unlocked meanwhile runs it again.
  */
 async function runBatch(
   db: Db,
@@ -471,10 +474,10 @@ export type TemplatesResult = {
 
 /**
  * Step 3, templates: P becomes U inside `schedules.templateJson` in `groupIds`
- * (`idx_groupId`), one schedule at a time. Each write guards the group and checks for a
- * `finalizing` statement, as for inputs, then is staged with the schedule guard: the schedule
- * row is written, then read again as stored, so an expansion, edit or end that got there first
- * runs it again (scheduling.md). No schedule kind is a payment or loan, so none is voided.
+ * (`idx_groupId`), one schedule at a time. Each write guards the group, checks for a
+ * `finalizing` statement and guards U's person row, as for inputs, then is staged with the
+ * schedule guard: the schedule row is written, then read again as stored, so an expansion, edit
+ * or end that got there first runs it again (scheduling.md). No schedule kind is a payment or loan, so none is voided.
  */
 export async function moveTemplates(
   db: Db,
@@ -558,7 +561,7 @@ async function moveGroupTemplates(
   }
 }
 
-/** One template: the group's guard and the finalizing check, then the schedule guard. */
+/** One template: the group's guard and the finalizing check, U's guard, then the schedule guard. */
 async function rewriteTemplate(
   db: Db,
   groupId: string,
