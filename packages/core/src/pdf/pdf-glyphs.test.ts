@@ -6,6 +6,7 @@ import {
   missingGlyphs,
   type PdfFont,
   printable,
+  ROBOTO_RANGES,
 } from './pdf-glyphs'
 
 const codePoints = (text: string) => Array.from(text, (char) => char.codePointAt(0))
@@ -106,6 +107,19 @@ describe('the Noto tables', () => {
     },
   )
 
+  // Why fontRuns() needs no emoji-first order: a cluster with one of these can only be whole in
+  // Noto Emoji. A font that adds one fails here, and the order comes back with a test that needs it.
+  it('has emoji style, text style, keycap and joiner in Noto Emoji only', () => {
+    const fonts = { Roboto: ROBOTO_RANGES, NotoSansCJK: cjkRanges(), NotoEmoji: emojiRanges() }
+    const sequenceMarks = [0x200d, 0x20e3, 0xfe0f, 0xfe0e]
+    const holders = sequenceMarks.map((codePoint) =>
+      Object.entries(fonts)
+        .filter(([, ranges]) => ranges.some(([from, to]) => from <= codePoint && codePoint <= to))
+        .map(([font]) => font),
+    )
+    expect(holders).toEqual(sequenceMarks.map(() => ['NotoEmoji']))
+  })
+
   // The web app imports this module for printable(), so starting it must not unpack them.
   it('unpacks each table on first use, once', async () => {
     vi.resetModules()
@@ -163,7 +177,7 @@ describe('fontRuns', () => {
   })
 
   // What a reader sees as one character prints in one font. An emoji sequence (emoji style
-  // U+FE0F, a keycap U+20E3 or a joiner U+200D) tries Noto Emoji first, as only it has all of one.
+  // U+FE0F, a keycap U+20E3 or a joiner U+200D) goes to Noto Emoji, as only it has all of one.
   const family = '👨\u{200D}👩\u{200D}👧'
   const runner = '🏃\u{200D}♀\u{FE0F}'
   const england = '🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}'
@@ -205,10 +219,13 @@ describe('fontRuns', () => {
   })
 
   // When no font has all of a cluster, each character goes to the first font that has it. No
-  // font has Thai or lists U+E0100, but a selector stays with the character before it.
+  // font has Thai or lists U+E0100, and only Noto Emoji has U+200D, but a selector or a joiner
+  // stays with the character before it.
   it.each([
     ['an ideographic variation', '葛\u{E0100}城', runs(['NotoSansCJK', '葛\u{E0100}城'])],
     ['VS16 on a character no font has', 'ร\u{FE0F}', runs(['Roboto', '�\u{FE0F}'])],
+    // a + U+200D is one cluster, then b.
+    ['a joiner after a letter', 'a\u{200D}b', runs(['Roboto', 'a\u{200D}b'])],
   ])('splits %s by character', (_, text, expected) => {
     expect(fontRuns(text)).toEqual(expected)
   })
