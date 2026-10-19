@@ -60,6 +60,13 @@
         "required": false,
         "array": true,
         "default": null
+      },
+      {
+        "key": "mergeMembersJson",
+        "type": "text",
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
