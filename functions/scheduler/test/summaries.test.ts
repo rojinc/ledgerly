@@ -415,7 +415,7 @@ describe('step 4: summary emails', () => {
 
   it.each([
     ['moves on from one Appwrite refuses to build', 400, NEXT_WEEK],
-    ['moves on from one whose rows are gone', 404, NEXT_WEEK],
+    ['tries one again when a table is missing', 404, DUE],
     ['tries one again that hit a rate limit', 429, DUE],
     ['tries one again after a key without a scope', 401, DUE],
     ['tries one again after a key without a permission', 403, DUE],
@@ -437,14 +437,21 @@ describe('step 4: summary emails', () => {
     quiet.mockRestore()
   })
 
-  it('stops, even within a page, once the time budget is used up', async () => {
-    const services = seeded({
-      profiles: [profile(), profile({ $id: 'u2', personId: 'pAlex' })],
-      accounts: {
-        u1: { email: 'sam@example.com', emailVerification: true },
-        u2: { email: 'alex@example.com', emailVerification: true },
-      },
+  it('moves on from one whose group row is gone, counting it as failed', async () => {
+    const services = seeded()
+    const get = services.db.getRow.bind(services.db)
+    vi.spyOn(services.db, 'getRow').mockImplementation(async (params) => {
+      if (params.tableId === 'groups') throw new AppwriteException('No', 404, 'row_not_found')
+      return get(params)
     })
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(storedProfile(services).nextSummaryAt).toBe(NEXT_WEEK)
+    quiet.mockRestore()
+  })
+
+  it('stops, even within a page, once the time budget is used up', async () => {
+    const services = seeded({ profiles: [profile(), profile({ $id: 'u2', personId: 'pAlex' })] })
     services.outOfTime = () => services.sendEmail.mock.calls.length >= 1
     expect((await runCron(services)).summaries).toEqual({ sent: 1, skipped: 0, failed: 0 })
     const alex = services.db.rows('profiles').find((row) => row.$id === 'u2')
@@ -459,7 +466,8 @@ describe('step 4: summary emails', () => {
       const staged = await stage(params)
       if (!done && JSON.stringify(params.operations).includes('"nextSummaryAt"')) {
         done = true
-        // The account's deletion takes the profile away (identity-and-invites.md#order).
+        // Gone as an account's deletion takes it. u1 isn't blocked here, so an email is built
+        // and still not sent.
         await withTransaction(services.db, (tx) =>
           tx.write({ action: 'delete', tableId: 'profiles', rowId: 'u1' }),
         )
