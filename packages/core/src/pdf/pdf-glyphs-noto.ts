@@ -1,5 +1,5 @@
 // Generated: don't edit by hand. What each Noto font the invoice PDF falls back to can draw, as
-// fontkit reads its cmap. pdf-glyphs.ts unpacks these into CJK_RANGES and EMOJI_RANGES. Each
+// fontkit reads its cmap. pdf-glyphs.ts unpacks these in cjkRanges() and emojiRanges(). Each
 // range is `gap,length` in base 36: the code points skipped since the previous range, then its
 // last code point minus its first. pdf-glyphs.test.ts pins each table's size as measured on #270,
 // until the files are in the repo and a server test checks each table against its file. The

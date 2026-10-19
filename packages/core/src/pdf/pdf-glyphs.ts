@@ -142,8 +142,10 @@ export function printable(text: string): string {
   return Array.from(text.normalize('NFC'), (char) => drawn(char) ?? '�').join('')
 }
 
+type Ranges = readonly (readonly [from: number, to: number])[]
+
 /** A table from pdf-glyphs-noto.ts as inclusive ranges in order, the form of ROBOTO_RANGES. */
-function unpack(packed: string): readonly (readonly [from: number, to: number])[] {
+function unpack(packed: string): Ranges {
   let to = -1
   return packed
     .trim()
@@ -156,28 +158,52 @@ function unpack(packed: string): readonly (readonly [from: number, to: number])[
     })
 }
 
+// Unpacked on first use: the web app imports this module for printable() and must not pay for
+// them when it starts.
+let cjk: Ranges | undefined
+let emoji: Ranges | undefined
+
 /** What Noto Sans CJK SC (regular) can draw: Chinese, Japanese and Korean. */
-export const CJK_RANGES = unpack(NOTO_SANS_CJK_PACKED)
+export function cjkRanges(): Ranges {
+  cjk ??= unpack(NOTO_SANS_CJK_PACKED)
+  return cjk
+}
 
 /** What Noto Emoji (regular, monochrome) can draw. */
-export const EMOJI_RANGES = unpack(NOTO_EMOJI_PACKED)
+export function emojiRanges(): Ranges {
+  emoji ??= unpack(NOTO_EMOJI_PACKED)
+  return emoji
+}
 
 /** The invoice PDF's fonts, by their pdfmake font names. */
 export type PdfFont = 'Roboto' | 'NotoSansCJK' | 'NotoEmoji'
 
 type FontRun = { font: PdfFont; text: string }
 
-// simple: a scan, about 4 µs for a Korean letter near the end of CJK_RANGES (10,000 in 42 ms);
-// binary search if a profile ever shows it.
-function within(ranges: readonly (readonly [number, number])[], codePoint: number): boolean {
-  return ranges.some(([from, to]) => from <= codePoint && codePoint <= to)
+const FONTS: readonly PdfFont[] = ['Roboto', 'NotoSansCJK', 'NotoEmoji']
+const EMOJI_FIRST: readonly PdfFont[] = ['NotoEmoji', 'Roboto', 'NotoSansCJK']
+
+// Emoji style (U+FE0F), a keycap (U+20E3) or a joiner (U+200D) makes a cluster an emoji sequence,
+// which only Noto Emoji has all of: `♥` + U+FE0F, `1` + U+FE0F + U+20E3, 🏃 + U+200D + `♀`.
+const EMOJI_SEQUENCE = /[\u{200D}\u{20E3}\u{FE0F}]/u
+
+// simple: a scan that stops at the first range ending at or after the code point (the ranges are
+// in order). fontRuns() takes about 7 µs for a Korean letter, near the end of cjkRanges() (6,000
+// in 42 ms); binary search if a profile ever shows it.
+function within(ranges: Ranges, codePoint: number): boolean {
+  const range = ranges.find(([, to]) => codePoint <= to)
+  return range !== undefined && range[0] <= codePoint
 }
 
-function fontOf(codePoint: number): PdfFont | undefined {
-  if (drawable(codePoint)) return 'Roboto'
-  if (within(CJK_RANGES, codePoint)) return 'NotoSansCJK'
-  if (within(EMOJI_RANGES, codePoint)) return 'NotoEmoji'
-  return undefined
+function has(font: PdfFont, codePoint: number): boolean {
+  if (font === 'Roboto') return drawable(codePoint)
+  return within(font === 'NotoSansCJK' ? cjkRanges() : emojiRanges(), codePoint)
+}
+
+/** The first font in `order` that can draw every character of `chars`. */
+function firstFont(chars: string, order: readonly PdfFont[]): PdfFont | undefined {
+  const codePoints = Array.from(chars, (char) => char.codePointAt(0) as number)
+  return order.find((font) => codePoints.every((codePoint) => has(font, codePoint)))
 }
 
 // A zero-width joiner or a variation selector changes how the character before it is drawn, so
@@ -191,20 +217,34 @@ function joinsPrevious(codePoint: number): boolean {
 }
 
 /**
- * `text`, composed (NFC), as runs of the first font that can draw each character: Roboto, then
- * Noto Sans CJK, then Noto Emoji. `张三 Pty Ltd` → NotoSansCJK `张三`, Roboto ` Pty Ltd`. A
- * character no font has becomes U+FFFD in a Roboto run. A zero-width joiner (U+200D) or variation
- * selector (U+FE00–U+FE0F, U+E0100–U+E01EF) stays in the run of the character before it.
+ * `text`, composed (NFC), as runs by font. Each grapheme cluster (what a reader sees as one
+ * character) goes to the first font that has all of it: Roboto, then Noto Sans CJK, then Noto
+ * Emoji, but Noto Emoji first for an emoji sequence. `张三 Pty Ltd` → NotoSansCJK `张三`, Roboto
+ * ` Pty Ltd`. When no font has a whole cluster, each of its characters goes to the first font
+ * that has it, a zero-width joiner (U+200D) or variation selector (U+FE00–U+FE0F,
+ * U+E0100–U+E01EF) staying with the character before it, and a character no font has becomes
+ * U+FFFD in a Roboto run.
  */
 export function fontRuns(text: string): FontRun[] {
   const runs: FontRun[] = []
-  for (const char of text.normalize('NFC')) {
-    const codePoint = char.codePointAt(0) as number
+  const add = (font: PdfFont, chars: string) => {
     const last = runs.at(-1)
-    const font = last && joinsPrevious(codePoint) ? last.font : fontOf(codePoint)
-    const run: FontRun = font ? { font, text: char } : { font: 'Roboto', text: '�' }
-    if (last?.font === run.font) last.text += run.text
-    else runs.push(run)
+    if (last?.font === font) last.text += chars
+    else runs.push({ font, text: chars })
+  }
+  const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+  for (const { segment } of graphemes.segment(text.normalize('NFC'))) {
+    const font = firstFont(segment, EMOJI_SEQUENCE.test(segment) ? EMOJI_FIRST : FONTS)
+    if (font) {
+      add(font, segment)
+      continue
+    }
+    for (const char of segment) {
+      const last = runs.at(-1)
+      const own =
+        last && joinsPrevious(char.codePointAt(0) as number) ? last.font : firstFont(char, FONTS)
+      add(own ?? 'Roboto', own ? char : '\u{FFFD}')
+    }
   }
   return runs
 }
