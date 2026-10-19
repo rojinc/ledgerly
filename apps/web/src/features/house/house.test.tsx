@@ -520,7 +520,13 @@ describe('HousePage', () => {
     })
 
     it('marks someone as moved out, today in the house’s time zone by default', async () => {
-      call.mockResolvedValue(ok({}))
+      call.mockImplementation(async (_fn, _method, _path, body) => {
+        const { leftOn } = body as { leftOn: string }
+        stored.members = stored.members.map((row) =>
+          row.$id === 'm3' ? { ...row, leftOn, role: 'viewer' } : row,
+        )
+        return ok({})
+      })
       renderAt('/groups/g1')
       const sam = await row('Sam')
       fireEvent.click(within(sam).getByRole('button', { name: 'Moved out' }))
@@ -538,8 +544,11 @@ describe('HousePage', () => {
       fireEvent.click(within(sam).getByRole('button', { name: 'Mark as moved out' }))
       await waitFor(() => expect(call).toHaveBeenCalled())
       expect(sent()).toEqual(['groups', 'PATCH', '/groups/g1/members/m3', { leftOn: '2026-10-19' }])
+      // The same button now moves them back in, and keeps focus.
       await waitFor(() =>
-        expect(document.activeElement).toBe(within(sam).getByRole('button', { name: /^Moved/ })),
+        expect(document.activeElement).toBe(
+          within(sam).getByRole('button', { name: 'Moved back in' }),
+        ),
       )
     })
 
