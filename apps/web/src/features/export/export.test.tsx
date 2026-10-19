@@ -707,7 +707,7 @@ describe('fileName', () => {
     const segmenter = Intl.Segmenter
     Object.assign(Intl, { Segmenter: undefined })
     try {
-      expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(60))
+      expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(45))
       expect(fileName('नमस्ते')).toBe('नमस्ते')
     } finally {
       Object.assign(Intl, { Segmenter: segmenter })
@@ -718,11 +718,12 @@ describe('fileName', () => {
     expect(fileName('a'.repeat(70))).toBe('a'.repeat(60))
     expect(fileName(`${'a'.repeat(59)} b`)).toBe('a'.repeat(59))
     expect(fileName(`-${'a'.repeat(60)}`)).toBe('a'.repeat(60))
-    // A letter outside the BMP counts once and isn't cut in half.
-    expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(60))
-    // A syllable, or a letter with its vowel sign, counts once and isn't split.
+    // A letter outside the BMP counts once and isn't cut in half; at 4 bytes, 45 fit in 180.
+    expect(fileName('𠀀'.repeat(61))).toBe('𠀀'.repeat(45))
+    // A syllable, or a letter with its vowel sign, counts once and isn't split. And 180 bytes at
+    // most, so the name with its dates stays under 255: 한 is 3 bytes, की is 6.
     expect(fileName('한'.repeat(61))).toBe('한'.repeat(60))
-    expect(fileName('की'.repeat(61))).toBe('की'.repeat(60))
+    expect(fileName('की'.repeat(61))).toBe('की'.repeat(30))
   })
 })
 

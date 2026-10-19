@@ -23,8 +23,7 @@ function decimal(cents: number, digits: number): string {
  */
 export function formatMoney(cents: number, currency: string, locale?: string): string {
   assertAmountCents(cents)
-  const { format, digits } = currencyFormat(currency, locale)
-  return format.format(decimal(cents, digits) as Intl.StringNumericLiteral)
+  return formatNet(cents, currency, locale)
 }
 
 /**

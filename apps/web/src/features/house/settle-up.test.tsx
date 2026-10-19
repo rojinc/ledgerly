@@ -163,6 +163,18 @@ describe('SettleUp', () => {
     expect(call).toHaveBeenCalledWith('ledger', 'GET', '/groups/g1/balances')
   })
 
+  it('shows a suggested payment past the amount cap', async () => {
+    mockLedger({
+      people: [
+        { personId: 'p1', netCents: 20_000_000_000 },
+        { personId: 'p3', netCents: -20_000_000_000 },
+      ],
+      transfers: [{ fromPersonId: 'p3', toPersonId: 'p1', cents: 20_000_000_000 }],
+    })
+    renderSettleUp()
+    expect(await screen.findByText(/^Cara pays Mia \(you\) .*200,000,000\.00$/)).toBeTruthy()
+  })
+
   it('says when everyone is square', async () => {
     mockLedger({ people: [], transfers: [] })
     renderSettleUp()

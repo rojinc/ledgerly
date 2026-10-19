@@ -11,8 +11,10 @@ import { useGroups } from '../groups/use-groups'
 import { usePerson, useProfile } from '../profile/use-profile'
 import { download, fileUrl, groupExport, myRecordsExport, profileExport } from './export-data'
 
-// Long names make file names some systems refuse.
+// Long names make file names some systems refuse: 255 bytes is the usual limit, and the dates
+// and `.csv` take 29.
 const NAME_LENGTH = 60
+const NAME_BYTES = 180
 
 /**
  * A file name from the group's name: letters of any script, digits and dashes, up to 60
@@ -27,7 +29,12 @@ export function fileName(name: string): string {
     .toLowerCase()
     .replace(/[^\p{L}\p{M}\p{N}]+/gu, '-')
     .replace(/^-/, '')
-  const kept = characters(slug).slice(0, NAME_LENGTH).join('').replace(/-$/, '')
+  let kept = ''
+  for (const character of characters(slug).slice(0, NAME_LENGTH)) {
+    if (new TextEncoder().encode(kept + character).length > NAME_BYTES) break
+    kept += character
+  }
+  kept = kept.replace(/-$/, '')
   // Marks alone aren't a name.
   return /[\p{L}\p{N}]/u.test(kept) ? kept : 'group'
 }

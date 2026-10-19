@@ -1,5 +1,5 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatNet } from '@ledgerly/core/money/format'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import type { ReactNode } from 'react'
 import { invoiceSections, type Line } from './invoice-sections'
@@ -26,7 +26,8 @@ export function formatDate(date: string): string {
   }).format(Date.UTC(year, month - 1, day))
 }
 
-function lineText(line: Line): string {
+/** A line as the PDF names it: its description, or its kind. */
+export function lineText(line: Line): string {
   return line.description || KIND_LABELS[line.kind] || line.kind
 }
 
@@ -124,7 +125,8 @@ export function InvoiceView({
   if (!issuer || !recipient || !invoice) {
     return <p className="text-muted-foreground">This statement isn’t an invoice.</p>
   }
-  const money = (cents: number) => formatMoney(cents, snapshot.group.currency)
+  // The opening, the section totals and the balance due are worked out, so they can pass the cap.
+  const money = (cents: number) => formatNet(cents, snapshot.group.currency)
   const { openingCents, owed, charges, credits, records } = invoiceSections(
     snapshot,
     issuer.personId,

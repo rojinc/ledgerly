@@ -346,6 +346,35 @@ describe('DashboardPage: this month', () => {
 })
 
 describe('DashboardPage: last 6 months', () => {
+  it('reports a month whose sums pass the amount cap', async () => {
+    // Each share is at the cap; two of each add up past it.
+    const cap = 10_000_000_000
+    const shares = [
+      share('g1', '2026-10-02', 'shift', cap, 0),
+      share('g1', '2026-10-03', 'shift', cap, 0),
+      share('g1', '2026-10-09', 'payment', 0, cap),
+      share('g1', '2026-10-10', 'payment', 0, cap),
+      share('g2', '2026-10-01', 'bill', 0, cap, 'rent'),
+      share('g2', '2026-10-02', 'bill', 0, cap, 'rent'),
+      share('g3', '2026-10-20', 'income', 0, cap),
+      share('g3', '2026-10-21', 'income', 0, cap),
+    ]
+    listRows.mockResolvedValue({ total: shares.length, rows: shares } as never)
+    renderPage()
+    const aud = await screen.findByRole('region', { name: 'AUD' })
+    const value = (label: string) => within(aud).getByText(label).nextElementSibling?.textContent
+    expect(value('Spending')).toMatch(/200,000,000\.00$/)
+    expect(value('Income')).toMatch(/400,000,000\.00$/)
+    expect(value('From employers')).toMatch(/200,000,000\.00$/)
+    expect(value('Personal income')).toMatch(/200,000,000\.00$/)
+    expect(value('Earnings from shifts')).toMatch(/200,000,000\.00$/)
+    expect(within(aud).getByRole('listitem').textContent).toMatch(/^Rent.*200,000,000\.00$/)
+    const history = screen.getByRole('region', { name: 'Last 6 months in AUD' })
+    expect(within(history).getAllByRole('button')[5]?.textContent).toMatch(
+      /Spent .*200,000,000\.00 · Income .*400,000,000\.00$/,
+    )
+  })
+
   it('lists spending and income per month per currency, and tapping one selects it', async () => {
     const router = renderPage()
     const history = await screen.findByRole('region', { name: 'Last 6 months' })
