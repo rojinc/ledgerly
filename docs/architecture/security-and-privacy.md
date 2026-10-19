@@ -15,7 +15,7 @@ We store people's money records, contact details and bank details. Treat every c
 | Invite spam or SMS cost abuse | Rate limits: 20 invites per inviter per day, 3 per identity per week. Tokens are hashed, single-use and expire in 14 days. |
 | Edited history | Final statements lock transactions; activity is append-only and written only by functions. |
 | Leaked secrets | No secrets in git. Function secrets are Appwrite project variables. CI secrets are GitHub Actions secrets. `.env*` files are git-ignored except `.env.example`. |
-| Malicious uploads | `receipts` accepts only images and PDFs up to 10 MB. Files are only shown as images or downloaded, never run. |
+| Malicious uploads | `receipts` accepts only images and PDFs up to 10 MB, from verified users only. Files are only shown as images or downloaded, never run. When a file is attached, the ledger limits it to its group's team ([permissions](permissions.md#storage)). Files that no transaction lists are deleted by the scheduler after 24 hours ([#163](https://github.com/rojinc/ledgerly/issues/163)). Until that ships, it's an accepted risk that a file that's never attached keeps its uploader's permissions, `read("any")` included. |
 | Injection | Appwrite queries are parameterised; no raw query strings from users. PDFs are built from data, not HTML. |
 
 ### Membership privacy

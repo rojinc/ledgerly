@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AppwriteException, ExecutionMethod, Query, Storage } from 'appwrite'
 import { callFunction, type Method, parseEnvelope } from '../../lib/api'
 import { client, DATABASE_ID, functions, tablesDB } from '../../lib/appwrite'
+import { queryKeys } from '../../lib/query-keys'
 import { writeErrorMessage } from '../groups/archive-group'
 
 // Appwrite's limit for one page.
@@ -24,12 +25,6 @@ const FINALIZE_REFUSED: Record<number, string> = {
   409: 'It couldn’t be finalized yet: an earlier invoice of this group must be finalized first, or something else changed it at the same time. Try again.',
 }
 
-// Local to this feature: the shared keys file is outside its Scope.
-export const statementKeys = {
-  list: (groupId: string) => ['statements', groupId] as const,
-  one: (id: string) => ['statement', id] as const,
-}
-
 /** Calls the statements function; a refusal throws its message in plain words. */
 async function statements<T>(method: Method, path: string, body?: unknown): Promise<T> {
   const result = await callFunction<T>('statements', method, path, body)
@@ -40,7 +35,7 @@ async function statements<T>(method: Method, path: string, body?: unknown): Prom
 /** A group's statements (`statements.idx_group_period`), latest period first, every page. */
 export function useStatements(groupId: string) {
   return useQuery({
-    queryKey: statementKeys.list(groupId),
+    queryKey: queryKeys.statements(groupId),
     enabled: groupId !== '',
     queryFn: async () => {
       const rows: Statements[] = []
@@ -66,7 +61,7 @@ export function useStatements(groupId: string) {
 
 export function useStatement(id: string) {
   return useQuery({
-    queryKey: statementKeys.one(id),
+    queryKey: queryKeys.statement(id),
     enabled: id !== '',
     queryFn: () =>
       tablesDB.getRow<Statements>({ databaseId: DATABASE_ID, tableId: 'statements', rowId: id }),
@@ -74,8 +69,8 @@ export function useStatement(id: string) {
 }
 
 function store(queryClient: ReturnType<typeof useQueryClient>, statement: Statements) {
-  queryClient.setQueryData(statementKeys.one(statement.$id), statement)
-  void queryClient.invalidateQueries({ queryKey: statementKeys.list(statement.groupId) })
+  queryClient.setQueryData(queryKeys.statement(statement.$id), statement)
+  void queryClient.invalidateQueries({ queryKey: queryKeys.statements(statement.groupId) })
 }
 
 /** `POST /statements/{id}/refresh`: a draft worked out again from the ledger as it is now. */
@@ -85,7 +80,7 @@ export function useRefreshStatement(id: string) {
     mutationFn: () => statements<Statements>('POST', `/statements/${id}/refresh`),
     onSuccess: (statement) => store(queryClient, statement),
     // A refresh whose answer was lost, or that clashed with another, may still have changed it.
-    onError: () => queryClient.invalidateQueries({ queryKey: statementKeys.one(id) }),
+    onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.statement(id) }),
   })
 }
 
@@ -96,7 +91,7 @@ export function useSendStatement(statement: Statements) {
     mutationFn: () => statements<{ sentAt: string }>('POST', `/statements/${statement.$id}/send`),
     onSuccess: ({ sentAt }) => store(queryClient, { ...statement, sentAt }),
     // The email may have gone although the answer was lost: show Send again if so.
-    onError: () => queryClient.invalidateQueries({ queryKey: statementKeys.one(statement.$id) }),
+    onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.statement(statement.$id) }),
   })
 }
 
@@ -171,7 +166,7 @@ export function useFinalizeStatement(statement: Statements) {
     },
     onSuccess: ({ statement: row }) => store(queryClient, row),
     // A watch that failed part way may have missed the row changing: read it again.
-    onError: () => queryClient.invalidateQueries({ queryKey: statementKeys.one(statement.$id) }),
+    onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.statement(statement.$id) }),
   })
 }
 

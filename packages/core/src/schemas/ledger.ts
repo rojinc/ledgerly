@@ -94,6 +94,12 @@ const paymentSchema = z
     path: ['toPersonId'],
   })
 
+// permissions.md#storage: a transaction's whole list of receipt files, each at most once.
+const receiptFileIdsSchema = z
+  .array(idSchema)
+  .max(MAX_RECEIPTS)
+  .refine((ids) => new Set(ids).size === ids.length, 'Each file can appear only once')
+
 const adjustmentSchema = z.strictObject({
   shares: peopleList(
     z.strictObject({ personId: idSchema, givenCents: centsSchema, receivedCents: centsSchema }),
@@ -102,8 +108,9 @@ const adjustmentSchema = z.strictObject({
   reason: text(1, 200),
 })
 
-// Everything in a TransactionInput except id, groupId, kind, date and description:
-// the shape of a schedule's template.
+// Everything in a TransactionInput except id, groupId, kind, date, description and
+// receiptFileIds: the shape of a schedule's template. A receipt belongs to one transaction,
+// so a template has none.
 const transactionFields = {
   category: categorySchema.optional(),
   totalCents: centsSchema.optional(),
@@ -117,7 +124,6 @@ const transactionFields = {
   bill: billSchema.optional(),
   payment: paymentSchema.optional(),
   adjustment: adjustmentSchema.optional(),
-  receiptFileIds: z.array(idSchema).max(MAX_RECEIPTS).optional(),
   note: text(0, 1000).optional(),
 }
 
@@ -233,6 +239,8 @@ export const transactionInputSchema = z
     date: localDateSchema, // at most 1 year ahead: needs today, so the ledger function checks it
     description: descriptionSchema,
     ...transactionFields,
+    // On PATCH, leaving it out keeps the stored list (functions-api.md#ledger).
+    receiptFileIds: receiptFileIdsSchema.optional(),
   })
   .superRefine((input, ctx) => {
     checkKindRules(input.kind, input, ctx)
@@ -256,6 +264,11 @@ export const postTransactionBodySchema = z.strictObject({
 })
 
 export type PostTransactionBody = z.infer<typeof postTransactionBodySchema>
+
+/** `POST /transactions/{id}/receipts`: the whole new list. `[]` removes every receipt. */
+export const receiptsBodySchema = z.strictObject({ receiptFileIds: receiptFileIdsSchema })
+
+export type ReceiptsBody = z.infer<typeof receiptsBodySchema>
 
 /** `POST /transactions/{id}/void` */
 export const voidTransactionBodySchema = z.strictObject({ reason: text(1, 200) })
