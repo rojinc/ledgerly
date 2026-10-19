@@ -1,7 +1,9 @@
 import type { Identities, Persons } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
+import type { Tx } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { AppwriteException, type Models, Query } from 'node-appwrite'
 
 export const SET_UP_FIRST = 'Set up your account first.'
@@ -46,6 +48,28 @@ export async function findPersonOfUser(db: Db, userId: string): Promise<Persons 
 
 export async function findIdentity(db: Db, key: string): Promise<Identities | undefined> {
   return findFirst<Identities>(db, TABLES.identities, [Query.equal('key', key)])
+}
+
+/**
+ * Stages a guard write on the person (a fresh `rev`, ledger.md#concurrency), then reads it as
+ * stored, not in this transaction's view: `refusal` if their account's deletion has passed its
+ * point of no return since they were looked up. One that passes it later fails the commit, so
+ * nothing is written for a deleted person (identity-and-invites.md#order).
+ */
+export async function guardPerson(
+  tx: Tx,
+  db: Db,
+  personId: string,
+  refusal: () => AppError,
+): Promise<void> {
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: personId,
+    data: { rev: randomId() },
+  })
+  const stored = await getRowOrNull<Persons>(db, TABLES.persons, personId)
+  if (!stored || stored.deletedAt) throw refusal()
 }
 
 /** No account, not being merged, not a deleted account: a person a new user may adopt. */

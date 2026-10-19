@@ -158,7 +158,10 @@ export function activityWrite(
       action,
       ...(subjectPersonId ? { subjectPersonId } : {}),
       summary: summary.slice(0, 255),
-      ...(changes ? { changesJson: JSON.stringify(changes) } : {}),
+      // A change only to a name has nothing else to show, so no empty diff.
+      ...(changes && (Object.keys(changes.before).length || Object.keys(changes.after).length)
+        ? { changesJson: JSON.stringify(changes) }
+        : {}),
       at: now.toISOString(),
     },
     permissions: teamRead(groupId),

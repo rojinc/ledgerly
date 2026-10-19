@@ -14,6 +14,8 @@ function db() {
       { $id: 'pLeft', userId: 'uLeft' },
       { $id: 'pQuit', userId: 'uQuit' },
       { $id: 'pOutsider', userId: 'uOutsider' },
+      // Their account is being deleted (identity-and-invites.md#deleting-an-account-m4).
+      { $id: 'pDeleted', userId: 'uDeleted', deletedAt: '2026-10-18T20:00:00.000Z' },
     ],
     members: [
       { $id: 'm1', groupId: 'g1', personId: 'pAdmin', role: 'admin', status: 'active' },
@@ -26,6 +28,7 @@ function db() {
       { $id: 'm8', groupId: 'gArchived', personId: 'pLeft', role: 'viewer', status: 'left' },
       { $id: 'm5', groupId: 'g2', personId: 'pOutsider', role: 'admin', status: 'active' },
       { $id: 'm6', groupId: 'gArchived', personId: 'pAdmin', role: 'admin', status: 'active' },
+      { $id: 'm9', groupId: 'g1', personId: 'pDeleted', role: 'admin', status: 'active' },
     ],
     groups: [
       { $id: 'g1', type: 'house', archivedAt: null },
@@ -35,10 +38,10 @@ function db() {
   })
 }
 
-// Joined members are in their group's team; uQuit left it.
+// Joined members are in their group's team; uQuit left it. uDeleted's deletion hasn't got to g1.
 function teams() {
   return new FakeTeams({
-    g1: ['uAdmin', 'uViewer', 'uLeft'],
+    g1: ['uAdmin', 'uViewer', 'uLeft', 'uDeleted'],
     g2: ['uOutsider'],
     gArchived: ['uAdmin', 'uLeft'],
   })
@@ -70,8 +73,18 @@ describe('requireMember', () => {
     ['a person with no member row in the group', 'uOutsider', 'g1'],
     ['a placeholder, even an admin with an account (D-016)', 'uPlaceholder', 'g1'],
     ['a group that does not exist', 'uAdmin', 'nope'],
+    ['a person with deletedAt, though still an active admin in the team', 'uDeleted', 'g1'],
   ])('is NOT_A_MEMBER for %s', async (_, userId, groupId) => {
     expect(await codeOf(requireMember(db(), teams(), userId, groupId))).toBe('NOT_A_MEMBER')
+  })
+
+  it('answers a deleted person exactly as a user with no person', async () => {
+    const asNobody = await requireMember(db(), teams(), 'uNew', 'g1').catch((error) => error)
+    const asDeleted = await requireMember(db(), teams(), 'uDeleted', 'g1', {
+      roles: ['admin'],
+    }).catch((error) => error)
+    expect(asDeleted).toEqual(asNobody)
+    expect((asDeleted as AppError).message).toBe("You're not a member of this group.")
   })
 
   it('is FORBIDDEN when the role is not allowed', async () => {
@@ -156,6 +169,7 @@ describe('requireMemberOf', () => {
     ['a placeholder with an account', 'uPlaceholder'],
     ['someone who left on their own', 'uQuit'],
     ['a user with no person row', 'uNobody'],
+    ['a person with deletedAt', 'uDeleted'],
   ])('answers %s with the given NOT_FOUND', async (_case, userId) => {
     await expect(of(userId, 'g1')).rejects.toEqual(new AppError('NOT_FOUND', NOT_FOUND))
   })
