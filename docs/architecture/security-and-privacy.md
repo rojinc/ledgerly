@@ -51,7 +51,7 @@ Rules:
 
 - **Collect the minimum.** No address-book upload, no location, no tracking pixels in emails.
 - **No personal data in logs**: no emails, phone numbers, names, bank details or amounts with names. Log IDs and error codes.
-- **Placeholders** are people who never agreed to our terms. Store only what the adding user typed, never show their contact details to other members, and delete it on request.
+- **Placeholders** are people who never agreed to our terms. Store only what the adding user typed, and never show their contact details to other members. Delete it on request: an admin removes the placeholder from each group, and with its last member row its person and identities are deleted ([removing members](permissions.md#leaving-a-group)). A group can remove someone only while nothing there names them (no shares, unposted transaction or template); until then the name the group typed stays on its records, as a finalized statement keeps the names it was issued with.
 - **Account deletion** removes contact details, the profile and every group no one else is in, and anonymises the person in shared groups. It needs a sign-in from the last 10 minutes ([details](identity-and-invites.md#deleting-an-account-m4)).
 - **Data export:** users download their own records and profile as CSV ([below](#data-export)).
 
@@ -86,6 +86,7 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 - **Backups** follow Appwrite Cloud's retention, so deleted data can stay in a backup for that period.
 - **Reminders** (`reminders`) hold person and group IDs only, and are kept until either person deletes their account; pruning old rows is a later follow-up.
 - **Address misses** (`persons.addressMisses` and `addressMissesFrom`) hold a count and a time only: no address, target or route. Each new window overwrites them, and they stay on a deleted person's anonymised row, which account deletion doesn't need to clear (the lead on [#274](https://github.com/rojinc/ledgerly/issues/274)).
+- **A placeholder's details** (its person, its identities, and the invites sent to its member rows) are deleted when its last member row is removed, or its last group is purged. An invite to a removed member row goes with the row.
 - **Activity rows written before #50** keep the names in their text, as history; rows written since name no one ([activity](data-model.md#activity)).
 - **Deleting needs a recent sign-in and an old password.** The session must be under 10 minutes old, and `passwordUpdate` over 24 hours old, so a stolen session can't set a first password, sign in fresh and delete the account the same day ([refusals](identity-and-invites.md#refusals)). Accepted risk: signing in with Google (OAuth, later) would make a fresh session without a password change, so this rule must be revisited when OAuth is added. The account's verified address is emailed whenever a password is set or changed ([password notice](identity-and-invites.md#password-notice)). When the email changes, its old verified addresses are emailed, and when the phone changes, its verified email is ([change notice](identity-and-invites.md#email-and-phone-change-notice)).
 
