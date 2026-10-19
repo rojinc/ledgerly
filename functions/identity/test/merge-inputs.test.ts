@@ -6,13 +6,16 @@ import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { guardInto, IntoDeleted, moveShares } from '../src/merge'
-import { moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
+import { cursorsOf, moveInputs, moveTemplates, VOID_REASON } from '../src/merge-inputs'
 import { beforeStaging, NOW } from './harness'
 
 // P (a placeholder) is merged into U; X is someone else.
 const merge = { from: 'pP', into: 'pU' }
 const FAR = Number.MAX_SAFE_INTEGER
 const HOUSE = JSON.stringify({ type: 'house', autoFinalize: false, defaultBillSplit: 'days' })
+// P's and U's member rows in g1 as step 1 recorded them: both there all year.
+const ALL_YEAR = { joinedOn: '2026-01-01' as LocalDate, leftOn: null }
+const DATES = [{ groupId: 'g1', from: ALL_YEAR, into: ALL_YEAR }]
 
 function transaction(id: string, input: object, extra: object = {}) {
   return {
@@ -32,6 +35,13 @@ function transaction(id: string, input: object, extra: object = {}) {
 const EXPENSE = {
   payers: [{ personId: 'pP', cents: 9000 }],
   split: { mode: 'equal', personIds: ['pP', 'pU', 'pX'] },
+  note: 'Kept',
+}
+
+// An input that names no P, as one renamed already does.
+const RENAMED = {
+  payers: [{ personId: 'pU', cents: 9000 }],
+  split: { mode: 'equal', personIds: ['pU', 'pX'] },
   note: 'Kept',
 }
 
@@ -82,7 +92,7 @@ describe('moveInputs (step 3)', () => {
         balances: [{ $id: 'g1', peopleJson: '[]' }],
       },
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
       rewritten: 3,
       voided: 0,
       skipped: 0,
@@ -120,7 +130,9 @@ describe('moveInputs (step 3)', () => {
     // A rewritten input changes no share, so the balances row stays.
     expect(store.rows('balances')).toHaveLength(1)
     // Nothing names P any more: a second run writes nothing.
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 0 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 0,
+    })
   })
 
   it('leaves an itemised row’s split to its items, posted or not', async () => {
@@ -172,7 +184,7 @@ describe('moveInputs (step 3)', () => {
         leftOn: null,
       })),
     })
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
     expect(input(store, 't1')).toEqual({ payers: [{ personId: 'pX', cents: 500 }] })
     expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
       mode: 'weights',
@@ -252,7 +264,7 @@ describe('moveInputs (step 3)', () => {
           })),
         },
       )
-      await moveInputs(store, merge, ['g1'], NOW, FAR)
+      await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
       await moveShares(store, 'pP', 'pU', ['g1'], FAR)
       // As weights A 1, U 2, A would get 33.
       const split = JSON.parse(store.rows('items')[0]?.splitJson as string)
@@ -281,6 +293,94 @@ describe('moveInputs (step 3)', () => {
     },
   )
 
+  it('plans a days item as the members were before the merge, from step 1’s record (B2)', async () => {
+    // X paid a September bill of 75.00, one item split by days: P was there all 30 days, U 15
+    // (from the 16th), X 30, so P 30.00, U 15.00, X 30.00. After step 2, U's kept row starts
+    // when P's did, so an edit would give U only 37.50.
+    const september = { periodStart: '2026-09-01', periodEnd: '2026-09-30' }
+    const bill = transaction(
+      't1',
+      { payers: [{ personId: 'pX', cents: 7500 }], bill: september },
+      { kind: 'bill', totalCents: 7500 },
+    )
+    const share = (id: string, personId: string, given: number, received: number) => ({
+      $id: id,
+      transactionId: 't1',
+      groupId: 'g1',
+      personId,
+      givenCents: given,
+      receivedCents: received,
+    })
+    const store = seed([bill], {
+      items: [
+        {
+          $id: 'i1',
+          transactionId: 't1',
+          position: 0,
+          name: 'Power',
+          quantity: 1,
+          amountCents: 7500,
+          category: null,
+          splitJson: JSON.stringify({ mode: 'days', personIds: ['pP', 'pU', 'pX'] }),
+        },
+      ],
+      shares: [
+        share('s1', 'pX', 7500, 3000),
+        share('s2', 'pP', 0, 3000),
+        share('s3', 'pU', 0, 1500),
+      ],
+      members: ['pU', 'pX'].map((personId) => ({
+        $id: `m${personId}`,
+        groupId: 'g1',
+        personId,
+        status: 'active',
+        joinedOn: '2026-01-01',
+        leftOn: null,
+      })),
+    })
+    const recorded = [
+      {
+        groupId: 'g1',
+        from: { joinedOn: '2026-01-01' as LocalDate, leftOn: null },
+        into: { joinedOn: '2026-09-16' as LocalDate, leftOn: null },
+      },
+    ]
+    await moveInputs(store, merge, ['g1'], NOW, FAR, recorded, [])
+    expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 4500 },
+        { personId: 'pX', cents: 3000 },
+      ],
+    })
+    const unrecorded = seed([bill], {
+      items: store.rows('items').map((item) => ({
+        ...item,
+        splitJson: JSON.stringify({ mode: 'days', personIds: ['pP', 'pU', 'pX'] }),
+      })),
+      members: ['pU', 'pX'].map((personId) => ({
+        $id: `m${personId}`,
+        groupId: 'g1',
+        personId,
+        status: 'active',
+        joinedOn: '2026-01-01',
+        leftOn: null,
+      })),
+    })
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect(await moveInputs(unrecorded, merge, ['g1'], NOW, FAR, [], [])).toMatchObject({
+      rewritten: 0,
+      putOff: ['g1'],
+      done: false,
+    })
+    // With no record, the item can't be planned as it was, so the group waits (#301).
+    expect(JSON.parse(unrecorded.rows('items')[0]?.splitJson as string)).toEqual({
+      mode: 'days',
+      personIds: ['pP', 'pU', 'pX'],
+    })
+    expect(errors).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
+  })
+
   it('voids a payment or loan whose two sides are now both U, as the ledger voids one', async () => {
     const store = seed(
       [
@@ -306,7 +406,7 @@ describe('moveInputs (step 3)', () => {
         balances: [{ $id: 'g1', peopleJson: '[]' }],
       },
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 0,
       voided: 2,
     })
@@ -346,7 +446,7 @@ describe('moveInputs (step 3)', () => {
         leftOn: null,
       })),
     })
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 0,
       voided: 1,
     })
@@ -368,7 +468,7 @@ describe('moveInputs (step 3)', () => {
         { kind: 'loan', groupId: 'g1' },
       ),
     ])
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 2,
       voided: 0,
     })
@@ -538,7 +638,7 @@ describe('moveInputs (step 3)', () => {
           })),
         },
       )
-      await moveInputs(store, merge, ['g1'], NOW, FAR)
+      await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
       await moveShares(store, 'pP', 'pU', ['g1'], FAR)
 
       // What each split became.
@@ -599,7 +699,7 @@ describe('moveInputs (step 3)', () => {
     })
     const broken = { ...transaction('t2', {}), inputJson: '{' }
     const store = seed([heavy, broken, transaction('t3', EXPENSE)])
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
       rewritten: 1,
       voided: 0,
       skipped: 2,
@@ -629,7 +729,7 @@ describe('moveInputs (step 3)', () => {
       ],
       { shares: [] },
     )
-    await moveInputs(store, merge, ['g1'], NOW, FAR)
+    await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
     expect(Object.keys(input(store, 't1'))).toEqual(['note', 'split'])
     expect(store.rows('transactions')[1]).toMatchObject({ status: 'void', updatedBy: 'pU' })
   })
@@ -646,7 +746,7 @@ describe('moveInputs (step 3)', () => {
         : transaction(`t${String(n).padStart(3, '0')}`, EXPENSE),
     )
     const store = seed(rows, { shares: [] })
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 100,
       voided: 1,
       done: true,
@@ -657,7 +757,7 @@ describe('moveInputs (step 3)', () => {
     const store = seed([transaction('t1', EXPENSE)], {
       statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-09-01' }],
     })
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
       rewritten: 0,
       voided: 0,
       skipped: 0,
@@ -684,7 +784,9 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 1 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+    })
     const [row] = store.rows('transactions')
     expect(row?.statementId).toBe('st1')
     expect(input(store, 't1').payers).toEqual([{ personId: 'pU', cents: 9000 }])
@@ -711,7 +813,7 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 0,
       voided: 1,
     })
@@ -739,7 +841,7 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 1,
       voided: 0,
     })
@@ -761,7 +863,7 @@ describe('moveInputs (step 3)', () => {
       { kind: 'payment', statementId: 'st1' },
     )
     const store = seed([loan, payment])
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
       rewritten: 1,
       voided: 0,
       skipped: 0,
@@ -779,7 +881,7 @@ describe('moveInputs (step 3)', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const broken = { ...transaction('t1', {}, { statementId: 'st1' }), inputJson: '{' }
     const store = seed([broken, transaction('t2', EXPENSE, { statementId: 'st1' })])
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
       rewritten: 1,
       voided: 0,
       skipped: 0,
@@ -807,7 +909,9 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 1 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+    })
     expect(input(store, 't1')).toMatchObject({
       note: 'Edited meanwhile',
       payers: [{ personId: 'pU', cents: 9000 }],
@@ -886,7 +990,9 @@ describe('moveInputs (step 3)', () => {
           ),
         ),
     )
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({ rewritten: 1 })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+    })
     expect(input(store, 't1')).toEqual({
       payers: [{ personId: 'pU', cents: 9000 }],
       note: 'Shop',
@@ -910,7 +1016,7 @@ describe('moveInputs (step 3)', () => {
     }))
     const store = seed(rows, { items })
     const staged = vi.spyOn(store, 'createOperations')
-    const result = await moveInputs(store, merge, ['g1'], NOW, FAR)
+    const result = await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
     expect(result.done).toBe(true)
     expect(store.rows('transactions').every((row) => !String(row.inputJson).includes('pP'))).toBe(
       true,
@@ -945,7 +1051,7 @@ describe('moveInputs (step 3)', () => {
       balances: [{ $id: 'g1', peopleJson: '[]' }],
     })
     const staged = vi.spyOn(store, 'createOperations')
-    expect(await moveInputs(store, merge, ['g1'], NOW, FAR)).toMatchObject({
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
       rewritten: 86,
       voided: 1,
       done: true,
@@ -973,7 +1079,9 @@ describe('moveInputs (step 3)', () => {
         },
       ],
     })
-    await expect(moveInputs(store, merge, ['g1'], NOW, FAR)).rejects.toBeInstanceOf(IntoDeleted)
+    await expect(moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).rejects.toBeInstanceOf(
+      IntoDeleted,
+    )
     expect(input(store, 't1')).toEqual(EXPENSE)
   })
 
@@ -993,16 +1101,18 @@ describe('moveInputs (step 3)', () => {
           }),
         ),
     )
-    await expect(moveInputs(store, merge, ['g1'], NOW, FAR)).rejects.toBeInstanceOf(IntoDeleted)
+    await expect(moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).rejects.toBeInstanceOf(
+      IntoDeleted,
+    )
     expect(input(store, 't1')).toEqual(EXPENSE)
   })
 
   it('treats U’s row being gone as a deletion, rather than as a race to run again', async () => {
     const store = seed([transaction('t1', EXPENSE)], { persons: [] })
     // A race would run the batch again until the deadline.
-    await expect(moveInputs(store, merge, ['g1'], NOW, Date.now() + 1_000)).rejects.toBeInstanceOf(
-      IntoDeleted,
-    )
+    await expect(
+      moveInputs(store, merge, ['g1'], NOW, Date.now() + 1_000, DATES, []),
+    ).rejects.toBeInstanceOf(IntoDeleted)
     await expect(withTransaction(store, (tx) => guardInto(tx, store, 'pU'))).rejects.toBeInstanceOf(
       IntoDeleted,
     )
@@ -1011,7 +1121,7 @@ describe('moveInputs (step 3)', () => {
 
   it('starts nothing once the deadline has passed, and says it isn’t done', async () => {
     const store = seed([transaction('t1', EXPENSE)])
-    expect(await moveInputs(store, merge, ['g1'], NOW, 0)).toEqual({
+    expect(await moveInputs(store, merge, ['g1'], NOW, 0, DATES, [])).toEqual({
       rewritten: 0,
       voided: 0,
       skipped: 0,
@@ -1020,6 +1130,271 @@ describe('moveInputs (step 3)', () => {
       done: false,
     })
     expect(input(store, 't1')).toEqual(EXPENSE)
+  })
+})
+
+describe('moveInputs: where the scan got to (#242 G)', () => {
+  const P = { $id: 'pP', userId: null, displayName: 'P', mergedInto: 'pU', mergeCursorsJson: null }
+  const ids = (count: number) =>
+    Array.from({ length: count }, (_, n) => `t${String(n).padStart(3, '0')}`)
+
+  function withP(
+    transactions: object[],
+    cursors: object | null = null,
+    more: Record<string, object[]> = {},
+  ) {
+    return seed(transactions, {
+      persons: [
+        { $id: 'pU', userId: 'uU', displayName: 'U', mergedInto: null, deletedAt: null },
+        { ...P, mergeCursorsJson: cursors && JSON.stringify(cursors) },
+      ],
+      ...more,
+    })
+  }
+
+  // A row an earlier run left as it is (t001), behind its cursor.
+  const LEFT = [{ groupId: 'g1', after: 't001', left: ['t001'] }]
+
+  function cursors(store: FakeDb) {
+    return cursorsOf(store.rows('persons').find((row) => row.$id === 'pP') as never)
+  }
+
+  it('records each page, and a later run carries on after it rather than from the start', async () => {
+    const store = withP(ids(250).map((id) => transaction(id, EXPENSE)))
+    // Out of time once the first page's cursor is stored.
+    const start = Date.now()
+    let out = false
+    vi.spyOn(Date, 'now').mockImplementation(() => (out ? start + 60_000 : start))
+    beforeStaging(
+      store,
+      (operations) => operations.includes('mergeCursorsJson'),
+      async () => {
+        out = true
+      },
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, start + 1000, DATES, [])).toMatchObject({
+      rewritten: 100,
+      cutOff: true,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't099', left: [] }])
+    vi.restoreAllMocks()
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, cursors(store))).toMatchObject({
+      rewritten: 150,
+      done: true,
+    })
+    const first = reads.mock.calls.find(([params]) => params.tableId === 'transactions')?.[0]
+    expect(first?.queries).toContainEqual(expect.stringContaining('t099'))
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't249', left: [] }])
+    expect(store.rows('transactions').every((row) => !/\bpP\b/.test(row.inputJson as string))).toBe(
+      true,
+    )
+  })
+
+  it('keeps a row it left behind the cursor holding the merge open, until it’s voided', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const broken = { ...transaction('t001', {}), inputJson: '{' }
+    const store = withP([transaction('t000', EXPENSE), broken, transaction('t002', EXPENSE)])
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      skipped: 1,
+      done: false,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: ['t001'] }])
+    // The next run reads t001 again first: still unreadable, still open.
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, cursors(store))).toMatchObject({
+      skipped: 1,
+      done: false,
+    })
+    // Voided since, it no longer names anyone: the group's inputs are done.
+    await withTransaction(store, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'transactions',
+        rowId: 't001',
+        data: { status: 'void' },
+      }),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, cursors(store))).toMatchObject({
+      skipped: 0,
+      done: true,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: [] }])
+  })
+
+  it('carries on after the cursor when its row has been deleted since', async () => {
+    // t000 was renamed before the cursor's row, t500, was deleted.
+    const stored = [{ groupId: 'g1', after: 't500', left: [] }]
+    const store = withP([transaction('t000', RENAMED), transaction('t600', EXPENSE)], stored)
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      rewritten: 1,
+      done: true,
+    })
+    const first = reads.mock.calls.find(([params]) => params.tableId === 'transactions')?.[0]
+    expect(first?.queries).toContainEqual(expect.stringMatching(/greaterThan.*t500/))
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't600', left: [] }])
+  })
+
+  it('counts a row it left once, however many pages it reads after it', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const rows = ids(151).map((id) => transaction(id, EXPENSE))
+    rows[1] = { ...transaction('t001', {}), inputJson: '{' }
+    const store = withP(rows)
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 150,
+      skipped: 1,
+      done: false,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't150', left: ['t001'] }])
+  })
+
+  it('clears a row it left that has been locked or deleted since: a locked one is renamed', async () => {
+    const stored = [{ groupId: 'g1', after: 't002', left: ['t001', 't002'] }]
+    const locked = transaction('t001', EXPENSE, { statementId: 'st1' })
+    const store = withP([transaction('t000', RENAMED), locked], stored)
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      rewritten: 1,
+      skipped: 0,
+      done: true,
+    })
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't002', left: [] }])
+    // Renamed by the locked rule (#263): as a posted row, never voided.
+    expect(JSON.stringify(input(store, 't001'))).not.toMatch(/\bpP\b/)
+  })
+
+  it('reads the rows it left again 100 at a time: no filter holds more values', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const broken = ids(150).map((id) => ({ ...transaction(id, {}), inputJson: '{' }))
+    const stored = [{ groupId: 'g1', after: 't149', left: ids(150) }]
+    const store = withP(broken, stored)
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, stored)).toMatchObject({
+      skipped: 150,
+      done: false,
+    })
+    const sizes = reads.mock.calls.flatMap(([params]) =>
+      (params.queries ?? [])
+        .map((query) => JSON.parse(query) as { method: string; values: unknown[] })
+        .filter((query) => query.method === 'equal')
+        .map((query) => query.values.length),
+    )
+    expect(Math.max(...sizes)).toBe(100)
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't149', left: ids(150) }])
+  })
+
+  it('renames a row it left once it’s fixed, reading it again when an edit races it', async () => {
+    const store = withP([transaction('t000', RENAMED), transaction('t001', EXPENSE)], LEFT)
+    const edited = { ...EXPENSE, note: 'Edited' }
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't001',
+            data: { inputJson: JSON.stringify(edited) },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, LEFT)).toMatchObject({
+      rewritten: 1,
+      skipped: 0,
+      done: true,
+    })
+    // Renamed as it was after the edit, not before.
+    expect(input(store, 't001')).toMatchObject({ payers: [{ personId: 'pU' }], note: 'Edited' })
+    expect(JSON.stringify(input(store, 't001'))).not.toMatch(/\bpP\b/)
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't001', left: [] }])
+  })
+
+  it('puts the group off, the rows it left untouched, while a statement is being finalized', async () => {
+    const store = withP([transaction('t001', EXPENSE)], LEFT, {
+      statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' }],
+    })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, LEFT)).toMatchObject({
+      rewritten: 0,
+      putOff: ['g1'],
+      done: false,
+    })
+    expect(input(store, 't001')).toEqual(EXPENSE)
+    expect(cursors(store)).toEqual(LEFT)
+  })
+
+  it('reads none of the rows it left once out of time', async () => {
+    const store = withP([transaction('t001', EXPENSE)], LEFT)
+    const reads = vi.spyOn(store, 'listRows')
+    expect(await moveInputs(store, merge, ['g1'], NOW, 0, DATES, LEFT)).toMatchObject({
+      cutOff: true,
+      done: false,
+    })
+    expect(reads.mock.calls.filter(([params]) => params.tableId === 'transactions')).toEqual([])
+  })
+
+  it('stores no resume point once out of time, so the next run reads that page again', async () => {
+    const store = withP(ids(150).map((id) => transaction(id, EXPENSE)))
+    // Out of time as the first batch is staged: the page's batches still all commit.
+    const start = Date.now()
+    let out = false
+    vi.spyOn(Date, 'now').mockImplementation(() => (out ? start + 60_000 : start))
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      async () => {
+        out = true
+      },
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, start + 1000, DATES, [])).toMatchObject({
+      rewritten: 100,
+      cutOff: true,
+    })
+    expect(cursors(store)).toEqual([])
+  })
+
+  it('keeps the rows another run left as they are in the same group, written just before', async () => {
+    const store = withP([transaction('t000', EXPENSE)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('mergeCursorsJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pP',
+            data: {
+              mergeCursorsJson: JSON.stringify([{ groupId: 'g1', after: 't000', left: ['t900'] }]),
+            },
+          }),
+        ),
+    )
+    await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
+    expect(cursors(store)).toEqual([{ groupId: 'g1', after: 't000', left: ['t900'] }])
+  })
+
+  it('keeps another run’s cursor for another group, written just before this one', async () => {
+    const store = withP([transaction('t000', EXPENSE)])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('mergeCursorsJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pP',
+            data: {
+              mergeCursorsJson: JSON.stringify([{ groupId: 'g2', after: 'x', left: ['x'] }]),
+            },
+          }),
+        ),
+    )
+    await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])
+    expect(cursors(store)).toEqual([
+      { groupId: 'g2', after: 'x', left: ['x'] },
+      { groupId: 'g1', after: 't000', left: [] },
+    ])
   })
 })
 

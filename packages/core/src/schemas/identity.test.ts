@@ -7,6 +7,8 @@ import {
   createInviteBodySchema,
   deleteAccountBodySchema,
   hoursCapSchema,
+  mergeCursorsSchema,
+  mergeMembersSchema,
   sendReminderBodySchema,
   updateProfileBodySchema,
 } from './identity'
@@ -210,5 +212,48 @@ describe('deleteAccountBodySchema (#50)', () => {
     }
     expect(paths(deleteAccountBodySchema, {})).toEqual(['confirm'])
     expect(paths(deleteAccountBodySchema, { confirm: 'DELETE', userId: 'u1' })).toEqual([''])
+  })
+})
+
+describe('mergeMembersSchema', () => {
+  const entry = {
+    groupId: 'g1',
+    from: { joinedOn: '2026-01-05', leftOn: null },
+    into: { joinedOn: '2026-02-01', leftOn: '2026-03-31' },
+  }
+
+  it('takes P dates with or without U dates', () => {
+    expect(mergeMembersSchema.parse([entry, { ...entry, groupId: 'g2', into: null }])).toHaveLength(
+      2,
+    )
+    expect(mergeMembersSchema.parse([])).toEqual([])
+  })
+
+  it('refuses a missing date, a date that is not one, or another key', () => {
+    expect(paths(mergeMembersSchema, [{ ...entry, from: { leftOn: null } }])).toEqual([
+      '0.from.joinedOn',
+    ])
+    expect(
+      paths(mergeMembersSchema, [{ ...entry, into: { joinedOn: '2026-02-30', leftOn: null } }]),
+    ).toEqual(['0.into.joinedOn'])
+    expect(paths(mergeMembersSchema, [{ ...entry, personId: 'p1' }])).toEqual(['0'])
+  })
+})
+
+describe('mergeCursorsSchema', () => {
+  const entry = { groupId: 'g1', after: 't9', left: [] }
+
+  it('takes a cursor per group, with the rows left behind it', () => {
+    expect(mergeCursorsSchema.parse([entry, { ...entry, groupId: 'g2', left: ['t3'] }])).toEqual([
+      entry,
+      { groupId: 'g2', after: 't9', left: ['t3'] },
+    ])
+    expect(mergeCursorsSchema.parse([])).toEqual([])
+  })
+
+  it('refuses a missing cursor, a left list that isn’t IDs, or another key', () => {
+    expect(paths(mergeCursorsSchema, [{ groupId: 'g1', left: [] }])).toEqual(['0.after'])
+    expect(paths(mergeCursorsSchema, [{ ...entry, left: [1] }])).toEqual(['0.left.0'])
+    expect(paths(mergeCursorsSchema, [{ ...entry, done: true }])).toEqual(['0'])
   })
 })
