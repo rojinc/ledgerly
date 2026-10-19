@@ -19,7 +19,9 @@ const PAGE_SIZE = 100
 
 /**
  * `identity GET /groups/pending`: the groups where the caller's person is still a `placeholder`
- * member, archived ones included (functions-api.md#identity). Only what a pending list shows.
+ * member, archived ones included (functions-api.md#identity). Only what a pending list shows:
+ * for a pair group, the other member's display name too, since the group's own name is what
+ * its creator calls the caller.
  */
 export async function listPendingGroups(
   { db }: Services,
@@ -43,7 +45,43 @@ export async function listPendingGroups(
       groups.push({ id: $id, type, name, archivedAt })
     }
   }
-  return { groups: groups.sort((a, b) => a.name.localeCompare(b.name)) }
+  const names = await counterpartNames(
+    db,
+    person.$id,
+    groups.filter((group) => group.type === 'pair').map((group) => group.id),
+  )
+  for (const group of groups) {
+    const counterpartName = names.get(group.id)
+    if (counterpartName !== undefined) group.counterpartName = counterpartName
+  }
+  const shown = (group: PendingGroup) => group.counterpartName ?? group.name
+  return { groups: groups.sort((a, b) => shown(a).localeCompare(shown(b))) }
+}
+
+/**
+ * The other member's display name in each pair group: a pair has exactly two members, so one
+ * row per group. Only the name, never an email or phone.
+ */
+async function counterpartNames(
+  db: Db,
+  personId: string,
+  groupIds: string[],
+): Promise<Map<string, string>> {
+  const names = new Map<string, string>()
+  for (let start = 0; start < groupIds.length; start += PAGE_SIZE) {
+    const { rows } = await db.listRows<Members>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.members,
+      queries: [
+        Query.equal('groupId', groupIds.slice(start, start + PAGE_SIZE)),
+        Query.notEqual('personId', personId),
+        Query.limit(PAGE_SIZE),
+      ],
+      total: false,
+    })
+    for (const row of rows) names.set(row.groupId, row.displayName)
+  }
+  return names
 }
 
 /**

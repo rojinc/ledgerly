@@ -10,7 +10,7 @@ Use these words exactly as defined here, in code, the UI and docs. If you need a
 | **Identity** | An email address or phone number that belongs to a person. Stored in `identities`. *Verified* means the user proved they own it. |
 | **Claim** | Linking a placeholder to a user after the user verifies a matching identity. |
 | **Join** | A person entering a group by their own action (claim, accepting an invite, or joining from the app). Their status becomes `active`, or `left` if they had already moved out. |
-| **Pending (group)** | A group someone was added to while they already had an account, and hasn't joined yet. They see only its name, type and whether it's archived until they join. |
+| **Pending (group)** | A group someone was added to while they already had an account, and hasn't joined yet. They see only its name, type and whether it's archived (and, for a pair group, the other member's display name) until they join. |
 | **Merge** | Combining two persons that turn out to be the same human. |
 | **Profile** | A user's settings and business details. One per user. |
 | **Group** | A container of people and transactions. Types: `personal`, `house`, `employer`, `pair`. Each group is one Appwrite Team. |

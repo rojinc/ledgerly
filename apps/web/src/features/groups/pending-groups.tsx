@@ -60,6 +60,8 @@ function PendingRow({
 }) {
   const userId = useCurrentUser().data?.$id ?? ''
   const queryClient = useQueryClient()
+  // A pair group's own name is what its creator calls the caller: show who added them instead.
+  const name = group.counterpartName ?? group.name
   const join = useMutation({
     mutationFn: async () => {
       const result = await callFunction('identity', 'POST', `/groups/${group.id}/join`)
@@ -73,7 +75,7 @@ function PendingRow({
     },
     // Joined: it's one of the user's groups now, and no longer waiting.
     onSuccess: () => {
-      onJoined(group.name)
+      onJoined(name)
       return Promise.all([
         queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) }),
         queryClient.invalidateQueries({ queryKey: pendingKey(userId) }),
@@ -84,7 +86,7 @@ function PendingRow({
     <li className="flex flex-col gap-2 px-4 py-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-medium break-words">{group.name}</p>
+          <p className="font-medium break-words">{name}</p>
           <p className="text-sm text-muted-foreground">
             {TYPE_LABEL[group.type]}
             {group.archivedAt ? ' · Archived' : ''}
@@ -96,7 +98,7 @@ function PendingRow({
           size="sm"
           onClick={() => !join.isPending && join.mutate()}
           aria-disabled={join.isPending}
-          aria-label={`Join ${group.name}`}
+          aria-label={`Join ${name}`}
         >
           {join.isPending ? 'Joining…' : 'Join'}
         </Button>

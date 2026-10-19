@@ -13,7 +13,11 @@ vi.mock('../../lib/appwrite', () => ({
 }))
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
-vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'p1' } }) }))
+// The viewer's person; empty while bootstrap is still loading.
+let mockPersonId = 'p1'
+vi.mock('../auth/use-bootstrap', () => ({
+  useBootstrap: () => ({ data: { personId: mockPersonId } }),
+}))
 
 const listTeams = vi.mocked(teams.list)
 const listRows = vi.mocked(tablesDB.listRows)
@@ -35,6 +39,7 @@ function renderPage() {
 }
 
 afterEach(() => {
+  mockPersonId = 'p1'
   cleanup()
   vi.resetAllMocks()
 })
@@ -121,14 +126,70 @@ describe('GroupsPage', () => {
     expect(document.activeElement?.tagName).toBe('H1')
   })
 
-  it('links a lend & borrow group to its page', async () => {
+  it('links a lend & borrow group to its page, named by the other member', async () => {
     listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g4' }] } as never)
-    listRows.mockResolvedValue({ total: 1, rows: [group('g4', 'pair', 'Sam')] } as never)
+    // Alex created it and named it after the viewer (p1); the viewer sees Alex.
+    const members = [
+      { $id: 'm1', groupId: 'g4', personId: 'p1', displayName: 'Sam' },
+      { $id: 'm2', groupId: 'g4', personId: 'p2', displayName: 'Alex' },
+    ]
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+      const rows = tableId === 'members' ? members : [group('g4', 'pair', 'Sam')]
+      return { total: rows.length, rows }
+    }) as never)
     call.mockResolvedValue({ ok: true, data: { people: [], transfers: [] } })
     renderPage()
-    expect((await screen.findByRole('link', { name: 'Sam' })).getAttribute('href')).toBe(
+    expect((await screen.findByRole('link', { name: 'Alex' })).getAttribute('href')).toBe(
       '/people/g4',
     )
+    expect(screen.queryByText('Sam')).toBeNull()
+  })
+
+  it('shows the group’s own name until the viewer’s person is known', async () => {
+    mockPersonId = ''
+    listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g4' }] } as never)
+    // Without the viewer, "the other member" could be the viewer themself.
+    const members = [
+      { $id: 'm1', groupId: 'g4', personId: 'p1', displayName: 'Me' },
+      { $id: 'm2', groupId: 'g4', personId: 'p2', displayName: 'Alex' },
+    ]
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+      const rows = tableId === 'members' ? members : [group('g4', 'pair', 'Sam')]
+      return { total: rows.length, rows }
+    }) as never)
+    call.mockResolvedValue({ ok: true, data: { people: [], transfers: [] } })
+    renderPage()
+    expect(await screen.findByRole('link', { name: 'Sam' })).toBeTruthy()
+    // Once the members have loaded, it still waits for the viewer.
+    await waitFor(() =>
+      expect(
+        listRows.mock.calls.some(
+          ([args]) => (args as unknown as { tableId: string }).tableId === 'members',
+        ),
+      ).toBe(true),
+    )
+    await act(async () => {})
+    expect(screen.queryByText('Me')).toBeNull()
+    expect(screen.getByRole('link', { name: 'Sam' })).toBeTruthy()
+  })
+
+  it('keeps the name of an employer or house group', async () => {
+    listTeams.mockResolvedValue({ total: 1, teams: [{ $id: 'g5' }] } as never)
+    listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
+      const rows =
+        tableId === 'members'
+          ? [{ $id: 'm1', groupId: 'g5', personId: 'p2', displayName: 'Alex' }]
+          : [group('g5', 'house', 'Flat 2')]
+      return { total: rows.length, rows }
+    }) as never)
+    call.mockResolvedValue({ ok: true, data: { people: [], transfers: [] } })
+    renderPage()
+    expect(await screen.findByText('Flat 2')).toBeTruthy()
+    expect(
+      listRows.mock.calls.some(
+        ([args]) => (args as unknown as { tableId: string }).tableId === 'members',
+      ),
+    ).toBe(false)
   })
 
   it('shows a dash when the balance is not available', async () => {

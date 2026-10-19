@@ -11,8 +11,9 @@ vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $i
 const call = vi.mocked(callFunction)
 const onJoined = vi.fn()
 
+// Alex added the user as "Sam": the pair is shown by Alex's name, not the group's (#145).
 const PENDING = [
-  { id: 'g1', type: 'pair', name: 'Alex', archivedAt: null },
+  { id: 'g1', type: 'pair', name: 'Sam', counterpartName: 'Alex', archivedAt: null },
   { id: 'g2', type: 'house', name: 'Flat', archivedAt: '2026-09-01T00:00:00.000Z' },
 ]
 

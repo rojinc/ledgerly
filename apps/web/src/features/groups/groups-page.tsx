@@ -5,6 +5,7 @@ import { Link } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
+import { useMembers } from '../transactions/use-transactions'
 import { PendingGroups, TYPE_LABEL } from './pending-groups'
 import { useBalances, useGroups } from './use-groups'
 
@@ -78,6 +79,15 @@ function GroupList({ groups }: { groups: Groups[] }) {
 }
 
 function GroupRow({ group }: { group: Groups }) {
+  const userId = useCurrentUser().data?.$id ?? ''
+  const personId = useBootstrap(userId).data?.personId ?? ''
+  // A pair group's own name is its creator's label for the other person, which is the viewer
+  // when the viewer was added: name it by the other member instead, as /people does (#145).
+  const members = useMembers(group.type === 'pair' ? group.$id : '')
+  const other = personId
+    ? members.data?.find((member) => member.personId !== personId)?.displayName
+    : undefined
+  const name = other ?? group.name
   // Employers open their settings; lend & borrow opens the person's page (#34).
   const to =
     group.type === 'employer'
@@ -91,10 +101,10 @@ function GroupRow({ group }: { group: Groups }) {
         <p className="truncate font-medium">
           {to ? (
             <Link to={to} className="underline-offset-4 hover:underline">
-              {group.name}
+              {name}
             </Link>
           ) : (
-            group.name
+            name
           )}
         </p>
         <p className="text-sm text-muted-foreground">

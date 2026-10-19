@@ -44,11 +44,14 @@ function group(id: string, name: string, extra: object = {}) {
   }
 }
 
+// A pair group's name is its creator's label for the other person: here, for Sam.
 const GROUPS = [
-  group('g1', 'Zed and Sam'),
-  group('g2', 'Ann and Sam', { archivedAt: '2026-10-02T00:00:00.000Z' }),
+  group('g1', 'Sam'),
+  group('g2', 'Sammy', { archivedAt: '2026-10-02T00:00:00.000Z' }),
   group('g3', 'Joined already'),
   group('g4', 'Someone else'),
+  group('g5', 'Flat 2', { type: 'house' }),
+  group('g6', 'Zed Cafe', { type: 'employer' }),
 ]
 
 function fixture(members: Array<ReturnType<typeof placeholderRow>> = defaultMembers()) {
@@ -64,6 +67,11 @@ function defaultMembers() {
     placeholderRow('m2', 'g2', 'pSam', BEFORE),
     placeholderRow('m3', 'g3', 'pSam', BEFORE, { status: 'active' }),
     placeholderRow('m4', 'g4', 'pOther', BEFORE),
+    placeholderRow('m5', 'g5', 'pSam', BEFORE),
+    // The creators, already joined.
+    placeholderRow('a1', 'g1', 'pZed', BEFORE, { displayName: 'Zed Park', status: 'active' }),
+    placeholderRow('a2', 'g2', 'pAnn', BEFORE, { displayName: 'Ann Cho', status: 'active' }),
+    placeholderRow('a5', 'g5', 'pAnn', BEFORE, { displayName: 'Ann Cho', status: 'active' }),
   ]
 }
 
@@ -82,24 +90,62 @@ describe('GET /groups/pending', () => {
     const services = fixture()
     const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups).toEqual([
-      { id: 'g2', type: 'pair', name: 'Ann and Sam', archivedAt: '2026-10-02T00:00:00.000Z' },
-      { id: 'g1', type: 'pair', name: 'Zed and Sam', archivedAt: null },
+      {
+        id: 'g2',
+        type: 'pair',
+        name: 'Sammy',
+        counterpartName: 'Ann Cho',
+        archivedAt: '2026-10-02T00:00:00.000Z',
+      },
+      // A house keeps its own name, with no member named.
+      { id: 'g5', type: 'house', name: 'Flat 2', archivedAt: null },
+      { id: 'g1', type: 'pair', name: 'Sam', counterpartName: 'Zed Park', archivedAt: null },
     ])
   })
 
-  it('pages through more than one page of placeholder rows', async () => {
+  it('names a pair group by the other member, never the caller’s own row', async () => {
+    // Sam's own row comes last in the table, so it would win if it were read.
+    const services = fixture([
+      placeholderRow('a1', 'g1', 'pZed', BEFORE, { displayName: 'Zed Park', status: 'active' }),
+      placeholderRow('m1', 'g1', 'pSam', BEFORE, { displayName: 'Sam' }),
+    ])
+    const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
+    expect(groups).toEqual([
+      { id: 'g1', type: 'pair', name: 'Sam', counterpartName: 'Zed Park', archivedAt: null },
+    ])
+  })
+
+  it('pages through more than one page of placeholder rows, and of their other members', async () => {
     const services = fakes({
       persons: [SAM],
       groups: Array.from({ length: 101 }, (_, i) =>
         group(`g${i}`, `G${String(i).padStart(3, '0')}`),
       ),
-      members: Array.from({ length: 101 }, (_, i) =>
-        placeholderRow(`m${i}`, `g${i}`, 'pSam', BEFORE),
-      ),
+      members: [
+        ...Array.from({ length: 101 }, (_, i) => placeholderRow(`m${i}`, `g${i}`, 'pSam', BEFORE)),
+        // Each pair's creator, so every group needs its other member's name.
+        ...Array.from({ length: 101 }, (_, i) =>
+          placeholderRow(`a${i}`, `g${i}`, `pC${i}`, BEFORE, {
+            displayName: `C${String(i).padStart(3, '0')}`,
+            status: 'active',
+          }),
+        ),
+      ],
     })
     const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
     expect(groups).toHaveLength(101)
-    expect(groups.at(-1)?.id).toBe('g100')
+    // Every one named, past the first batch of 100 and past the default page size.
+    expect(groups.every((g) => g.counterpartName === `C${g.name.slice(1)}`)).toBe(true)
+    expect(groups.at(-1)).toMatchObject({ id: 'g100', counterpartName: 'C100' })
+  })
+
+  it('names no member for an employer group either', async () => {
+    const services = fixture([
+      placeholderRow('m6', 'g6', 'pSam', BEFORE),
+      placeholderRow('a6', 'g6', 'pZed', BEFORE, { displayName: 'Zed Park', status: 'active' }),
+    ])
+    const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
+    expect(groups).toEqual([{ id: 'g6', type: 'employer', name: 'Zed Cafe', archivedAt: null }])
   })
 
   it('is NOT_FOUND before bootstrap, and UNAUTHENTICATED without a JWT', async () => {
@@ -131,7 +177,7 @@ describe('POST /groups/{id}/join', () => {
     ])
     // Not pending any more.
     const { groups } = await ok<PendingGroupsResult>(services, 'GET', '/groups/pending')
-    expect(groups.map((g) => g.id)).toEqual(['g2'])
+    expect(groups.map((g) => g.id)).toEqual(['g2', 'g5'])
   })
 
   it('joins an archived group', async () => {
