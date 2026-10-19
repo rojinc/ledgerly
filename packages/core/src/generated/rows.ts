@@ -228,6 +228,16 @@ export type Balances = Models.Row & {
     peopleJson: string;
 }
 
+export type ReceiptFiles = Models.Row & {
+    transactionIds: string[] | null;
+    detachedAt: string | null;
+    deletingAt: string | null;
+}
+
+export type Checkpoints = Models.Row & {
+    through: string;
+}
+
 export type Schedules = Models.Row & {
     groupId: string;
     kind: SchedulesKind;
