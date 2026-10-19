@@ -83,9 +83,17 @@ describe('scheduleInputSchema', () => {
     ).toEqual([])
   })
 
-  it("leaves each occurrence's dueOn to the scheduler", () => {
-    const template = { ...rentSchedule.template, bill: { status: 'due' } }
-    expect(paths(scheduleInputSchema, { ...rentSchedule, template })).toEqual([])
+  it("leaves each occurrence's status and dueOn to the scheduler", () => {
+    const withBill = (bill: object) => ({
+      ...rentSchedule,
+      template: { ...rentSchedule.template, bill },
+    })
+    expect(paths(scheduleInputSchema, withBill({ status: 'due', dueOn: '2026-11-15' }))).toEqual([
+      'template.bill.dueOn',
+    ])
+    expect(paths(scheduleInputSchema, withBill({ status: 'paid' }))).toEqual([
+      'template.bill.status',
+    ])
   })
 
   it('refuses a billing period, and so a days split, in a bill template', () => {

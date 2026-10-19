@@ -84,7 +84,7 @@ type TransactionInput = {
     startTime?: string          // 'HH:mm', for display
     endTime?: string
   }
-  bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate } // dueOn required when status is 'due'; schedule templates leave out dueOn and the period
+  bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate } // dueOn required when status is 'due'; a schedule template is { status: 'due' } with no dueOn or period
   payment?: { fromPersonId: string; toPersonId: string }
   adjustment?: { shares: { personId: string; givenCents: number; receivedCents: number }[]; reason: string }
   receiptFileIds?: string[]     // at most 10, each once; a PATCH without it keeps the stored list
@@ -107,7 +107,7 @@ Each route parses its body with its schema from `packages/core/src/schemas/` bef
 - **Amounts** are integer cents, at most `MAX_AMOUNT_CENTS` in size, and so are computed totals: a shift's `minutes × rateCents / 60` and the sum of the `items`. Rates are ≥ 0. A shift's `minutes` and `breakMinutes` are at most 1440 (one day).
 - **People:** a list names each person at most once, and a transaction names at most 15 people in all.
 - **Kinds:** `shift`, `bill`, `payment` and `adjustment` are required for their own kind and rejected on any other. `payers` and `split` are for expense, bill and loan; `items` (1–30) for expense and bill; a `days` split for bills only. `totalCents` is required unless the kind is `shift` (where it is computed, so it is rejected) or there are `items`. A payment's `fromPersonId` and `toPersonId` must be different people. Sums against the total (payers, `exact` splits, items) and the sign rules are ledger rules, checked by `buildShares()`.
-- **Bills:** a one-off `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`. A schedule's bill template has no `periodStart`, `periodEnd` or `days` split ([scheduling](scheduling.md#what-a-schedule-is)).
+- **Bills:** a one-off `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`. A schedule's bill template has status `due` and no `dueOn`, `periodStart`, `periodEnd` or `days` split ([scheduling](scheduling.md#what-a-schedule-is)).
 - **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it.
 - **Lists:** at most 10 `receiptFileIds`, each at most once (the ledger function checks each file), and 366 `exdates`. Schedule templates have no `receiptFileIds`.
 - **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365. `region` must be a country or state the public holiday library knows (`publicHolidayChecker`), checked by the function on create and `PATCH`.

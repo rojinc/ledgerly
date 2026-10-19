@@ -6,7 +6,7 @@ Schedules create transactions automatically: a Thursday shift, weekly rent, a mo
 
 A row in `schedules` ([data model](data-model.md#schedules)) with:
 
-- a **template**: the transaction to create (kind, description, amount or minutes × rate, payers, split). A bill template has no billing period, since one period can't fit every occurrence, and so no `days` split ([days present](ledger.md#days-present)); recurring days-present bills are for later,
+- a **template**: the transaction to create (kind, description, amount or minutes × rate, payers, split). A bill template is `due` with no `dueOn`, since each occurrence is due on its own date, and has no billing period, since one period can't fit every occurrence, and so no `days` split ([days present](ledger.md#days-present)); recurring days-present bills are for later,
 - a **recurrence rule** (RFC 5545 `RRULE`), a start date and an optional end date,
 - skip rules: specific dates (`exdates`) and optionally public holidays for the group's region,
 - `autoPost`: whether occurrences post themselves.
@@ -102,7 +102,7 @@ An edit, another run, a member removed or an occurrence changed meanwhile makes 
 - **Autopay bills:** status `due`, `dueOn <= localToday`, and the schedule has `autoPost` → post with the template's payers, `date = dueOn`.
 - **Other `scheduled` kinds** (expense, income): post when `date <= localToday` and `autoPost` is set.
 - Edited (`overridden`) occurrences auto-post too, with the edited values. Voided ones never do.
-- **Never one made after its own day** (local date of its `$createdAt` later than its `date`): a run that came late after an edit, or a new schedule that starts in the past, makes past occurrences, and those wait for the user like any past occurrence that wasn't posted. So a week an edit moved (Thursday posted, Friday made late) is never paid twice.
+- **Never one made after its own day** (local date of its `$createdAt` later than its `date`, or a bill's `dueOn`): a run that came late after an edit, or a new schedule that starts in the past, makes past occurrences, and those wait for the user like any past occurrence that wasn't posted. So a run that comes late after an edit never posts a moved week twice (Thursday posted, then Friday made on Saturday). One made on or before its day still posts: an edit on Friday that moves Thursday's posted shift to Fridays makes Friday's, which the user voids if the week is already paid.
 
 Query with `idx_status_date` (autopay bills: `idx_status_dueOn`) for dates from 7 days ago up to the UTC date plus one day (some timezones are ahead), then check each group's local date before posting. Skip transactions in archived groups; they stay as they are. The 7-day floor matters: shifts waiting for manual confirmation stay `scheduled` for as long as the user ignores them, and without a floor every run would re-read all of them. An auto-post occurrence missed by more than 7 days (a long outage) waits for the user.
 
@@ -111,7 +111,7 @@ Query with `idx_status_date` (autopay bills: `idx_status_dueOn`) for dates from 
 | Reminder | Condition | Sent to |
 | --- | --- | --- |
 | Bill due soon | status `due`, `dueOn` within 2 days, `remindedAt` empty | joined admins with an account (personal: the owner) |
-| Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost`, `remindedAt` empty | group owner |
+| Shift to confirm | status `scheduled`, `date < today`, schedule has no `autoPost` or the shift was made after its day (step 2 never posts it), `remindedAt` empty | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
 Each reminder goes out once. In one database transaction, `remindedAt` is staged first, then the stored row is checked: still the same status, date or `startedAt`, not locked and not reminded. Only then is the email sent, with Resend's idempotency key `reminder-<transactionId>`, before the commit. A row that changed after the page was read gets nothing. One that changes after staging fails the commit, and the next run looks at it again; if the email had gone out, Resend doesn't deliver it twice within 24 hours. A failed send leaves `remindedAt` empty, so the next run tries again, except for an email Resend will never take (a bad address, or the same key with different content), which is marked. Any other failure on one row is counted, and the run carries on. Bill reminders add `dueOn` to the key: a new due date clears `remindedAt` and needs its own reminder.

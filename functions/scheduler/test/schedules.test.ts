@@ -672,12 +672,12 @@ describe('races on schedule edits', () => {
       status: 'posted',
       date: '2026-10-18',
     })
-    const { created } = await patch(services, {
+    const { created, updated } = await patch(services, {
       ...rent,
       template: { ...rent.template, totalCents: 95_000 },
     })
     // November's ID is taken, whatever its date; December is updated in place.
-    expect(created).toBe(0)
+    expect([created, updated]).toEqual([0, 1])
     expect(await runCron(services)).toMatchObject({
       expanded: { schedules: 0, created: 0, failed: 0 },
     })

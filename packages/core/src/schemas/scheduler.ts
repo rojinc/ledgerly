@@ -114,12 +114,21 @@ function checkSchedule(schedule: ScheduleFields, ctx: z.RefinementCtx): void {
   }
 }
 
-// scheduling.md#what-a-schedule-is: one billing period can't fit every occurrence, so a template
-// has none, and so no days split either (ledger.md#days-present counts days within the period).
+// scheduling.md#what-a-schedule-is: each occurrence is due on its own date, so a template has no
+// dueOn or other status. One billing period can't fit every occurrence, so it has none, and so no
+// days split either (ledger.md#days-present counts days within the period).
 function checkScheduledBill(
   { bill, split, items }: TransactionTemplate,
   ctx: z.RefinementCtx,
 ): void {
+  if (bill && bill.status !== 'due') {
+    const message = 'Each occurrence starts due'
+    ctx.addIssue({ code: 'custom', message, path: ['template', 'bill', 'status'] })
+  }
+  if (bill?.dueOn !== undefined) {
+    const message = 'Each occurrence is due on its own date'
+    ctx.addIssue({ code: 'custom', message, path: ['template', 'bill', 'dueOn'] })
+  }
   for (const key of ['periodStart', 'periodEnd'] as const) {
     if (bill?.[key] !== undefined) {
       const message = 'A schedule template has no billing period'
