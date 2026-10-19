@@ -391,7 +391,9 @@ describe('StatementPage: a draft', () => {
   })
 
   it.each([
-    ['a Chinese name', '张三 Pty Ltd', true],
+    ['a Thai name', 'ร้าน Pty Ltd', true],
+    // Noto Sans CJK has it (#270).
+    ['a Chinese name', '张三 Pty Ltd', false],
     ['a Latin one', 'Café Ngọc', false],
   ])('warns when the PDF can’t show a character, for %s', async (_, name, warned) => {
     const recipient = { personId: 'pe', name, emails: ['delivered@resend.dev'] }

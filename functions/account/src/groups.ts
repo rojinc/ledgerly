@@ -12,7 +12,7 @@ import { everyPersonId, type TransactionTemplate } from '@ledgerly/core/schemas/
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
+import { deleteTeam, othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { logProblem } from '@ledgerly/server/http/log'
@@ -25,6 +25,7 @@ import {
   laterOf,
 } from '@ledgerly/server/scheduler/end-schedule'
 import { ID, Permission, Query, Role } from 'node-appwrite'
+import { purge } from './purge'
 import { FORMER_MEMBER, getRowOrNull, isAppwriteError } from './rows'
 import type { Services } from './services'
 
@@ -65,9 +66,9 @@ function joinedRows(db: Db, personId: string): Promise<Members[]> {
   ])
 }
 
-// One group. False when it's left for the next run: it needs a purge, a statement in it is being
-// finalized, or something changed it meanwhile. A rerun never decides again: the group's state
-// says how it carries on, never the team as it is by then.
+// One group. False when it's left for the next run: a statement in it is being finalized,
+// something changed it meanwhile, or a purge ran out of time. A rerun never decides again: the
+// group's state says how it carries on, never the team as it is by then.
 async function leaveGroup(
   services: Services,
   userId: string,
@@ -77,22 +78,29 @@ async function leaveGroup(
   const { db, teams } = services
   try {
     const others = await othersInTeam(teams, member.groupId, userId)
-    // The team is gone: a purge was started, and carries on. Purges are #50 PR-2.
-    if (others === null) return false
+    // The team is gone: a purge was started, and carries on. Their own member row, deleted
+    // last, ends it.
+    if (others === null) return await purge(services, member)
     const group = await getRowOrNull<Groups>(db, TABLES.groups, member.groupId)
     if (!group) return false
     if (!(await isKept(db, person, member))) {
-      // Nobody else is in the team, as in their personal group: it's purged (#50 PR-2), so
-      // until then it waits, untouched.
-      if (!others) return false
+      if (!others) {
+        // Nobody else is in the team, as in their personal group: it's purged. `archivedAt`
+        // first, as the keep's archive sets it (so no statement is being finalized, and none
+        // can start), then the team, so jobs and writes stop. A crash between the two leaves
+        // the team, so a rerun decides from it again.
+        if (!group.archivedAt) await archive(services, person.$id, group, true)
+        await deleteTeam(teams, group.$id)
+        return await purge(services, member)
+      }
       await keep(services, person, member, group)
     }
-    // Then, in this order, on every run once the keep is done (each is safe to repeat): their
+    // Then, in this order, on every run once the keep is done (each is safe to repeat): the
     // schedules, the archive (ending a schedule in an archived group is refused), and leaving
     // the team last, so a crash before it leaves the group to be finished, never with its
     // schedules still running.
     if (!group.archivedAt) {
-      if (!(await endSchedules(services, person.$id, group))) return false
+      if (!(await endSchedules(services, person, group))) return false
       if (!(await hasJoinedAdmin(db, group.$id))) await archive(services, person.$id, group)
     }
     await removeFromTeam(teams, group.$id, userId)
@@ -171,23 +179,38 @@ async function keep(
   })
 }
 
-// The schedules in the group that they created, or whose template names them, end on the
-// earlier of their stored end and today, so no new occurrence names a deleted person. One that
-// hasn't started and has nothing posted is deleted instead, as it would otherwise end before
-// it starts. False when the time budget runs out first.
+// The schedules in the group that they created, or whose template names them, and in a `pair`
+// or `employer` group every schedule made before the deletion, end on the earlier of their
+// stored end and today, so no new occurrence names a deleted person. One that hasn't started
+// and has nothing posted is deleted instead, as it would otherwise end before it starts. False
+// when the time budget runs out first.
 async function endSchedules(
   { db, now, outOfTime }: Services,
-  personId: string,
+  person: Deleting,
   group: Groups,
 ): Promise<boolean> {
   const today = localToday(group.timezone, now)
+  // In those groups, a schedule the other side made can give them a share without naming them
+  // (the default split, or a shift's employer), which no new record may do
+  // (identity-and-invites.md#after-deletion, a lead decision on #320). Only one made before the
+  // deletion: a later one is held to that rule when it is made, and a rerun must decide as the
+  // first run did. Appwrite writes `+00:00`, so the times are compared parsed.
+  const every = group.type === 'pair' || group.type === 'employer'
+  const deletedAt = Date.parse(person.deletedAt)
   // idx_groupId
   const schedules = await allRows<Schedules>(db, TABLES.schedules, [
     Query.equal('groupId', group.$id),
   ])
   for (const schedule of schedules) {
     if (outOfTime()) return false
-    if (schedule.createdBy !== personId && !namedIn(schedule).includes(personId)) continue
+    const before = Date.parse(schedule.$createdAt) <= deletedAt
+    if (
+      !(every && before) &&
+      schedule.createdBy !== person.$id &&
+      !namedIn(schedule).includes(person.$id)
+    ) {
+      continue
+    }
     const storedEnd = schedule.endsOn as LocalDate | null
     const generated = schedule.generatedThrough as LocalDate | null
     // Already ended by today, made up to its end and with nothing left for an end to delete:
@@ -255,13 +278,20 @@ async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
 }
 
 // Archives the group, with a group.archived row by them, as an admin's archive writes, so the
-// others see why. One archived meanwhile, with a statement being finalized, or with a timer
-// someone else started still running (it couldn't be stopped once archived) throws `Raced`: the
-// group is left for the next run, which finds it archived, or waits until the finalize ends or
-// the timer stops. A finalize stuck for an hour is never waited for: see `isStuck`.
-async function archive({ db, now }: Services, personId: string, group: Groups): Promise<void> {
+// others see why (a purge's goes with the group's rows). One archived meanwhile, with a
+// statement being finalized, or, unless it's for a purge, with a timer someone else started
+// still running (it couldn't be stopped once archived) throws `Raced`: the group is left for the
+// next run, which finds it archived, or waits until the finalize ends or the timer stops. A
+// purge doesn't wait for a timer: nobody else is in the team, and it goes with the group's rows.
+// Nor for a finalize stuck for an hour (see `isStuck`), which a kept group isn't archived over.
+async function archive(
+  { db, now }: Services,
+  personId: string,
+  group: Groups,
+  purging = false,
+): Promise<void> {
   const finalizing = await finalizingStatement(db, group.$id)
-  if (finalizing && isStuck(finalizing, now)) {
+  if (finalizing && isStuck(finalizing, now) && !purging) {
     logProblem('stuck_finalize_not_archived', { groupId: group.$id, statementId: finalizing.$id })
     return
   }
@@ -276,10 +306,11 @@ async function archive({ db, now }: Services, personId: string, group: Groups): 
     // Stage, then check: finalize step 1 stages the group row in the transaction that sets
     // `finalizing` (statements.md#2-finalize-post-statementsidfinalize).
     const current = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
+    const stillFinalizing = await finalizingStatement(db, group.$id)
     if (
       current?.archivedAt ||
-      (await finalizingStatement(db, group.$id)) ||
-      (await othersTimerRunning(db, group.$id, personId))
+      (stillFinalizing && !(purging && isStuck(stillFinalizing, now))) ||
+      (!purging && (await othersTimerRunning(db, group.$id, personId)))
     ) {
       throw new Raced()
     }

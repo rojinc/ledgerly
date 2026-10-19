@@ -6,6 +6,7 @@ import {
   type RouteContext,
   route,
 } from '@ledgerly/server/http/create-handler'
+import { checkFonts } from '@ledgerly/server/pdf/fonts'
 import { discardRoute } from './routes/discard'
 import { draftDueStatements } from './routes/draft-due'
 import { finalizeRoute } from './routes/finalize'
@@ -24,7 +25,16 @@ export function statementsRoutes(
   services: (ctx: Pick<RouteContext, 'db' | 'headers'>) => Services,
 ): Route[] {
   return [
-    route('GET', '/health', async () => ({ fn: 'statements', version }), { public: true }),
+    route(
+      'GET',
+      '/health',
+      async () => {
+        // The invoice PDF's font files are in dist/fonts/ (scripts/build-functions.mjs).
+        checkFonts()
+        return { fn: 'statements', version }
+      },
+      { public: true },
+    ),
     // Appwrite runs the cron as POST / (statements.md#1-draft). Never for a person.
     route('POST', '/', async (ctx) => {
       if (!ctx.scheduled) throw new AppError('FORBIDDEN', 'Only the statements job runs this.')
