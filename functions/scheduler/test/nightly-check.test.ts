@@ -252,6 +252,27 @@ describe('step 6: nightly check', () => {
     expect(logged()).toEqual(['scheduler: nightly check of group elm: transaction t1 breaks I-3'])
   })
 
+  it('counts a share of a person merged into a deleted account as merging, not as broken', async () => {
+    // Pat was merged into Dan, then Dan deleted his account before the merge finished. Deletion
+    // deletes Pat's identities too (identity-and-invites.md, step 5), so it never will.
+    const services = seeded(
+      {
+        persons: [
+          person('pSam', 'u1'),
+          person('pAlex', 'u2'),
+          { ...person('pPat', null), mergedInto: 'pDan' },
+          { ...person('pDan', null), deletedAt: '2026-10-18T00:00:00.000Z' },
+        ],
+        members: [member('elm', 'pSam'), member('elm', 'pAlex', { role: 'member' })],
+        transactions: [transaction('t1', 6000)],
+        shares: [share('s1', 't1', 'pSam', 6000, 3000), share('s2', 't1', 'pPat', 0, 3000)],
+      },
+      { elm: ['u1', 'u2'] },
+    )
+    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, findings: 0, merging: 1 })
+    expect(logged()).toEqual([])
+  })
+
   it('reads a group again when a write of shares lands while it is read', async () => {
     const services = seeded()
     const list = services.db.listRows.bind(services.db)

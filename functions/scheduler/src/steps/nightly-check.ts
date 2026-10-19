@@ -227,7 +227,9 @@ function ruleOf(error: LedgerError): string {
 
 /**
  * The persons among `personIds` whose merge into someone else isn't finished: `mergedInto` set,
- * and still an identity (a merge moves P's identities last, identity-and-invites.md).
+ * and still an identity (a merge moves P's identities last, identity-and-invites.md). Or one that
+ * never will be: merged into a person who deleted their account, since deletion deletes P's
+ * identities and nobody carries the merge on (scheduling.md#step-6-nightly-check).
  */
 async function mergedPersons(db: Db, personIds: readonly string[]): Promise<Set<string>> {
   const merging = new Set<string>()
@@ -245,6 +247,13 @@ async function mergedPersons(db: Db, personIds: readonly string[]): Promise<Set<
       ),
     ])
     for (const identity of identities) merging.add(identity.personId)
+    // Only a placeholder is merged, never a person with an account, so one step is the end.
+    const deleted = await allRows<Persons>(db, TABLES.persons, [
+      Query.equal('$id', [...new Set(merged.map((row) => row.mergedInto as string))]),
+      Query.isNotNull('deletedAt'),
+    ])
+    const deletedIds = new Set(deleted.map((row) => row.$id))
+    for (const row of merged) if (deletedIds.has(row.mergedInto as string)) merging.add(row.$id)
   }
   return merging
 }
