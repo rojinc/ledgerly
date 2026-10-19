@@ -256,6 +256,43 @@ describe('POST /claim', () => {
     ])
   })
 
+  // #322: an account deletion purging a group deletes its team first and its rows last.
+  it('skips a row whose team is gone, a group being purged, and joins the others', async () => {
+    const services = claimFixture([
+      placeholderRow('m1', 'g1', 'pSam', BEFORE),
+      // Listed first, so the claim must go on past it.
+      placeholderRow('m9', 'g9', 'pSam', '2026-09-01T00:00:00.000Z'),
+    ])
+    expect(await claimed(services)).toEqual(['g1'])
+    expect(statusOf(services, 'm9')).toBe('placeholder')
+    expect(services.db.rows('activity').map((row) => row.groupId)).toEqual(['g1'])
+  })
+
+  it('leaves out a group whose team goes just after its row joined', async () => {
+    const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+    const add = services.teams.createMembership.bind(services.teams)
+    let calls = 0
+    vi.spyOn(services.teams, 'createMembership').mockImplementation(async (params) => {
+      calls += 1
+      if (calls === 2) throw new AppwriteException('Team not found', 404, 'team_not_found')
+      return (await add(params)) as never
+    })
+    expect(await claimed(services)).toEqual([])
+    expect(calls).toBe(2)
+    // Joined already: the purge deletes the row with the others.
+    expect(statusOf(services, 'm1')).toBe('active')
+  })
+
+  it('still fails the claim for any other team error', async () => {
+    const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+    vi.spyOn(services.teams, 'createMembership').mockRejectedValue(
+      // Another 404, so only `team_not_found` counts as a purge.
+      new AppwriteException('User not found', 404, 'user_not_found'),
+    )
+    expect((await call(services, 'POST', '/claim')).status).toBe(500)
+    expect(statusOf(services, 'm1')).toBe('placeholder')
+  })
+
   it('takes back the team membership when an admin removed the row meanwhile', async () => {
     const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
     beforeStaging(
