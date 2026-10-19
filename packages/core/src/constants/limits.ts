@@ -17,3 +17,10 @@ export const MAX_HOURS_CAP_MINUTES = { week: 7 * 24 * 60, fortnight: 14 * 24 * 6
 export const REAUTH_WINDOW_MINUTES = 10
 // …nor while the password is this new: a stolen session could set a first one and sign in again.
 export const RECENT_PASSWORD_CHANGE_HOURS = 24
+
+// F-63 (#56): reminders, each counted over a rolling window (identity-and-invites.md#reminders).
+export const REMINDER_LIMITS = {
+  perSenderPerGroup: { count: 1, days: 3 },
+  perRecipient: { count: 3, days: 7 },
+  perSender: { count: 20, days: 1 },
+} as const

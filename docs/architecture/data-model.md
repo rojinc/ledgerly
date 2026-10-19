@@ -31,6 +31,7 @@ persons ──┬── identities                       (server only)
                       statements
                       activity
                       invites                   (server only)
+                      reminders                 (server only)
                       balances      (1:1 with a group, server only)
 ```
 
@@ -284,7 +285,7 @@ Append-only. Never updated. Deleted only with a group purged when a member delet
 | --- | --- | --- |
 | `groupId` | varchar(36) | |
 | `actorPersonId` | varchar(36)? | Empty for system jobs |
-| `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized` |
+| `action` | varchar(48) | e.g. `transaction.created`, `member.added`, `statement.finalized`, `reminder.sent` |
 | `transactionId` | varchar(36)? | |
 | `subjectPersonId` | varchar(36)? | The person a `member.*` row is about, so the app shows their current name ("Former member" after deletion) |
 | `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member or group row names its person through `subjectPersonId` instead (rows written before #50 keep their text). |
@@ -310,6 +311,22 @@ Permissions: `read("team:<groupId>")`.
 
 Indexes: `uniq_tokenHash (tokenHash)` **unique**, `idx_invitedBy_sentAt (invitedBy, sentAt)`, `idx_identity_sentAt (identityKey, sentAt)`.
 Permissions: none (server only).
+
+## reminders
+
+One row per reminder sent ([reminders](identity-and-invites.md#reminders), F-63): the state its rate limits count. Row ID = the client's `id`, so a retry finds it.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `groupId` | varchar(36) | A `pair` group |
+| `sentBy` | varchar(36) | personId of the sender, a joined member |
+| `toPersonId` | varchar(36) | personId of the other member it was sent to |
+| `channel` | enum(email, sms) | `email` until SMS reminders, after [#40](https://github.com/rojinc/ledgerly/issues/40) |
+| `sentAt` | datetime | |
+
+The address typed and the amount are **not stored**: the limits count by person, and the address is already an identity row.
+Indexes: `idx_sentBy_sentAt (sentBy, sentAt)`, `idx_toPerson_sentAt (toPersonId, sentAt)`.
+Permissions: none (server only). Deleted with either person's account, and with a purged group ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
 
 ## Storage buckets
 

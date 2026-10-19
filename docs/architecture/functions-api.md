@@ -39,7 +39,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
-| `RATE_LIMITED` | 429 | Too many invites |
+| `RATE_LIMITED` | 429 | Too many invites or reminders |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |
 
@@ -188,6 +188,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
+| `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
