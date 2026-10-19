@@ -166,6 +166,7 @@ describe('POST / (cron run)', () => {
           findings: 0,
           merging: 0,
           repaired: 4,
+          removed: 0,
           failed: 0,
         },
       },

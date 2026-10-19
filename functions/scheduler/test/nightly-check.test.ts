@@ -1,9 +1,10 @@
+import { readdirSync, readFileSync } from 'node:fs'
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { nightlyCheck } from '../src/steps/nightly-check'
-import { type Fakes, fakes, group, member, NOW, person } from './harness'
+import { call, type Fakes, fakes, group, member, NOW, person } from './harness'
 
 // scheduling.md#step-6-nightly-check. NOW is 07:00 on Monday 19 October in Sydney.
 const TOMORROW_3AM_SYDNEY = '2026-10-19T16:00:00.000Z'
@@ -134,6 +135,7 @@ describe('step 6: nightly check', () => {
       findings: 0,
       merging: 0,
       repaired: 1,
+      removed: 0,
       failed: 0,
     })
     expect(stored(services)).toEqual(ROW)
@@ -332,18 +334,27 @@ describe('step 6: nightly check', () => {
 
   it('moves a group the budget cuts off to tomorrow, by ID, and checks it then from the start', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const services = seeded()
-    let calls = 0
-    // Two reads let the page in and the group out of it; out of time once it is read whole.
-    services.outOfTime = () => ++calls > 2
-    expect(await nightlyCheck(services)).toMatchObject({ checked: 0, cutOff: 1, repaired: 0 })
-    expect(groupRow(services).nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
-    expect(warn).toHaveBeenLastCalledWith(
-      'scheduler: nightly check of group elm cut off by the budget',
-    )
-    services.outOfTime = () => false
-    services.now = new Date(TOMORROW_3AM_SYDNEY)
-    expect(await nightlyCheck(services)).toMatchObject({ checked: 1, repaired: 1 })
+    for (const [reads, repaired] of [
+      // Out of time once the group is read whole, or once its row is repaired.
+      [3, 0],
+      [4, 1],
+    ] as const) {
+      // u9 has no member row: a stale membership.
+      const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u9'] })
+      let calls = 0
+      // Two reads let the page in and the group out of it.
+      services.outOfTime = () => ++calls > reads - 1
+      expect(await nightlyCheck(services)).toMatchObject({ checked: 0, cutOff: 1, repaired })
+      expect(groupRow(services).nextCheckAt).toBe(TOMORROW_3AM_SYDNEY)
+      expect(warn).toHaveBeenLastCalledWith(
+        'scheduler: nightly check of group elm cut off by the budget',
+      )
+      // The team wasn't reached.
+      expect(services.teams.members('elm')).toHaveLength(4)
+      services.outOfTime = () => false
+      services.now = new Date(TOMORROW_3AM_SYDNEY)
+      expect(await nightlyCheck(services)).toMatchObject({ checked: 1, removed: 1 })
+    }
   })
 
   it('leaves a group it doesn’t reach due, for the next run', async () => {
@@ -357,8 +368,8 @@ describe('step 6: nightly check', () => {
       { oak: ['u1'] },
     )
     let calls = 0
-    // Out of time once Elm St is done: the page, Elm St, its check, then Oak Rd.
-    services.outOfTime = () => ++calls > 3
+    // Out of time once Elm St is done: the page, Elm St, its two checks, then Oak Rd.
+    services.outOfTime = () => ++calls > 4
     expect(await nightlyCheck(services)).toMatchObject({ checked: 1, cutOff: 0 })
     expect(groupRow(services, 'oak').nextCheckAt ?? null).toBeNull()
   })
@@ -395,5 +406,217 @@ describe('step 6: nightly check', () => {
     services.now = new Date('2026-10-02T20:00:00.000Z')
     await nightlyCheck(services)
     expect(groupRow(services).nextCheckAt).toBe('2026-10-03T16:00:00.000Z')
+  })
+
+  describe('the team', () => {
+    it('removes a membership that no joined member row backs, and logs only its ID', async () => {
+      // Pat, a placeholder with an account now, got a membership: a join that stopped halfway.
+      const services = seeded(
+        {
+          persons: [
+            person('pSam', 'u1'),
+            person('pAlex', 'u2'),
+            person('pPat', 'u9'),
+            person('pLee', 'u3'),
+          ],
+        },
+        { elm: ['u1', 'u2', 'u3', 'u9'] },
+      )
+      const stale = (await services.teams.listMemberships({ teamId: 'elm' })).memberships.find(
+        (membership) => membership.userId === 'u9',
+      )
+      expect(await nightlyCheck(services)).toMatchObject({ removed: 1, findings: 1 })
+      const left = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
+      expect(left.map((membership) => membership.userId)).toEqual(['u1', 'u2', 'u3'])
+      expect(logged()).toEqual([
+        `scheduler: nightly check of group elm: removed team membership ${stale?.$id}`,
+      ])
+    })
+
+    it('keeps one under an hour old, and one whose join lands before it is removed', async () => {
+      const services = seeded({
+        persons: [
+          person('pSam', 'u1'),
+          person('pAlex', 'u2'),
+          person('pPat', 'u9'),
+          person('pLee', 'u3'),
+        ],
+      })
+      // Just now: joining adds the membership before the member row.
+      await services.teams.createMembership({ teamId: 'elm', userId: 'u9', roles: [] })
+      expect((await nightlyCheck(services)).removed).toBe(0)
+
+      // An hour later, Pat's join lands just as the check reads again.
+      vi.setSystemTime(new Date(NOW.getTime() + 2 * HOUR))
+      services.now = new Date(NOW.getTime() + 2 * HOUR)
+      await withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'update',
+          tableId: 'groups',
+          rowId: 'elm',
+          data: { nextCheckAt: null },
+        }),
+      )
+      const list = services.db.listRows.bind(services.db)
+      vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+        if (
+          params.tableId === 'members' &&
+          params.queries?.some((query) => query.includes('pPat'))
+        ) {
+          await withTransaction(services.db, (tx) =>
+            tx.write({
+              action: 'update',
+              tableId: 'members',
+              rowId: 'elm-pPat',
+              data: { status: 'active' },
+            }),
+          )
+        }
+        return list(params)
+      })
+      expect((await nightlyCheck(services)).removed).toBe(0)
+    })
+
+    it('keeps someone who moved out, and removes someone who left on their own', async () => {
+      const services = seeded({
+        activity: [
+          {
+            $id: 'a1',
+            $createdAt: '2026-10-01T00:00:00.000Z',
+            at: '2026-10-01T00:00:00.000Z',
+            groupId: 'elm',
+            actorPersonId: 'pAlex',
+            action: 'member.left',
+            transactionId: null,
+            summary: 'Member left',
+            changesJson: null,
+          },
+        ],
+        members: [
+          member('elm', 'pSam'),
+          member('elm', 'pAlex', {
+            $createdAt: '2026-09-01T00:00:00.000Z',
+            role: 'viewer',
+            status: 'left',
+            leftOn: '2026-10-01',
+          }),
+          member('elm', 'pPat', { status: 'placeholder' }),
+          member('elm', 'pLee', { role: 'viewer', status: 'left', leftOn: '2026-09-30' }),
+        ],
+      })
+      expect((await nightlyCheck(services)).removed).toBe(1)
+      const left = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
+      expect(left.map((membership) => membership.userId)).toEqual(['u1', 'u3'])
+    })
+
+    it('leaves alone the membership of someone whose account is being deleted', async () => {
+      // Pat's deletion is between its member transaction and its team step.
+      const services = seeded(
+        {
+          persons: [
+            person('pSam', 'u1'),
+            person('pAlex', 'u2'),
+            { ...person('pPat', 'u9'), deletedAt: '2026-10-18T19:00:00.000Z' },
+            person('pLee', 'u3'),
+          ],
+        },
+        { elm: ['u1', 'u2', 'u3', 'u9'] },
+      )
+      expect((await nightlyCheck(services)).removed).toBe(0)
+      const memberships = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
+      expect(memberships.map((membership) => membership.userId)).toContain('u9')
+    })
+
+    it('puts a membership back when a join lands while it is removed', async () => {
+      const services = seeded(
+        {
+          persons: [
+            person('pSam', 'u1'),
+            person('pAlex', 'u2'),
+            person('pPat', 'u9'),
+            person('pLee', 'u3'),
+          ],
+        },
+        { elm: ['u1', 'u2', 'u3', 'u9'] },
+      )
+      const remove = services.teams.deleteMembership.bind(services.teams)
+      vi.spyOn(services.teams, 'deleteMembership').mockImplementation(async (params) => {
+        // Pat's join commits just as the membership goes.
+        await withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'members',
+            rowId: 'elm-pPat',
+            data: { status: 'active' },
+          }),
+        )
+        return (await remove(params)) as object
+      })
+      expect(await nightlyCheck(services)).toMatchObject({ removed: 0, findings: 0 })
+      const memberships = (await services.teams.listMemberships({ teamId: 'elm' })).memberships
+      expect(memberships.map((membership) => membership.userId)).toContain('u9')
+    })
+
+    it('counts a membership already gone as removed', async () => {
+      const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u9'] })
+      const remove = services.teams.deleteMembership.bind(services.teams)
+      // Another run removed it first, so this delete gets 404.
+      vi.spyOn(services.teams, 'deleteMembership').mockImplementation(async (params) => {
+        await remove(params)
+        return (await remove(params)) as object
+      })
+      expect((await nightlyCheck(services)).removed).toBe(1)
+    })
+
+    it('is never removed by a route that people call', async () => {
+      const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u9'] })
+      const remove = vi.spyOn(services.teams, 'deleteMembership')
+      const body = {
+        id: 'groceriesElm00000001',
+        groupId: 'elm',
+        kind: 'expense',
+        description: 'Groceries',
+        template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam', 'pAlex'] } },
+        rrule: 'FREQ=WEEKLY;BYDAY=MO',
+        startsOn: '2026-10-12',
+        skipPublicHolidays: false,
+        autoPost: false,
+      }
+      const { id, ...preview } = body
+      const path = `/schedules/${id}`
+      for (const [method, url, options] of [
+        ['POST', '/schedules/preview', { body: preview }],
+        ['POST', '/schedules', { body }],
+        ['PATCH', path, { body: { ...body, description: 'Food' } }],
+        ['POST', `${path}/end`, { body: { endsOn: '2026-10-31' } }],
+        ['DELETE', path, {}],
+      ] as const) {
+        const { body: sent } = await call(services, method, url, options)
+        expect([method, url, sent]).toMatchObject([method, url, { ok: true }])
+      }
+      expect(remove).not.toHaveBeenCalled()
+    })
+  })
+})
+
+describe('the team writes (teams.write)', () => {
+  it('are reached by no route that people call', async () => {
+    // Only step 6 writes to a team, and only the cron run calls step 6.
+    const src = new URL('../src/', import.meta.url)
+    const files = (readdirSync(src, { recursive: true }) as string[]).filter((file) =>
+      file.endsWith('.ts'),
+    )
+    const text = (file: string) => readFileSync(new URL(file, src), 'utf8')
+    expect(files.filter((file) => /\.deleteMembership\(|addToTeam\(/.test(text(file)))).toEqual([
+      'steps/nightly-check.ts',
+    ])
+    expect(files.filter((file) => /from '[./]+(steps\/)?nightly-check'/.test(text(file)))).toEqual([
+      'routes/run.ts',
+    ])
+    // And the cron route refuses a person, whatever the trigger says: u9's stale membership stays.
+    const services = seeded({}, { elm: ['u1', 'u2', 'u3', 'u9'] })
+    const remove = vi.spyOn(services.teams, 'deleteMembership')
+    expect((await call(services, 'POST', '/', { userId: 'u1', scheduled: true })).status).toBe(403)
+    expect(remove).not.toHaveBeenCalled()
   })
 })
