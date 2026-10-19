@@ -1,7 +1,8 @@
-import type { Groups, Items, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Items, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
+import { useSwap } from '../../lib/use-swap'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -9,13 +10,21 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useGroupName } from '../groups/use-group-name'
 import { useGroup, useMyMember } from '../groups/use-groups'
+import { EntryForm as PairEntryForm } from '../people/pair-page'
+import { toPairValues } from '../people/pair-values'
 import { ReceiptsSection } from '../receipts/receipts-section'
 import { KIND_LABEL, STATUS_LABEL } from './history-page'
+import { EntryForm } from './new-transaction-page'
+import { toEntryValues } from './presets'
 import {
+  CHANGED_MEANWHILE,
+  employerPeople,
+  LedgerError,
   useItems,
   useMembers,
   useShares,
   useTransaction,
+  useUpdateTransaction,
   useVoidTransaction,
 } from './use-transactions'
 
@@ -117,6 +126,10 @@ function Details({ row }: { row: Transactions }) {
   // error and the typed reason must still be there.
   const voidRow = useVoidTransaction(row.$id)
   const [reason, setReason] = useState('')
+  // Here too, not in the edit form: a save refused because the row, the group or the role
+  // changed meanwhile hides the form once they're read again, and the refusal must stay.
+  const update = useUpdateTransaction(row.$id, row.groupId)
+  const swap = useSwap()
 
   if (!group.data || member.data === undefined) {
     return (group.isError && !group.data) || member.isError || bootstrap.isError ? (
@@ -131,6 +144,7 @@ function Details({ row }: { row: Transactions }) {
   const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
   const locked = row.statementId !== null
   const archived = group.data.archivedAt !== null
+  const open = mayChange && !locked && !archived
 
   return (
     <>
@@ -223,9 +237,22 @@ function Details({ row }: { row: Transactions }) {
       <ReceiptsSection
         row={row}
         group={group.data}
-        mayChange={mayChange && !locked && !archived && !['void', 'running'].includes(row.status)}
+        mayChange={open && !['void', 'running'].includes(row.status)}
       />
-      {mayChange && !locked && !archived && row.status !== 'void' && (
+      {!open &&
+        update.error instanceof LedgerError &&
+        CHANGED_MEANWHILE.includes(update.error.code) && <Refused message={update.error.message} />}
+      {open && (
+        <Change
+          row={row}
+          group={group.data}
+          members={members.data}
+          personId={personId}
+          edit={{ swap, save: update.mutateAsync }}
+        />
+      )}
+      {/* Not while the edit form is open: voiding would take it, and what was typed, away. */}
+      {open && row.status !== 'void' && !swap.opened && (
         <VoidForm voidRow={voidRow} reason={reason} onReason={setReason} />
       )}
     </>
@@ -289,6 +316,133 @@ function ItemList({
         })}
       </ul>
     </section>
+  )
+}
+
+/** A save refused by a change made meanwhile, once the form has gone with it: focus moves here. */
+function Refused({ message }: { message: string }) {
+  const ref = useRef<HTMLParagraphElement>(null)
+  useEffect(() => ref.current?.focus(), [])
+  return (
+    <p ref={ref} tabIndex={-1} role="alert" className="break-words text-destructive outline-none">
+      {message}
+    </p>
+  )
+}
+
+/** The page's Edit: its panel (`useSwap`), and the save it sends. */
+type EditState = {
+  swap: ReturnType<typeof useSwap>
+  save: ReturnType<typeof useUpdateTransaction>['mutateAsync']
+}
+
+/**
+ * How the row is changed, for someone who may change it (#184): a posted employer or lend &
+ * borrow entry here, with the form it was made with; a personal bill or a shift on its own page.
+ */
+function Change({
+  row,
+  group,
+  members,
+  personId,
+  edit,
+}: {
+  row: Transactions
+  group: Groups
+  members: Members[] | undefined
+  personId: string
+  edit: EditState
+}) {
+  // The bill page changes a due personal or house bill only (#75, #44), and the shift page a
+  // scheduled or posted shift.
+  if (
+    row.kind === 'bill' &&
+    (group.type === 'personal' || group.type === 'house') &&
+    row.status === 'due'
+  ) {
+    return (
+      <Link to={`/bills/${row.$id}`} className="self-start underline underline-offset-4">
+        Change this bill
+      </Link>
+    )
+  }
+  if (row.kind === 'shift' && (row.status === 'scheduled' || row.status === 'posted')) {
+    return (
+      <Link to={`/shifts/${row.$id}`} className="self-start underline underline-offset-4">
+        Change this shift
+      </Link>
+    )
+  }
+  // A scheduled or due row stores no payer, so only a posted one has a choice to show.
+  if (row.status !== 'posted') return null
+  const employer = group.type === 'employer' && (row.kind === 'expense' || row.kind === 'payment')
+  const pair = group.type === 'pair' && (row.kind === 'loan' || row.kind === 'payment')
+  if (!employer && !pair) return null
+  // As on create, only the worker: the presets are worded from their side.
+  if (employer && group.ownerPersonId !== personId) {
+    return <Message>Only the person this group pays changes expenses and payments here.</Message>
+  }
+  return <EditEntry row={row} group={group} members={members} personId={personId} edit={edit} />
+}
+
+const UNMATCHED = 'This entry can’t be changed here. Void it and add it again.'
+
+/** Edit, swapping in the entry's form. Itemised rows (#42) get none yet. */
+function EditEntry({
+  row,
+  group,
+  members,
+  personId,
+  edit: { swap, save },
+}: {
+  row: Transactions
+  group: Groups
+  members: Members[] | undefined
+  personId: string
+  edit: EditState
+}) {
+  // Only an expense can have items (ledger.md#items), and an itemised one gets no Edit yet
+  // (#42). The page reads them too, and says so if it can't.
+  const items = useItems(row.$id, row.kind === 'expense')
+  if (!members || (row.kind === 'expense' && items.data?.length !== 0)) return null
+  let form: ReactNode
+  if (group.type === 'employer') {
+    const people = employerPeople(group, members)
+    const values = people && toEntryValues(row, people, group.currency)
+    if (!people || !values) return <Message>{UNMATCHED}</Message>
+    form = (
+      <EntryForm
+        group={group}
+        people={people}
+        edit={{ row, values, heading: swap.heading, save, onDone: swap.close }}
+      />
+    )
+  } else {
+    const them = members.find((member) => member.personId !== personId)
+    const people = them && { me: personId, them: them.personId }
+    const values = people && toPairValues(row, people, group.currency)
+    if (!them || !people || !values) return <Message>{UNMATCHED}</Message>
+    form = (
+      <PairEntryForm
+        group={group}
+        people={people}
+        name={them.displayName}
+        net={0}
+        edit={{ row, values, heading: swap.heading, save, onDone: swap.close }}
+      />
+    )
+  }
+  return swap.opened ? (
+    <section
+      aria-labelledby="edit-heading"
+      className="flex flex-col gap-3 border-t border-border pt-4"
+    >
+      {form}
+    </section>
+  ) : (
+    <Button ref={swap.trigger} variant="outline" className="self-start" onClick={swap.open}>
+      Edit
+    </Button>
   )
 }
 
