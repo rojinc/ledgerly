@@ -15,9 +15,16 @@ vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../auth/use-current-user', () => ({
   useCurrentUser: () => ({ data: { $id: 'u1', name: 'Sam' } }),
 }))
-vi.mock('../auth/use-bootstrap', () => ({ useBootstrap: () => ({ data: { personId: 'p1' } }) }))
+vi.mock('../auth/use-bootstrap', () => ({
+  useBootstrap: () => ({ data: { personId: 'p1', personalGroupId: 'g3' } }),
+}))
 vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn() }))
 vi.mock('../groups/use-groups', () => ({ useGroups: vi.fn() }))
+// This user has entries, so no guide and no extra read: onboarding/ tests the guide (#52).
+vi.mock('../onboarding/use-onboarding', async (original) => ({
+  ...(await original<typeof import('../onboarding/use-onboarding')>()),
+  useHasEntry: () => ({ data: true }),
+}))
 
 const listRows = vi.mocked(tablesDB.listRows)
 const call = vi.mocked(callFunction)
@@ -284,13 +291,21 @@ describe('DashboardPage: this month', () => {
     expect(screen.getByRole('region', { name: 'Last 6 months' })).toBeTruthy()
   })
 
-  it('shows an empty state when there are no groups', () => {
+  it('shows the guide’s first step when there are no groups (#52)', async () => {
     groupsHook.mockReturnValue({ data: [], isError: false, refetch: vi.fn() } as never)
+    profileHook.mockReturnValue({
+      data: { timezone: 'Australia/Sydney', region: 'AU-NSW', currency: 'AUD' },
+      isError: false,
+    } as never)
+    call.mockResolvedValue({ ok: true, data: { groups: [] } })
     renderPage()
-    expect(screen.getByText(/Nothing here yet/)).toBeTruthy()
-    expect(screen.getByRole('link', { name: 'Add an employer' })).toBeTruthy()
+    expect(screen.getByRole('heading', { name: 'What do you want to track first?' })).toBeTruthy()
+    expect(screen.queryByText(/Nothing here yet/)).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Owed to me / I owe' })).toBeNull()
     expect(listRows).not.toHaveBeenCalled()
-    expect(call).not.toHaveBeenCalled()
+    // Only the pending groups, which the first step shows first.
+    await waitFor(() => expect(call).toHaveBeenCalledWith('identity', 'GET', '/groups/pending'))
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('asks to try again when a share’s group isn’t in the list yet, and reloads both', async () => {

@@ -15,11 +15,15 @@ import { SelectField, TextField } from '../../ui/field'
 import {
   defaultTicks,
   type HouseExpenseValues,
+  itemProblems,
+  itemsTotal,
+  NEW_ITEM,
   previewShares,
   type SplitProblems,
   splitProblems,
   toHouseExpenseBody,
 } from './house-expense'
+import { ItemFields } from './item-fields'
 import { amountError, amountExample } from './presets'
 import {
   PaidAmountsField,
@@ -56,21 +60,26 @@ function noProblems(problems: SplitProblems): boolean {
   )
 }
 
-/** Everyone the expense names: whoever paid, and whoever it's split between. */
+type Split = NonNullable<ReturnType<ToBody>['split']>
+
+/** Everyone a split names. */
+function splitPeople(split: Split | undefined): string[] {
+  return split?.mode === 'exact'
+    ? split.amounts.map((entry) => entry.personId)
+    : split?.mode === 'percent'
+      ? split.percents.map((entry) => entry.personId)
+      : split?.mode === 'weights'
+        ? split.weights.map((entry) => entry.personId)
+        : split?.mode === 'equal'
+          ? split.personIds
+          : []
+}
+
+/** Everyone the expense names: whoever paid, and whoever it (or any of its items) is split between. */
 function peopleIn(body: ReturnType<ToBody>): number {
   const payers = (body.payers ?? []).map((payer) => payer.personId)
-  const split = body.split
-  const parts =
-    split?.mode === 'exact'
-      ? split.amounts.map((entry) => entry.personId)
-      : split?.mode === 'percent'
-        ? split.percents.map((entry) => entry.personId)
-        : split?.mode === 'weights'
-          ? split.weights.map((entry) => entry.personId)
-          : split?.mode === 'equal'
-            ? split.personIds
-            : []
-  return new Set([...payers, ...parts]).size
+  const items = (body.items ?? []).flatMap((item) => splitPeople(item.split as Split))
+  return new Set([...payers, ...splitPeople(body.split), ...items]).size
 }
 
 /** Schema errors on the fields the form shows, in plain words, then the ledger's own rules. */
@@ -90,27 +99,49 @@ function houseExpenseResolver(
     // Per-person errors sit under `paid.<id>` and `parts.<id>`; the payers' total under
     // `paidTotal`, which the form shows under their amounts.
     const errors: Record<string, unknown> = {}
-    const add = (field: keyof HouseExpenseValues | 'paidTotal', message: string) => {
+    const add = (field: keyof HouseExpenseValues | 'paidTotal' | 'itemsTotal', message: string) => {
       if (!errors[field]) errors[field] = { type: 'validate', message }
     }
     const body = toBody(values)
-    const amount = amountError(
-      values.amount,
-      body.totalCents,
-      Boolean(get(found, 'totalCents')),
-      currency,
-    )
-    if (amount) add('amount', amount)
     const problems = problemsOf(values, body)
     const byPerson = (by: Record<string, string>) =>
       Object.fromEntries(
         Object.entries(by).map(([id, message]) => [id, { type: 'validate', message }]),
       )
+    if (values.itemised) {
+      // Each item's own errors, under `items.<index>`; their total's under `itemsTotal`.
+      const items = itemProblems(values, currency)
+      const error = (message?: string) => message && { type: 'validate', message }
+      const byIndex = Object.entries(items.items).map(([index, item]) => [
+        index,
+        {
+          ...(item.name && { name: error(item.name) }),
+          ...(item.amount && { amount: error(item.amount) }),
+          ...(item.people && { people: error(item.people) }),
+          ...(Object.keys(item.shares).length > 0 && { shares: byPerson(item.shares) }),
+        },
+      ])
+      if (byIndex.length > 0) errors.items = Object.fromEntries(byIndex)
+      if (items.total) add('itemsTotal', items.total)
+    } else {
+      const amount = amountError(
+        values.amount,
+        body.totalCents,
+        Boolean(get(found, 'totalCents')),
+        currency,
+      )
+      if (amount) add('amount', amount)
+    }
     if (Object.keys(problems.paid).length > 0) errors.paid = byPerson(problems.paid)
     if (problems.paidTotal) add('paidTotal', problems.paidTotal)
     if (Object.keys(problems.parts).length > 0) errors.parts = byPerson(problems.parts)
     if (values.splitBetween.length === 0) {
-      add('splitBetween', 'Tick at least one person to split it between.')
+      add(
+        'splitBetween',
+        values.itemised
+          ? 'Tick at least one person sharing this receipt.'
+          : 'Tick at least one person to split it between.',
+      )
     } else if (problems.partsTotal) {
       add('splitBetween', problems.partsTotal)
     } else if (peopleIn(body) > MAX_PEOPLE_PER_TRANSACTION) {
@@ -118,8 +149,9 @@ function houseExpenseResolver(
     }
     for (const [path, field] of Object.entries(ERROR_FIELD)) {
       const message = get(found, path)?.message as string | undefined
-      // Several payers: a schema error on them goes under their amounts.
-      if (message) add(field === 'paidBy' && values.severalPaid ? 'paidTotal' : field, message)
+      // Several payers: a schema error on them goes under their amounts. A refund has one.
+      const several = values.severalPaid && !(values.itemised && itemsTotal(values, currency) < 0)
+      if (message) add(field === 'paidBy' && several ? 'paidTotal' : field, message)
     }
     if (Object.keys(errors).length > 0) {
       return { values: {}, errors: errors as FieldErrors<HouseExpenseValues> }
@@ -137,6 +169,21 @@ function houseExpenseResolver(
     }
     return result
   }
+}
+
+/**
+ * After a refused Add, when only an item's people or the items' total are wrong: neither has a
+ * field of its own, so focus goes to that item's first person, or to Add item.
+ */
+function focusItems(refused: FieldErrors<HouseExpenseValues>) {
+  if (Object.keys(refused).some((key) => key !== 'items' && key !== 'itemsTotal')) return
+  const items = Object.entries(refused.items ?? {}) as [string, Record<string, unknown>][]
+  if (items.some(([, item]) => item.name || item.amount || item.shares)) return
+  const people = items.find(([, item]) => item.people)
+  const target = people
+    ? document.querySelector<HTMLElement>(`#item-${people[0]}-people input`)
+    : document.getElementById('add-item')
+  target?.focus()
 }
 
 /** A house expense: who paid, and how it's split between whom (#180, #181). */
@@ -159,7 +206,18 @@ export function HouseExpenseForm({
     toHouseExpenseBody(values, { id, groupId: group.$id }, group.currency)
   const preview: Preview = (body) => previewShares(body, group, members, personId)
   const problemsOf: Problems = (values, body) =>
-    splitProblems(values, group.currency, body.totalCents ?? Number.NaN)
+    values.itemised
+      ? // Each item has its own split; a refund has one payer (#42 decision 4).
+        splitProblems(
+          {
+            ...values,
+            splitMode: 'equal',
+            severalPaid: values.severalPaid && itemsTotal(values, group.currency) >= 0,
+          },
+          group.currency,
+          itemsTotal(values, group.currency),
+        )
+      : splitProblems(values, group.currency, body.totalCents ?? Number.NaN)
   const form = useForm<HouseExpenseValues, unknown, TransactionInput>({
     resolver: houseExpenseResolver(toBody, problemsOf, preview, group.currency),
     defaultValues: {
@@ -174,6 +232,8 @@ export function HouseExpenseForm({
       splitBetween: defaultTicks(members, today),
       parts: {},
       note: '',
+      itemised: false,
+      items: [{ ...NEW_ITEM, excluded: [], shares: {} }],
     },
   })
   const { errors, isSubmitting } = form.formState
@@ -202,9 +262,9 @@ export function HouseExpenseForm({
       if (
         form.formState.isSubmitted &&
         name &&
-        /^(amount|paid\.|parts|splitMode|severalPaid)/.test(name)
+        /^(amount|paid\.|parts|splitMode|severalPaid|itemised|items)/.test(name)
       ) {
-        void form.trigger(['paidTotal' as never, 'splitBetween'])
+        void form.trigger(['paidTotal' as never, 'itemsTotal' as never, 'splitBetween', 'items'])
       }
     })
     return () => watching.unsubscribe()
@@ -213,9 +273,16 @@ export function HouseExpenseForm({
   // Worked out only once the form's own checks would pass, so a rule isn't said twice.
   const body = toBody(values)
   const problems = problemsOf(values, body)
+  const total = values.itemised
+    ? itemsTotal(values, group.currency)
+    : (body.totalCents ?? Number.NaN)
+  const refund = values.itemised && total < 0
+  const items = values.itemised ? itemProblems(values, group.currency) : undefined
+  const itemsRead = !items || (Object.keys(items.items).length === 0 && !items.total)
   const shares =
-    Number.isInteger(body.totalCents) &&
-    (body.totalCents ?? 0) > 0 &&
+    Number.isInteger(total) &&
+    (values.itemised ? total !== 0 : total > 0) &&
+    itemsRead &&
     values.splitBetween.length > 0 &&
     noProblems(problems) &&
     peopleIn(body) <= MAX_PEOPLE_PER_TRANSACTION &&
@@ -258,19 +325,26 @@ export function HouseExpenseForm({
               const first = sorted[0]
               if (first) form.setFocus(`paid.${first.personId}`)
             }
+            focusItems(refused)
           },
         )(event)
       }}
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
-      <TextField
-        id="amount"
-        inputMode="decimal"
-        label={`Amount (${group.currency})`}
-        hint={`For example ${amountExample(group.currency)}.`}
-        error={errors.amount}
-        {...form.register('amount')}
-      />
+      <label className="flex items-center gap-2 text-sm">
+        <input type="checkbox" {...form.register('itemised')} />
+        Itemise this receipt
+      </label>
+      {!values.itemised && (
+        <TextField
+          id="amount"
+          inputMode="decimal"
+          label={`Amount (${group.currency})`}
+          hint={`For example ${amountExample(group.currency)}.`}
+          error={errors.amount}
+          {...form.register('amount')}
+        />
+      )}
       <TextField
         id="date"
         type="date"
@@ -299,11 +373,14 @@ export function HouseExpenseForm({
           </option>
         ))}
       </SelectField>
-      <label className="flex items-center gap-2 text-sm">
-        <input type="checkbox" {...form.register('severalPaid')} />
-        Several people paid
-      </label>
-      {values.severalPaid ? (
+      {/* A refund goes back to one person (#42 decision 4). */}
+      {!refund && (
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" {...form.register('severalPaid')} />
+          Several people paid
+        </label>
+      )}
+      {values.severalPaid && !refund ? (
         <PaidAmountsField
           members={sorted}
           currency={group.currency}
@@ -318,14 +395,26 @@ export function HouseExpenseForm({
           total={message('paidTotal')}
         />
       ) : (
-        <PaidByField members={sorted} field={form.register('paidBy')} error={errors.paidBy} />
+        <PaidByField
+          members={sorted}
+          field={form.register('paidBy')}
+          error={errors.paidBy}
+          label={refund ? 'Refunded to' : 'Paid by'}
+        />
       )}
-      <SplitModeField field={form.register('splitMode')} />
+      {!values.itemised && <SplitModeField field={form.register('splitMode')} />}
       <SplitBetweenField
         members={sorted}
         date={values.date}
-        legend={splitMode === 'equal' ? 'Split equally between' : 'Split between'}
+        legend={
+          values.itemised
+            ? 'Who’s sharing this receipt'
+            : splitMode === 'equal'
+              ? 'Split equally between'
+              : 'Split between'
+        }
         part={(member) =>
+          !values.itemised &&
           splitMode !== 'equal' &&
           ticked.has(member.personId) && (
             <PartField
@@ -347,6 +436,15 @@ export function HouseExpenseForm({
         // Set whole by the resolver, never per checkbox.
         error={errors.splitBetween as FieldError | undefined}
       />
+      {values.itemised && (
+        <ItemFields
+          form={form}
+          members={sorted.filter((member) => ticked.has(member.personId))}
+          currency={group.currency}
+          total={total}
+          message={message}
+        />
+      )}
       <SharePreview
         // A refusal already shown above the form, after Add, isn't repeated here.
         preview={

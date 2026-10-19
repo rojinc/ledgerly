@@ -122,6 +122,13 @@ function House({
           Add expense
         </Link>
       )}
+      {/* #44: every role reads the house's bills. */}
+      <Link
+        to={`/bills?groupId=${group.$id}`}
+        className="self-start text-sm underline underline-offset-4"
+      >
+        Bills
+      </Link>
       <section aria-labelledby="housemates" className="flex flex-col gap-2">
         <h2 id="housemates" className="font-medium">
           Housemates

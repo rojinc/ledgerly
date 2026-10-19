@@ -18,7 +18,8 @@ export const NOT_LIVE = ['currentUser', 'bootstrap', 'profile', 'person'] as con
 
 // Not live either: `pendingGroups` (features/groups/pending-groups.tsx). Those are groups the user
 // was only added to (D-016), whose rows they can't read until they join, so no event comes; the
-// list refetches on focus (#48's Out of scope).
+// list refetches on focus (#48's Out of scope). Nor `firstEntry` (features/onboarding/): Home's
+// guide decides once per visit (#52), so someone else's first entry shows on the next one.
 
 /** How long after the last event the collected keys are refreshed. */
 export const FLUSH_MS = 300
