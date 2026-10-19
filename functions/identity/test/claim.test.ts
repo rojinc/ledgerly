@@ -44,6 +44,14 @@ function claimFixture(members: Row[], extra: { persons?: Row[]; identities?: Row
     {
       persons: [SAM, ...(extra.persons ?? [])],
       identities: [VERIFIED_EMAIL, ...(extra.identities ?? [])],
+      // Their rows, for the guard a merge writes on each group.
+      groups: ['g1', 'g2', 'g3'].map((id) => ({
+        $id: id,
+        type: 'house',
+        name: 'Flat',
+        rev: 'r0',
+        settingsJson: '{"type":"house","autoFinalize":false,"defaultBillSplit":"equal"}',
+      })),
       members,
     },
     { teams: { g1: ['uAdmin'], g2: ['uAdmin'], g3: ['uAdmin'] } },

@@ -114,10 +114,17 @@ describe('markMerged (step 1)', () => {
 
 describe('moveMembers (step 2)', () => {
   const CREATED = '2026-09-01T00:00:00.000Z'
+  const GROUPS = ['g1', 'g2', 'g3']
+  const GROUP_ROWS = GROUPS.map((groupId) => ({
+    $id: groupId,
+    type: 'house',
+    name: 'Flat',
+    rev: 'r0',
+  }))
 
-  /** Every group's team exists, with nobody in it yet. */
+  /** Every group's row and team exist, with nobody in the team yet. */
   function setUp(seed: Parameters<typeof fakes>[0]) {
-    return fakes(seed, { teams: { g1: [], g2: [], g3: [] } })
+    return fakes({ groups: GROUP_ROWS, ...seed }, { teams: { g1: [], g2: [], g3: [] } })
   }
 
   /** U's own member row, joined. */
@@ -159,9 +166,10 @@ describe('moveMembers (step 2)', () => {
       ],
     })
     // U was in g3 already, so only g1 and g2 are new to them.
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
       kept: new Set(),
       joined: ['g1', 'g2'],
+      putOff: [],
       done: true,
     })
     expect(members(services)).toEqual([
@@ -178,9 +186,10 @@ describe('moveMembers (step 2)', () => {
       ['g3', 'pU', 'pU', 'joined', NOW.toISOString()],
     ])
     // Nothing points at P any more: a second run is a no-op.
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
       kept: new Set(),
       joined: [],
+      putOff: [],
       done: true,
     })
   })
@@ -201,10 +210,11 @@ describe('moveMembers (step 2)', () => {
         activity('a3', 'g2', 'member.joined', '2026-10-12T00:00:00.000Z'),
       ],
     })
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
       kept: new Set(['g1']),
       // U's row in g2 was joined already: P's merges into it, but nothing is new to U.
       joined: [],
+      putOff: [],
       done: true,
     })
     expect(members(services)).toEqual([
@@ -227,22 +237,26 @@ describe('moveMembers (step 2)', () => {
       (operations) => operations.includes('"members"'),
       () => updateRow(services.db, 'members', 'm1', { leftOn: '2026-10-05' }),
     )
-    await expect(moveMembers(services, 'u1', 'pP', 'pU', FAR)).rejects.toThrow(TRY_AGAIN)
+    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
     expect(members(services)).toEqual([['m1', 'g1', 'pP', 'placeholder', '2026-09-01']])
     expect(services.teams.members('g1')).toEqual([])
     expect(joinedRows(services)).toEqual([])
     // The next claim moves it as it is now.
-    expect((await moveMembers(services, 'u1', 'pP', 'pU', FAR)).joined).toEqual(['g1'])
+    expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).joined).toEqual(['g1'])
     expect(members(services)).toEqual([['m1', 'g1', 'pU', 'left', '2026-09-01']])
   })
 
   it('answers try again when U’s row changed after it was read, and U keeps the team', async () => {
     const services = fakes(
-      { persons: [U, P], members: [placeholderRow('m1', 'g1', 'pP', CREATED), ownRow('m2', 'g1')] },
+      {
+        persons: [U, P],
+        groups: GROUP_ROWS,
+        members: [placeholderRow('m1', 'g1', 'pP', CREATED), ownRow('m2', 'g1')],
+      },
       { teams: { g1: ['u1'] } },
     )
     beforeCommit(services.db, () => updateRow(services.db, 'members', 'm2', { role: 'admin' }))
-    await expect(moveMembers(services, 'u1', 'pP', 'pU', FAR)).rejects.toThrow(TRY_AGAIN)
+    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
     expect(members(services).map(([id]) => id)).toEqual(['m1', 'm2'])
     // U's own joined row there keeps them in the team.
     expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u1'])
@@ -254,7 +268,7 @@ describe('moveMembers (step 2)', () => {
       members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
     })
     beforeCommit(services.db, () => removeFromTeam(services.teams, 'g1', 'u1'))
-    expect((await moveMembers(services, 'u1', 'pP', 'pU', FAR)).joined).toEqual(['g1'])
+    expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).joined).toEqual(['g1'])
     expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u1'])
   })
 
@@ -272,8 +286,11 @@ describe('moveMembers (step 2)', () => {
     beforeCommit(services.db, () =>
       updateRow(services.db, 'members', 'm2', { status: 'left', leftOn: '2026-10-18' }),
     )
-    await expect(moveMembers(services, 'u1', 'pP', 'pU', FAR)).rejects.toThrow(TRY_AGAIN)
-    expect(JSON.stringify(writes.mock.calls)).toContain('"rev"')
+    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
+    const memberWrites = writes.mock.calls.filter(([params]) =>
+      JSON.stringify(params.operations).includes('"members"'),
+    )
+    expect(JSON.stringify(memberWrites)).toContain('"rev"')
     // P's row is still there for the next claim, which then sees U's leave.
     expect(members(services).map(([id]) => id)).toEqual(['m1', 'm2'])
   })
@@ -296,9 +313,10 @@ describe('moveMembers (step 2)', () => {
         placeholderRow('m5', 'g3', 'pP', CREATED),
       ],
     })
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
       kept: new Set(['g1', 'g2']),
       joined: ['g3'],
+      putOff: [],
       done: true,
     })
     expect(members(services)).toEqual([
@@ -316,6 +334,7 @@ describe('moveMembers (step 2)', () => {
       return fakes(
         {
           persons: [U, P],
+          groups: GROUP_ROWS,
           members: [
             placeholderRow('m1', 'g1', 'pP', CREATED),
             ownRow('m2', 'g1', { status: 'left', role: 'viewer', leftOn: '2026-10-10', rev: 'r0' }),
@@ -355,10 +374,12 @@ describe('moveMembers (step 2)', () => {
         (operations) => operations.includes('"members"'),
         () => leave(services),
       )
-      await expect(moveMembers(services, 'u1', 'pP', 'pU', FAR)).rejects.toThrow(TRY_AGAIN)
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
       expect(services.teams.members('g1')).toEqual([])
       // The next claim sees the leave: g1 is kept, and U stays out.
-      expect((await moveMembers(services, 'u1', 'pP', 'pU', FAR)).kept).toEqual(new Set(['g1']))
+      expect((await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).kept).toEqual(
+        new Set(['g1']),
+      )
       expect(services.teams.members('g1')).toEqual([])
     })
 
@@ -369,7 +390,7 @@ describe('moveMembers (step 2)', () => {
         await leave(services)
         return (await add(params)) as never
       })
-      await expect(moveMembers(services, 'u1', 'pP', 'pU', FAR)).rejects.toThrow(TRY_AGAIN)
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).rejects.toThrow(TRY_AGAIN)
       expect(services.teams.members('g1')).toEqual([])
     })
 
@@ -385,14 +406,18 @@ describe('moveMembers (step 2)', () => {
         }
         return result
       })
-      await moveMembers(services, 'u1', 'pP', 'pU', FAR)
+      await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)
       expect(services.teams.members('g1')).toEqual([])
     })
 
     it('doesn’t count a group U left just after joining it as one U joined', async () => {
       // U had no row in g1: P's row becomes U's, and U leaves it on their own right after.
       const services = fakes(
-        { persons: [U, P], members: [placeholderRow('m1', 'g1', 'pP', CREATED)] },
+        {
+          persons: [U, P],
+          groups: GROUP_ROWS,
+          members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
+        },
         { teams: { g1: [] } },
       )
       const commit = services.db.updateTransaction.bind(services.db)
@@ -422,7 +447,7 @@ describe('moveMembers (step 2)', () => {
         return result
       })
       // So it isn't in linkedGroupIds.
-      expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toMatchObject({
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toMatchObject({
         joined: [],
         done: true,
       })
@@ -435,12 +460,84 @@ describe('moveMembers (step 2)', () => {
       persons: [U, P],
       members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
     })
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', 0)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, 0)).toEqual({
       kept: new Set(),
       joined: [],
+      putOff: [],
       done: false,
     })
     expect(members(services)).toEqual([['m1', 'g1', 'pP', 'placeholder', '2026-09-01']])
+  })
+
+  describe('a group with a statement being finalized waits whole', () => {
+    const FINALIZING = {
+      $id: 'st1',
+      groupId: 'g1',
+      status: 'finalizing',
+      periodStart: '2026-09-01',
+    }
+
+    function withP(statements: object[] = [{ ...FINALIZING, status: 'draft' }]) {
+      return setUp({
+        persons: [U, P],
+        members: [
+          placeholderRow('m1', 'g1', 'pP', CREATED),
+          placeholderRow('m2', 'g2', 'pP', CREATED),
+        ],
+        statements,
+      } as Parameters<typeof fakes>[0])
+    }
+
+    /** As finalize step 1 does it: the group's guard, with `finalizing`. */
+    function startFinalize(services: ReturnType<typeof fakes>) {
+      return withTransaction(services.db, (tx) =>
+        tx.write(
+          { action: 'update', tableId: 'groups', rowId: 'g1', data: { rev: 'rFinalize' } },
+          { action: 'update', tableId: 'statements', rowId: 'st1', data: { status: 'finalizing' } },
+        ),
+      )
+    }
+
+    it('keeps P’s row there, and U out of its team, while the other groups go on', async () => {
+      const services = withP([FINALIZING])
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
+        kept: new Set(),
+        joined: ['g2'],
+        putOff: ['g1'],
+        done: false,
+      })
+      expect(members(services)).toEqual([
+        ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],
+        ['m2', 'g2', 'pU', 'active', '2026-09-01'],
+      ])
+      expect(services.teams.members('g1')).toEqual([])
+    })
+
+    it('puts it off when the finalize starts after the first check, and takes back the team', async () => {
+      const services = withP()
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"groups"'),
+        () => startFinalize(services),
+      )
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR)).toMatchObject({
+        putOff: ['g1'],
+        done: false,
+      })
+      expect(members(services)[0]).toEqual(['m1', 'g1', 'pP', 'placeholder', '2026-09-01'])
+      expect(services.teams.members('g1')).toEqual([])
+    })
+
+    it('fails its commit when the finalize starts after its check, then puts it off', async () => {
+      const services = withP()
+      beforeCommit(services.db, () => startFinalize(services))
+      await expect(moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR)).rejects.toThrow(TRY_AGAIN)
+      expect(members(services)[0]).toEqual(['m1', 'g1', 'pP', 'placeholder', '2026-09-01'])
+      expect(services.teams.members('g1')).toEqual([])
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR)).toMatchObject({
+        putOff: ['g1'],
+      })
+    })
   })
 
   it('counts a row another merge moved meanwhile as done', async () => {
@@ -451,9 +548,10 @@ describe('moveMembers (step 2)', () => {
     beforeCommit(services.db, () =>
       updateRow(services.db, 'members', 'm1', { personId: 'pU', status: 'active' }),
     )
-    expect(await moveMembers(services, 'u1', 'pP', 'pU', FAR)).toEqual({
+    expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR)).toEqual({
       kept: new Set(),
       joined: [],
+      putOff: [],
       done: true,
     })
     expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u1'])
@@ -555,7 +653,7 @@ describe('moveShares (step 3)', () => {
       share('s5', 't2', 'pX', 4000, 0),
     ])
     const before = nets(store, 'g1')
-    expect(await moveShares(store, 'pP', 'pU', new Set(), FAR)).toEqual({
+    expect(await moveShares(store, 'pP', 'pU', ['g1'], FAR)).toEqual({
       moved: 2,
       putOff: [],
       done: true,
@@ -576,11 +674,11 @@ describe('moveShares (step 3)', () => {
   it('drops a combined share that comes to 0/0, as buildShares keeps none', async () => {
     // An adjustment that moved 3 from U to P: once P is U, it cancels out.
     const store = seed([share('s1', 't1', 'pP', 300, 0), share('s2', 't1', 'pU', -300, 0)])
-    expect(await moveShares(store, 'pP', 'pU', new Set(), FAR)).toMatchObject({ moved: 1 })
+    expect(await moveShares(store, 'pP', 'pU', ['g1'], FAR)).toMatchObject({ moved: 1 })
     expect(store.rows('shares')).toEqual([])
   })
 
-  it('leaves P’s shares in kept groups and puts off a group that is finalizing', async () => {
+  it('moves shares only in the groups it is given, and puts off one that is finalizing', async () => {
     const store = seed(
       [
         share('s1', 't1', 'pP', 100, 0, 'g1'),
@@ -590,7 +688,8 @@ describe('moveShares (step 3)', () => {
       ],
       [{ $id: 'st1', groupId: 'g2', status: 'finalizing', periodStart: '2026-09-01' }],
     )
-    expect(await moveShares(store, 'pP', 'pU', new Set(['g1']), FAR)).toEqual({
+    // g1 isn't one of them (a kept group, say).
+    expect(await moveShares(store, 'pP', 'pU', ['g2'], FAR)).toEqual({
       moved: 0,
       putOff: ['g2'],
       done: false,
@@ -604,7 +703,7 @@ describe('moveShares (step 3)', () => {
     const shares = Array.from({ length: 250 }, (_, n) => share(`s${n}`, `t${n}`, 'pP', 0, 100))
     const store = seed(shares)
     const commits = vi.spyOn(store, 'createOperations')
-    expect((await moveShares(store, 'pP', 'pU', new Set(), FAR)).moved).toBe(250)
+    expect((await moveShares(store, 'pP', 'pU', ['g1'], FAR)).moved).toBe(250)
     expect(store.rows('shares').every((row) => row.personId === 'pU')).toBe(true)
     // Every transaction's writes, by its ID: at most 90, and one of them the group's guard.
     const perTransaction = new Map<string, unknown[]>()
@@ -635,7 +734,7 @@ describe('moveShares (step 3)', () => {
         { $id: 'g3', peopleJson: '[]' },
       ],
     )
-    expect((await moveShares(store, 'pP', 'pU', new Set(), FAR)).moved).toBe(2)
+    expect((await moveShares(store, 'pP', 'pU', ['g1', 'g2', 'g3'], FAR)).moved).toBe(2)
     // g2 had none, and nothing of P's was in g3.
     expect(store.rows('balances').map((row) => row.$id)).toEqual(['g3'])
   })
@@ -647,7 +746,7 @@ describe('moveShares (step 3)', () => {
     ]).flat()
     const store = seed(shares, [], [{ $id: 'g1', peopleJson: '[]' }])
     const commits = vi.spyOn(store, 'createOperations')
-    expect((await moveShares(store, 'pP', 'pU', new Set(), FAR)).moved).toBe(100)
+    expect((await moveShares(store, 'pP', 'pU', ['g1'], FAR)).moved).toBe(100)
     const perTransaction = new Map<string, unknown[]>()
     for (const [params] of commits.mock.calls) {
       perTransaction.set(params.transactionId, [
@@ -676,7 +775,7 @@ describe('moveShares (step 3)', () => {
           tx.write({ action: 'delete', tableId: 'balances', rowId: 'g1' }),
         ),
     )
-    expect((await moveShares(store, 'pP', 'pU', new Set(), FAR)).moved).toBe(1)
+    expect((await moveShares(store, 'pP', 'pU', ['g1'], FAR)).moved).toBe(1)
     expect(raced).toHaveBeenCalled()
     expect(store.rows('shares').map((row) => row.personId)).toEqual(['pU', 'pX'])
     expect(store.rows('balances')).toEqual([])
@@ -687,7 +786,7 @@ describe('moveShares (step 3)', () => {
     expect(await moveIdentities(identities, 'pP', 'pU', 0)).toBe(0)
     expect(identities.rows('identities')[0]?.personId).toBe('pP')
     const store = seed([share('s1', 't1', 'pP', 0, 100)])
-    expect(await moveShares(store, 'pP', 'pU', new Set(), 0)).toEqual({
+    expect(await moveShares(store, 'pP', 'pU', ['g1'], 0)).toEqual({
       moved: 0,
       putOff: [],
       done: false,
@@ -706,9 +805,9 @@ describe('moveShares (step 3)', () => {
     beforeStaging(
       store,
       (operations) => operations.includes('"rev"'),
-      () => moveShares(store, 'pP2', 'pU', new Set(), FAR),
+      () => moveShares(store, 'pP2', 'pU', ['g1'], FAR),
     )
-    await moveShares(store, 'pP', 'pU', new Set(), FAR)
+    await moveShares(store, 'pP', 'pU', ['g1'], FAR)
     expect(
       store.rows('shares').map((row) => [row.personId, row.givenCents, row.receivedCents]),
     ).toEqual([
@@ -733,7 +832,7 @@ describe('moveShares (step 3)', () => {
           }),
         ),
     )
-    await moveShares(store, 'pP', 'pU', new Set(), FAR)
+    await moveShares(store, 'pP', 'pU', ['g1'], FAR)
     expect(
       store.rows('shares').map((row) => [row.personId, row.givenCents, row.receivedCents]),
     ).toEqual([['pU', 3000, 3000]])

@@ -88,9 +88,13 @@ async function moveGroupInputs(
   deadline: number,
   result: InputsResult,
 ): Promise<'done' | 'putOff' | 'cutOff'> {
-  // An edit after the merge plans a row with the members as step 2 left them.
-  const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
-  const ctx = group ? (await loadGroupLedger(db, group, merge.into)).ctx : undefined
+  // An edit after the merge plans a row with the members as step 2 left them, and as they are
+  // after a race: a member change may be what made the batch run again.
+  const members = async () => {
+    const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+    return group ? (await loadGroupLedger(db, group, merge.into)).ctx : undefined
+  }
+  let ctx = await members()
   let cursor: string | undefined
   for (;;) {
     if (Date.now() >= deadline) return 'cutOff'
@@ -126,7 +130,10 @@ async function moveGroupInputs(
       if (error instanceof Finalizing) return 'putOff'
       // A row changed after it was read: read this page again. Rows already rewritten no
       // longer name P, so they're left alone.
-      if (error instanceof Raced || isAppwriteError(error, 409)) continue
+      if (error instanceof Raced || isAppwriteError(error, 409)) {
+        ctx = await members()
+        continue
+      }
       throw error
     }
     for (const rowId of skipped) {
@@ -258,12 +265,6 @@ async function planRewrites(
   return { rewrites, skipped }
 }
 
-/**
- * Stored JSON with P renamed: `json` is the new text, undefined when nothing changed, and
- * `voided` as `rename` says. The stored object is renamed as it is, so its keys keep their order.
- * Undefined when the JSON can't be read, or is no longer valid once renamed (weights that add up
- * past `MAX_WEIGHT`, say): nothing invalid is ever written.
- */
 /** A bill's billing period from its stored input, for a `days` split. */
 function billPeriod(row: Transactions): DateRange | undefined {
   const stored = storedInputSchema.safeParse(JSON.parse(row.inputJson))
@@ -271,6 +272,12 @@ function billPeriod(row: Transactions): DateRange | undefined {
   return periodStart && periodEnd ? { start: periodStart, end: periodEnd } : undefined
 }
 
+/**
+ * Stored JSON with P renamed: `json` is the new text, undefined when nothing changed, and
+ * `voided` as `rename` says. The stored object is renamed as it is, so its keys keep their order.
+ * Undefined when the JSON can't be read, or is no longer valid once renamed (weights that add up
+ * past `MAX_WEIGHT`, say): nothing invalid is ever written.
+ */
 function renamed(
   text: string,
   schema: z.ZodType,
