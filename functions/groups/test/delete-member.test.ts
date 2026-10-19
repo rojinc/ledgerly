@@ -86,20 +86,27 @@ function item(id: string, transactionId: string, personIds: string[]): Row {
   }
 }
 
-function schedule(id: string, template: object): Row {
+function schedule(
+  id: string,
+  template: object,
+  { kind = 'bill', createdBy = 'p1' }: { kind?: string; createdBy?: string } = {},
+): Row {
   return {
     $id: id,
     groupId: 'g1',
-    kind: 'bill',
+    kind,
     description: 'Rent',
     templateJson: JSON.stringify(template),
     rrule: 'FREQ=WEEKLY;BYDAY=TH',
     startsOn: '2026-10-01',
     skipPublicHolidays: false,
     autoPost: false,
-    createdBy: 'p1',
+    createdBy,
   }
 }
+
+/** A template with no payers: the schedule's creator pays each occurrence (#155 O4). */
+const NO_PAYERS = { totalCents: 9000, bill: { status: 'due' } }
 
 const IS_NAMED =
   "This person is named in a transaction that isn't posted yet, or in a schedule. Set leftOn instead."
@@ -244,6 +251,58 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     })
     expect(memberIds(services)).toContain('m2')
     expect(teamUsers(services)).toEqual(['u1', 'u2'])
+  })
+
+  it.each([
+    ['a bill', 'bill', NO_PAYERS],
+    ['an expense', 'expense', { totalCents: 9000 }],
+  ])(
+    'refuses the creator of %s schedule whose template names no payers (#155 O4)',
+    async (_, kind, template) => {
+      const services = house({ schedules: [schedule('sc1', template, { kind, createdBy: 'p2' })] })
+      expect(await removeFails(services, 'm2')).toEqual({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+        message: IS_NAMED,
+      })
+      expect(memberIds(services)).toContain('m2')
+      expect(teamUsers(services)).toEqual(['u1', 'u2'])
+    },
+  )
+
+  it('removes the creator of a schedule whose template names who pays', async () => {
+    const services = house({
+      schedules: [
+        schedule(
+          'sc1',
+          { ...NO_PAYERS, payers: [{ personId: 'p1', cents: 9000 }] },
+          { createdBy: 'p2' },
+        ),
+      ],
+    })
+    expect(await remove(services, 'm2')).toEqual({})
+    expect(memberIds(services)).not.toContain('m2')
+  })
+
+  it('removes someone when a payer-less schedule was created by someone else', async () => {
+    const services = house({ schedules: [schedule('sc1', NO_PAYERS, { createdBy: 'p1' })] })
+    expect(await remove(services, 'm2')).toEqual({})
+    expect(memberIds(services)).not.toContain('m2')
+  })
+
+  it('refuses the creator of a payer-less schedule committed after the first read', async () => {
+    const services = house()
+    beforeStaging(services.db, 1, () =>
+      createRow(services.db, 'schedules', schedule('sc1', NO_PAYERS, { createdBy: 'p2' })),
+    )
+    expect(await removeFails(services, 'm2')).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: IS_NAMED,
+    })
+    expect(memberIds(services)).toContain('m2')
+    expect(teamUsers(services)).toEqual(['u1', 'u2'])
+    expect(services.db.rows('activity')).toEqual([])
   })
 
   it('reads every page of unposted transactions', async () => {

@@ -83,10 +83,10 @@ function mockGroups(group: Groups, role: Members['role'] = 'admin', net = 0) {
   } as never)
 }
 
-/** listRows answers members with MEMBERS, shares with `shares`, transactions with `history`. */
-function mockRows(history: Transactions[] = [], shares: object[] = []) {
+/** listRows answers members with `members`, shares with `shares`, transactions with `history`. */
+function mockRows(history: Transactions[] = [], shares: object[] = [], members = MEMBERS) {
   listRows.mockImplementation((async ({ tableId }: { tableId: string }) => {
-    const rows = tableId === 'members' ? MEMBERS : tableId === 'shares' ? shares : history
+    const rows = tableId === 'members' ? members : tableId === 'shares' ? shares : history
     return { total: rows.length, rows }
   }) as never)
 }
@@ -297,6 +297,312 @@ describe('NewTransactionPage', () => {
   })
 })
 
+// A house in Sydney (#180). Dan moved out on 2026-09-30; Erin moves in on the 19th.
+const house = {
+  $id: 'house1',
+  type: 'house',
+  name: 'The flat',
+  ownerPersonId: 'cara',
+  currency: 'AUD',
+  timezone: 'Australia/Sydney',
+  archivedAt: null,
+} as Groups
+
+function housemate(personId: string, displayName: string, joinedOn: string, leftOn?: string) {
+  const role = leftOn ? 'viewer' : 'member'
+  return {
+    $id: `m-${personId}`,
+    groupId: 'house1',
+    personId,
+    displayName,
+    role,
+    joinedOn,
+    leftOn: leftOn ?? null,
+  } as Members
+}
+
+const HOUSEMATES = [
+  housemate('cara', 'Cara', '2026-01-01'),
+  housemate('alice', 'Alice', '2026-01-01'),
+  housemate('bob', 'Bob', '2026-01-01'),
+  housemate('dan', 'Dan', '2026-01-01', '2026-09-30'),
+]
+
+// 01:30 on the 19th in Sydney, still the 18th in UTC.
+const HOUSE_NOW = new Date('2026-10-18T14:30:00Z')
+
+describe('NewTransactionPage, house expense', () => {
+  beforeEach(() => {
+    mockPersonId = 'alice'
+    vi.setSystemTime(HOUSE_NOW)
+  })
+
+  /** Opens the form and fills in a valid expense, with the default ticks. */
+  async function open(members = HOUSEMATES, role: Members['role'] = 'member') {
+    mockGroups(house, role)
+    mockRows([], [], members)
+    const view = renderAt('/transactions/new?groupId=house1')
+    fireEvent.change(await screen.findByLabelText('Amount (AUD)'), { target: { value: '90' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Groceries' } })
+    return view
+  }
+
+  const ticked = () =>
+    screen
+      .getAllByRole('checkbox')
+      .filter((box) => (box as HTMLInputElement).checked)
+      .map((box) => (box as HTMLInputElement).value)
+
+  it('sends who paid and who it’s split between, then opens the expense', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9', { groupId: 'house1' }), shares: [] }))
+    const { router } = await open()
+    expect(screen.getByRole('heading', { name: 'Add expense' })).toBeTruthy()
+    // The owner check is the employer's only: Cara owns this house, Alice adds.
+    expect((screen.getByLabelText('Date') as HTMLInputElement).value).toBe('2026-10-19')
+    expect((screen.getByLabelText('Category') as HTMLSelectElement).value).toBe('')
+    expect((screen.getByLabelText('Paid by') as HTMLSelectElement).value).toBe('alice')
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'groceries' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.slice(0, 3)).toEqual(['ledger', 'POST', '/transactions'])
+    expect(call.mock.calls[0]?.[3]).toEqual({
+      id: expect.any(String),
+      groupId: 'house1',
+      kind: 'expense',
+      date: '2026-10-19',
+      description: 'Groceries',
+      category: 'groceries',
+      totalCents: 9000,
+      payers: [{ personId: 'alice', cents: 9000 }],
+      split: { mode: 'equal', personIds: ['alice', 'bob', 'cara'] },
+    })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/transactions/x9'))
+  })
+
+  it('sends another payer, and the people ticked in personId order', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open()
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '40' } })
+    fireEvent.change(screen.getByLabelText('Paid by'), { target: { value: 'bob' } })
+    fireEvent.click(screen.getByLabelText('Bob'))
+    fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: 'Market' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const body = call.mock.calls[0]?.[3] as Record<string, unknown>
+    expect(body).toMatchObject({
+      payers: [{ personId: 'bob', cents: 4000 }],
+      split: { mode: 'equal', personIds: ['alice', 'cara'] },
+      note: 'Market',
+    })
+    expect(body).not.toHaveProperty('category')
+  })
+
+  it('previews each part from core, with the leftover cent on the first personId', async () => {
+    await open()
+    const preview = await screen.findByRole('region', { name: 'Each person’s part' })
+    expect(within(preview).getByText(/^Alice: paid .*90\.00, share .*30\.00$/)).toBeTruthy()
+    expect(within(preview).getByText(/^Bob: share .*30\.00$/)).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '100' } })
+    expect(within(preview).getByText(/^Alice: paid .*100\.00, share .*33\.34$/)).toBeTruthy()
+    expect(within(preview).getByText(/^Bob: share .*33\.33$/)).toBeTruthy()
+    expect(within(preview).getByText(/^Cara: share .*33\.33$/)).toBeTruthy()
+    // A payer who isn't ticked only paid.
+    fireEvent.click(screen.getByLabelText('Alice'))
+    expect(within(preview).getByText(/^Alice: paid .*100\.00$/)).toBeTruthy()
+    expect(within(preview).getByText(/^Bob: share .*50\.00$/)).toBeTruthy()
+  })
+
+  it('ticks those living there on the date, until a tick is changed by hand', async () => {
+    await open()
+    expect(ticked()).toEqual(['cara', 'alice', 'bob'].sort((a, b) => a.localeCompare(b)))
+    const dan = screen.getByLabelText(/^Dan/) as HTMLInputElement
+    expect(dan.getAttribute('aria-describedby')).toBe('splitBetween-dan-hint')
+    expect(screen.getByText('not living here on this date')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-09-15' } })
+    await waitFor(() => expect(dan.checked).toBe(true))
+    expect(screen.queryByText('not living here on this date')).toBeNull()
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-19' } })
+    await waitFor(() => expect(dan.checked).toBe(false))
+    // Ticked by hand: he's sent, and the date no longer moves the ticks.
+    fireEvent.click(dan)
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-20' } })
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-19' } })
+    expect(dan.checked).toBe(true)
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      split: { personIds: ['alice', 'bob', 'cara', 'dan'] },
+    })
+  })
+
+  it('ticks someone moving in on today’s date (local today, not UTC)', async () => {
+    await open([...HOUSEMATES, housemate('erin', 'Erin', '2026-10-19')])
+    expect((screen.getByLabelText(/^Erin/) as HTMLInputElement).checked).toBe(true)
+  })
+
+  it.each([
+    ['', 'Groceries', 'Required'],
+    ['lots', 'Groceries', 'Enter an amount like 40.50'],
+    ['0', 'Groceries', 'Enter an amount above 0'],
+    ['90', '', 'Required'],
+  ])(
+    'refuses amount “%s”, description “%s” before sending',
+    async (amount, description, message) => {
+      await open()
+      fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: amount } })
+      fireEvent.change(screen.getByLabelText('Description'), { target: { value: description } })
+      fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+      const field = screen.getByLabelText(amount === '90' ? 'Description' : 'Amount (AUD)')
+      await waitFor(() => expect(field.getAttribute('aria-invalid')).toBe('true'))
+      expect(screen.getByText(message)).toBeTruthy()
+      expect(call).not.toHaveBeenCalled()
+    },
+  )
+
+  it('refuses a split between nobody, or more than 15 people', async () => {
+    const many = Array.from({ length: 16 }, (_, n) =>
+      housemate(`p${String(n).padStart(2, '0')}`, `Person ${n}`, '2026-01-01'),
+    )
+    await open([housemate('alice', 'Alice', '2026-01-01'), ...many])
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('At most 15 people can be in one expense.')).toBeTruthy()
+    for (const box of screen.getAllByRole('checkbox')) {
+      if ((box as HTMLInputElement).checked) fireEvent.click(box)
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    const message = await screen.findByText('Tick at least one person to split it between.')
+    expect(
+      screen.getByRole('group', { name: 'Split equally between' }).getAttribute('aria-describedby'),
+    ).toBe(message.id)
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('allows 15 people, payer included, and refuses a 16th', async () => {
+    const others = Array.from({ length: 15 }, (_, n) =>
+      housemate(`p${String(n).padStart(2, '0')}`, `Person ${n}`, '2026-01-01'),
+    )
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open([housemate('alice', 'Alice', '2026-01-01'), ...others])
+    // Alice pays but isn't in the split: still 16 people.
+    fireEvent.click(screen.getByLabelText('Alice'))
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('At most 15 people can be in one expense.')).toBeTruthy()
+    // Said once: the preview doesn't add core's wording of the same rule.
+    expect(screen.queryByRole('region', { name: 'Each person’s part' })).toBeNull()
+    expect(screen.queryByText(/per transaction/)).toBeNull()
+    fireEvent.click(screen.getByLabelText('Person 0'))
+    expect(await screen.findByRole('region', { name: 'Each person’s part' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const body = call.mock.calls[0]?.[3] as { split: { personIds: string[] } } | undefined
+    expect(body?.split.personIds).toHaveLength(14)
+  })
+
+  it('sends a list for a house of one', async () => {
+    call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
+    await open([housemate('alice', 'Alice', '2026-01-01')])
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      split: { mode: 'equal', personIds: ['alice'] },
+    })
+  })
+
+  it('offers everyone as the payer, and the ticks still follow the date after a payer change', async () => {
+    await open()
+    const payer = screen.getByLabelText('Paid by')
+    expect(
+      within(payer)
+        .getAllByRole('option')
+        .map((option) => option.textContent),
+    ).toEqual(['Alice', 'Bob', 'Cara', 'Dan'])
+    fireEvent.change(payer, { target: { value: 'dan' } })
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-09-15' } })
+    await waitFor(() =>
+      expect((screen.getByLabelText(/^Dan/) as HTMLInputElement).checked).toBe(true),
+    )
+  })
+
+  it('ties the empty-split error to each box, and clears it once the date ticks someone', async () => {
+    // Everyone moves in tomorrow, so today ticks nobody.
+    await open([housemate('alice', 'Alice', '2026-10-20'), housemate('bob', 'Bob', '2026-10-20')])
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    const message = await screen.findByText('Tick at least one person to split it between.')
+    const alice = screen.getByLabelText(/^Alice/)
+    expect(alice.getAttribute('aria-invalid')).toBe('true')
+    expect(alice.getAttribute('aria-describedby')).toBe(`splitBetween-alice-hint ${message.id}`)
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-20' } })
+    await waitFor(() =>
+      expect(screen.queryByText('Tick at least one person to split it between.')).toBeNull(),
+    )
+    expect(alice.getAttribute('aria-invalid')).toBe('false')
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('shows the ledger’s own refusal from core, and sends nothing', async () => {
+    // The viewer's member row is missing from the list (removed meanwhile), so they can't pay.
+    mockPersonId = 'zed'
+    await open()
+    expect(
+      (await screen.findAllByText('Only members of the group can be in a transaction')).length,
+    ).toBe(1)
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Only members of the group can be in a transaction',
+    )
+    // Shown above the form now, so the preview no longer repeats it.
+    expect(screen.getAllByText('Only members of the group can be in a transaction')).toHaveLength(1)
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('shows a server refusal and keeps the ID for the retry', async () => {
+    call.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        code: 'VALIDATION_FAILED',
+        message: 'Only members of the group can be in a transaction',
+      },
+    })
+    call.mockReturnValueOnce(new Promise(() => {}))
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Only members of the group can be in a transaction',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    const [first, second] = call.mock.calls.map((args) => (args[3] as { id: string }).id)
+    expect(second).toBe(first)
+  })
+
+  it('warns of a possible duplicate on CONFLICT', async () => {
+    call.mockResolvedValue({ ok: false, error: { code: 'CONFLICT', message: 'Taken.' } })
+    await open()
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'This may already have been saved from your last try. Check History before adding it again.',
+    )
+  })
+
+  it('has no form for a viewer or in an archived house', async () => {
+    mockGroups(house, 'viewer')
+    mockRows([], [], HOUSEMATES)
+    renderAt('/transactions/new?groupId=house1')
+    expect(
+      await screen.findByText('You can see this house’s history but no longer add to it.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull()
+    cleanup()
+    mockGroups({ ...house, archivedAt: '2026-10-01T00:00:00.000Z' })
+    renderAt('/transactions/new?groupId=house1')
+    expect(
+      await screen.findByText('This group is archived. You can see its history but not change it.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull()
+  })
+})
+
 describe('HistoryPage', () => {
   it.each([
     [71500, /^Acme owes you .*715\.00$/],
@@ -447,6 +753,61 @@ describe('HistoryPage', () => {
 })
 
 describe('TransactionPage', () => {
+  it('shows a house expense’s split, each part by name, and links the house', async () => {
+    mockPersonId = 'alice'
+    mockGroups(house)
+    mockRows(
+      [],
+      [
+        { $id: 's1', personId: 'alice', givenCents: 9000, receivedCents: 3000 },
+        { $id: 's2', personId: 'bob', givenCents: 0, receivedCents: 3000 },
+        { $id: 's3', personId: 'cara', givenCents: 0, receivedCents: 3000 },
+      ],
+      HOUSEMATES,
+    )
+    getRow.mockResolvedValue(
+      row('t9', {
+        groupId: 'house1',
+        description: 'Groceries',
+        category: 'groceries',
+        totalCents: 9000,
+        inputJson: JSON.stringify({
+          payers: [{ personId: 'alice', cents: 9000 }],
+          split: { mode: 'equal', personIds: ['alice', 'bob', 'cara'] },
+        }),
+      }) as never,
+    )
+    renderAt('/transactions/t9')
+    const split = (await screen.findByText('Split')).nextElementSibling as HTMLElement
+    expect(split.textContent).toBe('Equally between 3 people')
+    expect(await screen.findByText(/^Alice: paid .*90\.00, for them .*30\.00$/)).toBeTruthy()
+    expect(screen.getByText(/^Bob: for them .*30\.00$/)).toBeTruthy()
+    const group = screen.getByText('Group').nextElementSibling as HTMLElement
+    expect(within(group).getByRole('link', { name: 'The flat' }).getAttribute('href')).toBe(
+      '/groups/house1',
+    )
+  })
+
+  it('shows no Split row for an employer entry, or for a stored input without one', async () => {
+    mockGroups(acme)
+    mockRows()
+    getRow.mockResolvedValue(
+      row('t1', {
+        inputJson: JSON.stringify({ split: { mode: 'equal', personIds: ['pe'] } }),
+      }) as never,
+    )
+    renderAt('/transactions/t1')
+    expect(await screen.findByText('Group')).toBeTruthy()
+    expect(screen.queryByText('Split')).toBeNull()
+    cleanup()
+    mockGroups(house)
+    mockRows([], [], HOUSEMATES)
+    getRow.mockResolvedValue(row('t2', { groupId: 'house1', inputJson: '{"bill":{}}' }) as never)
+    renderAt('/transactions/t2')
+    expect(await screen.findByText('Group')).toBeTruthy()
+    expect(screen.queryByText('Split')).toBeNull()
+  })
+
   const shares = [
     { $id: 's1', personId: 'pw', givenCents: 4000, receivedCents: 0 },
     { $id: 's2', personId: 'pe', givenCents: 0, receivedCents: 4000 },

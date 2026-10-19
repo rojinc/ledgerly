@@ -87,7 +87,7 @@ type TransactionInput = {
   bill?: { status: 'due' | 'paid'; dueOn?: LocalDate; periodStart?: LocalDate; periodEnd?: LocalDate } // dueOn required when status is 'due'; schedule templates leave it out
   payment?: { fromPersonId: string; toPersonId: string }
   adjustment?: { shares: { personId: string; givenCents: number; receivedCents: number }[]; reason: string }
-  receiptFileIds?: string[]
+  receiptFileIds?: string[]     // at most 10, each once; a PATCH without it keeps the stored list
   note?: string                 // up to 1000 chars
 }
 
@@ -109,7 +109,7 @@ Each route parses its body with its schema from `packages/core/src/schemas/` bef
 - **Kinds:** `shift`, `bill`, `payment` and `adjustment` are required for their own kind and rejected on any other. `payers` and `split` are for expense, bill and loan; `items` (1–30) for expense and bill; a `days` split for bills only. `totalCents` is required unless the kind is `shift` (where it is computed, so it is rejected) or there are `items`. A payment's `fromPersonId` and `toPersonId` must be different people. Sums against the total (payers, `exact` splits, items) and the sign rules are ledger rules, checked by `buildShares()`.
 - **Bills** (one-off transactions, not schedule templates): a `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`.
 - **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it.
-- **Lists:** at most 10 `receiptFileIds` (the ledger function checks each file) and 366 `exdates`.
+- **Lists:** at most 10 `receiptFileIds`, each at most once (the ledger function checks each file), and 366 `exdates`. Schedule templates have no `receiptFileIds`.
 - **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365. `region` must be a country or state the public holiday library knows (`publicHolidayChecker`), checked by the function on create and `PATCH`.
 - **Business details:** `abn` (11), `bsb` (6) and `accountNumber` (up to 12) are stored as digits only. Spaces and dashes are dropped.
 - **Schedules:** `rrule` is one of the shapes in [Rules the UI builds](scheduling.md#rules-the-ui-builds): weekly on plain `BYDAY` codes with an optional `INTERVAL` of 1–4, or monthly on a `BYMONTHDAY` of 1–28 or `-1`, either with an optional `COUNT` (1–500) or `UNTIL=YYYYMMDD`, not both. `UNTIL` is not before `startsOn`, and an unknown rule part gets the fixed message "Unsupported rule part". `startsOn`, `endsOn` and `exdates` are on or after 2000-01-01. The preview `count` is 1–100.
@@ -127,6 +127,7 @@ All money writes.
 | `PATCH /transactions/{id}` | `TransactionInput` (same `id`) | `TransactionView` | creator or admin; not locked |
 | `POST /transactions/{id}/post` | `{ date?, payers?, shift?: { minutes?, rateCents?, breakMinutes? } }` | `TransactionView` | creator or admin; status `scheduled` or `due` |
 | `POST /transactions/{id}/void` | `{ reason: string }` | `TransactionView` | creator or admin; not locked |
+| `POST /transactions/{id}/receipts` | `{ receiptFileIds: string[] }` (the whole new list, 0–10) | `TransactionView` | creator or admin; not locked |
 | `POST /timer/start` | `{ id, groupId, rateCents?, description? }` | `TransactionView` | the group's owner (employer group) |
 | `POST /timer/stop` | `{ transactionId, breakMinutes? }` | `TransactionView` | the person who started it |
 | `GET /groups/{groupId}/balances` | none | `{ people: { personId, netCents }[], transfers: { fromPersonId, toPersonId, cents }[] }` | any member |
@@ -138,7 +139,7 @@ What every write does, in **one TablesDB transaction**:
 3. Write the transaction row, replace its items and shares, and append an `activity` row.
 4. Commit. On conflict, retry once from step 1.
 
-On `PATCH`, `/post`, `/void` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use.
+On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use.
 
 `/balances` is a function, not a client-side sum, so that later switching to the `balances` cache table doesn't change any client.
 
@@ -152,6 +153,12 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 
 `/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
 
+**Receipts.** `POST /transactions/{id}/receipts` sets the transaction's receipt list and changes nothing else. It rebuilds no shares or items, and writes one `transaction.updated` activity row; sending the stored list again, in the same order, writes nothing. Otherwise its rules are `PATCH`'s: status `scheduled`, `due` or `posted`, `LOCKED` and `ARCHIVED` as for `PATCH`, `NOT_FOUND` for non-members, and it sets `overridden` on a schedule occurrence.
+
+- Every write that attaches a file (`POST /transactions`, `PATCH` and `/receipts`) checks it and limits it to the group's team first ([permissions](permissions.md#storage)). The check runs after step 1's membership, role, archived and locked checks, so a caller those checks refuse never changes a file.
+- A `PATCH` body without `receiptFileIds` keeps the stored list, so edit forms that don't show receipts don't drop them. `[]` clears it.
+- Taking a file off a list doesn't delete it or change its permissions; the scheduler's clean-up ([#163](https://github.com/rojinc/ledgerly/issues/163)) deletes files no transaction lists. The same file may be on two transactions of one group.
+
 ## groups
 
 | Route | Body | Returns | Who |
@@ -160,8 +167,8 @@ A `PATCH` that changes a bill's `dueOn` clears `remindedAt`, so the new date get
 | `PATCH /groups/{id}` | `{ name?, currency?, timezone?, region?, statementCycle?, cycleAnchor?, settings? }` | `group` | admin |
 | `POST /groups/{id}/archive` | none | `group` | admin |
 | `POST /groups/{id}/members` | `{ displayName, email?, phone?, role?, joinedOn? }` | `member` | admin (house: member too) |
-| `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn? }` | `member` | admin |
-| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares and aren't named in an unposted transaction or a schedule template (`VALIDATION_FAILED`). Also removes any team membership. |
+| `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn?: LocalDate \| null }` | `member` | admin; `leftOn: null` moves someone who moved out back in ([leaving](permissions.md#leaving-a-group)) |
+| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares, aren't named in an unposted transaction or a schedule template, and didn't create a schedule whose template names no payers (`VALIDATION_FAILED`). Also removes any team membership. |
 | `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0 and they aren't the last joined admin, except a retry of their own leave cut off before the team step, which finishes anyway ([leaving](permissions.md#leaving-a-group)). Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. Removing one with `DELETE /groups/{id}/members/{memberId}` also returns `VALIDATION_FAILED`; archive the group instead. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
@@ -177,7 +184,7 @@ Archiving is permanent in v1; there is no unarchive route. It clears `nextCloseA
 | `POST /bootstrap` | `{ timezone }` | `{ profile, personId, personalGroupId, linkedGroupIds }` | the user; idempotent |
 | `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency? }` | `profile` | the user |
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
-| `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | see [permissions](permissions.md) |
+| `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
@@ -211,7 +218,7 @@ type ScheduleInput = {
   groupId: string
   kind: 'shift' | 'bill' | 'expense' | 'income'
   description: string
-  template: Omit<TransactionInput, 'id' | 'groupId' | 'date' | 'kind' | 'description'>
+  template: Omit<TransactionInput, 'id' | 'groupId' | 'date' | 'kind' | 'description' | 'receiptFileIds'>
   rrule: string                 // RFC 5545; only the shapes in scheduling.md#rules-the-ui-builds
   startsOn: LocalDate
   endsOn?: LocalDate

@@ -19,4 +19,6 @@ export const queryKeys = {
     ['today', userId, ...groupIds, ...dates] as const,
   myRoles: (personId: string, groupIds: readonly string[]) =>
     ['myRoles', personId, ...groupIds] as const,
+  statements: (groupId: string) => ['statements', groupId] as const,
+  statement: (id: string) => ['statement', id] as const,
 }
