@@ -1,6 +1,7 @@
 import { type LocalDate, parseLocalDate } from '@ledgerly/core/dates/local-date'
 import { describe, expect, it } from 'vitest'
 import {
+  divideEmail,
   type EmailContent,
   invoiceEmail,
   shiftToConfirmEmail,
@@ -141,6 +142,73 @@ describe('invoiceEmail', () => {
   it('keeps the attachment name to safe characters', () => {
     const content = invoiceEmail({ ...invoice, displayNumber: 'A/B "0010"' })
     expect(content.attachments?.[0]?.filename).toBe('A-B--0010-.pdf')
+  })
+})
+
+describe('divideEmail', () => {
+  // Cara in the golden divide (core's snapshot test): she owes $67.22 in all.
+  const cara = {
+    groupName: '12 Smith St',
+    periodStart: day('2026-10-01'),
+    periodEnd: day('2026-10-31'),
+    currency: 'AUD',
+    closingCents: -6722,
+    pays: [
+      { name: 'Alice', cents: 6422 },
+      { name: 'Erin', cents: 300 },
+    ],
+    receives: [],
+    url: 'https://app.example/groups/grp_house/statements/st1',
+    pdf: new Uint8Array([37, 80, 68, 70]),
+  }
+
+  it('says where they stand, then their own transfers, then the link, with the PDF', () => {
+    const content = divideEmail(cara)
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your October divide for 12 Smith St')
+    expect(content.text.split('\n\n')).toEqual([
+      "Here's the October divide for 12 Smith St. The PDF is attached.",
+      'You owe $67.22.',
+      'Pay Alice $64.22.',
+      'Pay Erin $3.00.',
+      'Open the divide: https://app.example/groups/grp_house/statements/st1',
+      '--\nSent with Ledgerly.',
+    ])
+    expect(content.attachments).toEqual([{ filename: 'divide-2026-10-31.pdf', content: cara.pdf }])
+  })
+
+  it('tells someone who is owed who pays them', () => {
+    const erin = { ...cara, closingCents: 300, pays: [], receives: [{ name: 'Cara', cents: 300 }] }
+    const content = divideEmail(erin)
+    expect(content.text).toContain("You're owed $3.00.\n\nCara pays you $3.00.")
+    expect(content.text).not.toContain('Pay ')
+  })
+
+  it('tells someone who is square that they are settled up', () => {
+    const content = divideEmail({ ...cara, closingCents: 0, pays: [] })
+    expect(content.text).toContain("You're settled up.")
+    expect(content.text).not.toMatch(/Pay |pays you/)
+  })
+
+  it('names both years for a period across a new year', () => {
+    const content = divideEmail({
+      ...cara,
+      periodStart: day('2026-12-15'),
+      periodEnd: day('2027-01-14'),
+    })
+    expect(content.subject).toBe('Your 15 December 2026 – 14 January 2027 divide for 12 Smith St')
+    expect(content.attachments?.[0]?.filename).toBe('divide-2027-01-14.pdf')
+  })
+
+  it('escapes names in the HTML and refuses a link that isn’t http(s)', () => {
+    const content = divideEmail({
+      ...cara,
+      groupName: '<b>House</b>',
+      pays: [{ name: 'Al & "Co"', cents: 100 }],
+    })
+    expect(content.html).toContain('&lt;b&gt;House&lt;/b&gt;')
+    expect(content.html).toContain('Pay Al &amp; &quot;Co&quot; $1.00.')
+    expect(() => divideEmail({ ...cara, url: 'javascript:alert(1)' })).toThrow('http(s)')
   })
 })
 

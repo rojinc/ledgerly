@@ -21,6 +21,7 @@ import {
   ROLE_LABEL,
   toAddHousemateBody,
   toMemberEditBody,
+  toMoveBackInBody,
 } from './house-values'
 import { GroupsError, type useMemberWrites } from './use-house'
 
@@ -340,6 +341,61 @@ export function MoveOut({ group, member, writes, onClose }: RowFormProps & { gro
         {...form.register('leftOn')}
       />
       <FormButtons pending={isSubmitting} label="Mark as moved out" onCancel={onClose} />
+    </form>
+  )
+}
+
+/**
+ * `PATCH { leftOn: null }` (admins): someone who moved out lives here again. Someone who left on
+ * their own can't come back this way, and the function says so (permissions.md#leaving-a-group).
+ */
+export function MoveBackIn({ member, writes, onClose }: RowFormProps) {
+  const ref = useFocusFirst()
+  const form = useForm<{ role: Members['role'] }, unknown, UpdateMemberBody>({
+    resolver: housemateResolver<{ role: Members['role'] }, UpdateMemberBody>(
+      updateMemberBodySchema,
+      (values) => toMoveBackInBody(values.role, member),
+    ),
+    // Moving out made them a viewer.
+    defaultValues: { role: 'member' },
+  })
+  const { errors, isSubmitting } = form.formState
+  const id = member.$id
+  const submit = form.handleSubmit(async (body) => {
+    try {
+      await writes.update.mutateAsync({ memberId: id, body })
+      onClose()
+    } catch (error) {
+      form.setError('root', { message: (error as Error).message })
+    }
+  })
+
+  return (
+    <form
+      ref={ref}
+      noValidate
+      className="flex flex-col gap-4 pt-3"
+      onSubmit={(event) => {
+        // aria-disabled, not disabled, keeps focus on the button; this guard stops a second send.
+        if (form.formState.isSubmitting) event.preventDefault()
+        else void submit(event)
+      }}
+    >
+      {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
+      <SelectField
+        id={`${id}-backInRole`}
+        label="Role"
+        hint="Their move-out date is cleared, and they live here again."
+        error={errors.role}
+        {...form.register('role')}
+      >
+        {ROLES.map(([value, label]) => (
+          <option key={value} value={value}>
+            {label}
+          </option>
+        ))}
+      </SelectField>
+      <FormButtons pending={isSubmitting} label="Mark as moved back in" onCancel={onClose} />
     </form>
   )
 }

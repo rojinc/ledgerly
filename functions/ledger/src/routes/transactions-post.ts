@@ -1,5 +1,6 @@
 import { postTransactionBodySchema } from '@ledgerly/core/schemas/ledger'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { route } from '@ledgerly/server/http/create-handler'
 import { postInTransaction } from '@ledgerly/server/ledger/post'
 import {
@@ -7,10 +8,10 @@ import {
   invalid,
   ledgerRoute,
   loadLedger,
+  NO_SUCH_TRANSACTION,
   parseBody,
   readView,
   requireCreatorOrAdmin,
-  requireMemberOf,
   requireUnlocked,
   Unchanged,
 } from '@ledgerly/server/ledger/transactions'
@@ -28,9 +29,16 @@ export const postTransaction = (services: ServicesFor) =>
     ledgerRoute(async () => {
       const changes = parseBody(postTransactionBodySchema, body)
       const found = await getTransaction(db, params.id)
-      const membership = await requireMemberOf(db, services({ headers }).teams, userId, found, {
-        roles: ['admin', 'member'],
-      })
+      const membership = await requireMemberOf(
+        db,
+        services({ headers }).teams,
+        userId,
+        found.groupId,
+        NO_SUCH_TRANSACTION,
+        {
+          roles: ['admin', 'member'],
+        },
+      )
       requireCreatorOrAdmin(membership, found)
       requireUnlocked(found)
       if (!['scheduled', 'due', 'posted'].includes(found.status)) {

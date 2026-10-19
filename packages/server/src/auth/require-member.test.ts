@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { FakeDb } from '../appwrite/fake'
 import { FakeTeams } from '../appwrite/fake-teams'
 import { AppError } from '../http/app-error'
-import { requireMember, requireUser } from './require-member'
+import { requireMember, requireMemberOf, requireUser } from './require-member'
 
 function db() {
   return new FakeDb({
@@ -138,6 +138,43 @@ describe('requireMember', () => {
     expect(
       await codeOf(requireMember(viewerOfArchived, teams(), 'u', 'g', { roles: ['admin'] })),
     ).toBe('FORBIDDEN')
+  })
+})
+
+describe('requireMemberOf', () => {
+  const NOT_FOUND = 'This row does not exist.'
+  const of = (userId: string | null, groupId: string, roles?: ('admin' | 'member')[]) =>
+    requireMemberOf(db(), teams(), userId, groupId, NOT_FOUND, roles ? { roles } : {})
+
+  it('returns the membership for a member', async () => {
+    const { person, member } = await of('uAdmin', 'g1', ['admin'])
+    expect([person.$id, member.$id]).toEqual(['pAdmin', 'm1'])
+  })
+
+  it.each([
+    ['someone in another group', 'uOutsider'],
+    ['a placeholder with an account', 'uPlaceholder'],
+    ['someone who left on their own', 'uQuit'],
+    ['a user with no person row', 'uNobody'],
+  ])('answers %s with the given NOT_FOUND', async (_case, userId) => {
+    await expect(of(userId, 'g1')).rejects.toEqual(new AppError('NOT_FOUND', NOT_FOUND))
+  })
+
+  it('is NOT_FOUND for an outsider before any role or archive check', async () => {
+    await expect(of('uOutsider', 'gArchived', ['admin'])).rejects.toMatchObject({
+      code: 'NOT_FOUND',
+    })
+  })
+
+  it('passes every other error through', async () => {
+    expect(await codeOf(of(null, 'g1'))).toBe('UNAUTHENTICATED')
+    expect(await codeOf(of('uViewer', 'g1', ['admin', 'member']))).toBe('FORBIDDEN')
+    expect(await codeOf(of('uAdmin', 'gArchived'))).toBe('ARCHIVED')
+    const down = teams()
+    vi.spyOn(down, 'listMemberships').mockRejectedValue(new AppwriteException('Server error', 500))
+    await expect(requireMemberOf(db(), down, 'uLeft', 'g1', NOT_FOUND)).rejects.toMatchObject({
+      code: 500,
+    })
   })
 })
 

@@ -84,6 +84,50 @@ export function invoiceEmail(input: {
   }
 }
 
+/** One suggested transfer as one housemate sees it: who to pay, or who pays them. */
+export type DivideTransfer = { name: string; cents: number }
+
+/**
+ * To one housemate when a divide is sent: where they stand and their own suggested transfers,
+ * with the divide PDF attached (statements.md#3-send-and-resend). It names no one's address, and
+ * has no reply-to.
+ */
+export function divideEmail(input: {
+  groupName: string
+  periodStart: LocalDate
+  periodEnd: LocalDate
+  currency: string
+  closingCents: number
+  /** Whom they pay. */
+  pays: DivideTransfer[]
+  /** Who pays them. */
+  receives: DivideTransfer[]
+  url: string
+  pdf: Uint8Array
+}): EmailContent {
+  const money = (cents: number) => formatMoney(cents, input.currency, LOCALE)
+  const period = periodLabel(input.periodStart, input.periodEnd)
+  const standing =
+    input.closingCents < 0
+      ? `You owe ${money(-input.closingCents)}.`
+      : input.closingCents > 0
+        ? `You're owed ${money(input.closingCents)}.`
+        : "You're settled up."
+  return {
+    ...message(
+      `Your ${period} divide for ${input.groupName}`,
+      [
+        `Here's the ${period} divide for ${input.groupName}. The PDF is attached.`,
+        standing,
+        ...input.pays.map((to) => `Pay ${to.name} ${money(to.cents)}.`),
+        ...input.receives.map((from) => `${from.name} pays you ${money(from.cents)}.`),
+      ],
+      { label: 'Open the divide', url: input.url },
+    ),
+    attachments: [{ filename: `divide-${input.periodEnd}.pdf`, content: input.pdf }],
+  }
+}
+
 /**
  * To the group owner when a shift that doesn't auto-post is past and still unconfirmed
  * (scheduling.md#step-3-reminders).
@@ -193,9 +237,10 @@ function dayLabel(date: LocalDate): string {
 
 /**
  * `October` for a whole month, else `16 October`, `1–7 October` or `28 September – 4 October`.
- * A period across a new year names both years: `28 December 2026 – 3 January 2027`.
+ * A period across a new year names both years: `28 December 2026 – 3 January 2027`. Also names
+ * a statement in its activity rows.
  */
-function periodLabel(start: LocalDate, end: LocalDate): string {
+export function periodLabel(start: LocalDate, end: LocalDate): string {
   const from = dateParts(start)
   const to = dateParts(end)
   if (from.year !== to.year) return `${longDate(start)} – ${longDate(end)}`

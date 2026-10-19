@@ -1,6 +1,7 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
+import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { invoiceEmail } from '@ledgerly/server/email/templates'
 import { verifiedEmails } from '../people'
 import type { Services } from '../services'
@@ -9,7 +10,7 @@ import {
   conflictAsTryAgain,
   getStatement,
   invalid,
-  requireMemberOf,
+  NO_SUCH_STATEMENT,
   snapshotOf,
   updateStatement,
 } from '../shared'
@@ -21,9 +22,14 @@ export async function sendRoute(
   statementId: string,
 ): Promise<{ sentAt: string }> {
   const statement = await getStatement(services.db, statementId)
-  const { person, group } = await requireMemberOf(services.db, services.teams, userId, statement, {
-    roles: ['admin'],
-  })
+  const { person, group } = await requireMemberOf(
+    services.db,
+    services.teams,
+    userId,
+    statement.groupId,
+    NO_SUCH_STATEMENT,
+    { roles: ['admin'] },
+  )
   if (statement.status !== 'final') throw invalid('Only a final statement can be sent.')
   if (statement.type !== 'invoice') throw invalid('House divides are not available yet.')
   const sent = await conflictAsTryAgain(() => sendInvoice(services, group, statement, person.$id))
