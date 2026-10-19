@@ -94,7 +94,7 @@ function sharesOf(services: Fakes, transactionId: string): Shares[] {
 
 function update(
   services: Fakes,
-  tableId: 'transactions' | 'groups' | 'schedules',
+  tableId: 'transactions' | 'groups' | 'schedules' | 'members',
   rowId: string,
   data: object,
 ) {
@@ -217,6 +217,42 @@ describe('step 2: auto-post', () => {
     await create(services, { ...groceries, startsOn: '2026-10-19' })
     expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
     expect(row(services, `${groceries.id}_20261019`).status).toBe('posted')
+  })
+
+  it('leaves an expense its creator would pay once they have moved out', async () => {
+    // Alex adds groceries for Sam with no payers, so Alex would pay, then moves out.
+    const services = seeded()
+    const forSam = {
+      ...groceries,
+      template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, forSam, 'u2')
+    await update(services, 'members', 'elm-pAlex', {
+      status: 'left',
+      role: 'viewer',
+      leftOn: '2026-10-10',
+    })
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('still posts one that names its payers after its creator moved out', async () => {
+    const services = seeded()
+    const samPays = {
+      ...groceries,
+      template: {
+        totalCents: 6_000,
+        payers: [{ personId: 'pSam', cents: 6_000 }],
+        split: { mode: 'equal', personIds: ['pSam', 'pAlex'] },
+      },
+    }
+    await create(services, samPays, 'u2')
+    await update(services, 'members', 'elm-pAlex', {
+      status: 'left',
+      role: 'viewer',
+      leftOn: '2026-10-31',
+    })
+    expect((await runCron(services)).posted.posted).toBe(2)
   })
 
   it('looks back 7 days from the UTC date, and no further', async () => {

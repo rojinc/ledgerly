@@ -1,11 +1,17 @@
 import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
+import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { postInTransaction } from '@ledgerly/server/ledger/post'
-import { findTransaction, ledgerRoute, loadGroupLedger } from '@ledgerly/server/ledger/transactions'
+import {
+  findTransaction,
+  type Ledger,
+  ledgerRoute,
+  loadGroupLedger,
+} from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 import { madeLate } from '../occurrences'
 import { pages } from '../pages'
@@ -71,6 +77,7 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
     })
     if (group.archivedAt || !isDue(row, group, now) || forTheUser(row, group)) return false
     const ledger = await loadGroupLedger(db, group, schedule.createdBy)
+    if (await creatorWouldPayAfterLeaving(db, row, ledger, schedule.createdBy)) return false
     await withTransaction(db, (tx) =>
       postInTransaction(tx, db, {
         rowId,
@@ -86,6 +93,28 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
     )
     return true
   })
+}
+
+// The creator pays an expense or bill whose input names no payers (build-shares.ts), but not
+// once they're no longer an active member of the group: it waits for someone to confirm it
+// (scheduling.md#step-2-auto-post).
+async function creatorWouldPayAfterLeaving(
+  db: Db,
+  row: Transactions,
+  ledger: Ledger,
+  creator: string,
+): Promise<boolean> {
+  if (row.kind !== 'expense' && row.kind !== 'bill') return false
+  if ((JSON.parse(row.inputJson) as { payers?: unknown }).payers !== undefined) return false
+  const memberRow = ledger.memberRows.get(creator)
+  const member = memberRow
+    ? await db.getRow<Members>({
+        databaseId: DATABASE_ID,
+        tableId: TABLES.members,
+        rowId: memberRow,
+      })
+    : undefined
+  return member?.status !== 'active'
 }
 
 // Left for the user (scheduling.md#step-2-auto-post): made after its own day, or already
