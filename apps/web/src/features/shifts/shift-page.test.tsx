@@ -408,11 +408,13 @@ describe('NewShiftPage', () => {
   })
 
   it('shows the function error and retries with the same id', async () => {
+    // A CONFLICT from a write that clashed with another: nothing was saved with this ID.
     call.mockResolvedValueOnce(failure('The ledger is busy.'))
     call.mockImplementationOnce(async (_fn, _method, _path, body) =>
       view(shiftRow({ $id: (body as { id: string }).id })),
     )
     mockRow(shiftRow())
+    getRow.mockRejectedValueOnce(new Error('Not found'))
     const { router } = await renderNew('/shifts/new')
     type('Start', '09:00')
     type('End', '17:00')
@@ -423,6 +425,93 @@ describe('NewShiftPage', () => {
     await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
     expect(sentBody(1).id).toBe(sentBody(0).id)
     await waitFor(() => expect(router.state.location.pathname).toBe(`/shifts/${sentBody(0).id}`))
+  })
+
+  it('opens the shift saved by an earlier try when a retry with changes gets CONFLICT (#147 O9)', async () => {
+    // The first answer was lost, and the form changed before the retry.
+    call.mockResolvedValue(failure('A different transaction already has this ID.'))
+    const { router, queryClient } = await renderNew('/shifts/new')
+    const invalidated: unknown[] = []
+    vi.spyOn(queryClient, 'invalidateQueries').mockImplementation(async (filters) => {
+      invalidated.push(filters)
+    })
+    getRow.mockImplementation((async ({ rowId }: { rowId: string }) =>
+      shiftRow({ $id: rowId, description: 'As first sent' })) as never)
+    type('Start', '09:00')
+    type('End', '17:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe(`/shifts/${sentBody().id}`))
+    expect(getRow).toHaveBeenCalledWith({
+      databaseId: 'main',
+      tableId: 'transactions',
+      rowId: sentBody().id,
+    })
+    expect(await screen.findByRole('heading', { name: 'As first sent' })).toBeTruthy()
+    expect(screen.getByText(/already added by an earlier try/)).toBeTruthy()
+    // Shown on this visit only: the history entry no longer carries it, so a reload won't.
+    await waitFor(() => expect(router.state.location.state).toBeNull())
+    expect(screen.getByText(/already added by an earlier try/)).toBeTruthy()
+    // Its write's answer was lost, so what it changed is reloaded.
+    for (const key of [['balances', 'g1'], ['history', 'g1'], ['today'], ['calendar']]) {
+      expect(invalidated).toContainEqual(expect.objectContaining({ queryKey: key }))
+    }
+  })
+
+  it.each<[string, Partial<Transactions>]>([
+    ['someone else’s row', { createdBy: 'p2' }],
+    ['a row that isn’t a shift', { kind: 'expense' }],
+  ])('shows the CONFLICT rather than open %s', async (_, extra) => {
+    call.mockResolvedValue(failure('A different transaction already has this ID.'))
+    const { router } = await renderNew('/shifts/new')
+    getRow.mockImplementation((async ({ rowId }: { rowId: string }) =>
+      shiftRow({ $id: rowId, ...extra })) as never)
+    type('Start', '09:00')
+    type('End', '17:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'A different transaction already has this ID.',
+    )
+    expect(router.state.location.pathname).toBe('/shifts/new')
+  })
+
+  it('keeps Save focusable while saving, and ignores a second submit', async () => {
+    call.mockReturnValue(new Promise(() => {}))
+    await renderNew('/shifts/new')
+    type('Start', '09:00')
+    type('End', '17:00')
+    const save = screen.getByRole('button', { name: 'Add shift' })
+    fireEvent.click(save)
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    expect(saving.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(saving)
+    await act(async () => {})
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a CONFLICT when no shift was saved with the ID', async () => {
+    call.mockResolvedValue(failure('Someone else changed this at the same time. Try again.'))
+    getRow.mockRejectedValue(new Error('Not found'))
+    const { router } = await renderNew('/shifts/new')
+    type('Start', '09:00')
+    type('End', '17:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Someone else changed this at the same time. Try again.',
+    )
+    expect(router.state.location.pathname).toBe('/shifts/new')
+  })
+
+  it('only looks for a saved shift on CONFLICT', async () => {
+    call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Server error.' } })
+    mockRow(shiftRow())
+    const { router } = await renderNew('/shifts/new')
+    type('Start', '09:00')
+    type('End', '17:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Server error.')
+    expect(getRow).not.toHaveBeenCalled()
+    expect(router.state.location.pathname).toBe('/shifts/new')
   })
 
   it('links to a new employer when the user has no employer groups', async () => {
@@ -570,6 +659,63 @@ describe('ShiftPage', () => {
     expect(screen.queryByRole('button')).toBeNull()
   })
 
+  /** The summary's terms and what each says. */
+  function summary(): Record<string, string> {
+    const terms = [...document.querySelectorAll('dt')]
+    return Object.fromEntries(
+      terms.map((term) => [term.textContent, term.nextElementSibling?.textContent ?? '']),
+    )
+  }
+
+  it.each<[string, Members['role'], Partial<Transactions>]>([
+    ['a viewer', 'viewer', {}],
+    ['a locked shift', 'admin', { statementId: 's1' }],
+  ])('shows %s’s date, times, break, hours and pay (#147 O4)', async (_, role, extra) => {
+    mockGroup(acme, role)
+    mockRow(shiftRow(extra))
+    renderAt('/shifts/t1')
+    await screen.findByText('Date')
+    expect(summary()).toEqual({
+      Date: '2026-10-15',
+      Times: '09:00–17:30',
+      Break: '30 min',
+      Hours: expect.stringMatching(/^8 h 0 min at .*25\.50 an hour$/),
+      Pay: expect.stringMatching(/204\.00$/),
+    })
+  })
+
+  it('shows a void shift’s summary with no pay, since it pays nothing', async () => {
+    mockRow(shiftRow({ status: 'void', voidReason: 'Sick' }))
+    renderAt('/shifts/t1')
+    await screen.findByText('Date')
+    expect(Object.keys(summary())).toEqual(['Date', 'Times', 'Break', 'Hours'])
+  })
+
+  it('shows hours with no times for a shift stored as hours (#147 O4)', async () => {
+    mockGroup(acme, 'viewer')
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: { minutes: 450, rateCents: 2550 } }) }))
+    renderAt('/shifts/t1')
+    await screen.findByText('Date')
+    expect(Object.keys(summary())).toEqual(['Date', 'Hours', 'Pay'])
+    expect(summary().Hours).toMatch(/^7 h 30 min at /)
+  })
+
+  it('shows when a running timer started, in the group’s time zone, and no pay (#147 O4)', async () => {
+    mockRow(shiftRow({ status: 'running', startedAt: '2026-10-18T21:00:00.000Z' }))
+    renderAt('/shifts/t1')
+    await screen.findByText('Date')
+    expect(Object.keys(summary())).toEqual(['Date', 'Started'])
+    // 08:00 in Sydney.
+    expect(summary().Started).toMatch(/^0?8:00/)
+  })
+
+  it('shows no summary beside the form', async () => {
+    mockRow(shiftRow())
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    expect(screen.queryByText('Pay')).toBeNull()
+  })
+
   it('is read-only when it is on a final invoice', async () => {
     mockRow(shiftRow({ statementId: 's1' }))
     renderAt('/shifts/t1')
@@ -637,6 +783,40 @@ describe('ShiftPage', () => {
     expect(sentBody().description).toBe('Timed shift')
   })
 
+  it('saves a timer stopped within the minute it started, whose times are equal (#147 O5)', async () => {
+    const timed = { minutes: 0, rateCents: 2550, startTime: '09:00', endTime: '09:00' }
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))
+    call.mockResolvedValue(view(shiftRow()))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    type('Description', 'Quick shift')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sentBody().shift).toStrictEqual(timed)
+    expect(sentBody().description).toBe('Quick shift')
+  })
+
+  it('refuses equal stored times once the break changes, rather than pay a whole day', async () => {
+    const timed = { minutes: 0, rateCents: 2550, startTime: '09:00', endTime: '09:00' }
+    mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    type('Break (minutes)', '0')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('The end must differ from the start')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('still refuses equal times typed over a stored shift’s', async () => {
+    mockRow(shiftRow())
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Start')
+    type('End', '09:00')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('The end must differ from the start')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+  })
+
   it('works the minutes out again once a time changes', async () => {
     const timed = { minutes: 29, rateCents: 2550, startTime: '09:00', endTime: '09:30' }
     mockRow(shiftRow({ inputJson: JSON.stringify({ shift: timed }) }))
@@ -676,6 +856,17 @@ describe('ShiftPage', () => {
     expect(screen.getByText('Confirmed.')).toBeTruthy()
   })
 
+  it('moves focus to the heading when Confirm goes away (#147 O8)', async () => {
+    mockRow(shiftRow({ status: 'scheduled' }))
+    call.mockResolvedValue(view(shiftRow({ status: 'posted' })))
+    renderAt('/shifts/t1')
+    const button = await screen.findByRole('button', { name: 'Confirm as worked' })
+    button.focus()
+    fireEvent.click(button)
+    expect(await screen.findByText('Confirmed.')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Morning shift' }))
+  })
+
   it('won’t confirm while the form has unsaved changes', async () => {
     mockRow(shiftRow({ status: 'scheduled' }))
     call.mockImplementation(async (_fn, _method, _path, body) =>
@@ -685,18 +876,22 @@ describe('ShiftPage', () => {
     const confirm = (await screen.findByRole('button', {
       name: 'Confirm as worked',
     })) as HTMLButtonElement
-    expect(confirm.disabled).toBe(false)
+    const off = () => confirm.getAttribute('aria-disabled') === 'true'
+    expect(off()).toBe(false)
     type('End', '19:30')
-    expect(confirm.disabled).toBe(true)
+    expect(off()).toBe(true)
     expect(screen.getByText('Save your changes first.').id).toBe(
       confirm.getAttribute('aria-describedby'),
     )
+    // Still focusable, but a click does nothing.
+    fireEvent.click(confirm)
+    expect(call).not.toHaveBeenCalled()
     // Back as stored: nothing to save.
     type('End', '17:30')
-    expect(confirm.disabled).toBe(false)
+    expect(off()).toBe(false)
     type('End', '19:30')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
-    await waitFor(() => expect(confirm.disabled).toBe(false))
+    await waitFor(() => expect(off()).toBe(false))
     expect(screen.queryByText('Save your changes first.')).toBeNull()
     expect(call).toHaveBeenCalledTimes(1)
     expect(call.mock.calls[0]?.[2]).toBe('/transactions/t1')
@@ -795,6 +990,19 @@ describe('ShiftPage', () => {
     await act(async () => pending.resolve(view(shiftRow({ status: 'void', voidReason: 'Sick' }))))
     await settle()
     expect(screen.getByText('Voided. Reason: Sick')).toBeTruthy()
+  })
+
+  it('moves focus to the heading when the void form goes away (#147 O8)', async () => {
+    mockRow(shiftRow())
+    call.mockResolvedValue(view(shiftRow({ status: 'void', voidReason: 'Sick' })))
+    renderAt('/shifts/t1')
+    await screen.findByLabelText('Reason for voiding')
+    type('Reason for voiding', 'Sick')
+    const button = screen.getByRole('button', { name: 'Void shift' })
+    button.focus()
+    fireEvent.click(button)
+    expect(await screen.findByText('Voided. Reason: Sick')).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Morning shift' }))
   })
 
   it('needs a reason to void and sends nothing without one', async () => {

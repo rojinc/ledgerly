@@ -239,6 +239,38 @@ describe('TodayPage', () => {
     expect(screen.getByRole('heading', { name: 'Timer running · Acme Cafe' })).toBeTruthy()
   })
 
+  it('moves focus to the heading on Start and Stop, and reads out the result (#147 O8)', async () => {
+    mockGroups([acme])
+    mockRows([])
+    call.mockImplementation(async (_fn, _method, path, body) => {
+      if (path !== '/timer/start') {
+        mockRows([])
+        return ok(shift('r1', { status: 'posted' }))
+      }
+      const started = shift((body as { id: string }).id, {
+        status: 'running',
+        startedAt: NOW.toISOString(),
+      })
+      // The server has it now.
+      mockRows([], [started])
+      return ok(started)
+    })
+    renderPage()
+    const startButton = await screen.findByRole('button', { name: 'Start' })
+    const heading = screen.getByRole('heading', { name: 'Today' })
+    // Focused, as a keyboard user's would be; the button goes away as the timer starts.
+    startButton.focus()
+    fireEvent.click(startButton)
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Timer started.'))
+    expect(document.activeElement).toBe(heading)
+
+    const stopButton = screen.getByRole('button', { name: 'Stop' })
+    stopButton.focus()
+    fireEvent.click(stopButton)
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Timer stopped.'))
+    expect(document.activeElement).toBe(heading)
+  })
+
   it('starts the timer in the chosen employer', async () => {
     mockRows([])
     call.mockReturnValue(new Promise(() => {}))
@@ -345,8 +377,11 @@ describe('TodayPage', () => {
     call.mockReturnValueOnce(new Promise(() => {}))
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Start' }))
-    const stop = (await screen.findByRole('button', { name: 'Stop' })) as HTMLButtonElement
-    expect(stop.disabled).toBe(true)
+    const stop = await screen.findByRole('button', { name: 'Stop' })
+    expect(stop.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(stop)
+    await settle()
+    expect(call).toHaveBeenCalledTimes(1)
     expect(screen.queryByRole('link', { name: /Open the shift/ })).toBeNull()
   })
 
@@ -470,6 +505,46 @@ describe('TodayPage', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
+  it('moves on to the next day at the group’s local midnight (#147 O6)', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(NOW)
+    mockGroups([acme])
+    mockRows([
+      shift('s1', { date: '2026-10-19', description: 'Monday' }),
+      shift('s2', { date: '2026-10-20', description: 'Tuesday' }),
+    ])
+    renderPage()
+    expect(await screen.findByText('Monday')).toBeTruthy()
+    // Midnight in Sydney, and the minute's check.
+    vi.setSystemTime(new Date('2026-10-19T13:00:00.000Z'))
+    act(() => vi.advanceTimersByTime(60_000))
+    expect(await screen.findByText('Tuesday')).toBeTruthy()
+    expect(screen.queryByText('Monday')).toBeNull()
+    expect(listRows).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queries: expect.arrayContaining([Query.greaterThanEqual('date', '2026-10-20')]),
+      }),
+    )
+  })
+
+  it('keeps today on screen while a changed group list loads (#147 O7)', async () => {
+    // The minute's check re-renders the page with the groups as they are then.
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    vi.setSystemTime(NOW)
+    mockGroups([acme])
+    mockRows([shift('s1', { description: 'Café' })])
+    renderPage()
+    expect(await screen.findByText('Café')).toBeTruthy()
+    const calls = listRows.mock.calls.length
+    // A second employer: its shifts and roles are on their way.
+    listRows.mockReturnValue(new Promise(() => {}) as never)
+    mockGroups([acme, bistro])
+    act(() => vi.advanceTimersByTime(60_000))
+    await waitFor(() => expect(listRows.mock.calls.length).toBeGreaterThan(calls + 1))
+    expect(screen.getByText('Café')).toBeTruthy()
+    expect(screen.queryByText('Loading…')).toBeNull()
+  })
+
   it('links to a new employer when the user has no open employer groups', async () => {
     mockGroups([
       employer('g3', 'Flat', { type: 'house' }),
@@ -553,8 +628,11 @@ describe('TodayPage', () => {
     call.mockReturnValue(new Promise(() => {}))
     renderPage()
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }))
-    const start = (await screen.findByRole('button', { name: 'Start' })) as HTMLButtonElement
-    expect(start.disabled).toBe(true)
+    const start = await screen.findByRole('button', { name: 'Start' })
+    expect(start.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(start)
+    await settle()
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('reloads today after a failed start, to show a timer started elsewhere', async () => {

@@ -3,14 +3,14 @@ import { Link } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
-import { useGroupName } from '../groups/use-group-name'
+import { useGroupName, useSortedByName } from '../groups/use-group-name'
 import { useBalances, useGroups } from '../groups/use-groups'
 import { balanceText } from './pair-values'
 
 /** `/people`: everyone the user lends to or borrows from, with the balance (#34). */
 export function PeoplePage() {
   const groups = useGroups()
-  const pairs = groups.data?.filter((group) => group.type === 'pair')
+  const pairs = useSortedByName(groups.data?.filter((group) => group.type === 'pair') ?? [])
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -22,7 +22,7 @@ export function PeoplePage() {
           New lend & borrow
         </Link>
       </div>
-      {pairs ? (
+      {groups.data ? (
         pairs.length === 0 ? (
           <p className="text-muted-foreground">
             No one yet. Record money you lend or borrow with “New lend & borrow”.

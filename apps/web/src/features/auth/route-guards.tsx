@@ -67,8 +67,14 @@ function Bootstrapped({ userId }: { userId: string }) {
   )
 }
 
-/** Keeps a signed-in user away from the login and sign-up pages. */
+/**
+ * Keeps a signed-in user away from the login and sign-up pages, sending them where they were
+ * going: signing in there re-renders this before the page's own redirect can run.
+ */
 export function RedirectIfSignedIn() {
   const query = useCurrentUser()
-  return <UserGate query={query}>{query.data ? <Navigate to="/" replace /> : <Outlet />}</UserGate>
+  const from = (useLocation().state as { from?: string } | null)?.from ?? '/'
+  return (
+    <UserGate query={query}>{query.data ? <Navigate to={from} replace /> : <Outlet />}</UserGate>
+  )
 }

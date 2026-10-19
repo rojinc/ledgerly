@@ -21,8 +21,8 @@ export type StoredShift = NonNullable<TransactionInput['shift']>
 
 const MINUTES_PER_DAY = 24 * 60
 const TIME = /^([01]\d|2[0-3]):([0-5]\d)$/
-// `7`, `7.5`, `7.25` or `7:30`.
-const HOURS = /^(\d{1,2})(?:([.:])(\d{1,2}))?$/
+// `7`, `7.5`, `7.25` or `7:30`: minutes always have two digits, so `7:3` isn't 7 h 03 min.
+const HOURS = /^(\d{1,2})(?:(\.)(\d{1,2})|(:)(\d{2}))?$/
 
 function minutesOfDay(time: string): number | undefined {
   const match = TIME.exec(time)
@@ -41,11 +41,11 @@ export function minutesBetween(start: string, end: string): number | undefined {
 export function parseHours(text: string): number | undefined {
   const match = HOURS.exec(text.trim())
   if (!match) return undefined
-  const [, whole, separator, part] = match
+  const [, whole, , part, colon, clock] = match
   let minutes = Number(whole) * 60
-  if (separator === ':') {
-    if (Number(part) > 59) return undefined
-    minutes += Number(part)
+  if (colon) {
+    if (Number(clock) > 59) return undefined
+    minutes += Number(clock)
   } else if (part !== undefined) {
     // Integers only: `.25` is 25/100 of an hour, rounded to the minute.
     minutes += Math.round((Number(part) * 60) / 10 ** part.length)
