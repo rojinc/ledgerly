@@ -185,7 +185,7 @@ describe('NewTransactionPage', () => {
     fireEvent.change(await screen.findByLabelText('Amount (AUD)'), { target: { value: '4.005' } })
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Supplies' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
-    expect(await screen.findByText('Enter an amount like 40 or 40.50')).toBeTruthy()
+    expect(await screen.findByText('Enter an amount like 40.50')).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '0' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     expect(await screen.findByText('Enter an amount above 0')).toBeTruthy()
@@ -244,11 +244,43 @@ describe('NewTransactionPage', () => {
     )
   })
 
+  it('has no form for an admin who isn’t the group’s owner (the presets speak as the worker)', async () => {
+    mockGroups({ ...acme, ownerPersonId: 'pe' })
+    mockRows()
+    renderAt('/transactions/new?groupId=g1')
+    expect(
+      await screen.findByText('Only the person this group pays adds expenses and payments here.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull()
+  })
+
+  it('tells the owner who can now only view the group that they can’t add', async () => {
+    mockGroups(acme, 'viewer')
+    mockRows()
+    renderAt('/transactions/new?groupId=g1')
+    expect(
+      await screen.findByText('You can see this group’s history but no longer add to it.'),
+    ).toBeTruthy()
+  })
+
+  it('gives an amount example in the group’s currency', async () => {
+    mockGroups({ ...acme, currency: 'JPY' })
+    mockRows()
+    renderAt('/transactions/new?groupId=g1')
+    expect(await screen.findByText('For example 4050.')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Amount (JPY)'), { target: { value: '40.5' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: 'Supplies' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('Enter an amount like 4050')).toBeTruthy()
+  })
+
   it('has no form for a viewer or an archived group', async () => {
     mockGroups(acme, 'viewer')
     mockRows()
     renderAt('/transactions/new?groupId=g1')
-    expect(await screen.findByText(/Only the people who keep this group’s records/)).toBeTruthy()
+    expect(
+      await screen.findByText('You can see this group’s history but no longer add to it.'),
+    ).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Add' })).toBeNull()
     cleanup()
     mockGroups({ ...acme, archivedAt: '2026-10-01T00:00:00.000Z' })
@@ -306,7 +338,11 @@ describe('HistoryPage', () => {
     renderAt('/transactions?groupId=g1&kind=foo&category=bar')
     await screen.findByRole('region', { name: 'Transactions' })
     const queries = listCalls().find((params) => params.tableId === 'transactions')?.queries ?? []
-    expect(queries.some((q) => q.includes('"kind"') || q.includes('"category"'))).toBe(false)
+    expect(queries).not.toContain(Query.equal('kind', 'foo'))
+    expect(queries).not.toContain(Query.equal('category', 'bar'))
+    expect(queries.some((q) => q.includes('"method":"equal"') && /"kind"|"category"/.test(q))).toBe(
+      false,
+    )
     expect((screen.getByLabelText('Kind') as HTMLSelectElement).value).toBe('')
   })
 
@@ -343,6 +379,10 @@ describe('HistoryPage', () => {
     expect(await within(list).findByRole('link', { name: /^Older/ })).toBeTruthy()
     await waitFor(() => expect(within(list).getAllByRole('link')).toHaveLength(26))
     expect(listCalls().at(-1)?.queries).toContain(Query.cursorAfter('t24'))
+    // Only the columns a row shows, not inputJson.
+    expect(first?.queries).toContain(
+      Query.select(['$id', 'groupId', 'kind', 'status', 'date', 'description', 'totalCents']),
+    )
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
 
@@ -455,6 +495,61 @@ describe('TransactionPage', () => {
     expect(await screen.findByText('Pay by Friday')).toBeTruthy()
   })
 
+  it('shows a shift’s hours and rate, and says the worker earned it', async () => {
+    mockGroups(acme)
+    mockRows(
+      [],
+      [
+        { $id: 's1', personId: 'pw', givenCents: 12500, receivedCents: 0 },
+        { $id: 's2', personId: 'pe', givenCents: 0, receivedCents: 12500 },
+      ],
+    )
+    getRow.mockResolvedValue(
+      row('t1', {
+        kind: 'shift',
+        totalCents: 12500,
+        inputJson: JSON.stringify({ shift: { minutes: 330, rateCents: 2500 } }),
+      }) as never,
+    )
+    renderAt('/transactions/t1')
+    expect(await screen.findByText(/^5 h 30 min at .*25\.00 an hour$/)).toBeTruthy()
+    expect(await screen.findByText(/^Sam: earned .*125\.00$/)).toBeTruthy()
+  })
+
+  it('shows no shift line for a running timer, or for an entry that isn’t a shift', async () => {
+    mockGroups(acme)
+    mockRows([], shares)
+    const input = JSON.stringify({ shift: { minutes: 0, rateCents: 2500 } })
+    getRow.mockResolvedValue(
+      row('t1', { kind: 'shift', status: 'running', inputJson: input }) as never,
+    )
+    renderAt('/transactions/t1')
+    expect(await screen.findByText('Timer running')).toBeTruthy()
+    expect(screen.queryByText(/an hour$/)).toBeNull()
+    cleanup()
+    mockGroups(acme)
+    getRow.mockResolvedValue(row('t1', { kind: 'expense', inputJson: input }) as never)
+    renderAt('/transactions/t1')
+    await screen.findByText('Posted')
+    expect(screen.queryByText(/an hour$/)).toBeNull()
+  })
+
+  it('reloads the row and the group when a void is refused because it was locked meanwhile', async () => {
+    mockGroups(acme)
+    mockRows([], shares)
+    getRow.mockResolvedValue(row('t1') as never)
+    call.mockResolvedValue({ ok: false, error: { code: 'LOCKED', message: 'It’s locked.' } })
+    const { queryClient } = renderAt('/transactions/t1')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.change(await screen.findByLabelText('Reason for voiding'), {
+      target: { value: 'Twice' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Void' }))
+    expect(await screen.findByText('It’s locked.')).toBeTruthy()
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 't1'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['group', 'g1'] })
+  })
+
   it('says “received” for the person a payment went to', async () => {
     mockGroups(acme)
     mockRows(
@@ -486,8 +581,11 @@ describe('TransactionPage', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Void' }))
     expect(await screen.findByText('Void. Reason: Twice')).toBeTruthy()
-    await act(async () => reject({ ok: false, error: { code: 'LOCKED', message: 'It’s locked.' } }))
-    expect(await screen.findByText('It’s locked.')).toBeTruthy()
+    // Not LOCKED or ARCHIVED, which reload the row anyway: this shows the rollback itself.
+    await act(async () =>
+      reject({ ok: false, error: { code: 'INTERNAL', message: 'Something went wrong.' } }),
+    )
+    expect(await screen.findByText('Something went wrong.')).toBeTruthy()
     expect(screen.getByText('Posted')).toBeTruthy()
     expect((screen.getByLabelText('Reason for voiding') as HTMLInputElement).value).toBe('Twice')
   })
