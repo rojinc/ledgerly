@@ -238,7 +238,9 @@ describe('GettingStarted: step 2', () => {
       group('g5', 'house', 'Flat'),
     ]
     renderHome()
-    await screen.findByRole('heading', { name: STEP_2 })
+    // As above: wait by text, then check the role once.
+    await screen.findByText(STEP_2, {}, { timeout: 3000 })
+    expect(screen.getByRole('heading', { name: STEP_2 })).toBeTruthy()
     await waitFor(() =>
       expect(links(STEP_2)).toEqual([
         ['Add a shiftAcme', '/shifts/new?groupId=g1'],
@@ -396,7 +398,9 @@ describe('GettingStarted: Hide', () => {
     localStorage.setItem('ledgerly:onboarding-hidden:u1', '1')
     pending = [KIM as PendingGroup]
     renderHome()
-    fireEvent.click(await screen.findByRole('button', { name: 'Join Kim' }))
+    // As above: wait for Join by text, then find it by role and name once.
+    await screen.findByText('Join', { selector: 'button' }, { timeout: 3000 })
+    fireEvent.click(screen.getByRole('button', { name: 'Join Kim' }))
     expect(screen.queryByRole('heading', { name: STEP_1 })).toBeNull()
     expect(await screen.findByText('Joined Kim.')).toBeTruthy()
     // The joined pair is empty, but the guide stays hidden.
