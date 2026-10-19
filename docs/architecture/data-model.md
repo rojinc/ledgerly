@@ -299,7 +299,7 @@ Permissions: none (server only).
 | `receipts` | Clients, directly | Client sets `read("team:<groupId>")` at upload. Appwrite only lets a user grant roles they hold. | 10 MB; jpg, jpeg, png, webp, heic, pdf |
 | `statements` | `statements` function | `read("team:<groupId>")` | 10 MB; PDFs only |
 
-Bucket-level permission on `receipts`: `create("users")`. File security on for both buckets.
+Bucket-level permission on `receipts`: `create("users/verified")`, so only verified users can upload. File security on for both buckets.
 
 ## Derived and copied data
 
