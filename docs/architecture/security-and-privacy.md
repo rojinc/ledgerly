@@ -94,6 +94,8 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 | Resend API key | Appwrite project variable `RESEND_API_KEY` | functions |
 | SMS provider keys (M3) | Appwrite project variables | `identity` |
 | Sentry DSN (M4) | Project variable / Vite env | functions, web |
+| Stripe restricted key, once billing is built ([billing](billing.md#security-and-privacy)) | Function variable `STRIPE_SECRET_KEY` on `billing` and `account` only (each its own restricted key), not a project variable; test mode on dev, live on prod | `billing`, `account` |
+| Stripe webhook signing secret, only if the webhook design is chosen ([billing](billing.md#if-the-lead-picks-the-webhook-instead)) | Function variable `STRIPE_WEBHOOK_SECRET` on `stripe-webhook` only | `stripe-webhook` |
 
 Functions use the **per-execution key** in `x-appwrite-key` for database access. Long-lived keys exist only for CI deploys and are scoped to what deploys need.
 
