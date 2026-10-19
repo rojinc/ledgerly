@@ -7,6 +7,7 @@ import type { UpdatedSchedule } from '../src/routes/update-schedule'
 import {
   beforeCommit,
   beforeStaging,
+  call,
   type Fakes,
   failure,
   fakes,
@@ -465,6 +466,28 @@ describe('PATCH /schedules/{id}', () => {
         body: { ...rent, id: 'missingSchedule00001' },
       }),
     ).toEqual({ status: 404, code: 'NOT_FOUND' })
+  })
+
+  it('answers someone outside the group as if the schedule didn’t exist', async () => {
+    // Alex isn't in Acme.
+    const services = await withThursdays()
+    const missing = 'missingSchedule00001'
+    const requests = [
+      ['PATCH', (id: string) => `/schedules/${id}`, (id: string) => ({ ...thursdays, id })],
+      ['POST', (id: string) => `/schedules/${id}/end`, () => ({ endsOn: '2026-11-30' })],
+      ['DELETE', (id: string) => `/schedules/${id}`, () => undefined],
+    ] as const
+    for (const [method, path, body] of requests) {
+      const outsider = await call(services, method, path(ID), { body: body(ID), userId: 'u2' })
+      const none = await call(services, method, path(missing), {
+        body: body(missing),
+        userId: 'u2',
+      })
+      expect(outsider.status).toBe(404)
+      expect(outsider.body).toEqual(none.body)
+    }
+    expect(occurrences(services)).toHaveLength(11)
+    expect(scheduleRow(services)?.endsOn).toBeNull()
   })
 
   it('refuses a template that breaks a ledger rule, and changes nothing', async () => {

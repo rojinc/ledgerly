@@ -27,10 +27,12 @@ export function scheduleColumns(input: Omit<ScheduleInput, 'id' | 'groupId'>) {
   }
 }
 
+const NO_SUCH_SCHEDULE = 'There is no such schedule.'
+
 /** The schedule, or NOT_FOUND (a DELETE may have got there first). */
 export async function getSchedule(db: Db, scheduleId: string): Promise<Schedules> {
   const schedule = await findSchedule(db, scheduleId)
-  if (!schedule) throw new AppError('NOT_FOUND', 'There is no such schedule.')
+  if (!schedule) throw new AppError('NOT_FOUND', NO_SUCH_SCHEDULE)
   return schedule
 }
 
@@ -50,7 +52,8 @@ export async function findSchedule(db: Db, scheduleId: string): Promise<Schedule
 /**
  * The schedule and the caller's membership, for `PATCH`, `end` and `DELETE`: its creator or an
  * admin of its group (functions-api.md#scheduler). Viewers can't change schedules
- * (permissions.md#roles).
+ * (permissions.md#roles). Someone who isn't a member gets NOT_FOUND, the same as for an ID that
+ * doesn't exist, so schedule IDs can't be probed (#121).
  */
 export async function requireScheduleWriter(
   services: Services,
@@ -58,9 +61,17 @@ export async function requireScheduleWriter(
   scheduleId: string,
 ): Promise<{ schedule: Schedules; membership: Membership }> {
   const schedule = await getSchedule(services.db, scheduleId)
-  const membership = await requireMember(services.db, services.teams, userId, schedule.groupId, {
-    roles: ['admin', 'member'],
-  })
+  let membership: Membership
+  try {
+    membership = await requireMember(services.db, services.teams, userId, schedule.groupId, {
+      roles: ['admin', 'member'],
+    })
+  } catch (error) {
+    if (error instanceof AppError && error.code === 'NOT_A_MEMBER') {
+      throw new AppError('NOT_FOUND', NO_SUCH_SCHEDULE)
+    }
+    throw error
+  }
   if (membership.member.role !== 'admin' && schedule.createdBy !== membership.person.$id) {
     throw new AppError('FORBIDDEN', 'Only its creator or an admin can change this schedule.')
   }
