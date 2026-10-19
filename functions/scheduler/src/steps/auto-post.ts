@@ -48,10 +48,10 @@ export async function autoPost(services: Services): Promise<PostCounts> {
 }
 
 /**
- * Posts the occurrence if it is still due to be: still `scheduled`, its schedule auto-posts,
- * its group isn't archived and its day has come in the group's time zone. It posts as the
- * schedule's creator, who pays when the template names no payers, with no actor on the
- * activity row (data-model.md#activity). True when it posted.
+ * Posts the occurrence if it is still due to be: still `scheduled`, its schedule auto-posts and
+ * isn't waiting for step 1, its group isn't archived and its day has come in the group's time
+ * zone. It posts as the schedule's creator, who pays when the template names no payers, with no
+ * actor on the activity row (data-model.md#activity). True when it posted.
  */
 async function post({ db, now }: Services, rowId: string): Promise<boolean> {
   return ledgerRoute(async () => {
@@ -60,6 +60,9 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
     if (!row?.scheduleId) return false
     const schedule = await findSchedule(db, row.scheduleId)
     if (!schedule?.autoPost) return false
+    // Step 1 hasn't brought its occurrences in line with an edit yet (it ran out of time, or
+    // failed): a later run posts them once it has.
+    if (schedule.nextRunAt !== null && schedule.nextRunAt <= now.toISOString()) return false
     const group = await db.getRow<Groups>({
       databaseId: DATABASE_ID,
       tableId: TABLES.groups,

@@ -85,13 +85,36 @@ function sharesOf(services: Fakes, transactionId: string): Shares[] {
   )
 }
 
-function update(services: Fakes, tableId: 'transactions' | 'groups', rowId: string, data: object) {
+function update(
+  services: Fakes,
+  tableId: 'transactions' | 'groups' | 'schedules',
+  rowId: string,
+  data: object,
+) {
   return withTransaction(services.db, (tx) =>
     tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
   )
 }
 
 describe('step 2: auto-post', () => {
+  it('waits for step 1 to finish a schedule that is due', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // An edit made it due again, and this run's step 1 fails on it.
+    await update(services, 'schedules', ID, { nextRunAt: '2026-10-18T19:00:00.000Z' })
+    const commit = services.db.updateTransaction.bind(services.db)
+    const timeout = vi.spyOn(services.db, 'updateTransaction')
+    timeout.mockImplementationOnce(async (params) => {
+      if (params.commit) throw new Error('Timed out')
+      return commit(params)
+    })
+    const first = await runCron(services)
+    expect(first.expanded.failed).toBe(1)
+    expect(first.posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    timeout.mockRestore()
+    expect((await runCron(services)).posted.posted).toBe(1)
+  })
+
   it('posts a past shift of a schedule that auto-posts, once, as its creator', async () => {
     const services = seeded()
     await create(services, thursdays)
