@@ -1,18 +1,32 @@
 import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from '@testing-library/react'
 import { Query } from 'appwrite'
+import type { ReactNode } from 'react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
+import { staleKeys } from '../../lib/realtime'
 import { useBalances, useGroup, useGroups, useMyMember } from '../groups/use-groups'
 import { transactionRoutes } from './routes'
+import { useVoidTransaction } from './use-transactions'
 
 vi.mock('../../lib/appwrite', () => ({
   DATABASE_ID: 'main',
   tablesDB: { listRows: vi.fn(), getRow: vi.fn() },
+  // lib/realtime registers its reconnect listener on import.
+  realtime: { onOpen: vi.fn() },
 }))
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../auth/use-current-user', () => ({ useCurrentUser: () => ({ data: { $id: 'u1' } }) }))
@@ -1176,14 +1190,15 @@ describe('HistoryPage, the personal group (#402)', () => {
     expect(screen.queryByText(/^Balance with/)).toBeNull()
   })
 
-  it('still opens on an employer, and offers the personal group to pick and filter', async () => {
+  it('opens on All groups (F-71), and offers the personal group to pick and filter', async () => {
     mockGroups(acme)
     vi.mocked(useGroups).mockReturnValue({ data: [acme, personal], isError: false } as never)
     mockRows(entries)
     renderAt('/transactions')
-    expect(await screen.findByText('All square')).toBeTruthy()
+    await screen.findByRole('region', { name: 'Transactions' })
     const picker = screen.getByLabelText('Group') as HTMLSelectElement
-    expect(picker.value).toBe('g1')
+    expect(picker.value).toBe('')
+    expect(screen.queryByText('All square')).toBeNull()
     fireEvent.change(picker, { target: { value: 'me1' } })
     expect(await screen.findByRole('link', { name: 'Add income or expense' })).toBeTruthy()
     fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'income' } })
@@ -1528,6 +1543,444 @@ describe('HistoryPage', () => {
     expect(screen.queryByRole('link', { name: 'Add expense or payment' })).toBeNull()
     // Its balance and history still show.
     expect(await screen.findByText('All square')).toBeTruthy()
+  })
+})
+
+describe('HistoryPage, across groups (F-71)', () => {
+  // The creator's label for Jo, whom the app names the pair by (#145). In its own currency.
+  const pair = {
+    $id: 'pair1',
+    type: 'pair',
+    name: 'Joanna',
+    ownerPersonId: 'pw',
+    currency: 'NZD',
+    timezone: 'Pacific/Auckland',
+    archivedAt: null,
+  } as Groups
+  // As useGroups lists them, by their own names.
+  const GROUPS = [acme, pair, personal, house]
+  const MEMBERS_OF: Record<string, Members[]> = {
+    g1: MEMBERS,
+    house1: HOUSEMATES,
+    pair1: [
+      { $id: 'm7', groupId: 'pair1', personId: 'pw', displayName: 'Sam', role: 'admin' },
+      { $id: 'm8', groupId: 'pair1', personId: 'jo', displayName: 'Jo', role: 'admin' },
+    ] as Members[],
+    me1: ME,
+  }
+  const COLUMNS = Query.select([
+    '$id',
+    'groupId',
+    'kind',
+    'status',
+    'date',
+    'description',
+    'totalCents',
+  ])
+  const NEWEST = [Query.orderDesc('date'), Query.orderDesc('$id'), Query.limit(25)]
+
+  /** The values of a call's `equal` on `attribute`. */
+  function equalTo(queries: string[], attribute: string): unknown[] | undefined {
+    return queries
+      .map((query) => JSON.parse(query) as { method: string; attribute: string; values: unknown[] })
+      .find((query) => query.method === 'equal' && query.attribute === attribute)?.values
+  }
+
+  /**
+   * The user is in every group of `GROUPS`. listRows answers members by group, and shares and
+   * transactions with `shares` and `transactions` of the call's queries.
+   */
+  function mockAll(
+    transactions: (queries: string[]) => Transactions[] = () => [],
+    shares: (queries: string[]) => object[] = () => [],
+  ) {
+    mockGroups(acme)
+    vi.mocked(useGroups).mockReturnValue({ data: GROUPS, isError: false } as never)
+    listRows.mockImplementation((async ({
+      tableId,
+      queries,
+    }: {
+      tableId: string
+      queries: string[]
+    }) => {
+      const rows =
+        tableId === 'members'
+          ? (MEMBERS_OF[String(equalTo(queries, 'groupId')?.[0])] ?? [])
+          : tableId === 'shares'
+            ? shares(queries)
+            : transactions(queries)
+      return { total: rows.length, rows }
+    }) as never)
+  }
+
+  /** Each listRows call's queries on one table. */
+  const calls = (tableId: string) =>
+    listCalls()
+      .filter((params) => params.tableId === tableId)
+      .map((params) => params.queries)
+
+  const options = (label: string) =>
+    within(screen.getByLabelText(label))
+      .getAllByRole('option')
+      .map((option) => option.textContent)
+
+  it('opens on All groups: every group’s rows, each with its group’s name, and every kind', async () => {
+    mockAll(() => [
+      row('t4'),
+      row('t3', { groupId: 'pair1', kind: 'loan', description: 'Concert tickets' }),
+      row('t2', { groupId: 'house1', kind: 'bill', description: 'Power' }),
+      row('t1', { groupId: 'me1', kind: 'income', description: 'Refund', date: '2026-10-17' }),
+    ])
+    renderAt('/transactions')
+    const list = await screen.findByRole('region', { name: 'Transactions' })
+    // Each row's group is on a line of its own, so its status line still fits at 375 px.
+    const rowOf = (id: string) =>
+      within(
+        within(list)
+          .getAllByRole('link')
+          .find((link) => link.getAttribute('href') === `/transactions/${id}`) as HTMLElement,
+      )
+    expect(rowOf('t4').getByText('2026-10-18 · Expense · Posted')).toBeTruthy()
+    expect(rowOf('t4').getByText('Acme')).toBeTruthy()
+    expect(await rowOf('t3').findByText('Jo')).toBeTruthy()
+    expect(rowOf('t3').getByText('2026-10-18 · Loan · Posted')).toBeTruthy()
+    expect(within(list).getByText('NZ$40.00')).toBeTruthy()
+    expect(rowOf('t2').getByText('2026-10-18 · Bill · Posted')).toBeTruthy()
+    expect(rowOf('t2').getByText('The flat')).toBeTruthy()
+    expect(rowOf('t1').getByText('2026-10-17 · Income · Posted')).toBeTruthy()
+    expect(rowOf('t1').getByText('Personal')).toBeTruthy()
+    // One read of every group, which doesn't move when the pair's name arrives.
+    expect(calls('transactions')).toEqual([
+      [Query.equal('groupId', ['g1', 'pair1', 'me1', 'house1']), COLUMNS, ...NEWEST],
+    ])
+    expect((screen.getByLabelText('Group') as HTMLSelectElement).value).toBe('')
+    expect(options('Group')).toEqual(['All groups', 'Acme', 'Jo', 'Personal', 'The flat'])
+    expect(options('Kind')).toEqual([
+      'All',
+      'Shift',
+      'Expense',
+      'Bill',
+      'Payment',
+      'Loan',
+      'Income',
+      'Adjustment',
+    ])
+    // No one group's balance, Add link or people.
+    expect(screen.queryByRole('heading', { name: /^Balance with/ })).toBeNull()
+    expect(screen.queryByRole('link', { name: /^(Add|Record)/ })).toBeNull()
+    expect(screen.queryByLabelText('Person')).toBeNull()
+  })
+
+  it.each([
+    [
+      'house1',
+      'Add expense',
+      '/transactions/new?groupId=house1',
+      ['Expense', 'Bill', 'Payment', 'Loan', 'Adjustment'],
+      false,
+    ],
+    [
+      'pair1',
+      'Record money lent or borrowed',
+      '/people/pair1',
+      ['Expense', 'Bill', 'Payment', 'Loan', 'Adjustment'],
+      false,
+    ],
+    [
+      'me1',
+      'Add income or expense',
+      '/transactions/new?groupId=me1',
+      ['Expense', 'Bill', 'Income', 'Adjustment'],
+      false,
+    ],
+    [
+      'g1',
+      'Add expense or payment',
+      '/transactions/new?groupId=g1',
+      ['Shift', 'Expense', 'Payment', 'Adjustment'],
+      true,
+    ],
+  ])(
+    'gives %s its own kinds and Add link, and a balance only to an employer',
+    async (groupId, add, href, kinds, balance) => {
+      mockAll(() => [row('t1', { groupId })])
+      renderAt(`/transactions?groupId=${groupId}`)
+      expect((await screen.findByRole('link', { name: add })).getAttribute('href')).toBe(href)
+      expect(screen.getAllByRole('link', { name: /^(Add|Record)/ })).toHaveLength(1)
+      expect((screen.getByLabelText('Group') as HTMLSelectElement).value).toBe(groupId)
+      expect(options('Kind')).toEqual(['All', ...kinds])
+      expect(Boolean(screen.queryByRole('heading', { name: /^Balance with/ }))).toBe(balance)
+      // One group's rows don't repeat its name.
+      expect(await screen.findByText('2026-10-18 · Expense · Posted')).toBeTruthy()
+    },
+  )
+
+  it('offers a house’s Add only to its admins and members, and none in an archived one', async () => {
+    mockAll()
+    vi.mocked(useMyMember).mockReturnValue({ data: { role: 'viewer' }, isError: false } as never)
+    renderAt('/transactions?groupId=house1')
+    await screen.findByRole('region', { name: 'Transactions' })
+    expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+    cleanup()
+    mockAll()
+    vi.mocked(useGroups).mockReturnValue({
+      data: [{ ...house, archivedAt: '2026-10-01T00:00:00.000Z' }],
+      isError: false,
+    } as never)
+    renderAt('/transactions?groupId=house1')
+    expect(
+      await screen.findByText('This group is archived. You can see its history but not change it.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
+    expect(options('Group')).toEqual(['All groups', 'The flat (archived)'])
+  })
+
+  it('searches the description: in the URL trimmed, as Query.contains with the other filters', async () => {
+    mockAll()
+    const { router } = renderAt('/transactions?groupId=g1&kind=expense')
+    const field = (await screen.findByLabelText('Search descriptions')) as HTMLInputElement
+    fireEvent.change(field, { target: { value: '  Hardware shop ' } })
+    // The field keeps what's typed, so a space between words can be typed.
+    expect(field.value).toBe('  Hardware shop ')
+    expect(new URLSearchParams(router.state.location.search).get('q')).toBe('Hardware shop')
+    await waitFor(() =>
+      expect(calls('transactions').at(-1)).toEqual([
+        Query.equal('groupId', 'g1'),
+        Query.equal('kind', 'expense'),
+        Query.contains('description', 'Hardware shop'),
+        COLUMNS,
+        ...NEWEST,
+      ]),
+    )
+    fireEvent.change(field, { target: { value: '   ' } })
+    expect(new URLSearchParams(router.state.location.search).has('q')).toBe(false)
+    await waitFor(() =>
+      expect(calls('transactions').at(-1)).toEqual([
+        Query.equal('groupId', 'g1'),
+        Query.equal('kind', 'expense'),
+        COLUMNS,
+        ...NEWEST,
+      ]),
+    )
+    cleanup()
+    // From a link, under All groups: trimmed, and blank is no search.
+    renderAt('/transactions?q=%20Power%20')
+    expect(((await screen.findByLabelText('Search descriptions')) as HTMLInputElement).value).toBe(
+      'Power',
+    )
+    await waitFor(() =>
+      expect(calls('transactions').at(-1)).toEqual([
+        Query.equal('groupId', ['g1', 'pair1', 'me1', 'house1']),
+        Query.contains('description', 'Power'),
+        COLUMNS,
+        ...NEWEST,
+      ]),
+    )
+    cleanup()
+    renderAt('/transactions?groupId=me1&q=%20%20')
+    await screen.findByRole('region', { name: 'Transactions' })
+    expect(calls('transactions').at(-1)).toEqual([
+      Query.equal('groupId', 'me1'),
+      COLUMNS,
+      ...NEWEST,
+    ])
+    // Never `search`: the description has no full-text index.
+    expect(
+      calls('transactions')
+        .flat()
+        .some((query) => query.includes('"search"')),
+    ).toBe(false)
+  })
+
+  it('offers the person filter in one group only, with its members by name', async () => {
+    mockAll()
+    renderAt('/transactions?person=pw')
+    // Under All groups, a person in the link is ignored.
+    await screen.findByRole('region', { name: 'Transactions' })
+    expect(screen.queryByLabelText('Person')).toBeNull()
+    expect(calls('shares')).toEqual([])
+    fireEvent.change(screen.getByLabelText('Group'), { target: { value: 'house1' } })
+    await screen.findByLabelText('Person')
+    await waitFor(() =>
+      expect(options('Person')).toEqual(['Everyone', 'Alice', 'Bob', 'Cara', 'Dan']),
+    )
+  })
+
+  it('reads a person’s shares a page at a time, then those transactions by ID with the other filters', async () => {
+    mockAll(
+      () => [row('t2', { description: 'Van supplies' }), row('t1')],
+      () => [
+        { $id: 's2', transactionId: 't2' },
+        { $id: 's1', transactionId: 't1' },
+      ],
+    )
+    const { router } = renderAt(
+      '/transactions?groupId=g1&kind=expense&category=work&q=Supp&from=2026-10-01&to=2026-10-31',
+    )
+    const person = await screen.findByLabelText('Person')
+    await within(person).findByRole('option', { name: 'Acme' })
+    fireEvent.change(person, { target: { value: 'pe' } })
+    expect(new URLSearchParams(router.state.location.search).get('person')).toBe('pe')
+    const list = await screen.findByRole('region', { name: 'Transactions' })
+    await waitFor(() => expect(within(list).getAllByRole('link')).toHaveLength(2))
+    expect(calls('shares')).toEqual([
+      [
+        Query.equal('groupId', ['g1']),
+        Query.equal('personId', 'pe'),
+        Query.greaterThanEqual('date', '2026-10-01'),
+        Query.lessThanEqual('date', '2026-10-31'),
+        Query.select(['$id', 'transactionId']),
+        ...NEWEST,
+      ],
+    ])
+    expect(calls('transactions').at(-1)).toEqual([
+      Query.equal('$id', ['t2', 't1']),
+      Query.equal('kind', 'expense'),
+      Query.equal('category', 'work'),
+      Query.contains('description', 'Supp'),
+      COLUMNS,
+      ...NEWEST,
+    ])
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
+    cleanup()
+    listRows.mockClear()
+    // From a link: it waits for the members, rather than list everyone's rows first.
+    renderAt('/transactions?groupId=g1&person=pe')
+    await waitFor(() => expect(screen.getAllByRole('link', { name: /supplies/i })).toHaveLength(2))
+    expect(calls('transactions').every((queries) => equalTo(queries, '$id'))).toBe(true)
+  })
+
+  it('makes no transactions call for a page of shares with no IDs', async () => {
+    mockAll(() => [row('t1')])
+    renderAt('/transactions?groupId=g1&person=pe')
+    expect(await screen.findByText('Nothing here yet.')).toBeTruthy()
+    expect(calls('shares')).toHaveLength(1)
+    expect(calls('transactions')).toEqual([])
+  })
+
+  it('carries on past a page the filters emptied, while the shares have more', async () => {
+    const page1 = Array.from({ length: 25 }, (_, i) => ({
+      $id: `s${String(i).padStart(2, '0')}`,
+      transactionId: `t${String(i).padStart(2, '0')}`,
+    }))
+    mockAll(
+      // Only page 2's transaction is a payment.
+      (queries) =>
+        equalTo(queries, '$id')?.includes('t25')
+          ? [row('t25', { kind: 'payment', description: 'October pay' })]
+          : [],
+      (queries) =>
+        queries.includes(Query.cursorAfter('s24')) ? [{ $id: 's25', transactionId: 't25' }] : page1,
+    )
+    renderAt('/transactions?groupId=g1&person=pe&kind=payment')
+    expect(
+      await screen.findByText('None of the latest entries match. Load more to look further back.'),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }))
+    expect(await screen.findByRole('link', { name: /^October pay/ })).toBeTruthy()
+    // The cursor is the last share's, not a transaction's.
+    expect(calls('shares').at(-1)).toContain(Query.cursorAfter('s24'))
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
+  })
+
+  it('ignores a ?person= who isn’t a member, and a ?groupId= that isn’t the user’s', async () => {
+    mockAll()
+    renderAt('/transactions?groupId=g1&person=stranger')
+    await screen.findByRole('region', { name: 'Transactions' })
+    expect((screen.getByLabelText('Person') as HTMLSelectElement).value).toBe('')
+    expect(calls('shares')).toEqual([])
+    expect(calls('transactions').at(-1)).toContain(Query.equal('groupId', 'g1'))
+    cleanup()
+    renderAt('/transactions?groupId=nope')
+    await screen.findByRole('region', { name: 'Transactions' })
+    expect((screen.getByLabelText('Group') as HTMLSelectElement).value).toBe('')
+    expect(calls('transactions').at(-1)).toContain(
+      Query.equal('groupId', ['g1', 'pair1', 'me1', 'house1']),
+    )
+    expect(calls('transactions').flat()).not.toContain(Query.equal('groupId', 'nope'))
+  })
+
+  it('drops the person, and a kind the next group doesn’t have, on picking another group', async () => {
+    mockAll()
+    const { router } = renderAt('/transactions?groupId=house1&person=stranger&kind=bill')
+    await screen.findByLabelText('Person')
+    const search = () => new URLSearchParams(router.state.location.search)
+    // An employer has no bills.
+    fireEvent.change(screen.getByLabelText('Group'), { target: { value: 'g1' } })
+    expect(search().get('groupId')).toBe('g1')
+    expect(search().get('person')).toBeNull()
+    expect(search().get('kind')).toBeNull()
+    // A kind both have stays.
+    fireEvent.change(await screen.findByLabelText('Kind'), { target: { value: 'expense' } })
+    fireEvent.change(screen.getByLabelText('Group'), { target: { value: 'house1' } })
+    expect(search().get('kind')).toBe('expense')
+    fireEvent.change(screen.getByLabelText('Group'), { target: { value: '' } })
+    expect(search().get('groupId')).toBeNull()
+    expect(search().get('kind')).toBe('expense')
+    // The next group's own kinds decide: a house has loans, an employer doesn't.
+    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'loan' } })
+    fireEvent.change(screen.getByLabelText('Group'), { target: { value: 'house1' } })
+    expect(search().get('kind')).toBe('loan')
+  })
+
+  it('offers no person in the personal group, whose owner is its only member', async () => {
+    mockAll()
+    renderAt('/transactions?groupId=me1&person=pw')
+    await screen.findByRole('region', { name: 'Transactions' })
+    expect(screen.queryByLabelText('Person')).toBeNull()
+    expect(calls('shares')).toEqual([])
+    expect(calls('transactions').at(-1)).toContain(Query.equal('groupId', 'me1'))
+  })
+
+  /** A void in `groupId` through the app's own mutation, on the page's query client. */
+  async function voidIn(queryClient: QueryClient, groupId: string) {
+    call.mockResolvedValue(
+      ok({ transaction: row('t1', { groupId, status: 'void' }), shares: [], items: [] }),
+    )
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    )
+    const { result } = renderHook(() => useVoidTransaction('t1'), { wrapper })
+    await act(() => result.current.mutateAsync({ reason: 'Twice' }))
+  }
+
+  /** What Realtime refreshes for one row event (lib/realtime.ts). */
+  async function realtimeEvent(queryClient: QueryClient, payload: object) {
+    await act(async () => {
+      for (const queryKey of staleKeys({ payload }))
+        await queryClient.invalidateQueries({ queryKey })
+    })
+  }
+
+  it('reads All groups again after a write in any group, and on its Realtime event', async () => {
+    mockAll(() => [row('t1', { groupId: 'house1' })])
+    const { queryClient } = renderAt('/transactions')
+    await screen.findByRole('link', { name: /^Supplies/ })
+    let before = calls('transactions').length
+    await voidIn(queryClient, 'house1')
+    await waitFor(() => expect(calls('transactions').length).toBeGreaterThan(before))
+    before = calls('transactions').length
+    await realtimeEvent(queryClient, { $tableId: 'transactions', $id: 't1', groupId: 'house1' })
+    await waitFor(() => expect(calls('transactions').length).toBeGreaterThan(before))
+  })
+
+  it('reads a person’s shares again after a write in the group, and on its Realtime events', async () => {
+    mockAll(
+      () => [row('t1', { groupId: 'house1' })],
+      () => [{ $id: 's1', transactionId: 't1' }],
+    )
+    const { queryClient } = renderAt('/transactions?groupId=house1&person=alice')
+    await screen.findByRole('link', { name: /^Supplies/ })
+    let before = calls('shares').length
+    await voidIn(queryClient, 'house1')
+    await waitFor(() => expect(calls('shares').length).toBeGreaterThan(before))
+    before = calls('shares').length
+    await realtimeEvent(queryClient, { $tableId: 'transactions', $id: 't1', groupId: 'house1' })
+    await waitFor(() => expect(calls('shares').length).toBeGreaterThan(before))
+    // A merge changes shares no transaction row shows, and sets the group's `rev`.
+    before = calls('shares').length
+    await realtimeEvent(queryClient, { $tableId: 'groups', $id: 'house1' })
+    await waitFor(() => expect(calls('shares').length).toBeGreaterThan(before))
   })
 })
 
