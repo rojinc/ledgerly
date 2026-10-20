@@ -42,6 +42,7 @@ export type LogEvent =
   | 'merge_run_failed'
   | 'merge_walk_cut_off'
   | 'merge_run'
+  | 'account_finish_failed'
 
 /**
  * How each event is written. Most are problems, written with `console.error`: until alerting

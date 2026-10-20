@@ -695,6 +695,11 @@ describe('reminderEmail', () => {
     },
   )
 
+  it('removes other control characters from a name, as a description has them removed (#346)', () => {
+    const [nul, bell, nextLine] = [0x00, 0x07, 0x85].map((code) => String.fromCodePoint(code))
+    expect(reminder(`Sa${nul}m${bell}${nextLine}Lee`).text).toContain('Sam Lee sent you')
+  })
+
   it('keeps the zero-width joiners that hold an emoji sequence together', () => {
     const family = '👩‍👩‍👧'
     expect(family).toContain(String.fromCodePoint(0x200d))
