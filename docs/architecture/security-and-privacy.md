@@ -85,6 +85,7 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 - **A purged group's invoices are deleted** with it. The delete screen tells users to export first.
 - **Backups** follow Appwrite Cloud's retention, so deleted data can stay in a backup for that period.
 - **Reminders** (`reminders`) hold person and group IDs only, and are kept until either person deletes their account; pruning old rows is a later follow-up.
+- **Invites** (`invites`) hold the address each invite went to. Each row is deleted 30 days after the invite is accepted or expires ([scheduler step 5b](scheduling.md#step-5b-invite-clean-up)), or sooner, with a purged group or a deleted account.
 - **Address misses** (`persons.addressMisses` and `addressMissesFrom`) hold a count and a time only: no address, target or route. Each new window overwrites them, and they stay on a deleted person's anonymised row, which account deletion doesn't need to clear (the lead on [#274](https://github.com/rojinc/ledgerly/issues/274)).
 - **A placeholder's details** (its person, its identities, and the invites sent to its member rows) are deleted when its last member row is removed, or its last group is purged. An invite to a removed member row goes with the row.
 - **Activity rows written before #50** keep the names in their text, as history; rows written since name no one ([activity](data-model.md#activity)).
