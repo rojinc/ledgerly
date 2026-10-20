@@ -19,7 +19,8 @@ export default defineConfig({
   // Each flow's steps build on each other, in order; flows run side by side with their own users.
   fullyParallel: false,
   forbidOnly: Boolean(process.env.CI),
-  timeout: 60_000,
+  // One flow and every function call it makes; flow 5 alone waits up to a minute for a finalize.
+  timeout: 3 * 60_000,
   // The whole suite, within #38's 10 minutes.
   globalTimeout: 10 * 60_000,
   expect: { timeout: 15_000 },
