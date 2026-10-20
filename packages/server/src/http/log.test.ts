@@ -230,6 +230,9 @@ group('logProblem', () => {
     logProblem('merge_run', {
       counts: { personsRead: 3, cutOff: 1, skipped: 0, finished: 1, unfinished: 2 },
     })
+    logProblem('placeholder_cleanup_failed', {
+      counts: { cleared: 2, kept: 1, skipped: 0, failed: 1 },
+    })
     expect(lines()).toEqual([
       {
         fn: 'unknown',
@@ -244,6 +247,11 @@ group('logProblem', () => {
         fn: 'unknown',
         event: 'merge_run',
         counts: { unfinished: 2, finished: 1, skipped: 0, cutOff: 1, personsRead: 3 },
+      },
+      {
+        fn: 'unknown',
+        event: 'placeholder_cleanup_failed',
+        counts: { cleared: 2, kept: 1, skipped: 0, failed: 1 },
       },
     ])
   })

@@ -2,7 +2,6 @@ import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
 import type {
   Balances,
   Groups,
-  Identities,
   Invites,
   Items,
   Members,
@@ -13,9 +12,10 @@ import type {
 } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows, pages } from '@ledgerly/server/appwrite/pages'
-import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
+import { TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import { isLonePlaceholder, isPlaceholder } from '@ledgerly/server/identity/resolve-person'
 import {
   type ReceiptChange,
   receiptRows,
@@ -23,7 +23,7 @@ import {
 } from '@ledgerly/server/ledger/receipt-files'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, type Models, Permission, Query, Role } from 'node-appwrite'
-import { FORMER_MEMBER, getRowOrNull, isPlaceholder } from './rows'
+import { FORMER_MEMBER, getRowOrNull } from './rows'
 import type { FilesApi, Services } from './services'
 
 // data-model.md#storage-buckets
@@ -35,10 +35,11 @@ const IDS_PER_QUERY = 100
 /**
  * The purge of a group nobody else is in (identity-and-invites.md#each-group-they-joined), once
  * its `archivedAt` is set and its team is gone: its statements' PDFs, then its rows, each
- * transaction's receipts just before the batch that deletes it, then each other member row with
- * its placeholder, then the group row with their own member row, which ends it. Each step reads
- * what's left, so a rerun carries on from wherever the last one stopped; lists are paged by $id
- * (pages.ts), since their rows go meanwhile. False when the time budget is used up first.
+ * transaction's receipts just before the batch that deletes it, then each other member row,
+ * marking a placeholder it leaves with none, then the group row with their own member row, which
+ * ends it. Each step reads what's left, so a rerun carries on from wherever the last one stopped;
+ * lists are paged by $id (pages.ts), since their rows go meanwhile. False when the time budget is
+ * used up first.
  */
 export async function purge(services: Services, own: Members): Promise<boolean> {
   if (!(await deletePdfs(services, own.groupId))) return false
@@ -237,15 +238,15 @@ async function deleteRows(services: Services, groupId: string): Promise<boolean>
   return !services.outOfTime()
 }
 
-// Every other member row, once no share is left (I-3), each in a transaction of its own with
-// its person and identities when that person is a placeholder no other member row names. So a
-// crash never leaves a placeholder that a rerun can't find. A placeholder's person always gets a
-// staged write, deleted or given a fresh `rev`, then whether it's the last row is checked again:
-// a merged person is kept, and two purges deleting its last two rows at once fail one commit
-// rather than leave it with none. A row that another deletion under way purges the group from
-// itself is left to it (ownPurgeEnds).
+// Every other member row, once no share is left (I-3), each in a transaction of its own. A
+// placeholder's person gets a staged write with it: a fresh `rev`, and `orphanedAt` now when no
+// other member row names it, so scheduler step 5c deletes its identities and name 30 days later
+// (scheduling.md#step-5c-placeholder-clean-up). So a crash never leaves one unmarked that a rerun
+// can't find. Then whether it's the last row is checked again: a merged person isn't marked, and
+// two purges deleting its last two rows at once fail one commit rather than leave it unmarked. A
+// row that another deletion under way purges the group from itself is left to it (ownPurgeEnds).
 async function deleteMembers(services: Services, own: Members): Promise<boolean> {
-  const { db } = services
+  const { db, now } = services
   // idx_groupId
   for await (const member of pages<Members>(services, TABLES.members, [
     Query.equal('groupId', own.groupId),
@@ -253,29 +254,18 @@ async function deleteMembers(services: Services, own: Members): Promise<boolean>
     if (member.$id === own.$id || (await ownPurgeEnds(db, member))) continue
     const person = await getRowOrNull<Persons>(db, TABLES.persons, member.personId)
     const placeholder = person !== null && isPlaceholder(person)
-    const alone = placeholder && (await isLonePlaceholder(db, member))
+    const alone = placeholder && (await isLonePlaceholder(db, member.personId, member.$id))
     await withTransaction(db, async (tx) => {
       await tx.write(remove(TABLES.members, member.$id))
       if (!placeholder) return
-      if (alone) {
-        // idx_personId
-        const identities = await allRows<Identities>(db, TABLES.identities, [
-          Query.equal('personId', member.personId),
-        ])
-        await tx.write(
-          ...identities.map((row) => remove(TABLES.identities, row.$id)),
-          remove(TABLES.persons, member.personId),
-        )
-      } else {
-        await tx.write({
-          action: 'update',
-          tableId: TABLES.persons,
-          rowId: member.personId,
-          data: { rev: randomId() },
-        })
-      }
+      await tx.write({
+        action: 'update',
+        tableId: TABLES.persons,
+        rowId: member.personId,
+        data: { rev: randomId(), ...(alone ? { orphanedAt: now.toISOString() } : {}) },
+      })
       // Stage, then check: the stored rows, not this transaction's view.
-      if ((await isLonePlaceholder(db, member)) !== alone) throw new Raced()
+      if ((await isLonePlaceholder(db, member.personId, member.$id)) !== alone) throw new Raced()
     })
   }
   return !services.outOfTime()
@@ -293,20 +283,6 @@ async function ownPurgeEnds(db: Db, member: Members): Promise<boolean> {
   if (kept || (member.status !== 'active' && member.status !== 'left')) return false
   const person = await getRowOrNull<Persons>(db, TABLES.persons, member.personId)
   return Boolean(person?.deletedAt && person.userId)
-}
-
-// Whether the member's person is a placeholder (isPlaceholder) with no member row but this one.
-async function isLonePlaceholder(db: Db, member: Members): Promise<boolean> {
-  const person = await getRowOrNull<Persons>(db, TABLES.persons, member.personId)
-  if (!person || !isPlaceholder(person)) return false
-  // idx_person_status. A person has one row per group (uniq_group_person).
-  const { rows } = await db.listRows<Members>({
-    databaseId: DATABASE_ID,
-    tableId: TABLES.members,
-    queries: [Query.equal('personId', person.$id), Query.limit(2)],
-    total: false,
-  })
-  return rows.every((row) => row.$id === member.$id)
 }
 
 function remove(tableId: TableId, rowId: string): Write {

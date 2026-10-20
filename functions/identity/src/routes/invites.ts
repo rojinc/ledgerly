@@ -27,6 +27,8 @@ const PER_IDENTITY = { column: 'identityKey', max: 3, windowMs: 7 * DAY_MS } as 
 // which addresses exist (identity-and-invites.md#adding-someone-to-a-group, accepted risks).
 const NOT_THEIR_EMAIL = "This email address isn't one this person was added with."
 const TOO_MANY = 'Too many invites have been sent. Try again later.'
+const NOT_IN_GROUP = 'This member is not in the group.'
+const JOINED = 'Only someone who has not joined the group yet can be invited.'
 
 type InviteRow = Omit<Invites, keyof Models.Row>
 
@@ -61,11 +63,9 @@ export async function createInvite(
   // of these throws.
   const target = await getRowOrNull<Members>(db, TABLES.members, memberId)
   if (target?.groupId !== groupId) {
-    throw new AppError('NOT_FOUND', 'This member is not in the group.')
+    throw new AppError('NOT_FOUND', NOT_IN_GROUP)
   }
-  if (target.status !== 'placeholder') {
-    throw invalid('Only someone who has not joined the group yet can be invited.')
-  }
+  if (target.status !== 'placeholder') throw invalid(JOINED)
 
   // Step 4: a random token, stored only as its hash. The email (step 5) is built before anything
   // is committed, the address check's count included, so a missing APP_URL (the template refuses
@@ -111,7 +111,9 @@ export async function createInvite(
     // Another invite by this inviter, or to this person, a count of the inviter's, or a deletion
     // of one it guarded, committed after this one's guard was staged: check again, once, so it
     // is refused if that invite took the last place or that deletion has started, and takes its
-    // count back from the count as it is now.
+    // count back from the count as it is now. The member row first, as step 2 reads it, so a
+    // target removed meanwhile gets step 2's answer before any guard is staged.
+    await requireTarget(db, row, target.personId)
     await conflictAsTryAgain(commit)
   }
 
@@ -143,7 +145,7 @@ async function commitWithinLimits(
     // moves them, last, so the address is that person's. Read after the target's guard: a merge
     // that marks it later fails this commit.
     const invited = [targetPersonId]
-    const end = await mergedTarget(db, targetPersonId)
+    const end = await endOf(db, targetPersonId)
     if (end !== targetPersonId && end !== row.invitedBy) {
       await tx.write(guard(end))
       invited.push(end)
@@ -153,10 +155,18 @@ async function commitWithinLimits(
     if (inviter?.deletedAt !== null) {
       throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
     }
-    // No second address-miss limit check: the address check paid its count before it ran (#274).
-    // As a wrong address, so the answer doesn't show the deletion, and it keeps that count.
+    // The member row as stored, after its person's guard: a removal or a join also writes that
+    // person, so one that commits after this read fails this commit, and the retry reads it
+    // again (permissions.md#leaving-a-group). No second address-miss limit check: the address
+    // check paid its count before it ran (#274).
+    await requireTarget(db, row, targetPersonId)
     for (const personId of invited) {
-      if (await isDeleted(db, personId)) throw invalid(NOT_THEIR_EMAIL)
+      const person = await getRowOrNull<Persons>(db, TABLES.persons, personId)
+      // A target whose person is gone gets step 2's answer: an account deletion keeps the row,
+      // and so does scheduler step 5c, so this shows no deletion.
+      if (!person && personId === targetPersonId) throw new AppError('NOT_FOUND', NOT_IN_GROUP)
+      // As a wrong address, so the answer doesn't show the deletion.
+      if (person?.deletedAt !== null) throw invalid(NOT_THEIR_EMAIL)
     }
     if (
       (await reached(db, PER_INVITER, row.invitedBy, now)) ||
@@ -183,9 +193,28 @@ function guard(personId: string): Write {
   return { action: 'update', tableId: TABLES.persons, rowId: personId, data: { rev: randomId() } }
 }
 
-// A missing row counts as deleted, so it refuses too.
-async function isDeleted(db: Db, personId: string): Promise<boolean> {
-  return (await getRowOrNull<Persons>(db, TABLES.persons, personId))?.deletedAt !== null
+/** The target's member row as stored, answered as step 2 answers. */
+async function requireTarget(db: Db, row: InviteRow, personId: string): Promise<void> {
+  const target = await getRowOrNull<Members>(db, TABLES.members, row.memberId)
+  if (target?.groupId !== row.groupId || target.personId !== personId) {
+    throw new AppError('NOT_FOUND', NOT_IN_GROUP)
+  }
+  if (target.status !== 'placeholder') throw invalid(JOINED)
+}
+
+/**
+ * Where the target's merges end (mergedTarget). A target whose person is gone ends at itself, so
+ * the reads after it answer for it, as step 2 does; any other row that's gone still fails.
+ */
+async function endOf(db: Db, personId: string): Promise<string> {
+  try {
+    return await mergedTarget(db, personId)
+  } catch (error) {
+    if (isAppwriteError(error, 404) && !(await getRowOrNull(db, TABLES.persons, personId))) {
+      return personId
+    }
+    throw error
+  }
 }
 
 // Whether `max` invites were already sent within the window: an invite sent exactly

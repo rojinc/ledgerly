@@ -376,20 +376,35 @@ describe('POST /delete: purging a group nobody else is in', () => {
     expect(services.users.account('u1')).toBeUndefined()
   })
 
-  it('deletes a placeholder only the purged group named, with its identities, and keeps the rest', async () => {
+  it('marks a placeholder only the purged group named with orphanedAt, for step 5c, and keeps every person and identity', async () => {
     const services = world()
     await remove(services)
-    expect(rowOf(services, 'persons', 'pKim')).toBeUndefined()
-    expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iLee'])
-    // Lee is also in h1; Old was merged; Ray has an account; Sam is kept as "Former member".
+    // Step 5c deletes Kim's identities and name 30 days later (#367).
+    expect(rowOf(services, 'persons', 'pKim')).toMatchObject({
+      displayName: 'pKim',
+      orphanedAt: NOW.toISOString(),
+      rev: expect.stringMatching(/^[a-z0-9]{20}$/),
+    })
+    // Sam's own go with the account.
+    expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iKim', 'iKim2', 'iLee'])
     expect(services.db.rows('persons').map((row) => row.$id)).toEqual([
       'p1',
       'p2',
       'p3',
+      'pKim',
       'pLee',
       'pOld',
     ])
+    // Lee is also in h1, so gets a fresh rev only; Old was merged and Ray has an account, so
+    // neither is written.
+    const lee = rowOf(services, 'persons', 'pLee')
+    expect(lee?.rev).toMatch(/^[a-z0-9]{20}$/)
+    expect(lee?.rev).not.toBe(rowOf(services, 'persons', 'pKim')?.rev)
     expect(rowOf(services, 'members', 'h1-pLee')).toBeDefined()
+    for (const id of ['pLee', 'pOld', 'p3']) {
+      expect(rowOf(services, 'persons', id)?.orphanedAt ?? null).toBeNull()
+    }
+    expect(rowOf(services, 'persons', 'pOld')?.rev ?? null).toBeNull()
   })
 
   it('keeps a placeholder that a merge marks after it was first checked', async () => {
@@ -404,6 +419,7 @@ describe('POST /delete: purging a group nobody else is in', () => {
     vi.restoreAllMocks()
     expect((await remove(services)).finished).toBe(true)
     expect(rowOf(services, 'persons', 'pKim')).toMatchObject({ mergedInto: 'p2' })
+    expect(rowOf(services, 'persons', 'pKim')?.orphanedAt ?? null).toBeNull()
     expect(services.db.rows('identities').map((row) => row.$id)).toEqual(['iKim', 'iKim2', 'iLee'])
     expect(rowOf(services, 'members', 'h2-pKim')).toBeUndefined()
   })
@@ -691,7 +707,7 @@ describe('POST /delete: purging a group nobody else is in', () => {
     ['before the other stages', 'staging'],
     ['between the other’s staging and its commit', 'commit'],
   ])(
-    'leaves no placeholder without a member row when two purges delete its last two, %s',
+    'leaves no placeholder unmarked when two purges delete its last two member rows, %s',
     async (_, when) => {
       const services = world()
       // Alex purges h1, where Lee is a placeholder too, as Sam's purge deletes Lee's row in h2.
@@ -713,11 +729,13 @@ describe('POST /delete: purging a group nobody else is in', () => {
       expect((await remove(services)).finished).toBe(false)
       expect(alex).toBe(true)
       expect(rowOf(services, 'members', 'h2-pLee')).toBeDefined()
+      // Alex's purge saw that row, so it didn't mark Lee.
+      expect(rowOf(services, 'persons', 'pLee')?.orphanedAt ?? null).toBeNull()
       vi.restoreAllMocks()
       expect((await remove(services)).finished).toBe(true)
       expect(services.db.rows('members').filter((row) => row.personId === 'pLee')).toEqual([])
-      expect(rowOf(services, 'persons', 'pLee')).toBeUndefined()
-      expect(rowOf(services, 'identities', 'iLee')).toBeUndefined()
+      expect(rowOf(services, 'persons', 'pLee')?.orphanedAt).toBe(NOW.toISOString())
+      expect(rowOf(services, 'identities', 'iLee')).toBeDefined()
     },
   )
 

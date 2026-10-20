@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { type Email, EmailError } from '@ledgerly/server/email/send-email'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -528,6 +529,176 @@ describe('POST /invites', () => {
       )
       expect(commits).toEqual(['fulfilled', 'rejected', 'fulfilled'])
       expectNothingDone(services, true)
+    })
+  })
+
+  // #342: the member row is read again after its person's guard, and answered as step 2 does.
+  describe('when the member row changes meanwhile', () => {
+    const NOT_IN_GROUP = {
+      status: 404,
+      code: 'NOT_FOUND',
+      message: 'This member is not in the group.',
+    }
+    const JOINED = {
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: 'Only someone who has not joined the group yet can be invited.',
+    }
+    // groups DELETE /groups/{id}/members/{memberId}: the row goes, and its person gets a guard.
+    const removal = (services: Fakes, guard: boolean) => () =>
+      withTransaction(services.db, (tx) =>
+        tx.write(
+          { action: 'delete', tableId: 'members', rowId: 'mSam' },
+          ...(guard
+            ? [
+                {
+                  action: 'update' as const,
+                  tableId: 'persons' as const,
+                  rowId: 'pSam',
+                  data: { rev: 'removal' },
+                },
+              ]
+            : []),
+        ),
+      )
+    const atGuards = (services: Fakes, change: () => Promise<unknown>) =>
+      beforeStaging(services.db, (operations) => operations.includes('"tableId":"persons"'), change)
+
+    function expectNothingSent(services: Fakes) {
+      expect(services.db.rows('invites')).toEqual([])
+      expect(services.sent).toEqual([])
+    }
+
+    it('answers NOT_FOUND when the row is removed just before the guards', async () => {
+      const services = fixture()
+      atGuards(services, removal(services, false))
+      expect(await refused(services)).toEqual(NOT_IN_GROUP)
+      expectNothingSent(services)
+    })
+
+    it('fails the commit when a removal commits after the guards, and the retry answers NOT_FOUND', async () => {
+      const services = fixture()
+      beforeCommit(services.db, removal(services, true))
+      expect(await refused(services)).toEqual(NOT_IN_GROUP)
+      expectNothingSent(services)
+    })
+
+    // Sam's row and person both go. A removal keeps the person now, and so does step 5c, but a
+    // target whose person is gone still gets step 2's answer (identity-and-invites.md#invites).
+    const lastRowRemoval = (services: Fakes) => () =>
+      withTransaction(services.db, (tx) =>
+        tx.write(
+          { action: 'delete', tableId: 'members', rowId: 'mSam' },
+          { action: 'delete', tableId: 'persons', rowId: 'pSam' },
+        ),
+      )
+    /** Runs `change` once, before the first read of `tableId` after the guards, once `after` was read. */
+    function beforeRead(
+      services: Fakes,
+      tableId: string,
+      after: string | null,
+      change: () => Promise<unknown>,
+    ) {
+      const stage = services.db.createOperations.bind(services.db)
+      const read = services.db.getRow.bind(services.db)
+      let staged = false
+      let seen = after === null
+      let fired = false
+      vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+        staged = true
+        return stage(params)
+      })
+      vi.spyOn(services.db, 'getRow').mockImplementation(async (params) => {
+        if (staged && seen && !fired && params.tableId === tableId) {
+          fired = true
+          await change()
+        }
+        if (staged && params.tableId === after) seen = true
+        return read(params)
+      })
+    }
+
+    it('answers NOT_FOUND, not as a wrong address, when the last row goes after the guards', async () => {
+      const services = fixture()
+      beforeRead(services, 'persons', null, lastRowRemoval(services))
+      expect(await refused(services)).toEqual(NOT_IN_GROUP)
+      expectNothingSent(services)
+    })
+
+    it('answers NOT_FOUND when the last row goes between the member and person reads', async () => {
+      const services = fixture()
+      beforeRead(services, 'persons', 'members', lastRowRemoval(services))
+      expect(await refused(services)).toEqual(NOT_IN_GROUP)
+      expectNothingSent(services)
+    })
+
+    it('answers NOT_FOUND when the last row goes before the guards, whose retry reads it first', async () => {
+      const services = fixture()
+      atGuards(services, lastRowRemoval(services))
+      expect(await refused(services)).toEqual(NOT_IN_GROUP)
+      expectNothingSent(services)
+    })
+
+    it('answers NOT_FOUND when the last row goes before the commit', async () => {
+      const services = fixture()
+      beforeCommit(services.db, lastRowRemoval(services))
+      expect(await refused(services)).toEqual(NOT_IN_GROUP)
+      expectNothingSent(services)
+    })
+
+    it("answers the inviter's deletion before the row's removal", async () => {
+      const services = fixture()
+      atGuards(services, async () => {
+        await removal(services, false)()
+        await updateRow(services.db, 'persons', 'pAnn', { deletedAt: ago(1000), rev: 'deleting' })
+      })
+      expect(await refused(services)).toMatchObject({ status: 401, code: 'UNAUTHENTICATED' })
+      expectNothingSent(services)
+    })
+
+    it('answers a gone end person as a wrong address, not NOT_FOUND', async () => {
+      // Kim is mid-merge into Sam, and Sam's row goes after the member read (an account
+      // deletion's stray-person purge is the only way).
+      const services = fixture({ samUserId: 'u9' })
+      await updateRow(services.db, 'persons', 'pKim', { mergedInto: 'pSam' })
+      beforeRead(services, 'persons', 'members', () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'persons', rowId: 'pSam' }),
+        ),
+      )
+      expect(await refused(services, TO_KIM)).toEqual({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+        message: NOT_THEIR_EMAIL,
+      })
+      expectNothingSent(services)
+    })
+
+    it('sends nothing when the person a target ends at is gone, and the target is not', async () => {
+      const services = fixture({ samUserId: 'u9' })
+      await updateRow(services.db, 'persons', 'pKim', { mergedInto: 'pSam' })
+      atGuards(services, () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'persons', rowId: 'pSam' }),
+        ),
+      )
+      // Fails closed, as before: only the target's own row being gone ends at the target.
+      expect(await refused(services, TO_KIM)).toMatchObject({ code: 'INTERNAL' })
+      expectNothingSent(services)
+    })
+
+    it('refuses as joined when they join just before the guards', async () => {
+      const services = fixture()
+      atGuards(services, () => updateRow(services.db, 'members', 'mSam', { status: 'active' }))
+      expect(await refused(services)).toEqual(JOINED)
+      expectNothingSent(services)
+    })
+
+    it('answers NOT_FOUND when a merge moves the row to someone else just before the guards', async () => {
+      const services = fixture()
+      atGuards(services, () => updateRow(services.db, 'members', 'mSam', { personId: 'pJo' }))
+      expect(await refused(services)).toEqual(NOT_IN_GROUP)
+      expectNothingSent(services)
     })
   })
 
