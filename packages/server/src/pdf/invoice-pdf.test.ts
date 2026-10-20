@@ -345,6 +345,51 @@ describe('renderInvoicePdf', () => {
   })
 
   // #360: narrowed to the column's own width, not less, so a word that fits it isn't broken.
+  // #360: the payments and records tables narrow their descriptions too (AI D's should-fix).
+  it.each([
+    [
+      'a payment received',
+      line(
+        '2026-10-20',
+        'payment',
+        50000,
+        [share('employer', 50000, 0), share('worker', 0, 50000)],
+        {
+          description: '⸻'.repeat(20),
+        },
+      ),
+      'Total payments and deductions -$500.00',
+    ],
+    [
+      'a purchase for the records',
+      line('2026-10-12', 'expense', 12000, [share('employer', 12000, 12000)], {
+        description: '⸻'.repeat(20),
+      }),
+      '$120.00',
+    ],
+  ])('keeps every amount on the page for %s with a long word', async (_case, row, amount) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      lines: [shift('2026-10-01', 12500), row],
+    })
+    const pdf = await renderInvoicePdf(snapshot, details)
+    expect(await textBeyondMargin(pdf)).toEqual([])
+    expect(await pdfText(pdf)).toContain(amount)
+  })
+
+  // The header's other lines are at 10 pt, so a word that fits the issuer column there moves
+  // whole to a line of its own, beside the widest number.
+  it('moves a word that fits the issuer column at 10 pt to a line of its own, whole', async () => {
+    const word = 'Ѹ'.repeat(20)
+    const snapshot = buildStatementSnapshot(
+      goldenInput({ ...fullBusiness, address: `${'x'.repeat(10)} ${word}` }),
+    )
+    const displayNumber = `${'Ѹ'.repeat(16)}10000`
+    const pdf = await renderInvoicePdf(snapshot, { ...details, displayNumber })
+    expect(await pdfText(pdf)).toContain(` ${word} `)
+  })
+
   it('moves a word that fits the Description column to a line of its own, whole', async () => {
     const word = 'Ѹ'.repeat(18)
     const snapshot = buildStatementSnapshot({
