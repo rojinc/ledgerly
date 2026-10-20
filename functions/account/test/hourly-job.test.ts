@@ -663,6 +663,53 @@ describe('POST /: the time budget', () => {
       undefined,
     ])
   })
+
+  it('stops the e2e pass between users, and the next run deletes the rest (#386)', async () => {
+    const bo = 'delivered+e2emq1abcd2f3e4a5-bo@resend.dev'
+    const services = fakes(
+      {
+        persons: [person('p1', 'u1'), person('p2', 'u2')],
+        identities: [
+          identity('i1', `email:${RUN_ADDRESS}`, 'p1'),
+          identity('i2', `email:${bo}`, 'p2'),
+        ],
+        groups: [group('me', 'personal', 'p1'), group('me2', 'personal', 'p2')],
+        members: [member('me', 'p1'), member('me2', 'p2')],
+      },
+      {
+        accounts: [runUser(), runUser({ $id: 'u2', email: bo })],
+        teams: { me: ['u1'], me2: ['u2'] },
+      },
+    )
+    const list = vi.spyOn(services.users, 'list')
+    // Used up the moment Kim's user is gone.
+    services.outOfTime = () => services.users.account('u1') === undefined
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 1, failed: 0 })
+    expect(rowOf(services, 'persons', 'p2')).toMatchObject({ userId: 'u2', deletedAt: null })
+    // Used up before the pass starts: it doesn't even list.
+    list.mockClear()
+    services.outOfTime = () => true
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 0, failed: 0 })
+    expect(list).not.toHaveBeenCalled()
+    services.outOfTime = () => false
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 1, failed: 0 })
+    expect(services.users.account('u2')).toBeUndefined()
+  })
+
+  it('counts a deletion the budget cut off after step 2 as neither done nor failed, and the account pass finishes it', async () => {
+    const services = e2eRun()
+    // Used up once step 2 has set `deletedAt`.
+    services.outOfTime = () => rowOf(services, 'persons', 'p1')?.deletedAt != null
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 0, failed: 0 })
+    expect(rowOf(services, 'persons', 'p1')).toMatchObject({
+      deletedAt: NOW.toISOString(),
+      userId: 'u1',
+    })
+    services.outOfTime = () => false
+    services.now = new Date(NOW.getTime() + 60 * 60_000)
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, e2e: 0, failed: 0 })
+    expect(services.users.account('u1')).toBeUndefined()
+  })
 })
 
 describe('appwrite/functions.json', () => {
