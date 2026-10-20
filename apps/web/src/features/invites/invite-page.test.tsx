@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { StrictMode } from 'react'
 import { createMemoryRouter, RouterProvider, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -9,11 +9,22 @@ import { InvitePage } from './invite-page'
 
 vi.mock('../../lib/api', () => ({ callFunction: vi.fn() }))
 vi.mock('../../lib/appwrite', () => ({ account: { createEmailVerification: vi.fn() } }))
-// Signed in as u1 by default; tests switch to signed out.
+// Signed in as u1 by default; tests switch to signed out. Kept in the query cache, so the page
+// signing someone out shows.
 let mockUser: { $id: string } | null = { $id: 'u1' }
-vi.mock('../auth/use-current-user', () => ({
-  useCurrentUser: () => ({ data: mockUser, isPending: false, isError: false }),
-}))
+vi.mock('../auth/use-current-user', async () => {
+  const { useQuery } = await import('@tanstack/react-query')
+  const { queryKeys } = await import('../../lib/query-keys')
+  return {
+    useCurrentUser: () =>
+      useQuery({
+        queryKey: queryKeys.currentUser,
+        queryFn: () => mockUser,
+        initialData: mockUser,
+        staleTime: Number.POSITIVE_INFINITY,
+      }),
+  }
+})
 let mockBootstrapped = true
 vi.mock('../auth/use-bootstrap', () => ({
   useBootstrap: () => ({ data: mockBootstrapped ? { personId: 'p1' } : undefined }),
@@ -98,6 +109,8 @@ describe('InvitePage', () => {
     mockUser = null
     const { router } = renderAt(`/invite#${TOKEN}`)
     expect(router.state.location.hash).toBe('')
+    // Replaced, so Back doesn't bring the token back into the address bar.
+    expect(router.state.historyAction).toBe('REPLACE')
     expect(sessionStorage.getItem('ledgerly.inviteToken')).toBe(TOKEN)
     fireEvent.click(await screen.findByRole('link', { name: 'Log in' }))
     expect(await screen.findByText('Login from /invite')).toBeTruthy()
@@ -120,6 +133,8 @@ describe('InvitePage', () => {
     vi.mocked(account.createEmailVerification).mockResolvedValue({} as never)
     renderAt(`/invite#${TOKEN}`)
     expect(await screen.findByText(/first verify your email/)).toBeTruthy()
+    // Not used up yet: kept for after they verify, even if they reload.
+    expect(sessionStorage.getItem('ledgerly.inviteToken')).toBe(TOKEN)
     fireEvent.click(screen.getByRole('button', { name: 'Send the link again' }))
     expect(await screen.findByText('We sent you a new link.')).toBeTruthy()
     expect(account.createEmailVerification).toHaveBeenCalledWith({
@@ -176,6 +191,44 @@ describe('InvitePage', () => {
     call.mockResolvedValueOnce(answer({ groupId: 'g1' }))
     fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
     expect(await screen.findByText('Groups')).toBeTruthy()
+  })
+
+  it.each([
+    ['UNAUTHENTICATED', 'Please log in again.'],
+    ['NOT_FOUND', 'Set up your account first.'],
+  ] as const)(
+    'signs out on %s, offering log in or sign up and keeping the token',
+    async (code, message) => {
+      call.mockResolvedValueOnce({ ok: false, error: { code, message } })
+      renderAt(`/invite#${TOKEN}`)
+      expect(await screen.findByRole('link', { name: 'Log in' })).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Create an account' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull()
+      expect(sessionStorage.getItem('ledgerly.inviteToken')).toBe(TOKEN)
+    },
+  )
+
+  it('takes a second link opened in the same tab, and accepts it', async () => {
+    const NEW = 'Zy8-_'.repeat(8)
+    call.mockResolvedValueOnce({
+      ok: false,
+      error: {
+        code: 'INVITE_INVALID',
+        message: "This invite link isn't valid. It may have expired or been used already.",
+      },
+    })
+    const { router } = renderAt(`/invite#${TOKEN}`)
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'This invite has expired or was already used.',
+    )
+    call.mockResolvedValueOnce(answer({ needsVerification: 'email' }))
+    await act(() => router.navigate(`/invite#${NEW}`))
+    expect(router.state.location.hash).toBe('')
+    expect(router.state.historyAction).toBe('REPLACE')
+    expect(await screen.findByText(/first verify your email/)).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(call.mock.calls[1]?.[3]).toEqual({ token: NEW })
+    expect(sessionStorage.getItem('ledgerly.inviteToken')).toBe(NEW)
   })
 
   it('says when there’s no token at all', async () => {

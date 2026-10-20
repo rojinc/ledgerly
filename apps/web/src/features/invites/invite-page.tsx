@@ -71,6 +71,12 @@ function isInvalid(error: Error): boolean {
   )
 }
 
+function isSignedOut(error: Error): boolean {
+  return (
+    error instanceof AcceptError && (error.code === 'UNAUTHENTICATED' || error.code === 'NOT_FOUND')
+  )
+}
+
 function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
   return (
     <p
@@ -86,10 +92,13 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 export function InvitePage() {
   const location = useLocation()
   const navigate = useNavigate()
-  const [token] = useState(() => takeToken(location.hash))
-  // Off the address bar before anything else can see or log it.
+  const [token, setToken] = useState(() => takeToken(location.hash))
+  // Off the address bar before anything else can see or log it. A second link opened in this
+  // tab only changes the hash, so this takes its token too.
   useLayoutEffect(() => {
-    if (location.hash !== '') navigate({ hash: '' }, { replace: true })
+    if (location.hash === '') return
+    setToken(takeToken(location.hash))
+    navigate({ hash: '' }, { replace: true })
   }, [location.hash, navigate])
   const user = useCurrentUser()
 
@@ -109,7 +118,8 @@ export function InvitePage() {
   } else if (!user.data) {
     content = <SignedOut />
   } else {
-    content = <Accept token={token} userId={user.data.$id} />
+    // A new token is a new accept, sent once like the first.
+    content = <Accept key={token} token={token} userId={user.data.$id} />
   }
   return <AuthCard title="Join a group">{content}</AuthCard>
 }
@@ -163,6 +173,9 @@ function Accept({ token, userId }: { token: string; userId: string }) {
     },
     onError: (error) => {
       if (isInvalid(error)) dropToken()
+      // The session ended, or NOT_FOUND: the account was deleted after bootstrap, which bootstrap
+      // itself answers with UNAUTHENTICATED. Either way, log in or sign up; the token waits.
+      if (isSignedOut(error)) queryClient.setQueryData(queryKeys.currentUser, null)
     },
   })
 
