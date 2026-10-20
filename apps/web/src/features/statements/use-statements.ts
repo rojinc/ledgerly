@@ -86,7 +86,8 @@ function store(queryClient: ReturnType<typeof useQueryClient>, statement: Statem
  */
 export function usePreviewStatement(groupId: string, periodEnd?: string, enabled = true) {
   return useQuery({
-    queryKey: [...queryKeys.statements(groupId), 'preview', periodEnd ?? ''],
+    // null for the default, so an emptied date field ('') is never the same query.
+    queryKey: [...queryKeys.statements(groupId), 'preview', periodEnd ?? null],
     enabled: enabled && groupId !== '',
     retry: false,
     queryFn: () =>
