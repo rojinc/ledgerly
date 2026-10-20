@@ -290,6 +290,14 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "emailOptOuts",
+        "type": "varchar",
+        "size": 32,
+        "required": false,
+        "array": true,
+        "default": null
       }
     ],
     "indexes": [

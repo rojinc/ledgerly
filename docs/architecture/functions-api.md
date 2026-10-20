@@ -204,7 +204,7 @@ Archiving clears `nextCloseAt`, so no more statements are drafted, until an admi
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /bootstrap` | `{ timezone }` | `{ profile, personId, personalGroupId, linkedGroupIds }` | the user; idempotent |
-| `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency?, hoursCap? }` | `profile` | the user |
+| `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency?, hoursCap?, emailOptOuts? }` | `profile` | the user |
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
 | `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
@@ -219,7 +219,7 @@ Archiving clears `nextCloseAt`, so no more statements are drafted, until an admi
 
 A person calling `POST /` gets `FORBIDDEN`, and any other call without a JWT `UNAUTHENTICATED`.
 
-`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift.
+`PATCH /profile` changes only the fields given; `business`, when given, replaces the stored business details as a whole. `hoursCap` is `{ minutes, period: 'week' | 'fortnight', startsOn? }`, a fortnight's `startsOn` being a Monday, and `null` clears it ([profiles](data-model.md#profiles)); it only warns the user (F-82), never refuses a shift. `emailOptOuts` is the list of emails to turn off, any of `billDue`, `shiftToConfirm` and `statementReady` ([#431](https://github.com/rojinc/ledgerly/issues/431)). It replaces the stored list as a whole, `[]` turns every email back on, and leaving it out keeps the list. An unknown type, a type twice or `null` is `VALIDATION_FAILED`.
 
 An event run of `POST /` reads only the user ID, from the event's name in `x-appwrite-event` (a missing or any other name gets `FORBIDDEN`), and which event ran, from the end of that name; a change event also checks it against the body's `$id` ([change notice](identity-and-invites.md#email-and-phone-change-notice)). It never logs or stores the body (Appwrite's user model can carry the password hash), and answers `{}` to an event run whether it sent an email or not (a failed send fails the run).
 

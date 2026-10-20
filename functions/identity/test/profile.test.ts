@@ -214,6 +214,38 @@ describe('PATCH /profile', () => {
     })
   })
 
+  describe('emailOptOuts (#431)', () => {
+    it('stores the list, replacing the stored one, and returns it', async () => {
+      const services = withProfile({ emailOptOuts: ['billDue'] })
+      const profile = await patch(services, { emailOptOuts: ['statementReady', 'shiftToConfirm'] })
+      expect(profile.emailOptOuts).toEqual(['statementReady', 'shiftToConfirm'])
+    })
+
+    it('turns every email back on with []', async () => {
+      const services = withProfile({ emailOptOuts: ['billDue', 'statementReady'] })
+      expect((await patch(services, { emailOptOuts: [] })).emailOptOuts).toEqual([])
+    })
+
+    it('leaves the list as it is when emailOptOuts is left out', async () => {
+      const services = withProfile({ emailOptOuts: ['shiftToConfirm'] })
+      expect((await patch(services, { region: 'AU-VIC' })).emailOptOuts).toEqual(['shiftToConfirm'])
+    })
+
+    it.each([
+      ['an unknown email', ['billDue', 'timerRunning']],
+      ['an email twice', ['billDue', 'billDue']],
+      ['null', null],
+    ])('is VALIDATION_FAILED for %s, and writes nothing', async (_, emailOptOuts) => {
+      const services = withProfile({ emailOptOuts: ['billDue'] })
+      const before = services.db.rows('profiles')
+      expect(await failure(services, 'PATCH', '/profile', { emailOptOuts })).toMatchObject({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+      })
+      expect(services.db.rows('profiles')).toEqual(before)
+    })
+  })
+
   it('writes nothing for an empty body', async () => {
     const services = withProfile()
     const before = services.db.rows('profiles')
