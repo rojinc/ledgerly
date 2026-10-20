@@ -1,4 +1,5 @@
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
+import { formatNet } from '@ledgerly/core/money/format'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
@@ -1262,6 +1263,213 @@ describe('StatementsPage: a house', () => {
     store()
     renderAt('/groups/g1/statements')
     expect(await screen.findByText(/^No statements yet/)).toBeTruthy()
+  })
+})
+
+describe('StatementsPage: the period so far, and closing it now (#398)', () => {
+  // 14:00 on 12 Nov 2026 in Sydney, the group's time zone.
+  const NOW = new Date('2026-11-12T03:00:00.000Z')
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  /**
+   * The statements function: a preview covers `start` to its `periodEnd` (default: today), and a
+   * close answers `close`, by default the new draft.
+   */
+  function answer({
+    start = '2026-11-01',
+    snap = snapshot,
+    close = (periodEnd: string): Result<unknown> => {
+      const row = statement('s9', { periodStart: start, periodEnd })
+      store(...stored, row)
+      return ok(row)
+    },
+  }: {
+    start?: string
+    snap?: (extra: object) => StatementSnapshot
+    close?: (periodEnd: string) => Result<unknown>
+  } = {}) {
+    call.mockImplementation(async (_fn, _method, path, body) => {
+      const { periodEnd = '2026-11-12' } = (body ?? {}) as { periodEnd?: string }
+      if (path === '/statements/preview') {
+        return ok({ snapshot: snap({ period: { start, end: periodEnd } }) })
+      }
+      if (path === '/statements/close') return close(periodEnd)
+      // The draft's page refreshes it on open.
+      return ok(stored.find((row) => path.includes(row.$id)))
+    })
+  }
+
+  const covers = (start: string, end: string) =>
+    `Covers ${formatDate(start)} – ${formatDate(end)}. Entries after ${formatDate(end)} go on the next one.`
+
+  it('offers Close period now… to an admin only, never in an archived group', async () => {
+    const cases = [
+      ['admin', {}, true],
+      // A group with no cycle gets a statement only this way.
+      ['admin', { statementCycle: 'none' }, true],
+      ['member', {}, false],
+      ['viewer', {}, false],
+      ['admin', { archivedAt: '2026-11-01T00:00:00.000Z' }, false],
+    ] as const
+    for (const [role, extra, shown] of cases) {
+      mockGroup(role, extra)
+      store()
+      answer()
+      renderAt('/groups/g1/statements')
+      // The preview has come back, so the page is all there.
+      await screen.findByText('Balance due', {}, { timeout: 3000 })
+      expect(screen.queryByRole('button', { name: 'Close period now…' }) !== null).toBe(shown)
+      cleanup()
+    }
+  })
+
+  it('says what a close would cover, then drafts it up to the day picked and opens it', async () => {
+    store(statement('s1', FINAL))
+    answer()
+    const { router } = renderAt('/groups/g1/statements')
+    fireEvent.click(await screen.findByText('Close period now…', {}, { timeout: 3000 }))
+    expect(document.activeElement?.textContent).toBe('Close the period now?')
+    // Today in the group's time zone.
+    const input = screen.getByLabelText('Last day') as HTMLInputElement
+    expect(input.value).toBe('2026-11-12')
+    expect(input.max).toBe('2026-11-12')
+    await screen.findByText(covers('2026-11-01', '2026-11-12'), {}, { timeout: 3000 })
+
+    fireEvent.change(input, { target: { value: '2026-11-05' } })
+    await screen.findByText(covers('2026-11-01', '2026-11-05'), {}, { timeout: 3000 })
+    expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/preview', {
+      groupId: 'g1',
+      periodEnd: '2026-11-05',
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements/s9'))
+    expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/close', {
+      groupId: 'g1',
+      periodEnd: '2026-11-05',
+    })
+  })
+
+  it('shows a refused close, and links to the earlier draft when one is unfinished', async () => {
+    store()
+    let refusal: Result<unknown> = {
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', message: 'That day is after the period ends.' },
+    }
+    answer({ close: () => refusal })
+    const { router } = renderAt('/groups/g1/statements')
+    fireEvent.click(await screen.findByText('Close period now…', {}, { timeout: 3000 }))
+    fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
+    await screen.findByText('That day is after the period ends.', {}, { timeout: 3000 })
+
+    refusal = {
+      ok: false,
+      error: {
+        code: 'CONFLICT',
+        message: 'Another draft is unfinished.',
+        details: { draftId: 's2' },
+      },
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
+    const link = await screen.findByText('Open the earlier draft', {}, { timeout: 3000 })
+    expect(link.getAttribute('href')).toBe('/groups/g1/statements/s2')
+    expect(screen.getByRole('alert').textContent).toBe(
+      'Finalize or discard the earlier draft first. Open the earlier draft',
+    )
+    expect(router.state.location.pathname).toBe('/groups/g1/statements')
+  })
+
+  it('ends no later than the job’s period before the job drafts it, and checks the day', async () => {
+    // 03:00 on 1 Nov in Sydney: October has ended, and the job drafts it at 06:00.
+    vi.setSystemTime(new Date('2026-10-31T16:00:00.000Z'))
+    mockGroup('admin', { nextCloseAt: '2026-10-31T19:00:00.000Z' })
+    store()
+    answer({ start: '2026-10-01' })
+    renderAt('/groups/g1/statements')
+    fireEvent.click(await screen.findByText('Close period now…', {}, { timeout: 3000 }))
+    const input = screen.getByLabelText('Last day') as HTMLInputElement
+    expect(input.value).toBe('2026-10-31')
+    expect(input.max).toBe('2026-10-31')
+    await screen.findByText(covers('2026-10-01', '2026-10-31'), {}, { timeout: 3000 })
+
+    fireEvent.change(input, { target: { value: '2026-11-01' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
+    await screen.findByText(`Pick ${formatDate('2026-10-31')} or earlier`)
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
+    await screen.findByText('Required')
+    // A day before the period starts is pointed out before it's refused.
+    fireEvent.change(input, { target: { value: '2026-09-30' } })
+    await screen.findByText(
+      `The period starts on ${formatDate('2026-10-01')}, so pick that day or a later one.`,
+      {},
+      { timeout: 3000 },
+    )
+    expect(call.mock.calls.map(([, , path]) => path)).not.toContain('/statements/close')
+  })
+
+  it('doesn’t promise a draft at period end to a group with no cycle', async () => {
+    mockGroup('admin', { statementCycle: 'none' })
+    store()
+    answer()
+    renderAt('/groups/g1/statements')
+    expect((await screen.findByText(/^No invoices yet/)).textContent).toBe('No invoices yet.')
+  })
+
+  it('shows a member the invoice so far: its period and balance due', async () => {
+    mockGroup('member')
+    store()
+    answer()
+    renderAt('/groups/g1/statements')
+    const due = await screen.findByText('Balance due', {}, { timeout: 3000 })
+    expect(due.closest('section')?.textContent).toBe(
+      `Current period so far${formatDate('2026-11-01')} – ${formatDate('2026-11-12')}Balance due${formatNet(11500, 'AUD')}`,
+    )
+    // Today in the group's time zone, which the server works out.
+    expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/preview', {
+      groupId: 'g1',
+    })
+  })
+
+  it('shows a housemate everyone’s closing so far, in words', async () => {
+    mockGroup('member', { type: 'house', name: 'The flat' })
+    store()
+    const dan = {
+      personId: 'pd',
+      name: 'Dan',
+      openingCents: 0,
+      givenCents: 0,
+      receivedCents: 0,
+      closingCents: 0,
+    }
+    answer({
+      snap: (extra) => divideSnapshot({ people: [...divideSnapshot().people, dan], ...extra }),
+    })
+    renderAt('/groups/g1/statements')
+    const alice = await screen.findByText(/^Alice is owed/, {}, { timeout: 3000 })
+    const section = alice.closest('section') as HTMLElement
+    expect(
+      within(section)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual([
+      `Alice is owed ${formatNet(99100, 'AUD')}`,
+      `Bob owes ${formatNet(70139, 'AUD')}`,
+      `Cara owes ${formatNet(28961, 'AUD')}`,
+      'Dan is settled up',
+    ])
+    expect(
+      within(section).getByText(`${formatDate('2026-11-01')} – ${formatDate('2026-11-12')}`),
+    ).toBeTruthy()
+    expect(within(section).queryByText('Balance due')).toBeNull()
   })
 })
 

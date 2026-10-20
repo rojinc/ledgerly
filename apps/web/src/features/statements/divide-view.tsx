@@ -15,11 +15,13 @@ function Section({ id, title, children }: { id: string; title: string; children:
   )
 }
 
-/** A closing balance in words: positive is owed to them (ledger.md#balances). */
-function closingText(cents: number, money: (cents: number) => string): string {
+/**
+ * A closing balance in words, to follow a name: positive is owed to them (ledger.md#balances).
+ */
+export function closingText(cents: number, money: (cents: number) => string): string {
   if (cents > 0) return `is owed ${money(cents)}`
   if (cents < 0) return `owes ${money(-cents)}`
-  return 'settled'
+  return 'is settled up'
 }
 
 /**
