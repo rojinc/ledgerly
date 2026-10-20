@@ -531,7 +531,7 @@ describe('POST /groups/{id}/delete: deleting', () => {
     // Not while the route may still be running it.
     expect((await runJob(services)).groups).toBe(0)
     services.now = new Date(NOW.getTime() + 2 * 60_000)
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 1, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 1, e2e: 0, failed: 0 })
     expectPurged(services)
   })
 })
@@ -544,7 +544,7 @@ describe('POST /: the group pass', () => {
     const services = world()
     await setRow(services, 'groups', 'h2', { deletingAt: CUT_OFF, deletingBy: 'p1' })
     if (teamGone) await services.teams.delete({ teamId: 'h2' })
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 1, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 1, e2e: 0, failed: 0 })
     expectPurged(services)
     expect(rowOf(services, 'persons', 'pKim')).toMatchObject({ orphanedAt: NOW.toISOString() })
   })
@@ -553,7 +553,7 @@ describe('POST /: the group pass', () => {
     const services = world()
     await deleting(services, minutesAgo(0.5))
     const before = state(services)
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 0, failed: 0 })
     expect(state(services)).toEqual(before)
   })
 
@@ -566,7 +566,7 @@ describe('POST /: the group pass', () => {
       account({ labels: ['deleted'], status: false, sessions: [], $updatedAt: CUT_OFF }),
     ])
     // The account pass purges h2 as one of Sam's groups, so the group pass finds nothing left.
-    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, e2e: 0, failed: 0 })
     expectPurged(services)
     expect(services.users.account('u1')).toBeUndefined()
   })
@@ -579,7 +579,7 @@ describe('POST /: the group pass', () => {
       tx.write({ action: 'delete', tableId: 'members', rowId: 'h2-p1' }),
     )
     const before = state(services)
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 0, failed: 0 })
     expect(state(services)).toEqual(before)
   })
 
@@ -588,12 +588,12 @@ describe('POST /: the group pass', () => {
     await deleting(services)
     crashOnCall(services.files, 'getFile')
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 1 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 0, failed: 1 })
     expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
       { fn: 'unknown', event: 'account_finish_failed', groupId: 'h2', cause: 'Error' },
     ])
     vi.restoreAllMocks()
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 1, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 1, e2e: 0, failed: 0 })
     expectPurged(services)
   })
 })
@@ -627,7 +627,7 @@ describe('a group delete and another person’s account deletion that kept a row
     // Under a minute old, so the group pass leaves it: only Ray's rerun runs.
     await deleting(services, NOW.toISOString())
     const h2 = leftOf(services, ['h2'])
-    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, e2e: 0, failed: 0 })
     expect(services.users.account('u3')).toBeUndefined()
     // Purging from the kept row too, each purge could delete the other's end row (#446, S2).
     expect(leftOf(services, ['h2'])).toEqual(h2)
@@ -671,13 +671,13 @@ describe('a group delete racing the same admin’s account deletion', () => {
       finished: false,
     })
     // Sam's deletion is less than a minute old, so only the group pass took it.
-    expect(job).toEqual({ finished: 0, users: 0, groups: 1, failed: 0 })
+    expect(job).toEqual({ finished: 0, users: 0, groups: 1, e2e: 0, failed: 0 })
     expect(errors).not.toHaveBeenCalled()
     expectPurged(services)
     vi.restoreAllMocks()
     // The sessions are gone; the hourly job carries on.
     services.now = new Date(NOW.getTime() + 2 * 60_000)
-    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, e2e: 0, failed: 0 })
     expect(services.users.account('u1')).toBeUndefined()
   })
 
@@ -688,10 +688,10 @@ describe('a group delete racing the same admin’s account deletion', () => {
     beforeCommitOf(services, firstBatch, async () => {
       expect((await ok<DeleteAccountResult>(services)).finished).toBe(true)
     })
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 0, failed: 0 })
     expect(errors).not.toHaveBeenCalled()
     expect(leftOf(services, ['h2'])).toEqual([])
     vi.restoreAllMocks()
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, e2e: 0, failed: 0 })
   })
 })

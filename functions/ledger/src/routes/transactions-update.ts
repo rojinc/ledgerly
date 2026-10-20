@@ -8,6 +8,7 @@ import { refuseDeletedPeople } from '@ledgerly/server/ledger/deleted-people'
 import {
   activityWrite,
   changedColumns,
+  changeNets,
   getTransaction,
   guardGroupAndMembers,
   guardTransaction,
@@ -135,6 +136,8 @@ export const updateTransaction = (services: ServicesFor) =>
           if (Object.keys(changes).length === 0 && sameRows(oldShares, shareData)) {
             throw new Unchanged()
           }
+          // Who was in it, for the hourly change email (ledger.md#editing-and-voiding).
+          if (existing.status === 'posted') changes.nets = changeNets(oldShares, shareData)
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
           const before = await storedInput(db, existing)
           await refuseDeletedPeople(tx, db, ledger, {

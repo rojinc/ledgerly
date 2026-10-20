@@ -33,6 +33,7 @@ export function account(overrides: Partial<FakeAccount> = {}): FakeAccount {
   return {
     $id: 'u1',
     $updatedAt: '2026-01-01T00:00:00.000Z',
+    email: 'sam@example.com',
     labels: [],
     status: true,
     passwordUpdate: '2026-01-01T00:00:00.000Z',
