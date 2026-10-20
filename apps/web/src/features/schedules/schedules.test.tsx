@@ -242,6 +242,26 @@ describe('NewSchedulePage', () => {
     expect((await screen.findByRole('alert')).textContent).toBe('Only an admin can.')
   })
 
+  it('keeps Create schedule focusable while saving, and sends once', async () => {
+    mockGroup(acme)
+    // The create never answers.
+    mockScheduler(new Promise(() => {}) as never)
+    renderAt('/schedules/new?groupId=g1')
+    fireEvent.click(screen.getByLabelText('Thursday'))
+    fireEvent.change(screen.getByLabelText('Paid hours per shift'), { target: { value: '5' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    saving.focus()
+    expect(document.activeElement).toBe(saving)
+    fireEvent.click(saving)
+    fireEvent.submit(saving.closest('form') as HTMLFormElement)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(callsTo('/schedules')).toHaveLength(1)
+  })
+
   it('has no form for someone who isn’t an admin, or in an archived group', () => {
     mockGroup(acme, 'member')
     renderAt('/schedules/new?groupId=g1')

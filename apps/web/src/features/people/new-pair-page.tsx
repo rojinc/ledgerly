@@ -95,26 +95,33 @@ function PairForm({ currency }: { currency: string }) {
     <form
       noValidate
       className="flex flex-col gap-4"
-      onSubmit={form.handleSubmit(async (body) => {
-        const result = await callFunction<CreateGroupResult>('groups', 'POST', '/groups', body)
-        if (!result.ok) {
-          // Either a clash, or an earlier try with this ID went through and its answer was lost.
-          if (result.error.code === 'CONFLICT') {
-            await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
-          }
-          form.setError('root', {
-            message:
-              result.error.code === 'CONFLICT'
-                ? 'This may already have been saved from your last try. Check People before adding it again.'
-                : result.error.message,
-          })
+      onSubmit={(event) => {
+        // Create stays focusable while saving (aria-disabled), so a second submit is ignored here.
+        if (isSubmitting) {
+          event.preventDefault()
           return
         }
-        const { group } = result.data
-        queryClient.setQueryData(queryKeys.group(group.$id), group)
-        await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
-        navigate(`/people/${group.$id}`)
-      })}
+        void form.handleSubmit(async (body) => {
+          const result = await callFunction<CreateGroupResult>('groups', 'POST', '/groups', body)
+          if (!result.ok) {
+            // Either a clash, or an earlier try with this ID went through and its answer was lost.
+            if (result.error.code === 'CONFLICT') {
+              await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
+            }
+            form.setError('root', {
+              message:
+                result.error.code === 'CONFLICT'
+                  ? 'This may already have been saved from your last try. Check People before adding it again.'
+                  : result.error.message,
+            })
+            return
+          }
+          const { group } = result.data
+          queryClient.setQueryData(queryKeys.group(group.$id), group)
+          await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
+          navigate(`/people/${group.$id}`)
+        })(event)
+      }}
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
       <TextField id="name" label="Name" error={errors.name} {...form.register('name')} />
@@ -144,7 +151,7 @@ function PairForm({ currency }: { currency: string }) {
         maxLength={3}
         {...form.register('currency')}
       />
-      <Button type="submit" className="self-start" disabled={isSubmitting}>
+      <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : 'Create'}
       </Button>
     </form>

@@ -81,15 +81,22 @@ export function BusinessForm({ profile, onSave }: Props) {
   return (
     <form
       noValidate
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          await onSave(body)
-          // Show what was stored (digits only, trimmed), not what was typed.
-          form.reset(toValues(body.business ?? {}, body.invoicePrefix ?? ''))
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
+      onSubmit={(event) => {
+        // Save stays focusable while saving (aria-disabled), so a second submit is ignored here.
+        if (isSubmitting) {
+          event.preventDefault()
+          return
         }
-      })}
+        void form.handleSubmit(async (body) => {
+          try {
+            await onSave(body)
+            // Show what was stored (digits only, trimmed), not what was typed.
+            form.reset(toValues(body.business ?? {}, body.invoicePrefix ?? ''))
+          } catch (error) {
+            form.setError('root', { message: (error as Error).message })
+          }
+        })(event)
+      }}
       className="flex flex-col gap-4"
       aria-labelledby="business-heading"
     >
@@ -194,7 +201,7 @@ export function BusinessForm({ profile, onSave }: Props) {
           />
         )}
       </Field>
-      <Button type="submit" disabled={isSubmitting}>
+      <Button type="submit" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : 'Save invoice details'}
       </Button>
       {isSubmitSuccessful && !isDirty && !errors.root && <Alert>Saved.</Alert>}

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { AppwriteException } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -75,5 +75,20 @@ describe('RecoverPage', () => {
       'Something went wrong. Check your connection and try again.',
     )
     expect(screen.queryByText(SENT)).toBeNull()
+  })
+
+  it('keeps Send link focusable while sending, and sends once', async () => {
+    createRecovery.mockReturnValue(new Promise(() => {}) as never)
+    ask('sam@example.com')
+    const busy = await screen.findByRole('button', { name: 'Sending…' })
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    busy.focus()
+    expect(document.activeElement).toBe(busy)
+    fireEvent.click(busy)
+    fireEvent.submit(busy.closest('form') as HTMLFormElement)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(createRecovery).toHaveBeenCalledTimes(1)
   })
 })

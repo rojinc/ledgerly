@@ -1491,6 +1491,37 @@ describe('HistoryPage', () => {
     expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull()
   })
 
+  it('keeps Load more focusable while it loads, and loads the next page once', async () => {
+    mockGroups(acme)
+    const page1 = Array.from({ length: 25 }, (_, i) => row(`t${String(i).padStart(2, '0')}`))
+    listRows.mockImplementation((async ({
+      tableId,
+      queries,
+    }: {
+      tableId: string
+      queries: string[]
+    }) => {
+      if (tableId === 'members') return { total: 2, rows: MEMBERS }
+      // The next page never answers.
+      if (queries.some((q) => q.includes('cursorAfter'))) return new Promise(() => {})
+      return { total: page1.length, rows: page1 }
+    }) as never)
+    renderAt('/transactions?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }))
+    const loading = await screen.findByRole('button', { name: 'Loading…' })
+    expect(loading.getAttribute('aria-disabled')).toBe('true')
+    loading.focus()
+    expect(document.activeElement).toBe(loading)
+    fireEvent.click(loading)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const nextPages = listCalls().filter((params) =>
+      params.queries.some((q) => q.includes('cursorAfter')),
+    )
+    expect(nextPages).toHaveLength(1)
+  })
+
   it('filters by kind, category and dates, in the query', async () => {
     mockGroups(acme)
     mockRows()
@@ -2127,6 +2158,30 @@ describe('TransactionPage', () => {
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['balances', 'g1'] }))
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['history', 'g1'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] })
+  })
+
+  it('keeps Void focusable while it starts, and starts it once', async () => {
+    mockGroups(acme)
+    mockRows([], shares)
+    getRow.mockResolvedValue(row('t1') as never)
+    const { queryClient } = renderAt('/transactions/t1')
+    // Held as it starts: once it shows the row as void, the form is gone.
+    const cancel = vi.spyOn(queryClient, 'cancelQueries').mockReturnValue(new Promise(() => {}))
+    fireEvent.change(await screen.findByLabelText('Reason for voiding'), {
+      target: { value: 'Twice' },
+    })
+    const button = screen.getByRole('button', { name: 'Void' })
+    fireEvent.click(button)
+    await waitFor(() => expect(button.getAttribute('aria-disabled')).toBe('true'))
+    button.focus()
+    expect(document.activeElement).toBe(button)
+    fireEvent.click(button)
+    fireEvent.submit(button.closest('form') as HTMLFormElement)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(cancel).toHaveBeenCalledTimes(1)
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('shows the note of a stored input the template schema doesn’t model, such as a bill’s', async () => {

@@ -226,6 +226,23 @@ describe('NewPairPage', () => {
     const [first, second] = call.mock.calls.map((args) => (args[3] as { id: string }).id)
     expect(second).toBe(first)
   })
+
+  it('keeps Create focusable while saving, and sends once', async () => {
+    call.mockReturnValue(new Promise(() => {}) as never)
+    renderAt('/people/new')
+    type('Name', 'Sam')
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    saving.focus()
+    expect(document.activeElement).toBe(saving)
+    fireEvent.click(saving)
+    fireEvent.submit(saving.closest('form') as HTMLFormElement)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(call).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('PairPage', () => {
@@ -463,6 +480,37 @@ describe('PairPage', () => {
     expect(queries).toEqual(
       expect.arrayContaining([Query.equal('groupId', 'g1'), Query.orderDesc('date')]),
     )
+  })
+
+  it('keeps Load more focusable while it loads, and loads the next page once', async () => {
+    mockGroup(0)
+    const page1 = Array.from({ length: 25 }, (_, i) => row(`t${String(i).padStart(2, '0')}`))
+    listRows.mockImplementation((async ({
+      tableId,
+      queries,
+    }: {
+      tableId: string
+      queries: string[]
+    }) => {
+      if (tableId === 'members') return { total: 2, rows: members() }
+      // The next page never answers.
+      if (queries.some((q) => q.includes('cursorAfter'))) return new Promise(() => {})
+      return { total: page1.length, rows: page1 }
+    }) as never)
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Load more' }))
+    const loading = await screen.findByRole('button', { name: 'Loading…' })
+    expect(loading.getAttribute('aria-disabled')).toBe('true')
+    loading.focus()
+    expect(document.activeElement).toBe(loading)
+    fireEvent.click(loading)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    const nextPages = listRows.mock.calls.filter(([params]) =>
+      (params as unknown as { queries: string[] }).queries.some((q) => q.includes('cursorAfter')),
+    )
+    expect(nextPages).toHaveLength(1)
   })
 
   it('shows no form in an archived group, or to a viewer', async () => {
