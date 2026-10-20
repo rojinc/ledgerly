@@ -17,6 +17,10 @@ const OPTIONS: Record<EmailType, { label: string; hint: string }> = {
     label: 'Shift to confirm',
     hint: 'When a past shift of yours still needs confirming.',
   },
+  transactionChanged: {
+    label: 'A transaction you’re in was changed',
+    hint: 'When someone else edits or voids one: at most one email an hour.',
+  },
   statementReady: {
     label: 'Statement ready',
     hint: 'When an invoice or divide is drafted. Drafts still appear under Statements.',
