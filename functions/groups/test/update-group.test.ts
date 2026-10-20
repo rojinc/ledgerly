@@ -179,6 +179,22 @@ describe('PATCH /groups/{id}', () => {
     expect(weekly).toMatchObject({ nextCloseAt: '2026-10-31T20:00:00.000Z' })
   })
 
+  it('takes a cycle change from today after a move west, while the period lasts there', async () => {
+    const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
+    services.now = new Date('2026-10-31T19:05:00.000Z')
+    const west = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Europe/London' })
+    expect(west).toMatchObject({ nextCloseAt: '2026-11-01T06:00:00.000Z' })
+    // 19:10 on 31 October in London: October hasn't ended there, so the change is made during
+    // it, as for a group that was always in London.
+    services.now = new Date('2026-10-31T19:10:00.000Z')
+    const weekly = await ok(services, 'PATCH', '/groups/g1', {
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    // The first week, from the anchor, closes at 06:00 on 9 November in London.
+    expect(weekly).toMatchObject({ nextCloseAt: '2026-11-09T06:00:00.000Z' })
+  })
+
   it('keeps a period that has ended, before its close, when the cycle changes', async () => {
     const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
     // 01:00 on 1 November in Sydney: October has ended, and closes at 06:00.

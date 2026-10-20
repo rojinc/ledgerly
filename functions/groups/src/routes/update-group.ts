@@ -121,10 +121,11 @@ export async function updateGroup(
 
 /**
  * Whether the statements cron has yet to draft the period `closeAt` closes
- * (statements.md#periods): once that period has ended, read in `timeZone`, the one the close was
- * made in, or once the close has passed. The first covers the hours between a period's end and
- * its close, which a move west makes longer (#126); the second, a close stored in another time
- * zone before #126.
+ * (statements.md#periods): once that period has ended, read in `timeZone`, the group's before
+ * the change, or once the close has passed. The first covers the hours between a period's end
+ * and its close, so a period that has ended in the group's time zone is never merged into the
+ * next (#126); the second, a close stored in another time zone before #126. Before the period
+ * ends there, a change works the close out from today, as for a group always in that time zone.
  */
 function isDue(closeAt: string, timeZone: string, now: Date): boolean {
   const ended = compareDates(periodEndClosedAt(closeAt, timeZone), localToday(timeZone, now)) < 0
