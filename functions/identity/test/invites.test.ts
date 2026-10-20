@@ -167,6 +167,16 @@ function revs(services: Fakes): Record<string, unknown> {
   return Object.fromEntries(services.db.rows('persons').map((row) => [row.$id, row.rev]))
 }
 
+/** The address-miss count on a person's row (#274). */
+function missesOf(services: Fakes, personId: string) {
+  const row = services.db.rows('persons').find((person) => person.$id === personId)
+  return { addressMisses: row?.addressMisses, addressMissesFrom: row?.addressMissesFrom }
+}
+
+const GUARDED = expect.stringMatching(/^[a-z0-9]{20}$/)
+const ONE_MISS = { addressMisses: 1, addressMissesFrom: NOW.toISOString() }
+const NO_MISSES = { addressMisses: undefined, addressMissesFrom: undefined }
+
 const UNTOUCHED = {
   pAnn: null,
   pBen: null,
@@ -222,6 +232,8 @@ describe('POST /invites', () => {
       pAnn: expect.stringMatching(/^[a-z0-9]{20}$/),
       pSam: expect.stringMatching(/^[a-z0-9]{20}$/),
     })
+    // The address check counted 1 in a new window, and the send took it back (#274).
+    expect(missesOf(services, 'pAnn')).toEqual({ ...ONE_MISS, addressMisses: 0 })
   })
 
   it('gives every invite its own token', async () => {
@@ -405,29 +417,30 @@ describe('POST /invites', () => {
           message: 'Only someone who has not joined the group yet can be invited.',
         },
       ],
-      [
-        'an address nobody has',
-        { ...BODY, email: 'nobody@example.com' },
-        'u1',
-        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
-      ],
-      [
-        "someone else's address",
-        { ...BODY, email: 'jo@example.com' },
-        'u1',
-        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
-      ],
-      [
-        "another member's address in the same group",
-        { ...BODY, email: 'kim@example.com' },
-        'u1',
-        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
-      ],
     ])('%s', async (_name, body, userId, expected) => {
       const services = fixture()
       expect(await refused(services, body, userId)).toMatchObject(expected)
       expect(services.db.rows('invites')).toEqual([])
       expect(revs(services)).toEqual(UNTOUCHED)
+      expect(services.sent).toEqual([])
+    })
+
+    // #274: each keeps the count its check took on the inviter's row, before the address was
+    // looked at.
+    it.each([
+      ['an address nobody has', 'nobody@example.com'],
+      ["someone else's address", 'jo@example.com'],
+      ["another member's address in the same group", 'kim@example.com'],
+    ])('%s, as a wrong address, keeping its count', async (_name, email) => {
+      const services = fixture()
+      expect(await refused(services, { ...BODY, email })).toEqual({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+        message: NOT_THEIR_EMAIL,
+      })
+      expect(services.db.rows('invites')).toEqual([])
+      expect(revs(services)).toEqual({ ...UNTOUCHED, pAnn: GUARDED })
+      expect(missesOf(services, 'pAnn')).toEqual(ONE_MISS)
       expect(services.sent).toEqual([])
     })
 
@@ -452,7 +465,8 @@ describe('POST /invites', () => {
       { status: 403, code: 'NOT_A_MEMBER', message: "You're not a member of this group." },
       { status: 401, code: 'UNAUTHENTICATED', message: 'Log in to continue.' },
     ],
-    // The same answer as a wrong address, so it doesn't show the deletion.
+    // The same answer as a wrong address, so it doesn't show the deletion, and it keeps the count
+    // its address check took the same way (step 3.1, #274).
     [
       'the person invited',
       'pSam',
@@ -465,10 +479,18 @@ describe('POST /invites', () => {
     const deleting = (services: Fakes) => () =>
       updateRow(services.db, 'persons', personId, { deletedAt: ago(1000), rev: 'deleting' })
 
-    function expectNothingDone(services: Fakes) {
+    // The deletion's write, and the count the inviter's address check took, which a refusal
+    // after it keeps (#274): this request's guards in step 3 were rolled back. An inviter refused
+    // as NOT_A_MEMBER made no check.
+    function expectNothingDone(services: Fakes, counted: boolean) {
       expect(services.db.rows('invites')).toEqual([])
-      // The deletion's write only: this request's guards were rolled back.
-      expect(revs(services)).toEqual({ ...UNTOUCHED, [personId]: 'deleting' })
+      expect(revs(services)).toEqual({
+        ...UNTOUCHED,
+        // The count's guard, unless the inviter's own deletion wrote after it.
+        ...(counted ? { pAnn: GUARDED } : {}),
+        [personId]: 'deleting',
+      })
+      expect(missesOf(services, 'pAnn')).toEqual(counted ? ONE_MISS : NO_MISSES)
       expect(services.sent).toEqual([])
     }
 
@@ -476,34 +498,36 @@ describe('POST /invites', () => {
       const services = fixture({ samUserId: 'u9' })
       await deleting(services)()
       expect(await refused(services)).toEqual(before)
-      expectNothingDone(services)
+      expectNothingDone(services, personId !== 'pAnn')
     })
 
     it('refuses when the deletion commits just before the guards are staged', async () => {
       const services = fixture({ samUserId: 'u9' })
-      // After step 2's checks: the stored rows, read after the guards, show it.
+      // After step 2's checks and the address check's count, before step 3's guards: the stored
+      // rows, read after those guards, show it.
       const raced = beforeStaging(
         services.db,
-        (operations) => operations.includes('"tableId":"persons"'),
+        (operations) => operations.includes('"rowId":"pSam"'),
         deleting(services),
       )
       expect(await refused(services)).toEqual(expected)
       expect(raced).toHaveBeenCalled()
-      expectNothingDone(services)
+      expectNothingDone(services, true)
     })
 
     it('fails the commit when the deletion commits just after the guards, and the retry refuses', async () => {
       const services = fixture({ samUserId: 'u9' })
-      // After this request staged its guards, read both rows and counted.
-      const raced = beforeCommit(services.db, deleting(services))
+      // After this request staged step 3's guards, read both rows and counted. The first commit
+      // is the address check's count.
+      const raced = beforeCommit(services.db, deleting(services), 2)
       expect(await refused(services)).toEqual(expected)
-      // This request's first commit fails (409), then the deletion's own; the retry refuses
-      // before committing.
+      // The count commits; this request's step 3 commit fails (409), then the deletion's own
+      // commits; the retry refuses before committing.
       const commits = raced.mock.calls.flatMap(([params], index) =>
         params.commit ? [raced.mock.settledResults[index]?.type] : [],
       )
-      expect(commits).toEqual(['rejected', 'fulfilled'])
-      expectNothingDone(services)
+      expect(commits).toEqual(['fulfilled', 'rejected', 'fulfilled'])
+      expectNothingDone(services, true)
     })
   })
 
@@ -522,9 +546,11 @@ describe('POST /invites', () => {
 
     const wrongAddress = { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL }
 
+    // The deletion's write, and the count the inviter's address check took (step 3.1, #274).
     function expectNothingDone(services: Fakes) {
       expect(services.db.rows('invites')).toEqual([])
-      expect(revs(services)).toEqual({ ...UNTOUCHED, pSam: 'deleting' })
+      expect(revs(services)).toEqual({ ...UNTOUCHED, pSam: 'deleting', pAnn: GUARDED })
+      expect(missesOf(services, 'pAnn')).toEqual(ONE_MISS)
       expect(services.sent).toEqual([])
     }
 
@@ -554,11 +580,14 @@ describe('POST /invites', () => {
       await updateRow(services.db, 'persons', 'pKim', { mergedInto: 'pAnn' })
       const staged = vi.spyOn(services.db, 'createOperations')
       await sends(services, TO_KIM)
-      const guarded = staged.mock.calls
-        .flatMap(([params]) => (params.operations ?? []) as { tableId: string; rowId: string }[])
-        .filter((operation) => operation.tableId === 'persons')
-        .map((operation) => operation.rowId)
-      expect(guarded).toEqual(['pAnn', 'pKim'])
+      const persons = staged.mock.calls.map(([params]) =>
+        ((params.operations ?? []) as { tableId: string; rowId: string }[])
+          .filter((operation) => operation.tableId === 'persons')
+          .map((operation) => operation.rowId),
+      )
+      // The address check's count (its guard, then its count), step 3's guards, then the
+      // take-back staged with the invite row (#274).
+      expect(persons).toEqual([['pAnn'], ['pAnn'], ['pAnn', 'pKim'], ['pAnn']])
       expect(services.sent).toHaveLength(1)
     })
 
@@ -571,9 +600,10 @@ describe('POST /invites', () => {
 
     it('refuses when that deletion commits just before the guards are staged', async () => {
       const services = await merging()
+      // Before step 3's guards, after the address check's count.
       const raced = beforeStaging(
         services.db,
-        (operations) => operations.includes('"tableId":"persons"'),
+        (operations) => operations.includes('"rowId":"pKim"'),
         deleting(services),
       )
       expect(await refused(services, TO_KIM)).toEqual(wrongAddress)
@@ -583,18 +613,19 @@ describe('POST /invites', () => {
 
     it('fails the commit when that deletion commits just after the guards, and the retry refuses', async () => {
       const services = await merging()
-      const raced = beforeCommit(services.db, deleting(services))
+      // Step 3's commit: the first is the address check's count.
+      const raced = beforeCommit(services.db, deleting(services), 2)
       expect(await refused(services, TO_KIM)).toEqual(wrongAddress)
       const commits = raced.mock.calls.flatMap(([params], index) =>
         params.commit ? [raced.mock.settledResults[index]?.type] : [],
       )
-      expect(commits).toEqual(['rejected', 'fulfilled'])
+      expect(commits).toEqual(['fulfilled', 'rejected', 'fulfilled'])
       expectNothingDone(services)
     })
   })
 
   describe('rate limits', () => {
-    it('refuses the 21st invite by one inviter in 24 hours, before anything is committed', async () => {
+    it('refuses the 21st invite by one inviter in 24 hours, before the invite is committed', async () => {
       const services = fixture({ invites: sentInvites('a', 20, { invitedBy: 'pAnn' }) })
       expect(await refused(services)).toEqual({
         status: 429,
@@ -602,7 +633,9 @@ describe('POST /invites', () => {
         message: TOO_MANY,
       })
       expect(services.db.rows('invites')).toHaveLength(20)
-      expect(revs(services)).toEqual(UNTOUCHED)
+      // Only the address check's count, which a refusal after it keeps (#274).
+      expect(revs(services)).toEqual({ ...UNTOUCHED, pAnn: GUARDED })
+      expect(missesOf(services, 'pAnn')).toEqual(ONE_MISS)
       expect(services.sent).toEqual([])
       // The limit is the inviter's: someone else in the group can still invite Sam.
       await sends(services, BODY, 'u2')
@@ -655,10 +688,15 @@ describe('POST /invites', () => {
     it('refuses the 21st when two invites by one inviter are sent at once', async () => {
       const services = fixture({ invites: sentInvites('a', 19, { invitedBy: 'pAnn' }) })
       let other: InviteResult | undefined
-      // To Kim, committed after this request staged its guard on Ann's row and counted 19.
-      const raced = beforeCommit(services.db, async () => {
-        other = await sends(services, TO_KIM)
-      })
+      // To Kim, committed after this request staged its guard on Ann's row and counted 19: step
+      // 3's commit, after the address check's count (#274).
+      const raced = beforeCommit(
+        services.db,
+        async () => {
+          other = await sends(services, TO_KIM)
+        },
+        2,
+      )
       expect(await refused(services)).toEqual({
         status: 429,
         code: 'RATE_LIMITED',
@@ -674,8 +712,9 @@ describe('POST /invites', () => {
       const services = fixture({
         invites: sentInvites('s', 2, { identityKey: 'email:sam@example.com', invitedBy: 'pVic' }),
       })
-      // Ben's invite to Sam commits after Ann's request staged its guard on Sam's row.
-      const raced = beforeCommit(services.db, () => sends(services, BODY, 'u2'))
+      // Ben's invite to Sam commits after Ann's request staged its guard on Sam's row (step 3's
+      // commit, after the address check's count).
+      const raced = beforeCommit(services.db, () => sends(services, BODY, 'u2'), 2)
       expect((await refused(services)).code).toBe('RATE_LIMITED')
       expect(raced).toHaveBeenCalled()
       expect(services.db.rows('invites').map((row) => row.invitedBy)).toEqual([
@@ -688,10 +727,10 @@ describe('POST /invites', () => {
 
     it('stages its guard before counting, so an invite committed just before the guard counts', async () => {
       const services = fixture({ invites: sentInvites('a', 19, { invitedBy: 'pAnn' }) })
-      // To Kim, committed after this request's checks but before it staged its guards.
+      // To Kim, committed after this request's checks but before it staged step 3's guards.
       const raced = beforeStaging(
         services.db,
-        (operations) => operations.includes('"tableId":"persons"'),
+        (operations) => operations.includes('"rowId":"pSam"'),
         () => sends(services, TO_KIM),
       )
       expect((await refused(services)).code).toBe('RATE_LIMITED')
@@ -702,24 +741,30 @@ describe('POST /invites', () => {
 
     it('counts again after losing a race, and sends when there is still room', async () => {
       const services = fixture()
-      beforeCommit(services.db, () => sends(services, TO_KIM))
+      // Step 3's commit, after the address check's count.
+      beforeCommit(services.db, () => sends(services, TO_KIM), 2)
       await sends(services)
       expect(services.db.rows('invites').map((row) => row.memberId)).toEqual(['mKim', 'mSam'])
       expect(services.sent.map((email) => email.to)).toEqual(['kim@example.com', 'sam@example.com'])
     })
 
-    it('says CONFLICT, try again, when the commit conflicts twice', async () => {
+    it('says CONFLICT, try again, when the commit conflicts twice, and keeps the count', async () => {
       const services = fixture()
       const commit = services.db.updateTransaction.bind(services.db)
+      let count = 0
+      // The address check's count commits; step 3's commit and its rerun conflict.
       const commits = vi
         .spyOn(services.db, 'updateTransaction')
         .mockImplementation(async (params) => {
-          if (params.commit) throw new AppwriteException('Conflict', 409, 'transaction_conflict')
+          if (params.commit && count++ > 0) {
+            throw new AppwriteException('Conflict', 409, 'transaction_conflict')
+          }
           return commit(params)
         })
       expect(await refused(services)).toEqual({ status: 409, code: 'CONFLICT', message: TRY_AGAIN })
-      expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(2)
+      expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(3)
       expect(services.db.rows('invites')).toEqual([])
+      expect(missesOf(services, 'pAnn')).toEqual(ONE_MISS)
       expect(services.sent).toEqual([])
     })
   })
