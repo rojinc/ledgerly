@@ -3,6 +3,7 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import { expect, type Page, test } from '@playwright/test'
 import { runId, testEmail } from './dev-project'
+import { archiveEmployer } from './employer'
 import { logIn, setupUser } from './users'
 
 // User flow 2 (docs/product/user-flows.md#2-set-up-an-employer-with-a-weekly-shift). The
@@ -11,6 +12,12 @@ const ZONE = 'Australia/Sydney'
 const THURSDAY = 4
 // The scheduler creates a new schedule's shifts up to 56 days ahead (scheduling.md).
 const HORIZON_DAYS = 56
+
+// The employer this test adds, archived after it even when it fails.
+let groupId: string | undefined
+test.afterEach(async ({ page }) => {
+  if (groupId) await archiveEmployer(page, groupId)
+})
 
 test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks', async ({
   page,
@@ -32,7 +39,7 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   await expect(page.getByLabel('Default hourly rate (AUD)')).toHaveValue('25.00')
   await expect(page.getByLabel('Invoice cycle')).toHaveValue('monthly')
   await expect(page.getByLabel('Payment terms (days)')).toHaveValue('14')
-  const groupId = /\/groups\/([^/]+)\/settings/.exec(page.url())?.[1]
+  groupId = /\/groups\/([^/]+)\/settings/.exec(page.url())?.[1]
   expect(groupId).toBeTruthy()
 
   // Step 2: every Thursday, 5 hours at the employer's $25/h, from today, skipping NSW holidays.
