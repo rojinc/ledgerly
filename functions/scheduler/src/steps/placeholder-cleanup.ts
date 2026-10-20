@@ -24,10 +24,9 @@ const FORMER_MEMBER = 'Former member'
  * Step 5c (scheduling.md#step-5c-placeholder-clean-up): each person whose `orphanedAt` is 30 days
  * old or more, in one transaction, gets it cleared, and a placeholder no member row names also
  * has its identities and the invites to them deleted and its name replaced with "Former member";
- * its row stays. One
- * re-added, claimed or merged since is kept as it is. A write to the person meanwhile fails one of
- * the two commits, and the person is skipped for the next run. Any other failure ends the step,
- * with one error line.
+ * its row stays. One re-added, claimed or merged since is kept as it is. A write to the person
+ * meanwhile fails one of the two commits, and the person is skipped for the next run. Any other
+ * failure ends the step, with one error line.
  */
 export async function cleanUpPlaceholders(services: Services): Promise<PlaceholderCounts> {
   const counts: PlaceholderCounts = { cleared: 0, kept: 0, skipped: 0, failed: 0 }
