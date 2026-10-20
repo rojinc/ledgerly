@@ -55,6 +55,8 @@ const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
     // Feature-local keys: the dashboard's shares and the bills lists.
     ['myShares'],
     ['bills', groupId],
+    // A statement's "current period so far" preview sits under its group's statements (#420).
+    ['statements', groupId],
     ['activity', groupId],
   ],
   // `statement` covers an async finalize's status (#32).
