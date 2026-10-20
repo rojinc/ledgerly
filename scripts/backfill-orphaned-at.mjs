@@ -5,7 +5,8 @@
 // 15 s):
 //   APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/backfill-orphaned-at.mjs
 // Use a one-off key with rows.read and rows.write, and delete it afterwards. It prints counts
-// only. Safe to run again.
+// only. Safe to run again: it marks again only placeholders step 5c has cleared since, which have
+// nothing more to clear.
 import { bundleBackfill } from './backfill-bundle.mjs'
 
 const { APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_API_KEY } = process.env

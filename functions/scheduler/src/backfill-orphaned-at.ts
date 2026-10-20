@@ -4,7 +4,11 @@ import { pages } from '@ledgerly/server/appwrite/pages'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { randomId } from '@ledgerly/server/identity/random-id'
-import { isLonePlaceholder, isPlaceholder } from '@ledgerly/server/identity/resolve-person'
+import {
+  findPerson,
+  isLonePlaceholder,
+  isPlaceholder,
+} from '@ledgerly/server/identity/resolve-person'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 
@@ -19,10 +23,12 @@ const TRIES = 3
  * by scripts/backfill-orphaned-at.mjs, once in each environment, after the change is deployed
  * there and the old deployment's executions have finished.
  *
- * Safe to run again, and while the new code runs: the person is written first, with a fresh
- * `rev`, then read again as committed, so an add, a claim or a merge that commits meanwhile
- * fails one of the two commits, and the person is decided again. One listed with an `orphanedAt`
- * keeps it. A person that keeps changing makes it throw.
+ * Safe while the new code runs: the person is decided on its stored row, written with a fresh
+ * `rev`, then decided again as committed, so an add, a claim, a merge or a removal that commits
+ * meanwhile fails one of the two commits, and the person is decided again. One with an
+ * `orphanedAt` keeps it, so a removal's newer mark stands. A person that keeps changing makes it
+ * throw. Run again, it marks again only the placeholders step 5c has cleared since, which then
+ * have nothing left to clear.
  */
 export async function backfillOrphanedAt(db: Db, now: Date): Promise<BackfillCounts> {
   const counts: BackfillCounts = { marked: 0, unchanged: 0 }
@@ -38,7 +44,7 @@ export async function backfillOrphanedAt(db: Db, now: Date): Promise<BackfillCou
 
 async function mark(db: Db, personId: string, now: Date): Promise<keyof BackfillCounts> {
   for (let tries = 1; ; tries++) {
-    if (!(await isLonePlaceholder(db, personId))) return 'unchanged'
+    if (!(await unmarked(db, personId))) return 'unchanged'
     try {
       await withTransaction(db, async (tx) => {
         await tx.write({
@@ -47,7 +53,7 @@ async function mark(db: Db, personId: string, now: Date): Promise<keyof Backfill
           rowId: personId,
           data: { orphanedAt: now.toISOString(), rev: randomId() },
         })
-        if (!(await isLonePlaceholder(db, personId))) throw new Raced()
+        if (!(await unmarked(db, personId))) throw new Raced()
       })
       return 'marked'
     } catch (error) {
@@ -58,4 +64,10 @@ async function mark(db: Db, personId: string, now: Date): Promise<keyof Backfill
       if (!raced || tries === TRIES) throw error
     }
   }
+}
+
+/** Whether the stored person has no `orphanedAt` and is a placeholder no member row names. */
+async function unmarked(db: Db, personId: string): Promise<boolean> {
+  const person = await findPerson(db, personId)
+  return !person?.orphanedAt && (await isLonePlaceholder(db, personId))
 }

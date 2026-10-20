@@ -1,4 +1,5 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { bundleBackfill } from '../../../scripts/backfill-bundle.mjs'
 import { backfillOrphanedAt } from '../src/backfill-orphaned-at'
@@ -79,6 +80,82 @@ describe('backfillOrphanedAt', () => {
     }
     expect(await backfillOrphanedAt(services.db, NOW)).toEqual({ marked: 0, unchanged: 2 })
     expect(personOf(services, 'pLone')).toMatchObject({ rev: 'add' })
+    expect(personOf(services, 'pLone')?.orphanedAt).toBeUndefined()
+  })
+
+  // A new removal of pX's last member row: its mark, from after the backfill started.
+  const REMOVED = '2026-10-18T20:05:00.000Z'
+  const removal = (services: Fakes) => () =>
+    withTransaction(services.db, (tx) =>
+      tx.write(
+        { action: 'delete', tableId: 'members', rowId: 'g1-pX' },
+        {
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pX',
+          data: { orphanedAt: REMOVED, rev: 'removal' },
+        },
+      ),
+    )
+
+  it.each([
+    ['before it reads the person', 'getRow'],
+    ['between its reads of the person and of its member rows', 'listRows'],
+  ])('keeps the mark of a removal that commits after the listing, %s', async (_, method) => {
+    const services = fakes({
+      persons: [person('pX', null)],
+      members: [member('g1', 'pX', { status: 'placeholder' })],
+    })
+    const db = services.db
+    let done = false
+    const hook = async (tableId: string) => {
+      if (!done && tableId === (method === 'getRow' ? 'persons' : 'members')) {
+        done = true
+        await removal(services)()
+      }
+    }
+    const getRow = db.getRow.bind(db)
+    vi.spyOn(db, 'getRow').mockImplementation(async (params) => {
+      await hook(params.tableId)
+      return getRow(params)
+    })
+    const listRows = db.listRows.bind(db)
+    vi.spyOn(db, 'listRows').mockImplementation(async (params) => {
+      // Not the listing of persons, which comes first.
+      if (params.tableId === 'members') await hook(params.tableId)
+      return listRows(params)
+    })
+    expect(await backfillOrphanedAt(db, NOW)).toEqual({ marked: 0, unchanged: 1 })
+    expect(personOf(services, 'pX')).toMatchObject({ orphanedAt: REMOVED, rev: 'removal' })
+  })
+
+  it('leaves a placeholder adopted after it decided, before it staged', async () => {
+    const services = seeded()
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"pLone"'),
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'persons',
+            rowId: 'pLone',
+            data: { userId: 'u9', rev: 'adopt' },
+          }),
+        ),
+    )
+    expect(await backfillOrphanedAt(services.db, NOW)).toEqual({ marked: 0, unchanged: 2 })
+    expect(personOf(services, 'pLone')).toMatchObject({ userId: 'u9', rev: 'adopt' })
+    expect(personOf(services, 'pLone')?.orphanedAt).toBeUndefined()
+  })
+
+  it('throws any other error at once, without trying again', async () => {
+    const services = seeded()
+    const stage = vi
+      .spyOn(services.db, 'createOperations')
+      .mockRejectedValue(new AppwriteException('Server error', 500, 'general_unknown'))
+    await expect(backfillOrphanedAt(services.db, NOW)).rejects.toMatchObject({ code: 500 })
+    expect(stage).toHaveBeenCalledTimes(1)
     expect(personOf(services, 'pLone')?.orphanedAt).toBeUndefined()
   })
 
