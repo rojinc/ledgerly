@@ -1060,6 +1060,141 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
   })
 })
 
+// The user's personal group (#402): Sam is its owner and only member (permissions.md).
+const personal = {
+  $id: 'me1',
+  type: 'personal',
+  name: 'Personal',
+  ownerPersonId: 'pw',
+  currency: 'AUD',
+  timezone: 'Australia/Sydney',
+  archivedAt: null,
+} as Groups
+
+const ME = [
+  { $id: 'm9', groupId: 'me1', personId: 'pw', displayName: 'Sam', role: 'admin' },
+] as Members[]
+
+describe('NewTransactionPage, personal income and expense (#402)', () => {
+  it('offers Income and Expense, and none of the employer presets', async () => {
+    mockGroups(personal)
+    mockRows([], [], ME)
+    renderAt('/transactions/new?groupId=me1')
+    expect(await screen.findByRole('heading', { name: 'Add income or expense' })).toBeTruthy()
+    const choices = within(await screen.findByRole('group', { name: 'What happened?' }))
+    expect(choices.getAllByRole('radio')).toHaveLength(2)
+    expect((choices.getByRole('radio', { name: /^Income/ }) as HTMLInputElement).checked).toBe(true)
+    expect(choices.getByRole('radio', { name: /^Expense/ })).toBeTruthy()
+    expect(screen.queryByLabelText(/I paid for them/)).toBeNull()
+    // An optional category (functions-api.md#transactioninput), none by default.
+    expect((screen.getByLabelText('Category') as HTMLSelectElement).value).toBe('')
+  })
+
+  it('offers no adjustment: there is nobody to adjust against', async () => {
+    mockGroups(personal)
+    mockRows([], [], ME)
+    renderAt('/transactions/new?groupId=me1&kind=adjustment')
+    expect(await screen.findByRole('heading', { name: 'Add income or expense' })).toBeTruthy()
+    expect(await screen.findByRole('radio', { name: /^Income/ })).toBeTruthy()
+    expect(screen.queryByLabelText('Who is owed more')).toBeNull()
+    expect(screen.queryByRole('link', { name: /with an adjustment/ })).toBeNull()
+  })
+
+  it.each([
+    ['Income', { kind: 'income' }],
+    [
+      'Expense',
+      {
+        kind: 'expense',
+        payers: [{ personId: 'pw', cents: 1999 }],
+        split: { mode: 'equal', personIds: ['pw'] },
+      },
+    ],
+  ])('sends %s as the documented body, in cents, dated local today', async (label, parts) => {
+    // 01:30 on the 19th in Sydney, still the 18th in UTC.
+    vi.setSystemTime(HOUSE_NOW)
+    mockGroups(personal)
+    mockRows([], [], ME)
+    call.mockResolvedValue(ok({ transaction: row('x5', { groupId: 'me1' }), shares: [] }))
+    const { router } = renderAt('/transactions/new?groupId=me1')
+    fireEvent.click(await screen.findByRole('radio', { name: new RegExp(`^${label}`) }))
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '19.99' } })
+    fireEvent.change(screen.getByLabelText('Description'), { target: { value: ' Refund ' } })
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'other' } })
+    fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: 'ATO' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.slice(0, 3)).toEqual(['ledger', 'POST', '/transactions'])
+    expect(call.mock.calls[0]?.[3]).toEqual({
+      id: expect.any(String),
+      groupId: 'me1',
+      date: '2026-10-19',
+      description: 'Refund',
+      totalCents: 1999,
+      category: 'other',
+      note: 'ATO',
+      ...parts,
+    })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/transactions/x5'))
+  })
+})
+
+describe('HistoryPage, the personal group (#402)', () => {
+  const entries = [
+    row('t2', { groupId: 'me1', kind: 'income', description: 'Refund', category: null }),
+    row('t1', { groupId: 'me1', description: 'Groceries', date: '2026-10-17' }),
+  ]
+
+  it('lists its entries with its own kinds and Add, and no balance or invoices', async () => {
+    mockGroups(personal)
+    mockRows(entries, [], ME)
+    renderAt('/transactions?groupId=me1')
+    const list = await screen.findByRole('region', { name: 'Transactions' })
+    const links = await within(list).findAllByRole('link')
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/transactions/t2',
+      '/transactions/t1',
+    ])
+    expect(within(list).getByText('2026-10-18 · Income · Posted')).toBeTruthy()
+    expect(within(list).getByText('2026-10-17 · Expense · Posted')).toBeTruthy()
+    expect(listCalls().find((params) => params.tableId === 'transactions')?.queries).toContain(
+      Query.equal('groupId', 'me1'),
+    )
+    // ledger.md#transaction-kinds: a personal group's.
+    const kinds = within(screen.getByLabelText('Kind')).getAllByRole('option')
+    expect(kinds.map((option) => option.textContent)).toEqual([
+      'All',
+      'Expense',
+      'Bill',
+      'Income',
+      'Adjustment',
+    ])
+    expect(screen.getByRole('link', { name: 'Add income or expense' }).getAttribute('href')).toBe(
+      '/transactions/new?groupId=me1',
+    )
+    expect(screen.queryByRole('link', { name: 'Invoices' })).toBeNull()
+    expect(screen.queryByText(/^Balance with/)).toBeNull()
+  })
+
+  it('still opens on an employer, and offers the personal group to pick and filter', async () => {
+    mockGroups(acme)
+    vi.mocked(useGroups).mockReturnValue({ data: [acme, personal], isError: false } as never)
+    mockRows(entries)
+    renderAt('/transactions')
+    expect(await screen.findByText('All square')).toBeTruthy()
+    const picker = screen.getByLabelText('Group') as HTMLSelectElement
+    expect(picker.value).toBe('g1')
+    fireEvent.change(picker, { target: { value: 'me1' } })
+    expect(await screen.findByRole('link', { name: 'Add income or expense' })).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'income' } })
+    await waitFor(() =>
+      expect(listCalls().at(-1)?.queries).toEqual(
+        expect.arrayContaining([Query.equal('groupId', 'me1'), Query.equal('kind', 'income')]),
+      ),
+    )
+  })
+})
+
 describe('NewTransactionPage, adjustment (#400)', () => {
   const ADJUST = '/transactions/new?groupId=g1&kind=adjustment'
   const select = (label: string) => screen.getByLabelText(label) as HTMLSelectElement
@@ -1853,5 +1988,57 @@ describe('TransactionPage', () => {
         'We couldn’t load this expense’s items. Reload the page to try again.',
       ),
     ).toBeTruthy()
+  })
+})
+
+describe('TransactionPage, personal income and expense (#402)', () => {
+  const income = row('t1', {
+    groupId: 'me1',
+    kind: 'income',
+    description: 'Refund',
+    category: null,
+    totalCents: 1999,
+    inputJson: '{}',
+  })
+  // The ledger's share for it: the owner gives and gets the total (ledger.md#transaction-kinds).
+  const mine = [{ $id: 's1', personId: 'pw', givenCents: 1999, receivedCents: 1999 }]
+
+  it('shows it without a who-paid list, and links the personal history', async () => {
+    mockGroups(personal)
+    mockRows([], mine, ME)
+    getRow.mockResolvedValue(income as never)
+    const { queryClient } = renderAt('/transactions/t1')
+    const group = (await screen.findByText('Group')).nextElementSibling as HTMLElement
+    expect(within(group).getByRole('link', { name: 'Personal' }).getAttribute('href')).toBe(
+      '/transactions?groupId=me1',
+    )
+    expect(screen.getByText('Income')).toBeTruthy()
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0))
+    expect(queryClient.getQueryData(['transaction', 't1', 'shares'])).toHaveLength(1)
+    expect(screen.queryByRole('heading', { name: 'Who paid, and who it was for' })).toBeNull()
+    expect(screen.queryByText(/^Sam: paid/)).toBeNull()
+  })
+
+  it('voids it with a reason, as other kinds', async () => {
+    mockGroups(personal)
+    mockRows([], mine, ME)
+    getRow.mockResolvedValue(income as never)
+    call.mockResolvedValue(
+      ok({ transaction: { ...income, status: 'void', voidReason: 'Twice' }, shares: [] }),
+    )
+    const { queryClient } = renderAt('/transactions/t1')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.change(await screen.findByLabelText('Reason for voiding'), {
+      target: { value: 'Twice' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Void' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('ledger', 'POST', '/transactions/t1/void', {
+        reason: 'Twice',
+      }),
+    )
+    expect(await screen.findByText('Void. Reason: Twice')).toBeTruthy()
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['history', 'me1'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['balances', 'me1'] })
   })
 })

@@ -1,6 +1,16 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
+import { buildShares } from '@ledgerly/core/ledger/build-shares'
+import { reportByMonth } from '@ledgerly/core/reports/personal-report'
 import { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { describe, expect, it } from 'vitest'
-import { type EntryValues, readStored, toEntryBody, toEntryValues } from './presets'
+import {
+  type EntryValues,
+  readStored,
+  toEntryBody,
+  toEntryValues,
+  toPersonalBody,
+  toPersonalValues,
+} from './presets'
 
 const PEOPLE = { worker: 'pw', employer: 'pe' }
 const IDS = { id: 'x1', groupId: 'g1' }
@@ -180,6 +190,178 @@ describe('toEntryValues', () => {
       inputJson: JSON.stringify(input),
     }
     expect(toEntryValues(row, PEOPLE, 'AUD')).toBeUndefined()
+  })
+})
+
+// #402: the personal group's owner, Sam, is its only member.
+const ME = 'pw'
+const MINE = { id: 'x1', groupId: 'me1' }
+const INCOME: EntryValues = {
+  type: 'income',
+  // Not a whole number of cents as a float (19.99 × 100 = 1998.999…): core parses it exactly.
+  amount: '19.99',
+  date: '2026-10-19',
+  description: ' Tax refund ',
+  category: '',
+  note: ' ATO ',
+}
+
+describe('toPersonalBody', () => {
+  it('sends income with no payers or split: the owner gives and gets it all (ledger.md)', () => {
+    const body = toPersonalBody(INCOME, MINE, 'AUD', ME)
+    expect(body).toEqual({
+      id: 'x1',
+      groupId: 'me1',
+      kind: 'income',
+      date: '2026-10-19',
+      description: 'Tax refund',
+      totalCents: 1999,
+      note: 'ATO',
+    })
+    expect(transactionInputSchema.safeParse(body).success).toBe(true)
+  })
+
+  it('sends an expense paid by the owner, for the owner, with its category', () => {
+    const body = toPersonalBody(
+      { ...INCOME, type: 'expense', description: 'Groceries', category: 'groceries', note: '' },
+      MINE,
+      'AUD',
+      ME,
+    )
+    expect(body).toEqual({
+      id: 'x1',
+      groupId: 'me1',
+      kind: 'expense',
+      date: '2026-10-19',
+      description: 'Groceries',
+      totalCents: 1999,
+      category: 'groceries',
+      payers: [{ personId: 'pw', cents: 1999 }],
+      split: { mode: 'equal', personIds: ['pw'] },
+    })
+    expect(transactionInputSchema.safeParse(body).success).toBe(true)
+  })
+
+  it('sends NaN for an amount that isn’t one, so the schema refuses it', () => {
+    const body = toPersonalBody({ ...INCOME, amount: '19.999' }, MINE, 'AUD', ME)
+    expect(body.totalCents).toBeNaN()
+    expect(transactionInputSchema.safeParse(body).success).toBe(false)
+  })
+
+  // The dashboard reads the user's shares with reportByMonth() (features/dashboard), so shares
+  // built from these bodies are what its personal lines show.
+  it('gives shares the dashboard counts as personal income and as spending', () => {
+    const ctx = {
+      groupType: 'personal' as const,
+      ownerPersonId: ME,
+      callerPersonId: ME,
+      members: [{ personId: ME, joinedOn: '2026-01-01' as LocalDate, leftOn: null }],
+    }
+    const shares = (['income', 'expense'] as const).flatMap((type) => {
+      const body = toPersonalBody({ ...INCOME, type, category: 'other' }, MINE, 'AUD', ME)
+      const input = transactionInputSchema.parse(body)
+      const built = buildShares({ ...input, date: input.date as LocalDate }, ctx)
+      return built.shares.map((share) => ({
+        ...share,
+        groupId: 'me1',
+        date: input.date,
+        kind: input.kind,
+        category: input.category ?? null,
+      }))
+    })
+    // ledger.md#transaction-kinds: the owner gives and gets each total, so the nets are 0.
+    expect(shares.map(({ givenCents, receivedCents }) => [givenCents, receivedCents])).toEqual([
+      [1999, 1999],
+      [1999, 1999],
+    ])
+    const [month] = reportByMonth(ME, shares as never, [
+      { id: 'me1', type: 'personal', currency: 'AUD' },
+    ])
+    expect(month?.reports[0]).toMatchObject({
+      personalIncomeCents: 1999,
+      incomeCents: 1999,
+      spendingCents: 1999,
+      spendingByCategory: { other: 1999 },
+    })
+  })
+})
+
+describe('toPersonalValues', () => {
+  it.each([
+    ['income', ''],
+    ['income', 'work'],
+    ['expense', 'groceries'],
+    ['expense', ''],
+  ] as const)(
+    'gives %s (category “%s”) back, so saving it unchanged sends the stored input',
+    (type, category) => {
+      const values: EntryValues = { ...INCOME, type, category, description: 'Refund', note: 'ATO' }
+      const body = toPersonalBody(values, MINE, 'AUD', ME)
+      const back = toPersonalValues(stored(body), ME, 'AUD')
+      expect(back).toEqual(values)
+      expect(toPersonalBody(back as EntryValues, MINE, 'AUD', ME)).toEqual(body)
+    },
+  )
+
+  it('reads a row with no note, and an amount in a currency without cents', () => {
+    const body = toPersonalBody({ ...INCOME, amount: '2500', note: '' }, MINE, 'JPY', ME)
+    expect(toPersonalValues(stored(body), ME, 'JPY')).toMatchObject({ amount: '2500', note: '' })
+  })
+
+  const paidByMe = { payers: [{ personId: 'pw', cents: 4000 }] }
+  it.each([
+    ['an expense with no payers or split', 'expense', 4000, {}],
+    ['an expense with no split', 'expense', 4000, paidByMe],
+    [
+      'someone else paying',
+      'expense',
+      4000,
+      { payers: [{ personId: 'px', cents: 4000 }], split: { mode: 'equal', personIds: ['pw'] } },
+    ],
+    [
+      'a payer of part of it',
+      'expense',
+      4000,
+      { payers: [{ personId: 'pw', cents: 3000 }], split: { mode: 'equal', personIds: ['pw'] } },
+    ],
+    [
+      'a split for someone else',
+      'expense',
+      4000,
+      { ...paidByMe, split: { mode: 'equal', personIds: ['px'] } },
+    ],
+    [
+      'a split for them and someone else',
+      'expense',
+      4000,
+      { ...paidByMe, split: { mode: 'equal', personIds: ['pw', 'px'] } },
+    ],
+    [
+      'a split that isn’t equal',
+      'expense',
+      4000,
+      { ...paidByMe, split: { mode: 'exact', amounts: [{ personId: 'pw', cents: 4000 }] } },
+    ],
+    [
+      'a refund',
+      'expense',
+      -4000,
+      { payers: [{ personId: 'pw', cents: -4000 }], split: { mode: 'equal', personIds: ['pw'] } },
+    ],
+    ['an income of 0', 'income', 0, {}],
+    ['an empty note', 'income', 4000, { note: '' }],
+    ['a bill', 'bill', 4000, {}],
+    ['an adjustment', 'adjustment', 4000, {}],
+  ] as const)('matches no choice for %s', (_, kind, totalCents, input) => {
+    const row = {
+      kind,
+      date: '2026-10-18',
+      description: 'Groceries',
+      totalCents,
+      category: null,
+      inputJson: JSON.stringify(input),
+    }
+    expect(toPersonalValues(row, ME, 'AUD')).toBeUndefined()
   })
 })
 

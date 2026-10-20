@@ -1215,3 +1215,76 @@ describe('Edit a house expense (#202)', () => {
     })
   })
 })
+
+// #402: changing a posted personal income or expense with the entry form it was made with.
+describe('Edit a personal income or expense (#402)', () => {
+  const personal = { ...acme, $id: 'g5', type: 'personal', name: 'Personal' } as Groups
+  const ME = [
+    { $id: 'm5', groupId: 'g5', personId: 'pw', displayName: 'Sam', role: 'admin' },
+  ] as Members[]
+  const income = row(
+    { note: 'ATO' },
+    { groupId: 'g5', kind: 'income', description: 'Refund', category: null, totalCents: 1999 },
+  )
+  // ledger.md#transaction-kinds: in a personal group the owner pays, for themselves.
+  const groceries = row(
+    { payers: [{ personId: 'pw', cents: 4000 }], split: { mode: 'equal', personIds: ['pw'] } },
+    { groupId: 'g5', description: 'Groceries', category: 'groceries' },
+  )
+  const mine = (stored: Transactions) => mock(stored, { group: personal, members: ME })
+
+  it.each([
+    ['an income', income, 'Income', 'Expense'],
+    ['an expense', groceries, 'Expense', 'Income'],
+  ])(
+    'fills the form from %s and sends it back exactly when saved unchanged',
+    async (_, stored, own, other) => {
+      mine(stored)
+      call.mockImplementation(saves(stored))
+      renderPage()
+      await openForm()
+      // The kind stays: the ledger refuses a new one.
+      const choice = screen.getByRole('radio', { name: new RegExp(`^${own}`) }) as HTMLInputElement
+      expect(choice.checked).toBe(true)
+      expect(screen.queryByRole('radio', { name: new RegExp(`^${other}`) })).toBeNull()
+      fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+      expect(patched()).toStrictEqual(sameBody(stored))
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Edit' })),
+      )
+    },
+  )
+
+  it('sends a changed amount, date and category, the payer following the amount', async () => {
+    mine(groceries)
+    call.mockImplementation(saves(groceries))
+    renderPage()
+    await openForm()
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '55.10' } })
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2026-10-01' } })
+    fireEvent.change(screen.getByLabelText('Category'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(patched()).toStrictEqual({
+      id: 't1',
+      groupId: 'g5',
+      kind: 'expense',
+      date: '2026-10-01',
+      description: 'Groceries',
+      totalCents: 5510,
+      payers: [{ personId: 'pw', cents: 5510 }],
+      split: { mode: 'equal', personIds: ['pw'] },
+    })
+  })
+
+  it('says a stored input the form doesn’t make can’t be changed here', async () => {
+    mine(row({ payers: [{ personId: 'pw', cents: 4000 }] }, { groupId: 'g5' }))
+    const { queryClient } = renderPage()
+    await settled(queryClient)
+    expect(
+      await screen.findByText('This entry can’t be changed here. Void it and add it again.'),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+})
