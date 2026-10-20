@@ -14,10 +14,22 @@ import {
   LOCALE,
   lineText,
   MUTED,
+  narrow,
   PAGE,
   pdfmake,
   table,
 } from './layout'
+
+// The narrowest column a line's description prints in: Work and charges' Description, 515.28 pt
+// less its other four columns (230) and the cells' padding (64). The other tables' are wider.
+const DESCRIPTION_COLUMN = 221
+// The issuer's column, beside the INVOICE block at its widest: a 16-character prefix's number and
+// the longest period. The block is as wide as it needs, so a wider word here would push it, or
+// the amounts' column, off the page (#360). The number itself is never broken: it's the payment
+// reference.
+const ISSUER_COLUMN = 250
+// The issuer's name prints at 14 pt, and narrow() measures at 10 pt.
+const ISSUER_NAME = Math.floor((ISSUER_COLUMN * 10) / 14)
 
 /**
  * The statement row's number and issue date, which the snapshot doesn't hold. The due date
@@ -45,13 +57,20 @@ export async function renderInvoicePdf(
   // profile prints as fontRuns() splits it, each run in its own font, and a character no font has
   // as �. A font's file is read the first time a run needs it.
   let replaced = 0
-  const print = (text: string): ContentText[] => {
+  // A text in a column narrower than the page is narrowed to it (#360): pdfmake would widen the
+  // column to its widest word instead, until the amounts fall off the page.
+  const print = (text: string, width?: number): ContentText[] => {
     replaced += missingGlyphs(text).length
-    const runs = fontRuns(text)
+    const runs = width === undefined ? fontRuns(text) : narrow(fontRuns(text), width)
     loadFonts(runs.map((run) => run.font))
     return runs
   }
   const paragraph = (text: string): ContentText => ({ text: print(text) })
+  // A paragraph in a column `width` wide (#360).
+  const narrowed =
+    (width: number) =>
+    (text: string): ContentText => ({ text: print(text, width) })
+  const description = (line: Line) => narrowed(DESCRIPTION_COLUMN)(lineText(line))
   const number = print(details.displayNumber)
   const worker = snapshot.people.find((person) => person.personId === issuer.personId)
   const openingCents = worker?.openingCents ?? 0
@@ -70,14 +89,14 @@ export async function renderInvoicePdf(
     {
       columns: [
         [
-          { text: print(business.businessName ?? issuer.name), style: 'issuer' },
+          { text: print(business.businessName ?? issuer.name, ISSUER_NAME), style: 'issuer' },
           ...present([
             business.abn &&
               `ABN ${business.abn.replace(/^(\d{2})(\d{3})(\d{3})(\d{3})$/, '$1 $2 $3 $4')}`,
             business.address,
             business.email,
             business.phone,
-          ]).map(paragraph),
+          ]).map(narrowed(ISSUER_COLUMN)),
         ],
         {
           width: 'auto',
@@ -115,7 +134,7 @@ export async function renderInvoicePdf(
         ['Date', 'Description', 'Hours', 'Rate', 'Amount'],
         charges.map((line) => [
           formatDate(line.date),
-          paragraph(lineText(line)),
+          description(line),
           line.shift ? hoursText(line.shift.minutes) : '',
           line.shift ? `${money(line.shift.rateCents)}/h` : '',
           money(owed(line)),
@@ -130,11 +149,7 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        credits.map((line) => [
-          formatDate(line.date),
-          paragraph(lineText(line)),
-          money(owed(line)),
-        ]),
+        credits.map((line) => [formatDate(line.date), description(line), money(owed(line))]),
         { total: ['Total payments and deductions', money(total(credits))] },
       ),
     )
@@ -156,11 +171,7 @@ export async function renderInvoicePdf(
       table(
         [60, '*', 70],
         ['Date', 'Description', 'Amount'],
-        records.map((line) => [
-          formatDate(line.date),
-          paragraph(lineText(line)),
-          money(line.totalCents),
-        ]),
+        records.map((line) => [formatDate(line.date), description(line), money(line.totalCents)]),
       ),
     )
   }

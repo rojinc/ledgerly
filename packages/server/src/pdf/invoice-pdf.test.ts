@@ -115,18 +115,21 @@ async function pdfText(pdf: Buffer): Promise<string> {
 }
 
 // Text drawn past the right edge of its page, which a reader would never see.
-async function textBeyondPage(pdf: Buffer): Promise<string[]> {
+async function textBeyondPage(pdf: Buffer, margin = 0): Promise<string[]> {
   const doc = await getDocumentProxy(new Uint8Array(pdf))
   const beyond: string[] = []
   for (let number = 1; number <= doc.numPages; number++) {
     const page = await doc.getPage(number)
-    const right = page.view[2] as number
+    const right = (page.view[2] as number) - margin
     for (const item of (await page.getTextContent()).items) {
       if ('str' in item && item.transform[4] + item.width > right) beyond.push(item.str)
     }
   }
   return beyond
 }
+
+// Past the page's right margin: a column pdfmake widened (#360). A hair's leeway for rounding.
+const textBeyondMargin = (pdf: Buffer) => textBeyondPage(pdf, 40 - 0.5)
 
 // Where the build finds each font file (scripts/build-functions.mjs).
 const FONT_PATHS: Record<string, string | URL> = {
@@ -289,6 +292,53 @@ describe('renderInvoicePdf', () => {
     const pdf = await renderInvoicePdf(snapshot, details)
     expect(await textBeyondPage(pdf)).toEqual([])
     expect(await pdfText(pdf)).toContain('Total work and charges $165.00')
+  })
+
+  // #360: a word pdfmake can't break widens its column, so it's measured at its fonts' widest,
+  // not counted by graphemes.
+  it.each([
+    ['Thai, which prints as �', 'ค่าไฟฟ้าเดือนตุลาคม'.repeat(3)],
+    ['tabs, stored before oneLine() folded them', `b${'\t'.repeat(99)}b`],
+    ['U+202F, which prints as �', `b${'\u202F'.repeat(99)}b`],
+    ['a run of ⸻', '⸻'.repeat(20)],
+    ['em dashes, which pdfmake glues across a space', Array(20).fill('——').join(' ')],
+  ])(
+    'keeps every amount on the page for a description of %s (#360)',
+    async (_case, description) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const snapshot = buildStatementSnapshot({
+        ...goldenInput(),
+        lines: [
+          shift('2026-10-01', 12500),
+          line(
+            '2026-10-02',
+            'expense',
+            4000,
+            [share('worker', 4000, 0), share('employer', 0, 4000)],
+            {
+              description,
+            },
+          ),
+        ],
+      })
+      const pdf = await renderInvoicePdf(snapshot, details)
+      expect(await textBeyondMargin(pdf)).toEqual([])
+      expect(await pdfText(pdf)).toContain('$40.00 Total work and charges $165.00')
+    },
+  )
+
+  it('keeps INVOICE on the page beside a business name pdfmake can’t break (#360)', async () => {
+    const wide = '⸻'.repeat(20)
+    const snapshot = buildStatementSnapshot(
+      goldenInput({ ...fullBusiness, businessName: wide, address: wide }),
+    )
+    // The longest prefix's number, in Roboto's widest capital: never broken, as it's the reference.
+    const displayNumber = `${'W'.repeat(16)}-0010`
+    const pdf = await renderInvoicePdf(snapshot, { ...details, displayNumber })
+    expect(await textBeyondMargin(pdf)).toEqual([])
+    const text = await pdfText(pdf)
+    expect(text).toContain(`INVOICE Number ${displayNumber}`)
+    expect(text).toContain(`with ${displayNumber} as the reference`)
   })
 
   // breakable() puts a zero-width space every 20 characters; between the halves of an emoji or
