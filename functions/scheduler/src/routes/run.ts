@@ -8,11 +8,13 @@ import { cleanUpPlaceholders, type PlaceholderCounts } from '../steps/placeholde
 import { type CleanUpCounts, cleanUpReceipts } from '../steps/receipts'
 import { type ReminderCounts, sendReminders } from '../steps/reminders'
 import { type SummaryCounts, sendSummaries } from '../steps/summaries'
+import { type ChangeCounts, sendTransactionChanges } from '../steps/transaction-changes'
 
 export type RunResult = {
   expanded: ExpandCounts
   posted: PostCounts
   reminders: ReminderCounts
+  changes: ChangeCounts
   summaries: SummaryCounts
   receipts: CleanUpCounts
   invites: InviteCounts
@@ -32,10 +34,21 @@ export async function run(scheduled: boolean, services: () => Services): Promise
   const expanded = await expandDueSchedules(built)
   const posted = await autoPost(built)
   const reminders = await sendReminders(built)
+  const changes = await sendTransactionChanges(built)
   const summaries = await sendSummaries(built)
   const receipts = await cleanUpReceipts(built)
   const invites = await cleanUpInvites(built)
   const placeholders = await cleanUpPlaceholders(built)
   const nightly = await nightlyCheck(built)
-  return { expanded, posted, reminders, summaries, receipts, invites, placeholders, nightly }
+  return {
+    expanded,
+    posted,
+    reminders,
+    changes,
+    summaries,
+    receipts,
+    invites,
+    placeholders,
+    nightly,
+  }
 }

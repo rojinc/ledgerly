@@ -245,7 +245,10 @@ async function nameFor({ db }: Services, group: Groups, profile: Profiles): Prom
 
 // Only to the account's own email, once it's verified, and not once the account is blocked:
 // deleting it blocks it first (scheduling.md, step 4).
-async function verifiedEmail({ users }: Services, userId: string): Promise<string | undefined> {
+export async function verifiedEmail(
+  { users }: Services,
+  userId: string,
+): Promise<string | undefined> {
   try {
     const user = await users.get({ userId })
     return user.status && user.emailVerification && user.email ? user.email : undefined

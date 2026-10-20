@@ -34,6 +34,8 @@ export type Services = {
   appUrl: string
   /** True once this run's time budget is used up. */
   outOfTime: () => boolean
+  /** Waits, between emails sent close together. */
+  wait: (ms: number) => Promise<void>
 }
 
 /**
@@ -60,5 +62,6 @@ export function servicesFromRequest(ctx: Pick<RouteContext, 'db' | 'headers'>): 
     now: new Date(),
     appUrl: process.env.APP_URL ?? '',
     outOfTime: () => performance.now() >= stopAt,
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   }
 }

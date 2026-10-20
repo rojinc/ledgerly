@@ -379,7 +379,7 @@ async function getOrUndefined<R extends Persons | Profiles | Transactions>(
   }
 }
 
-function memo<T>(load: (rowId: string) => Promise<T>): (rowId: string) => Promise<T> {
+export function memo<T>(load: (rowId: string) => Promise<T>): (rowId: string) => Promise<T> {
   const loaded = new Map<string, Promise<T>>()
   return (rowId) => {
     let row = loaded.get(rowId)
