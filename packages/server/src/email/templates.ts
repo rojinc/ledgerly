@@ -2,6 +2,7 @@ import { endOfMonth, type LocalDate, weekdayOf } from '@ledgerly/core/dates/loca
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import type { PersonalReport } from '@ledgerly/core/reports/personal-report'
+import { oneLine } from '@ledgerly/core/schemas/common'
 import type { Attachment } from './send-email'
 
 /** What `sendEmail` needs apart from the addresses. */
@@ -317,22 +318,16 @@ export function reminderEmail(input: {
 // The most of someone's own text a reminder or an invite shows, per name.
 const SHORT_LINE_LENGTH = 40
 const GRAPHEMES = new Intl.Segmenter(LOCALE, { granularity: 'grapheme' })
-// Unicode's Bidi_Control characters: embeddings and overrides, isolates, and the three marks
-// (LRM, RLM and the Arabic letter mark). They can make text around the name read in another
-// order. The zero-width joiner (U+200D) isn't one, so it stays: emoji need it.
-const BIDI_CONTROLS = /\p{Bidi_Control}/gu
 
 /**
- * Free text someone chose, for an email body: one line, as the subject is, so a line break
- * can't start a paragraph of its own, with no bidi controls, and at most 40 characters as people
- * see them, so an emoji sequence isn't split; a longer one ends in "…". Cut before `message()`
- * escapes it, so an escape is never cut in half.
+ * Free text someone chose, for an email body: one line (`oneLine()`), as the subject is, so a
+ * line break can't start a paragraph of its own and no bidi control can make the text around it
+ * read in another order, and at most 40 characters as people see them, so an emoji sequence
+ * isn't split; a longer one ends in "…". Cut before `message()` escapes it, so an escape is
+ * never cut in half.
  */
 function shortLine(text: string): string {
-  const characters = Array.from(
-    GRAPHEMES.segment(text.replace(BIDI_CONTROLS, '').replace(/\s+/g, ' ').trim()),
-    (part) => part.segment,
-  )
+  const characters = Array.from(GRAPHEMES.segment(oneLine(text)), (part) => part.segment)
   return characters.length > SHORT_LINE_LENGTH
     ? `${characters
         .slice(0, SHORT_LINE_LENGTH - 1)

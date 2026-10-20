@@ -103,12 +103,20 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
 
 // pdfmake drops the part of a row it may not break that doesn't fit on one page, so rows are
 // kept whole only while every one surely fits: at most this many wrapped lines (about 700 pt of
-// a page), counting a line per 10 characters, which no name or description in Roboto 10 pt beats.
+// a page), counting a line per 10 characters, which no name or description in Roboto 10 pt beats,
+// from each line break.
 const MAX_ROW_LINES = 45
 const CHARS_PER_LINE = 10
+// Where pdfmake must start a new line (Unicode's mandatory breaks; CR LF counts twice, which is
+// safe). A stored
+// name or description can hold them.
+const LINE_BREAK = /[\n\v\f\r\u0085\u2028\u2029]/
 
 function wrappedLines(line: Line, nameOf: (personId: string) => string): number {
-  const lines = (text: string) => Math.max(1, Math.ceil(text.length / CHARS_PER_LINE))
+  const lines = (text: string) =>
+    text
+      .split(LINE_BREAK)
+      .reduce((sum, part) => sum + Math.max(1, Math.ceil(part.length / CHARS_PER_LINE)), 0)
   return line.shares.reduce(
     (sum, share) => sum + lines(nameOf(share.personId)),
     lines(lineText(line)),
