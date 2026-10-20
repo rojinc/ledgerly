@@ -218,6 +218,44 @@ export async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
 }
 
 /**
+ * A new `draft` statement of the group for `period`, with its snapshot: the job's, a reissue's
+ * and a close's (statements.md#lifecycle).
+ */
+export function draftWrite(
+  group: Groups,
+  statementId: string,
+  period: { start: string; end: string },
+  snapshot: StatementSnapshot,
+): Write {
+  return {
+    action: 'create',
+    tableId: TABLES.statements,
+    rowId: statementId,
+    data: {
+      groupId: group.$id,
+      type: snapshot.group.type === 'employer' ? 'invoice' : 'divide',
+      periodStart: period.start,
+      periodEnd: period.end,
+      status: 'draft',
+      number: null,
+      displayNumber: null,
+      issuedOn: null,
+      dueOn: null,
+      snapshotJson: JSON.stringify(snapshot),
+      pdfFileId: null,
+      sentAt: null,
+      finalizedBy: null,
+    },
+    permissions: teamRead(group.$id),
+  }
+}
+
+/** The `statement.drafted` summary, for the job's drafts and a close's. */
+export function draftSummary(periodEnd: string): string {
+  return `Statement for the period ending ${periodEnd} drafted`
+}
+
+/**
  * A guard write to the group row: a fresh `rev`, so it is a real change that fails, or is
  * failed by, any other write to the group at the same moment (ledger.md#concurrency).
  */

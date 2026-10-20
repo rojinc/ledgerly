@@ -11,16 +11,16 @@ import type { Services } from '../services'
 import {
   activityWrite,
   conflictAsTryAgain,
+  draftWrite,
   getRowOrNull,
   groupGuard,
   invalid,
   isFinalizing,
   latestFinal,
   parseBody,
-  teamRead,
   tryAgain,
 } from '../shared'
-import { computeSnapshot, statementTypeOf } from '../snapshot'
+import { computeSnapshot } from '../snapshot'
 
 /**
  * `statements POST /statements/reissue` (admin): a new draft for the range, to redo a period
@@ -48,27 +48,7 @@ export async function reissueStatement(
       if (await unfinishedFor(db, groupId, periodStart, periodEnd)) throw tryAgain()
       await requireFinalizable(db, groupId, periodEnd)
       await tx.write(
-        {
-          action: 'create',
-          tableId: TABLES.statements,
-          rowId: statementId,
-          data: {
-            groupId,
-            type: statementTypeOf(group),
-            periodStart,
-            periodEnd,
-            status: 'draft',
-            number: null,
-            displayNumber: null,
-            issuedOn: null,
-            dueOn: null,
-            snapshotJson: JSON.stringify(snapshot),
-            pdfFileId: null,
-            sentAt: null,
-            finalizedBy: null,
-          },
-          permissions: teamRead(groupId),
-        },
+        draftWrite(group, statementId, period, snapshot),
         activityWrite(
           groupId,
           person.$id,
