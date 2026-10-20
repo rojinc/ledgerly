@@ -1,4 +1,4 @@
-import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { Query } from 'appwrite'
@@ -6,6 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
+import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { billRoutes } from './routes'
 
@@ -73,7 +74,7 @@ function bill(extra: Partial<Transactions> = {}): Transactions {
 function mockHouse(
   house: Groups = HOUSE,
   role: Members['role'] = 'admin',
-  bills: { due?: Transactions[]; paid?: Transactions[] } = {},
+  bills: { due?: Transactions[]; paid?: Transactions[]; recurring?: Schedules[] } = {},
 ) {
   vi.mocked(useGroup).mockReturnValue({ data: house, isError: false } as never)
   vi.mocked(useMyMember).mockReturnValue({ data: { role }, isError: false } as never)
@@ -87,9 +88,11 @@ function mockHouse(
     const rows =
       tableId === 'members'
         ? MEMBERS
-        : queries.includes(Query.equal('status', 'due'))
-          ? (bills.due ?? [])
-          : (bills.paid ?? [])
+        : tableId === 'schedules'
+          ? (bills.recurring ?? [])
+          : queries.includes(Query.equal('status', 'due'))
+            ? (bills.due ?? [])
+            : (bills.paid ?? [])
     return { total: rows.length, rows }
   }) as never)
 }
@@ -163,13 +166,12 @@ describe('HouseBillsPage', () => {
     expect(queried.every((params) => params.queries[0] === Query.equal('groupId', 'house1'))).toBe(
       true,
     )
-    // Recurring bills are the personal group's (#75): not shown or read here.
-    expect(screen.queryByRole('heading', { name: 'Recurring' })).toBeNull()
-    expect(
-      listRows.mock.calls.some(
-        ([params]) => (params as unknown as { tableId: string }).tableId === 'schedules',
-      ),
-    ).toBe(false)
+    // Its recurring bills and expenses too (#403).
+    expect(screen.getByRole('link', { name: 'New recurring' }).getAttribute('href')).toBe(
+      '/bills/recurring/new?groupId=house1',
+    )
+    const recurring = within(await screen.findByRole('region', { name: 'Recurring' }))
+    expect(await recurring.findByText('None yet.')).toBeTruthy()
   })
 
   it.each([
@@ -180,6 +182,7 @@ describe('HouseBillsPage', () => {
     renderAt('/bills?groupId=house1')
     await screen.findByRole('link', { name: /^Electricity/ })
     expect(screen.queryByRole('link', { name: 'New bill' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'New recurring' })).toBeNull()
   })
 
   it('says so for a group that isn’t a house', () => {
@@ -337,6 +340,191 @@ describe('NewHouseBillPage', () => {
       await screen.findByText('You can see this house’s bills but not add to them.'),
     ).toBeTruthy()
     expect(screen.queryByLabelText('Amount (AUD)')).toBeNull()
+  })
+})
+
+// A house's recurring bill or expense (#403), made by `createdBy`.
+function recurringRow(id: string, extra: Partial<Schedules> = {}): Schedules {
+  return {
+    $id: id,
+    groupId: 'house1',
+    kind: 'bill',
+    description: 'Internet',
+    templateJson: JSON.stringify({ totalCents: 8000, bill: { status: 'due' } }),
+    rrule: 'FREQ=WEEKLY;BYDAY=MO',
+    startsOn: '2026-10-05',
+    endsOn: null,
+    exdates: [],
+    skipPublicHolidays: false,
+    autoPost: false,
+    createdBy: 'alice',
+    ...extra,
+  } as unknown as Schedules
+}
+
+describe('NewRecurringBillPage in a house (#403)', () => {
+  const sent = () => call.mock.calls[0]?.[3] as Record<string, unknown>
+  const saved = { ok: true, data: { schedule: recurringRow('s9') } } as Result<unknown>
+
+  it('sends a bill paid by the caller and split between everyone living there on each date, then shows the house’s bills', async () => {
+    mockHouse(HOUSE, 'member')
+    call.mockResolvedValue(saved)
+    const router = renderAt('/bills/recurring/new?groupId=house1')
+    const paidBy = (await screen.findByLabelText('Paid by')) as HTMLSelectElement
+    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe(
+      'New recurring bill or expense · Flat',
+    )
+    expect(paidBy.value).toBe('alice')
+    type('Description', 'Internet')
+    type('Amount (AUD)', '80')
+    type('Day of the month', '15')
+    fireEvent.click(screen.getByRole('button', { name: 'Add recurring bill' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.slice(0, 3)).toEqual(['scheduler', 'POST', '/schedules'])
+    // No split: each one is split between everyone living there on its date.
+    expect(sent()).toEqual({
+      id: expect.any(String),
+      groupId: 'house1',
+      kind: 'bill',
+      description: 'Internet',
+      template: {
+        totalCents: 8000,
+        bill: { status: 'due' },
+        payers: [{ personId: 'alice', cents: 8000 }],
+      },
+      rrule: 'FREQ=MONTHLY;BYMONTHDAY=15',
+      startsOn: '2026-10-05',
+      skipPublicHolidays: false,
+      autoPost: false,
+    })
+    await waitFor(() => expect(router.state.location.search).toBe('?groupId=house1'))
+    expect(router.state.location.pathname).toBe('/bills')
+    await waitFor(() => expect(document.activeElement?.textContent).toBe('Bills · Flat'))
+  })
+
+  it('sends an expense that posts itself, paid by someone else and split between the people ticked', async () => {
+    mockHouse(HOUSE, 'admin')
+    call.mockResolvedValue(saved)
+    renderAt('/bills/recurring/new?groupId=house1')
+    fireEvent.click(await screen.findByLabelText(/^An expense/))
+    // An expense always posts itself, as nothing else would post it.
+    expect(screen.queryByLabelText(/Autopay/)).toBeNull()
+    type('Description', 'Cleaner')
+    type('Amount (AUD)', '100')
+    type('Paid by', 'bob')
+    fireEvent.click(screen.getByLabelText('Only the people I tick'))
+    // Everyone living there on the first date is ticked to start with.
+    const ticks = within(screen.getByRole('group', { name: 'Who it’s split between' }))
+    expect(
+      ticks.getAllByRole('checkbox').filter((box) => (box as HTMLInputElement).checked),
+    ).toHaveLength(3)
+    fireEvent.click(ticks.getByLabelText('Bob'))
+    fireEvent.click(screen.getByLabelText('Every week'))
+    type('Day of the week', 'FR')
+    // Not in the past: those would never be posted.
+    type('First date', '2026-10-04')
+    fireEvent.click(screen.getByRole('button', { name: 'Add recurring expense' }))
+    expect(await screen.findByText(/^Pick a date from (5 Oct|Oct 5,) 2026 on$/)).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+    type('First date', '2026-10-05')
+    fireEvent.click(screen.getByRole('button', { name: 'Add recurring expense' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sent()).toMatchObject({
+      kind: 'expense',
+      description: 'Cleaner',
+      template: {
+        totalCents: 10000,
+        payers: [{ personId: 'bob', cents: 10000 }],
+        split: { mode: 'equal', personIds: ['alice', 'cara'] },
+      },
+      rrule: 'FREQ=WEEKLY;BYDAY=FR',
+      startsOn: '2026-10-05',
+      autoPost: true,
+    })
+    expect(sent().template).not.toHaveProperty('bill')
+  })
+
+  it('refuses a split between nobody, sending nothing', async () => {
+    mockHouse(HOUSE, 'member')
+    renderAt('/bills/recurring/new?groupId=house1')
+    await screen.findByLabelText('Description')
+    type('Description', 'Internet')
+    type('Amount (AUD)', '80')
+    fireEvent.click(screen.getByLabelText('Only the people I tick'))
+    for (const name of ['Alice', 'Bob', 'Cara']) fireEvent.click(screen.getByLabelText(name))
+    fireEvent.click(screen.getByRole('button', { name: 'Add recurring bill' }))
+    expect(await screen.findByText('Tick at least one person')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['a viewer', HOUSE, 'viewer', 'You can see this house’s bills but not add to them.'],
+    [
+      'an archived house',
+      { ...HOUSE, archivedAt: '2026-10-01T00:00:00.000Z' },
+      'admin',
+      ARCHIVED_NOTICE,
+    ],
+  ] as const)('has no form for %s', async (_name, house, role, message) => {
+    mockHouse(house as Groups, role)
+    renderAt('/bills/recurring/new?groupId=house1')
+    expect(await screen.findByText(message)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^Add recurring/ })).toBeNull()
+  })
+})
+
+describe('HouseBillsPage: recurring (#403)', () => {
+  const ROWS = [
+    recurringRow('s1'),
+    recurringRow('s2', {
+      kind: 'expense',
+      description: 'Cleaner',
+      templateJson: JSON.stringify({ totalCents: 10000 }),
+      autoPost: true,
+      createdBy: 'bob',
+    }),
+  ]
+  const items = async () =>
+    (
+      await within(await screen.findByRole('region', { name: 'Recurring' })).findAllByRole(
+        'listitem',
+      )
+    ).map((item) => item.textContent)
+
+  it('lists its bills and expenses, and offers Stop to a member only on their own', async () => {
+    mockHouse(HOUSE, 'member', { recurring: ROWS })
+    renderAt('/bills?groupId=house1')
+    expect(await items()).toEqual([
+      expect.stringMatching(/^InternetEvery Monday · A?\$80\.00Stop$/),
+      // An expense always posts itself: it isn't called autopay.
+      expect.stringMatching(/^CleanerExpense · Every Monday · A?\$100\.00$/),
+    ])
+    cleanup()
+    mockHouse(HOUSE, 'viewer', { recurring: ROWS })
+    renderAt('/bills?groupId=house1')
+    expect(await items()).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: /^Stop/ })).toBeNull()
+  })
+
+  it('lets an admin stop anyone’s recurring expense, in an expense’s words', async () => {
+    mockHouse(HOUSE, 'admin', { recurring: ROWS })
+    call.mockResolvedValue({
+      ok: true,
+      data: { schedule: { ...ROWS[1], endsOn: '2026-10-05' } },
+    } as Result<unknown>)
+    renderAt('/bills?groupId=house1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Stop Cleaner' }))
+    expect(
+      screen.getByText(
+        'Stop Cleaner from today? Nothing more is added after today. What was added already stays.',
+      ),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Stop it' }))
+    expect(await screen.findByText('Stopped Cleaner. What was added already stays.')).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('scheduler', 'POST', '/schedules/s2/end', {
+      endsOn: '2026-10-05',
+    })
+    expect(document.activeElement?.textContent).toBe('Bills · Flat')
   })
 })
 

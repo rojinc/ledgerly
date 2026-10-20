@@ -12,6 +12,10 @@ const RENT: RecurringValues = {
   startsOn: '2026-10-19',
   until: '',
   autopay: false,
+  kind: 'bill',
+  paidBy: '',
+  split: 'everyone',
+  splitBetween: [],
 }
 
 const IDS = { id: 'abcdefghij0123456789', groupId: 'g1' }

@@ -50,6 +50,8 @@ To bill before the period ends, or with no regular invoices at all, an admin use
 3. Alice pays it on 10 Oct and marks it paid → `ledger POST /transactions/{id}/post`, with payer Alice.
 4. The default split is **days present**. Cara moved in on 1 Aug, so she pays for 61 of the 92 days.
 
+**Recurring house bills and expenses** ([#403](https://github.com/rojinc/ledgerly/issues/403)): on the house's Bills page, an admin or member taps **New recurring**. They choose a bill (due on each date until someone marks it paid, or paid by autopay) or an expense (added on each date as already paid), then the amount, who pays it, and the split, with the repeat and the first date. The split is either everyone living there on each date, equally, or equally between the people ticked → `scheduler POST /schedules`, with the template's `payers` and, for ticked people, an `equal` split. A recurring expense always posts itself (`autoPost`), and starts today at the earliest, since nothing else posts its occurrences. The Bills page lists them, and their creator or an admin can **Stop** one.
+
 A posted house expense is fixed the same way as an employer entry: its creator or an admin opens it and taps **Edit**, which shows the house expense form filled in → `ledger PATCH /transactions/{id}`. Who paid, the split and the people sharing it can all change; a new date doesn't change who shares it. One the form can't show has no Edit: void it and add it again.
 
 ## 7. Itemised grocery receipt
