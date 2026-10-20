@@ -13,6 +13,7 @@ import {
   categorySchema,
   centsSchema,
   checkDateOrder,
+  checkPersonIdOrder,
   descriptionSchema,
   idSchema,
   localDateSchema,
@@ -300,15 +301,7 @@ export type StopTimerBody = z.infer<typeof stopTimerBodySchema>
  */
 export const balancesPeopleSchema = z
   .array(z.strictObject({ personId: idSchema, netCents: z.int(), shares: z.int().min(1) }))
-  .superRefine((people, ctx) => {
-    people.forEach((person, index) => {
-      const before = people[index - 1]
-      if (before !== undefined && before.personId >= person.personId) {
-        const message = 'In ascending personId order, each once'
-        ctx.addIssue({ code: 'custom', message, path: [index, 'personId'] })
-      }
-    })
-  })
+  .superRefine(checkPersonIdOrder)
 
 export type BalancesPeople = z.infer<typeof balancesPeopleSchema>
 

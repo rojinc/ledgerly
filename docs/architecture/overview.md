@@ -62,7 +62,7 @@
 
 | Job | Trigger | What it does |
 | --- | --- | --- |
-| `scheduler` | every 60 minutes | Creates occurrences for due schedules, auto-posts past shifts and autopay bills, sends reminders and summary emails, deletes receipt files no transaction lists, invite rows 30 days after they're accepted or expire and placeholders' identities and names 30 days after their last member row went, and runs the nightly check (balances row, ledger invariants, team memberships) |
+| `scheduler` | every 60 minutes | Creates occurrences for due schedules, auto-posts past shifts and autopay bills, sends reminders, the hourly email about transactions someone else changed, and summary emails, deletes receipt files no transaction lists, invite rows 30 days after they're accepted or expire and placeholders' identities and names 30 days after their last member row went, and runs the nightly check (balances row, ledger invariants, team memberships) |
 | `statements` | every 60 minutes | Drafts statements for periods that ended, auto-finalizes where enabled, and emails the auto-finalized invoices of groups with auto-send on ([auto-send](statements.md#auto-send)) |
 | `identity` | every 60 minutes | Carries on person merges a claim left unfinished ([finishing merges](identity-and-invites.md#finishing-merges)) |
 

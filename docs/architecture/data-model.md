@@ -92,7 +92,7 @@ Row ID = the Appwrite user ID. One per user.
 | `hoursCapMinutes` | integer? | The user's own work-hours limit (F-82): 60 to 10080 for a week, 60 to 20160 for a fortnight. All three `hoursCap*` columns are set together, or all empty for no limit. |
 | `hoursCapPeriod` | enum(week, fortnight)? | A week runs Monday to Sunday in the profile's `timezone` |
 | `hoursCapStartsOn` | varchar(10)? | A fortnight's first Monday (YYYY-MM-DD); fortnights count from it, before and after. Empty for a week. |
-| `emailOptOuts` | varchar(32)[]? | The emails the user turned off on Profile ([#431](https://github.com/rojinc/ledgerly/issues/431)): any of `billDue`, `shiftToConfirm` ([scheduler step 3](scheduling.md#step-3-reminders)) and `statementReady` ([the statements job](statements.md#1-draft-statements-job-hourly)), each at most once. Null or `[]` means every email is on, so existing rows need no backfill. Per person, not per group: profiles are readable only by their user, while member rows are readable by the whole team and guard ledger writes. Security emails, the timer email, the "couldn't be emailed" notice ([auto-send](statements.md#auto-send)) and emails someone sends on purpose have no setting. |
+| `emailOptOuts` | varchar(32)[]? | The emails the user turned off on Profile ([#431](https://github.com/rojinc/ledgerly/issues/431)): any of `billDue`, `shiftToConfirm` ([scheduler step 3](scheduling.md#step-3-reminders)), `transactionChanged` ([step 3b](scheduling.md#step-3b-transaction-change-emails), [#433](https://github.com/rojinc/ledgerly/issues/433)) and `statementReady` ([the statements job](statements.md#1-draft-statements-job-hourly)), each at most once. Null or `[]` means every email is on, so existing rows need no backfill. Per person, not per group: profiles are readable only by their user, while member rows are readable by the whole team and guard ledger writes. Security emails, the timer email, the "couldn't be emailed" notice ([auto-send](statements.md#auto-send)) and emails someone sends on purpose have no setting. |
 
 Indexes: `idx_nextSummaryAt (nextSummaryAt)`.
 Permissions: `read("user:<userId>")`. Writes go through `identity PATCH /profile`, except `lastInvoiceNumber` (`statements`) and `nextSummaryAt` (also `scheduler`). `account` deletes it with the account.
@@ -283,6 +283,7 @@ How far a background job has got, for a job that must not lose its place from on
 | `through` | datetime | The job has dealt with everything up to this time |
 
 - `receipt-clean-up`: made by the [backfill](#receiptfiles) as its last write, then moved forward by [step 5](scheduling.md#step-5-receipt-clean-up)'s pass 1. Step 5 reads it once per run, and does nothing until it exists. Step 5 only ever updates it, never creates it, so deleting it stops even a run already in progress from writing it again.
+- `transaction-changes`: the end of the last hour [step 3b](scheduling.md#step-3b-transaction-change-emails) finished. Step 3b makes it at the start of the current hour when it's missing, so no backlog is ever sent, and only ever moves it forward.
 
 Permissions: none (server only).
 
@@ -343,10 +344,10 @@ Append-only. Never updated, but for one column: a [merge](identity-and-invites.m
 | `transactionId` | varchar(36)? | |
 | `subjectPersonId` | varchar(36)? | The person a `member.*` or `reminder.sent` row is about, so the app shows their current name ("Former member" after deletion) |
 | `summary` | varchar(255) | Human-readable, e.g. `Changed “Electricity”: $90.00 → $95.00`. Never holds a display name: a member or reminder row names its person through `subjectPersonId` instead, and a group row names no one (rows written before #50 keep their text). |
-| `changesJson` | text? | `{ before, after }` of the changed fields; never a display name. Empty when only a name changed, which the summary says. |
+| `changesJson` | text? | `{ before, after }` of the changed fields; never a display name. Empty when only a name changed, which the summary says. On a posted transaction, the `transaction.updated` or `transaction.voided` row that `PATCH` or `/void` writes also holds `nets: { before, after }`: each person's net in it before and after, as `{ personId, netCents }[]` from `netsFromShares`, in ascending `personId` order (`after` is empty for a void; core's `changeNetsSchema`). [Step 3b](scheduling.md#step-3b-transaction-change-emails) reads it; the app doesn't. |
 | `at` | datetime | |
 
-Indexes: `idx_group_at (groupId, at)`, `idx_group_subject (groupId, subjectPersonId)` (a merge finds the rows about P).
+Indexes: `idx_group_at (groupId, at)`, `idx_group_subject (groupId, subjectPersonId)` (a merge finds the rows about P), `idx_action_at (action, at)` ([step 3b](scheduling.md#step-3b-transaction-change-emails) reads an hour's edits and voids).
 Permissions: `read("team:<groupId>")`.
 
 ## invites
