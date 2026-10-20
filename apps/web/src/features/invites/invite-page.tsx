@@ -3,6 +3,7 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 're
 import { Link, useLocation, useNavigate } from 'react-router'
 import { callFunction, type ErrorCode } from '../../lib/api'
 import { account } from '../../lib/appwrite'
+import { queryKeys } from '../../lib/query-keys'
 import { Button } from '../../ui/button'
 import { AuthCard } from '../auth/auth-card'
 import { authErrorMessage } from '../auth/auth-error'
@@ -57,6 +58,17 @@ class AcceptError extends Error {
   ) {
     super(message)
   }
+}
+
+/**
+ * The link can't work: INVITE_INVALID, or VALIDATION_FAILED for a token over 128 characters
+ * (the body holds nothing else), so sending it again can't help.
+ */
+function isInvalid(error: Error): boolean {
+  return (
+    error instanceof AcceptError &&
+    (error.code === 'INVITE_INVALID' || error.code === 'VALIDATION_FAILED')
+  )
 }
 
 function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
@@ -146,11 +158,11 @@ function Accept({ token, userId }: { token: string; userId: string }) {
     onSuccess: async (data) => {
       if (!('groupId' in data)) return
       dropToken()
-      await queryClient.invalidateQueries({ queryKey: ['groups'] })
+      await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
       navigate('/groups', { replace: true })
     },
     onError: (error) => {
-      if (error instanceof AcceptError && error.code === 'INVITE_INVALID') dropToken()
+      if (isInvalid(error)) dropToken()
     },
   })
 
@@ -166,8 +178,7 @@ function Accept({ token, userId }: { token: string; userId: string }) {
     return <Message alert>We couldn’t set up your account. Reload the page to try again.</Message>
   }
   if (accept.isError) {
-    const invalid = accept.error instanceof AcceptError && accept.error.code === 'INVITE_INVALID'
-    return invalid ? (
+    return isInvalid(accept.error) ? (
       <Message alert>This invite has expired or was already used.</Message>
     ) : (
       <>

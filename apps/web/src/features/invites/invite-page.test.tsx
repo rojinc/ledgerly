@@ -74,7 +74,7 @@ describe('InvitePage', () => {
     expect(router.state.location.hash).toBe('')
     expect(await screen.findByText('Groups')).toBeTruthy()
     expect(call).toHaveBeenCalledWith('identity', 'POST', '/invites/accept', { token: TOKEN })
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['groups'] })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['groups', 'u1'] })
     // Used up: not kept for this tab any more.
     expect(sessionStorage.getItem('ledgerly.inviteToken')).toBeNull()
     expect(router.state.historyAction).toBe('REPLACE')
@@ -142,9 +142,25 @@ describe('InvitePage', () => {
   it('says an invalid invite has expired or was used, and forgets it', async () => {
     call.mockResolvedValue({
       ok: false,
-      error: { code: 'INVITE_INVALID', message: 'Invite token unknown, expired or used' },
+      error: {
+        code: 'INVITE_INVALID',
+        message: "This invite link isn't valid. It may have expired or been used already.",
+      },
     })
     renderAt(`/invite#${TOKEN}`)
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'This invite has expired or was already used.',
+    )
+    expect(sessionStorage.getItem('ledgerly.inviteToken')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
+  it('treats a token too long to send as an invalid invite, without Try again', async () => {
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', message: 'The request is not valid.' },
+    })
+    renderAt(`/invite#${'x'.repeat(129)}`)
     expect((await screen.findByRole('alert')).textContent).toBe(
       'This invite has expired or was already used.',
     )
