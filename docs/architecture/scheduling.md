@@ -272,6 +272,7 @@ Creating or editing a schedule sets its `nextRunAt` to now in the same transacti
   - Otherwise it makes `PATCH`'s checks on the stored template: the ledger rules with the trial on `startsOn`; the creator's `deletedAt`, then the people the trial on the later of `startsOn` and today names (`VALIDATION_FAILED`, [functions API](functions-api.md#ledger)); and the group and member guards.
   - In that transaction it clears `pausedFrom`, sets `generatedThrough` to yesterday (empty stays empty) and `nextRunAt` to now. Then it expands from local today (from `startsOn` if it never expanded) and returns how many occurrences it created (`created`). Any it updates or removes on the way, as `PATCH` would, aren't counted.
   - So it carries on from today, and the dates missed inside the pause aren't made. A missed shift or bill is added by hand.
+  - An expansion that stops partway (a timeout, or a race lost) is finished by the next scheduled run, as after `PATCH`, since the schedule is due. A resume that runs again after losing a race finds the schedule no longer paused and answers `created: 0`.
   - A resume makes again any occurrence the pause deleted that's dated today or later. A bill reminded about before the pause can then be reminded about a second time (Resend's idempotency key only stops a resend within 24 hours). That's accepted, as when an ended schedule is reopened with `PATCH`.
   - Nothing resumes on its own: a pause lasts until someone resumes it.
 - **The other routes and jobs:**
