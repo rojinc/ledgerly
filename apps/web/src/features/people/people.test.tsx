@@ -1093,6 +1093,24 @@ describe('PairPage: settings (#403)', () => {
     expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
   })
 
+  it('leaves focus alone when Settings appear as the role loads', async () => {
+    // As in the app: the caller's role arrives after the page's first render.
+    mockGroup(0)
+    vi.mocked(useMyMember).mockReturnValue({ data: undefined, isError: false } as never)
+    mockRows()
+    const { queryClient } = renderAt('/people/g1')
+    await screen.findByText('Loading…')
+    vi.mocked(useMyMember).mockReturnValue({ data: { role: 'admin' }, isError: false } as never)
+    // A refetch with changed rows re-renders the page, which reads the role again.
+    mockRows(
+      [],
+      members().map((one) => ({ ...one, $updatedAt: '2026-10-18T21:00:00.000Z' })),
+    )
+    await queryClient.invalidateQueries({ queryKey: queryKeys.members('g1') })
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeTruthy()
+    expect(document.activeElement).toBe(document.body)
+  })
+
   it('sends focus to Change their name when Sam joined while the invite was open', async () => {
     mockGroup(0)
     mockRows()

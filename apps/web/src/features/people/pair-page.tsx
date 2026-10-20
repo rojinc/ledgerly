@@ -121,9 +121,10 @@ export function PairPage() {
   // its refusal: focus, if it went with them, goes to the heading.
   const managed = useRef(manages)
   useEffect(() => {
-    if (managed.current === manages) return
+    const was = managed.current
     managed.current = manages
-    if (document.activeElement === document.body) heading.current?.focus()
+    // Only when they go: Settings appear as the page loads, and that moves no focus.
+    if (was && !manages && document.activeElement === document.body) heading.current?.focus()
   }, [manages])
 
   let content: ReactNode
