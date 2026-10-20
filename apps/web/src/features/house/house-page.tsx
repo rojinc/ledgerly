@@ -8,6 +8,8 @@ import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE, ArchiveGroup } from '../groups/archive-group'
 import { useGroup, useMyMember } from '../groups/use-groups'
+import { InviteForm, inviteSentText } from '../invites/invite-member'
+import type { InviteSent } from '../invites/use-send-invite'
 import { useMembers } from '../transactions/use-transactions'
 import { HouseForm } from './house-form'
 import { HouseHistory } from './house-history'
@@ -148,8 +150,10 @@ function House({
               member={member}
               isMe={member.personId === me?.personId}
               isAdmin={role === 'admin'}
+              // permissions.md#roles: in a house, members send invites too.
+              invitedBy={role === 'admin' || role === 'member' ? me?.personId : undefined}
               writes={writes}
-              onRemoved={focusHeading}
+              focusHeading={focusHeading}
             />
           ))}
         </ul>
@@ -171,40 +175,51 @@ function House({
   )
 }
 
-type Mode = 'view' | 'edit' | 'moveOut' | 'moveBackIn' | 'remove'
+type Mode = 'view' | 'edit' | 'moveOut' | 'moveBackIn' | 'remove' | 'invite'
 
 function MemberRow({
   group,
   member,
   isMe,
   isAdmin,
+  invitedBy,
   writes,
-  onRemoved,
+  focusHeading,
 }: {
   group: Groups
   member: Members
   isMe: boolean
   isAdmin: boolean
+  /** The caller's person, when they may invite. */
+  invitedBy: string | undefined
   writes: ReturnType<typeof useMemberWrites>
-  onRemoved: () => void
+  focusHeading: () => void
 }) {
   const [chosen, setMode] = useState<Mode>('view')
+  const [invited, setInvited] = useState<InviteSent>()
   // Every row has the same three buttons: each one is described by its housemate's name.
   const nameId = useId()
-  // An open form closes when the caller stops being an admin, or the house is archived.
-  const mode = isAdmin ? chosen : 'view'
+  // An open form closes when the caller stops being an admin, or the house is archived; the
+  // invite form when they can no longer invite. It stays if the row changes meanwhile (they
+  // joined), so a send under way or its refusal isn't lost.
+  const mode = chosen === 'invite' ? (invitedBy ? chosen : 'view') : isAdmin ? chosen : 'view'
+  // identity-and-invites.md#invites: only someone who hasn't joined can be invited.
+  const invitable = invitedBy !== undefined && member.status === 'placeholder'
   const buttons = {
     edit: useRef<HTMLButtonElement>(null),
     // One button moves them out or back in, whichever applies now.
     move: useRef<HTMLButtonElement>(null),
     remove: useRef<HTMLButtonElement>(null),
+    invite: useRef<HTMLButtonElement>(null),
   }
 
   function close(from: Exclude<Mode, 'view'>) {
     flushSync(() => setMode('view'))
     const trigger = from === 'moveOut' || from === 'moveBackIn' ? buttons.move : buttons[from]
-    // A button that's gone sends focus to Change.
-    ;(trigger.current ?? buttons.edit.current)?.focus()
+    // A button that's gone sends focus to Change, or with none (a member's row), to the heading.
+    const target = trigger.current ?? buttons.edit.current
+    if (target) target.focus()
+    else focusHeading()
   }
 
   return (
@@ -274,8 +289,40 @@ function MemberRow({
           member={member}
           writes={writes}
           onCancel={() => close('remove')}
-          onRemoved={onRemoved}
+          onRemoved={focusHeading}
         />
+      )}
+      {invitable && mode === 'view' && (
+        <Button
+          ref={buttons.invite}
+          variant="outline"
+          className="self-start"
+          aria-describedby={nameId}
+          onClick={() => {
+            setInvited(undefined)
+            setMode('invite')
+          }}
+        >
+          Invite by email
+        </Button>
+      )}
+      {mode === 'invite' && invitedBy && (
+        <InviteForm
+          group={group}
+          member={member}
+          personId={invitedBy}
+          onSent={(invite) => {
+            setInvited(invite)
+            close('invite')
+          }}
+          onCancel={() => close('invite')}
+        />
+      )}
+      {/* Mounted with the button, so the news is read out. */}
+      {invitable && (
+        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+          {invited ? inviteSentText(invited) : ''}
+        </p>
       )}
     </li>
   )

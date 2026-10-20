@@ -277,6 +277,10 @@ describe('HousePage', () => {
       expect(within(jo).queryByRole('button', { name: 'Moved out' })).toBeNull()
       expect(within(jo).getByRole('button', { name: 'Moved back in' })).toBeTruthy()
       expect(within(sam).queryByRole('button', { name: 'Moved back in' })).toBeNull()
+      // Only someone who hasn't joined can be invited (#399).
+      expect(within(sam).getByRole('button', { name: 'Invite by email' })).toBeTruthy()
+      expect(within(alex).queryByRole('button', { name: 'Invite by email' })).toBeNull()
+      expect(within(jo).queryByRole('button', { name: 'Invite by email' })).toBeNull()
       expect(screen.getByLabelText('Role')).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Settings' })).toBeTruthy()
       expect(screen.getByRole('region', { name: 'Archive group' })).toBeTruthy()
@@ -310,6 +314,12 @@ describe('HousePage', () => {
       )
       // Jo has moved out, but only an admin moves them back in.
       expect(screen.queryByRole('button', { name: 'Moved back in' })).toBeNull()
+      // In a house, members send invites too (permissions.md#roles, #399).
+      const invites = screen.getAllByRole('button', { name: 'Invite by email' })
+      expect(invites).toHaveLength(1)
+      expect(within(await row('Sam')).getByRole('button', { name: 'Invite by email' })).toBe(
+        invites[0],
+      )
     })
 
     it('lets a viewer only look, and leave', async () => {
@@ -319,6 +329,7 @@ describe('HousePage', () => {
       expect(screen.queryByRole('region', { name: 'Add a housemate' })).toBeNull()
       expect(screen.queryByRole('button', { name: 'Change' })).toBeNull()
       expect(screen.queryByRole('button', { name: 'Moved back in' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Invite by email' })).toBeNull()
       expect(screen.getByRole('region', { name: 'Leave this house' })).toBeTruthy()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
       // Everyone can read the house's divides (#166).
@@ -448,6 +459,118 @@ describe('HousePage', () => {
       type('Email (optional)', 'sam@example.com')
       click('Add housemate')
       expect(await screen.findByText('They’re already in this house.')).toBeTruthy()
+    })
+  })
+
+  describe('inviting (#399)', () => {
+    const SENT = { sentAt: NOW.toISOString(), expiresAt: '2026-11-01T22:00:00.000Z' }
+
+    async function openInvite(name = 'Sam') {
+      const found = await row(name)
+      fireEvent.click(within(found).getByRole('button', { name: 'Invite by email' }))
+      return found
+    }
+
+    it('emails an invite from the row, with the row’s other buttons put away meanwhile', async () => {
+      call.mockResolvedValue(ok(SENT))
+      renderAt('/groups/g1')
+      const sam = await row('Sam')
+      const invite = within(sam).getByRole('button', { name: 'Invite by email' })
+      expect(
+        document.getElementById(invite.getAttribute('aria-describedby') ?? '')?.textContent,
+      ).toBe('Sam')
+      fireEvent.click(invite)
+      expect(document.activeElement).toBe(input('Their email address'))
+      // One form at a time: Change can't take the row away from a send under way.
+      expect(within(sam).queryByRole('button', { name: 'Invite by email' })).toBeNull()
+      expect(within(sam).queryByRole('button', { name: 'Change' })).toBeNull()
+      expect(within(sam).queryByRole('button', { name: 'Remove' })).toBeNull()
+      type('Their email address', 'sam@example.com')
+      click('Send')
+      const news = `Invite sent. It expires on ${new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }).format(new Date(SENT.expiresAt))}.`
+      await waitFor(() => expect(within(sam).getByRole('status').textContent).toBe(news))
+      expect(sent()).toEqual([
+        'identity',
+        'POST',
+        '/invites',
+        { groupId: 'g1', memberId: 'm3', email: 'sam@example.com' },
+      ])
+      expect(document.activeElement).toBe(
+        within(sam).getByRole('button', { name: 'Invite by email' }),
+      )
+      expect(within(sam).getByRole('button', { name: 'Change' })).toBeTruthy()
+      // A new invite: the last one's news goes.
+      fireEvent.click(within(sam).getByRole('button', { name: 'Invite by email' }))
+      expect(within(sam).getByRole('status').textContent).toBe('')
+    })
+
+    it('gives each placeholder its own form', async () => {
+      stored.members.push(
+        member('m4', { personId: 'p4', displayName: 'Kim', status: 'placeholder' }),
+      )
+      renderAt('/groups/g1')
+      await openInvite('Sam')
+      await openInvite('Kim')
+      const fields = screen.getAllByLabelText('Their email address')
+      expect(new Set(fields).size).toBe(2)
+    })
+
+    it.each([
+      ['an admin', 'admin' as const, () => screen.getByRole('button', { name: 'Change' })],
+      ['a member', 'member' as const, () => screen.getByRole('heading', { level: 1 })],
+    ])(
+      'keeps the refusal when Sam joined meanwhile, then sends %s to what’s left on Cancel',
+      async (_case, role, focused) => {
+        seed(role)
+        const { queryClient } = renderAt('/groups/g1')
+        call.mockImplementation((async () => {
+          stored.members = stored.members.map((one) =>
+            one.$id === 'm3' ? { ...one, status: 'active' } : one,
+          )
+          return refused(
+            'VALIDATION_FAILED',
+            'Only someone who has not joined the group yet can be invited.',
+          )
+        }) as never)
+        const sam = await openInvite()
+        type('Their email address', 'sam@example.com')
+        click('Send')
+        const message = 'Only someone who has not joined the group yet can be invited.'
+        await waitFor(() =>
+          expect(
+            document.getElementById(`${input('Their email address').id}-error`)?.textContent,
+          ).toBe(message),
+        )
+        // The list catches up (a refocus, say): the form, its message and focus all stay.
+        await queryClient.invalidateQueries({ queryKey: queryKeys.members('g1') })
+        await waitFor(() => expect(within(sam).queryByText(/Not joined yet/)).toBeNull())
+        expect(document.activeElement).toBe(input('Their email address'))
+        click('Cancel')
+        expect(within(sam).queryByRole('button', { name: 'Invite by email' })).toBeNull()
+        expect(document.activeElement).toBe(
+          within(sam).queryByRole('button', { name: 'Change' }) ?? focused(),
+        )
+      },
+    )
+
+    it('closes, and says so, when the caller’s role turns out to have changed', async () => {
+      call.mockImplementation((async () => {
+        stored.members = stored.members.map((one) =>
+          one.$id === 'm1' ? { ...one, role: 'viewer' } : one,
+        )
+        return refused('FORBIDDEN', 'Your role in this group can’t do this.')
+      }) as never)
+      renderAt('/groups/g1')
+      await openInvite()
+      type('Their email address', 'sam@example.com')
+      click('Send')
+      expect(await screen.findByText('Your role here is now Viewer.')).toBeTruthy()
+      expect(screen.queryByLabelText('Their email address')).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Invite by email' })).toBeNull()
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
     })
   })
 
