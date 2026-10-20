@@ -256,7 +256,7 @@ export type Checkpoints = Models.Row & {
 export type ChangeNotices = Models.Row & {
     userId: string;
     kind: ChangeNoticesKind;
-    identityId: string | null;
+    identityId: string;
     idempotencyKey: string;
     attempts: number;
 }

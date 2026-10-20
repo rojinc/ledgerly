@@ -1027,7 +1027,7 @@
         "key": "identityId",
         "type": "varchar",
         "size": 36,
-        "required": false,
+        "required": true,
         "array": false,
         "default": null
       },
@@ -1052,6 +1052,12 @@
         "key": "uniq_idempotencyKey",
         "type": "unique",
         "columns": ["idempotencyKey"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_userId",
+        "type": "key",
+        "columns": ["userId"],
         "orders": ["ASC"]
       }
     ]
