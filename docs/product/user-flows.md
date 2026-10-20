@@ -41,6 +41,8 @@ To fix a posted entry, the worker opens it and taps **Edit**, which shows the sa
 3. **Finalize & send** → `statements POST /statements/{id}/finalize`. This locks the transactions, gives the invoice its number, makes the PDF and emails the employer.
 4. A mistake found later is fixed with an **adjustment** transaction, which appears on the next invoice. Sent invoices never change.
 
+To bill before the period ends, or with no regular invoices at all, an admin uses **Close period now…** → `statements POST /statements/close`. That drafts the invoice up to the chosen day (default: today). With a regular cycle, the job later drafts only the rest of the period.
+
 ## 6. Create a house and add a bill
 
 1. **Groups → New → House**, then add housemates by phone or email → `groups POST /groups/{id}/members`. Optionally send invites → `identity POST /invites`.
@@ -61,7 +63,7 @@ A posted house expense is fixed the same way as an employer entry: its creator o
 
 1. The house screen shows balances and suggested transfers, for example "Cara → Alice $45.20".
 2. Cara pays Alice by bank transfer outside the app, then taps **Record payment** → `ledger POST /transactions` with `kind: payment`.
-3. At month end the statements job drafts the **monthly divide**. An admin finalizes it, which locks the month, makes the PDF and emails everyone.
+3. At month end the statements job drafts the **monthly divide**. An admin can also draft it sooner with **Close period now…**, for example when someone moves out. Any member can see the current period so far. An admin finalizes the divide, which locks its period, makes the PDF and emails everyone.
 
 ## 9. Lend to a friend who isn't registered
 

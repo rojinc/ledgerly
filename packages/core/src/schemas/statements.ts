@@ -86,6 +86,14 @@ export const previewStatementBodySchema = z.strictObject({
 
 export type PreviewStatementBody = z.infer<typeof previewStatementBodySchema>
 
+/** `POST /statements/close` (statements.md#6-close-a-period-now-post-statementsclose). */
+export const closeStatementBodySchema = z.strictObject({
+  groupId: idSchema,
+  periodEnd: localDateSchema.optional(),
+})
+
+export type CloseStatementBody = z.infer<typeof closeStatementBodySchema>
+
 /** `POST /statements/{id}/finalize` */
 export const finalizeStatementBodySchema = z.strictObject({ send: z.boolean() })
 

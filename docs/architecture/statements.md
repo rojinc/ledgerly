@@ -5,7 +5,7 @@ A **statement** summarises a group for a period and then locks that period. The 
 - **Invoices** for `employer` groups: what the employer owes you, as a PDF emailed to their billing address.
 - **Monthly divides** for `house` groups: who paid what, everyone's share and who should pay whom.
 
-`personal` and `pair` groups have no statements (`statementCycle = none`).
+`personal` and `pair` groups have no statements. An `employer` or `house` group with no cycle (`statementCycle = none`) gets one only when an admin [closes a period](#6-close-a-period-now-post-statementsclose).
 
 ## Core rules
 
@@ -29,12 +29,13 @@ Dates before the anchor fall into earlier periods of the same length, counted ba
 
 `groups.nextCloseAt` = 06:00 local time on the day after the current period ends, converted to UTC. The six-hour grace lets late entries from the last day make it in.
 
-The job's period ends on the group's local date 12 hours before the stored `nextCloseAt` (normally the day before it; core's `periodEndClosedAt`). It starts the day after the latest `periodEnd` among the group's statements that end before it, void ones included (a void period is redone by a reissue of its own range). A group's first statement starts where its cycle period does. So a cycle or time zone change leaves no gap or overlap between periods, though the period after it can be longer or shorter than the cycle. A change of cycle, anchor or time zone while a period is due keeps that period. It's due once it has ended, read in the group's time zone before the change, or once the stored `nextCloseAt` has passed, until the job drafts it. `groups` keeps the stored `nextCloseAt`, or, when the time zone changes, reads the period's end from it in the old time zone and stores that end's close in the new one ([#126](https://github.com/rojinc/ledgerly/issues/126)). So a move west (Sydney to Honolulu) drafts October once, later; a move east doesn't give October a day of November; and a cycle change once October has ended in the group's time zone doesn't merge it into the next period. One made before then works the close out from today, as for any group, so the period after it is longer; that's also so after a move west, while October hasn't ended in the new time zone yet. A time zone change alone does the same when nothing is due yet, so a move east into a time zone where the period has already ended can't skip it either.
+The job's period ends on the group's local date 12 hours before the stored `nextCloseAt` (normally the day before it; core's `periodEndClosedAt`). It starts the day after the latest `periodEnd` among the group's statements that end before it, void ones included (a void period is redone by a reissue of its own range). A group's first statement starts where its cycle period does. So a cycle or time zone change leaves no gap or overlap between periods, though the period after it can be longer or shorter than the cycle. The same holds after an admin [closes a period early](#6-close-a-period-now-post-statementsclose): that draft ends inside the job's period, so the job's draft starts the day after it and covers only the rest. A change of cycle, anchor or time zone while a period is due keeps that period. It's due once it has ended, read in the group's time zone before the change, or once the stored `nextCloseAt` has passed, until the job drafts it. `groups` keeps the stored `nextCloseAt`, or, when the time zone changes, reads the period's end from it in the old time zone and stores that end's close in the new one ([#126](https://github.com/rojinc/ledgerly/issues/126)). So a move west (Sydney to Honolulu) drafts October once, later; a move east doesn't give October a day of November; and a cycle change once October has ended in the group's time zone doesn't merge it into the next period. One made before then works the close out from today, as for any group, so the period after it is longer; that's also so after a move west, while October hasn't ended in the new time zone yet. A time zone change alone does the same when nothing is due yet, so a move east into a time zone where the period has already ended can't skip it either.
 
 ## Lifecycle
 
 ```
-           period ends                         admin clicks Finalize (or autoFinalize)
+       period ends, or
+       admin closes it now (§6)                admin clicks Finalize (or autoFinalize)
  (none) ───────────────► draft ──────────────────────► finalizing ───► final ───► void
                          │ ▲  refresh recalculates         (resumable)        (latest only)
                          │ └──────────────┘
@@ -48,11 +49,13 @@ Appwrite runs the job as `POST /` on the `statements` function; nobody else can 
 - create a `draft` statement for the period, with a computed snapshot,
 - move `groups.nextCloseAt` to the next period's close.
 
-The period is the one that ended the day before the stored `nextCloseAt`, so a cycle or time zone change made after it ended can't skip it. If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period, and the run that lost doesn't count it as a failure. The job reads its period again after staging the group row: if a [discard](#5-discard-post-statementsiddiscard) committed meanwhile and moved the period's start, the group is left for the next run. A discard that commits later fails one of the two commits, since both write the group row. If a statement that isn't void already reaches the period's end (one reissued before the reissue rules in [§4](#4-void-post-statementsidvoid)), the job only moves `nextCloseAt` on. The job lists every due group first and then works through them, so a group that fails every time never keeps the others waiting; a failure is logged (IDs only) and tried again on the next run. The job drafts an invoice for an employer group and a divide for a house.
+The period is the one that ended the day before the stored `nextCloseAt`, so a cycle or time zone change made after it ended can't skip it. If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period, and the run that lost doesn't count it as a failure. The job reads its period again after staging the group row: if a [discard](#5-discard-post-statementsiddiscard) committed meanwhile and moved the period's start, the group is left for the next run. A discard that commits later fails one of the two commits, since both write the group row. If a statement that isn't void already reaches the period's end (an [early close](#6-close-a-period-now-post-statementsclose) that ended on the period's last day, or one reissued before the reissue rules in [§4](#4-void-post-statementsidvoid)), the job only moves `nextCloseAt` on. The job lists every due group first and then works through them, so a group that fails every time never keeps the others waiting; a failure is logged (IDs only) and tried again on the next run. The job drafts an invoice for an employer group and a divide for a house.
 
 **Empty divides:** when a house's period has no lines and every opening is 0, the job drafts nothing and sends no "ready" email. It still moves `nextCloseAt`, so the empty period merges into the next one (before the group's first statement, it's simply skipped).
 
 Then email the group admins at their verified addresses: "Your October invoice for Acme is ready to review", linking to `/groups/<groupId>/statements/<statementId>` in the web app. A failed email, even one that can't be built, doesn't undo the draft or stop what follows. If the group setting `autoFinalize` is on, finalize straight away, without sending.
+
+An admin can also draft the period so far without waiting for it to end ([§6](#6-close-a-period-now-post-statementsclose)).
 
 Drafts are **not** locked. Users can keep adding and fixing transactions. `POST /statements/{id}/refresh` (called whenever the draft is opened) recalculates the snapshot.
 
@@ -92,6 +95,7 @@ A draft that could never be finalized would block every later statement of the g
 - a range that doesn't end after the latest final statement (`VALIDATION_FAILED`), since its opening would come from before that statement;
 - a range that ends on the same day as another statement that isn't void (`VALIDATION_FAILED`);
 - a range that reaches the period the job drafts next (`VALIDATION_FAILED`), which the job would draft again;
+- in a group with no cycle, a range that ends after the group's latest statement, void ones included, or any range if it has none (`VALIDATION_FAILED`): there, new periods come only from a [close](#6-close-a-period-now-post-statementsclose), so a reissue only redoes a void one;
 - any range while a statement of the group is `finalizing` (`CONFLICT`).
 
 ### 5. Discard (`POST /statements/{id}/discard`)
@@ -112,10 +116,45 @@ Calling it again gets `NOT_FOUND`, which the app treats as done.
 
 **Periods.** `nextCloseAt` doesn't move, and the draft's transactions land on the next statement ([core rule 1](#core-rules)).
 
-- Discarding a draft that ends after every other statement of the group, void ones included, rolls its period into the next draft. The next period starts the day after the latest `periodEnd` that remains, void ones included ([periods](#periods)), so a reissue of the discarded range is refused, since that period hasn't been drafted yet. If no statement remains, the next draft starts where its cycle period does, and the discarded range can be reissued. To recalculate a draft, refresh it rather than discarding it.
+- Discarding a draft that ends after every other statement of the group, void ones included, rolls its period into the next draft. The next period starts the day after the latest `periodEnd` that remains, void ones included ([periods](#periods)), so a reissue of the discarded range is refused, since that period hasn't been drafted yet. If no statement remains, the next draft starts where its cycle period does (or, with no cycle, where a [close](#6-close-a-period-now-post-statementsclose)'s first statement does), and in a group with a cycle the discarded range can be reissued. To recalculate a draft, refresh it rather than discarding it.
 - Discarding any other draft, such as a reissue of a void statement's range, leaves the period boundaries as they were, and the range can be reissued again.
 
 **Files.** A draft never has a PDF, because step 7 runs while `finalizing`, so discard doesn't touch storage.
+
+### 6. Close a period now (`POST /statements/close`)
+
+Admin only, in an `employer` or a `house` group. Other groups get `VALIDATION_FAILED`, and an archived group gets `ARCHIVED`. The route drafts the group's next statement now, up to `periodEnd`, instead of waiting for the job: an invoice whenever the worker wants to bill, or a divide when a housemate moves out. It returns the draft, and the admin finalizes it as usual ([§2](#2-finalize-post-statementsidfinalize)). A group with cycle `none` gets its statements this way, since the job never drafts one for it, and a reissue only redoes a void one ([§4](#4-void-post-statementsidvoid)).
+
+**Period.**
+- **The end** is `periodEnd`. It defaults to today in the group's time zone, or to the end of the job's next period if that's earlier. That happens in the hours after a period ends, before the job drafts it. The app always sends the day the admin confirmed.
+- **The start** is the day after the latest `periodEnd` among the group's statements, void ones included. The job counts only statements that end before its period does ([periods](#periods)); a close counts them all, so a second close can't overlap one that ended on the job's period end.
+- **A group's first statement** starts where the cycle period containing `periodEnd` starts. With cycle `none`, it starts on the date of the group's earliest posted transaction dated on or before `periodEnd`, or on the day the group was created (in its time zone) if it has none.
+
+**Like the job's drafts:**
+- the same snapshot, built by the same code: every posted, unlocked transaction dated on or before `periodEnd` ([core rule 1](#core-rules));
+- a `statement.drafted` activity row, with the admin as its actor.
+
+**Unlike them:**
+- `nextCloseAt` and the cycle don't move;
+- no "ready" email is sent, since the route returns the draft to the admin who asked;
+- `autoFinalize` doesn't apply;
+- a divide with nothing in it is drafted too, and the admin can discard it.
+
+**Locking ([I-7](ledger.md#invariants)) is unchanged:** finalizing locks every transaction dated on or before `periodEnd`. Entries dated after it go on the next statement, and the app says so before it closes the period.
+
+**At period end** the job drafts the rest: its period starts the day after the early close. That can be an empty employer invoice, which the admin can discard unless `autoFinalize` finalized it, as for any period the job drafts. If the early close ended on the period's last day, the job only moves `nextCloseAt` on ([§1](#1-draft-statements-job-hourly)).
+
+**Asking again** with the same `periodEnd` returns the group's statement that ends on that day, while it's still unfinished (`draft` or `finalizing`), whoever drafted it. So a retry makes no second draft. This is read first, before any refusal, and read again after staging, as for a reissue.
+
+**Refusals.** The route stages a guard write to the group row, then reads the stored rows and refuses:
+- a group archived meanwhile (`ARCHIVED`), as finalize step 1 does;
+- any close while a statement of the group is `finalizing` (`CONFLICT`);
+- any close while another draft of the group is unfinished: `CONFLICT`, with `details: { draftId }` naming the oldest one by `periodEnd`, so the app can link to it. Periods lock in order ([core rule 5](#core-rules)), so that draft must be finalized or discarded first;
+- a `periodEnd` after today in the group's time zone, before the period's start, or after the end of the period the job drafts next (`VALIDATION_FAILED`). A group with no cycle has no job period, so only the first two apply.
+
+It reads the period's start again after staging, and answers `CONFLICT` (try again) if a draft or a discard that committed meanwhile moved it, so no two periods overlap and none leaves a gap. A job run or another close at the same moment fails one of the two commits, since both write the group row.
+
+**The current period so far.** `POST /statements/preview` shows any member what the statement would hold if it were closed on `periodEnd`. The default and the start are a close's, not the cycle period's, so the preview matches what an admin would draft. A statement may already cover that day (a close ended today); then the preview starts where the cycle period does, as before. Nothing is saved, nothing is refused for being early or late, and it works in an archived group too.
 
 ## Snapshot
 

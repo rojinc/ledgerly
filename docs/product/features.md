@@ -38,7 +38,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-26 | Expenses with presets: *I paid for them* (they owe you), *bought on their card for work* (shown for information only), *personal purchase on their card or a cash advance* (deducted from what they owe). | M1 |
 | F-27 | Record payments received. | M1 |
 | F-28 | Balance: what the employer owes you right now. | M1 |
-| F-29 | Invoices on a weekly, fortnightly or monthly cycle. A draft is created at the end of each period; you review it, then finalize and email the PDF. Optional auto-send. Numbering such as `INV-0001` per user. Payment terms. | M1 |
+| F-29 | Invoices on a weekly, fortnightly or monthly cycle, or none. A draft is created at the end of each period, or whenever an admin closes the period now; you review it, then finalize and email the PDF. Optional auto-finalize of the period-end draft, which doesn't send it (auto-send is post-launch, [#404](https://github.com/rojinc/ledgerly/issues/404)). Numbering such as `INV-0001` per user. Payment terms. | M1 |
 | F-30 | Rate changes only affect future shifts. Past shifts keep their rate. | M1 |
 
 ## House
@@ -52,7 +52,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-44 | Attach receipt photos or PDFs to any transaction. | M3 |
 | F-45 | Recurring bills and expenses (rent, internet). | M3 |
 | F-46 | Balances and settle-up suggestions using the fewest transfers. Record a settlement payment. | M3 |
-| F-47 | Monthly divide: a statement for the month showing each person's paid, share and net, plus suggested transfers. Comes with a PDF and locks the month. | M3 |
+| F-47 | Monthly divide: a statement for the month, or for the period so far when an admin closes it now, showing each person's paid, share and net, plus suggested transfers. Comes with a PDF and locks the period. Any member can preview the current period so far. | M3 |
 | F-48 | Anyone can add transactions. You can edit your own; admins can edit everyone's; nobody can edit a locked month. | M3 |
 
 ## Personal

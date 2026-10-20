@@ -37,7 +37,7 @@ Table-level permissions: **none** on every table. Row security is on everywhere.
 | Create and edit schedules | ✓ | own only | — |
 | Add members and send invites (invites need a verified email) | ✓ | house only | — |
 | Remove members, change roles, change settings | ✓ | — | — |
-| Finalize, send, void, reissue or discard statements | ✓ | — | — |
+| Close a period now; finalize, send, void, reissue or discard statements | ✓ | — | — |
 | Archive the group | ✓ | — | — |
 
 Nobody can edit or void a **locked** transaction, admins included ([I-7](ledger.md#invariants)).
