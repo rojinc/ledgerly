@@ -83,7 +83,7 @@ export function invoiceEmail(input: {
         : nothingToPay(input.balanceDueCents, input.currency),
       'If you have any questions, reply to this email.',
     ]),
-    // The prefix is user-typed; keep the file name to characters every mail client accepts.
+    // Keep the file name to characters every mail client accepts.
     attachments: [
       { filename: `${displayNumber.replace(/[^\w.-]/g, '-')}.pdf`, content: input.pdf },
     ],
@@ -459,8 +459,9 @@ type Link = { label: string; url: string }
 
 // The same paragraphs and lists as HTML and as plain text. Names are user-typed, so HTML
 // escapes everything, and the subject is kept to one line. Each template folds the names it
-// shows (`oneLine()`), not whole paragraphs, which would turn the narrow no-break spaces in
-// times and money into plain ones. No images, so no tracking pixels (security-and-privacy.md).
+// shows (`oneLine()`), not whole paragraphs, which would turn the no-break space Intl puts in an
+// amount like `EUR 12.00` into a plain one. No images, so no tracking pixels
+// (security-and-privacy.md).
 function message(
   subject: string,
   blocks: readonly Block[],
