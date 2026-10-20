@@ -1384,6 +1384,51 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(rows(services)).toEqual([expect.objectContaining({ $id: 'n1', attempts: 0 })])
     })
 
+    it('checks 23 hours again just before each send, after the spacing', async () => {
+      const start = T0 + HOUR
+      const services = withRows([
+        pending('n1', { $createdAt: new Date(start - 23 * HOUR + 100).toISOString() }),
+        // 400 ms short of 23 hours at the start, but past them by its send, 500 ms after n1's.
+        pending('n2', { $createdAt: new Date(start - 23 * HOUR + 400).toISOString() }),
+      ])
+      const calls = answered(services)
+      expect(counted(await hourly(services))).toEqual({
+        retried: 1,
+        failed: 0,
+        expired: 1,
+        gone: 0,
+      })
+      expect(calls.map(({ key }) => key)).toEqual(['email-change-notice-key-n1'])
+      expect(rows(services)).toEqual([])
+      expect(noticeLines()).toEqual([
+        retryLine('email', 'retried', 0),
+        retryLine('email', 'expired', 0),
+      ])
+    })
+
+    it('still retries the notices when the merges’ walk fails', async () => {
+      const services = withRows([pending('n1')])
+      const list = services.db.listRows.bind(services.db)
+      let walked = false
+      vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+        // The walk's first page of merged persons, not the retry's own reads.
+        if (params.tableId === 'persons' && !walked) {
+          walked = true
+          throw new AppwriteException('Server Error', 500)
+        }
+        return list(params)
+      })
+      const calls = answered(services)
+      const result = await hourly(services)
+      expect(result.body).toMatchObject({ ok: true, data: { unfinished: 0 } })
+      expect(counted(result)).toEqual({ retried: 1, failed: 0, expired: 0, gone: 0 })
+      expect(calls).toHaveLength(1)
+      expect(lines()).toContainEqual({
+        event: 'merge_run_failed',
+        cause: 'AppwriteException 500',
+      })
+    })
+
     it('answers with the merges’ counts when the rows can’t be listed', async () => {
       const services = withRows([pending('n1')])
       const list = services.db.listRows.bind(services.db)

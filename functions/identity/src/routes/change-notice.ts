@@ -124,8 +124,8 @@ export async function changeNotice(
 
 /**
  * Step 8: tries the `changeNotices` rows again, oldest first, in identity's hourly run, after its
- * merges, leaving rows an event run may still be sending (RUN_MS). Step 6's limits count from the run's start (`started`), so the merges' time comes off
- * them. A row is deleted once its email is sent, or can never be (refused, gone, or 23 hours
+ * merges, leaving rows an event run may still be sending (RUN_MS). Step 6's limits count from the
+ * run's start (`started`), so the merges' time comes off them. A row is deleted once its email is sent, or can never be (refused, gone, or 23 hours
  * old). A 429 ends the retries for the run, since Resend's limit is shared; any other failure
  * adds 1 to `attempts`. Rows it doesn't reach wait for the next hour.
  */
@@ -161,19 +161,21 @@ export async function retryNotices(services: Services, started: number): Promise
         counts: { attempts },
         ...line,
       })
+    // Checked now, and again just before the send, after the reads and the spacing.
+    const expired = () => Date.now() - Date.parse(row.$createdAt) >= KEEP_MS
     let error: unknown
     try {
-      const email =
-        services.now.getTime() - Date.parse(row.$createdAt) >= KEEP_MS
-          ? 'expired'
-          : await rebuilt(services, row)
+      let email: Keyed | 'expired' | 'gone' = expired() ? 'expired' : await rebuilt(services, row)
+      if (typeof email !== 'string') {
+        if (!(await pace.start())) break
+        if (expired()) email = 'expired'
+      }
       if (typeof email === 'string') {
         counts[email] += 1
         log({ outcome: email })
         await forget(services.db, row.$id)
         continue
       }
-      if (!(await pace.start())) break
       error = await sendOnce(pace, email)
       if (error === undefined) {
         counts.retried += 1
