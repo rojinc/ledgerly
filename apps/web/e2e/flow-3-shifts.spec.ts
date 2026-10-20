@@ -84,8 +84,16 @@ test('changes a shift, adds another, voids one and times one', async ({ page }) 
     await expect(items).toHaveCount(1)
     await items.click()
     await page.getByLabel('Reason for voiding').fill('Didn’t go')
+    // The page shows the void before the server answers, so wait for the answer before leaving:
+    // a navigation could cancel the request. Every call is an execution, so match the void's.
+    const answered = page.waitForResponse(
+      (response) =>
+        response.url().includes('/executions') &&
+        /\/transactions\/[^/"]+\/void/.test(response.request().postData() ?? ''),
+    )
     await page.getByRole('button', { name: 'Void', exact: true }).click()
     await expect(page.getByText('Void. Reason: Didn’t go', { exact: true })).toBeVisible()
+    await answered
     // It stays on the calendar, struck through.
     const voided = await dayItems(page, nextWeek)
     await expect(voided).toHaveText(/^Shift.*· Void/)

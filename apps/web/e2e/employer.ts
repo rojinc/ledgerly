@@ -12,9 +12,11 @@ export async function addEmployer(page: Page, name: string, billing: string): Pr
   await page.getByLabel('Invoice cycle').selectOption({ label: 'Monthly' })
   await page.getByLabel('Payment terms (days)').fill('14')
   await page.getByRole('button', { name: 'Create employer', exact: true }).click()
-  await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible()
+  // The ID first, so a check that fails after saving still leaves something to archive.
+  await page.waitForURL(/\/groups\/[^/]+\/settings$/)
   const groupId = /^\/groups\/([^/]+)\/settings$/.exec(new URL(page.url()).pathname)?.[1]
   if (!groupId) throw new Error('Saving the employer didn’t open its settings')
+  await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible()
   return groupId
 }
 

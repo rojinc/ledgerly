@@ -51,7 +51,7 @@ test('invoices last month: the draft, finalize and send, its number and PDF', as
     // dev server serves the app's modules, so this is the instance the app itself calls with.
     const result = await page.evaluate(
       async ({ path, body }) => {
-        const { callFunction } = await import(/* @vite-ignore */ path)
+        const { callFunction } = await import(path)
         return callFunction('statements', 'POST', '/statements/reissue', body)
       },
       { path: '/src/lib/api.ts', body: { groupId, periodStart, periodEnd } },
