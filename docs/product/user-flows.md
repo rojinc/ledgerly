@@ -45,7 +45,7 @@ To bill before the period ends, or with no regular invoices at all, an admin use
 
 ## 6. Create a house and add a bill
 
-1. **Groups → New → House**, then add housemates by phone or email → `groups POST /groups/{id}/members`. Optionally send invites → `identity POST /invites`.
+1. **Groups → New → House**, with its time zone, holiday region and currency starting as the profile's (F-10), then add housemates by phone or email → `groups POST /groups/{id}/members`. Optionally send invites → `identity POST /invites`.
 2. Alice adds the electricity bill: $270, period 1 Jul–30 Sep, due 15 Oct, not paid yet → `ledger POST /transactions` with `kind: bill`, status `due`.
 3. Alice pays it on 10 Oct and marks it paid → `ledger POST /transactions/{id}/post`, with payer Alice.
 4. The default split is **days present**. Cara moved in on 1 Aug, so she pays for 61 of the 92 days.
