@@ -149,6 +149,35 @@ describe('transactionChanges', () => {
     })
   })
 
+  it('tells only who was in it when it was voided', () => {
+    // Bob takes Cara, at 0, off it, then voids it in the same hour.
+    const withCara = [...split(9000), { personId: 'cara', netCents: 0 }]
+    const rows = [
+      edit({ nets: { before: withCara, after: split(9000) }, totalCents: undefined }),
+      edit({ voided: true, nets: { before: split(9000), after: [] }, totalCents: undefined }),
+    ]
+    const told = transactionChanges(rows, current, samePerson)
+    expect([...told.keys()]).toEqual(['alice'])
+    expect(told.get('alice')?.[0]).toMatchObject({ changedBy: ['bob'], voided: true })
+  })
+
+  it('doesn’t count who changed only what the email doesn’t show as having changed it', () => {
+    // Bob changes the total, then Alice edits only the note, and adds Cara at 0.
+    const withCara = [...split(12000), { personId: 'cara', netCents: 0 }]
+    const rows = [
+      edit(),
+      edit({
+        actorPersonId: 'alice',
+        nets: { before: split(12000), after: withCara },
+        totalCents: undefined,
+      }),
+    ]
+    // Bob hears nothing: the change he's told of would be only his own.
+    const told = transactionChanges(rows, current, samePerson)
+    expect([...told.keys()]).toEqual(['alice', 'cara'])
+    expect(told.get('alice')?.[0]?.changedBy).toEqual(['bob'])
+  })
+
   it('tells someone added or taken off it, from 0 or to 0', () => {
     const row = edit({
       actorPersonId: 'alice',

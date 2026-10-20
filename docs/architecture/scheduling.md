@@ -136,7 +136,7 @@ When someone edits or voids a posted transaction, the other people in it get an 
 
 - **What counts:** a `transaction.updated` or `transaction.voided` [activity](data-model.md#activity) row with `changesJson.nets`. Only `PATCH /transactions/{id}` and `POST /transactions/{id}/void` write `nets`, and only for a posted transaction ([ledger](ledger.md#editing-and-voiding)). So nothing is sent for a create, nor for `/post`, a timer stop or an auto-post (each a `transaction.posted` row), a schedule's expansion (no activity row), the receipts route, a merge's voids, or rows written before `nets` existed.
 - **Windows:** whole UTC hours, each `[start, end)` by the row's `at`, taken once its end is at least a minute old, since `at` is set before a ledger write commits and the write may take 15 seconds. The `transaction-changes` [checkpoint](data-model.md#checkpoints) is the end of the last window finished. When it's missing, it's made at the start of the current hour, so no backlog goes out. Rows are read by `idx_action_at`, 100 at a time.
-- **The fold, per transaction:** the window's rows are taken in `at` order. Each field keeps its first `before` and its last `after`: `nets` from every row, and the total and the date from the rows that changed them (`changesJson.totalCents`, `changesJson.date`), or else as the transaction has them now. A person's net is summed over entries that name the same person after `mergedInto`. Core's `transactionChanges` does this.
+- **The fold, per transaction:** the window's rows are taken in `at` order, then `$id`. Each field keeps its first `before` and its last `after`: `nets` from every row, and the total and the date from the rows that changed them (`changesJson.totalCents`, `changesJson.date`), or else as the transaction has them now. A person's net is summed over entries that name the same person after `mergedInto`. Core's `transactionChanges` does this.
 - **Who gets it:** everyone in the folded `before` or `after` nets whose own net, the total or the date differs between the two, or who was in it when it was voided, and who has all of these:
   - an `active` member row in the group, or a `left` one while they're still in its team (as summaries, [step 4](#step-4-summary-emails));
   - a verified account email, an account that isn't blocked, and no `deletedAt`;
@@ -148,7 +148,7 @@ When someone edits or voids a posted transaction, the other people in it get an 
 - **The email** (`transactionChangesEmail`) has a fixed subject, with no name or amount. For each transaction, at most 10 then "and N more":
   - the group's name, one line and 40 characters at most (a pair is named by its other member, as the app names it);
   - the description, one line;
-  - everyone else who changed it in that window, by their names in that group, each one line and 40 characters at most;
+  - everyone else who changed it in that window (its total, its date or someone's part, or voided it; a change only to the note, the description or the category doesn't count), by their names in that group, each one line and 40 characters at most;
   - the total and the date, before → after;
   - their own part before → after (their net: owed to them or owed by them), or that it was voided;
   - a link to `<APP_URL>/groups/<groupId>/transactions/<transactionId>`.

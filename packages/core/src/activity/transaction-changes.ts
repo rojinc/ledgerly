@@ -20,15 +20,17 @@ export type PersonChange = {
   date: { before: LocalDate; after: LocalDate }
   /** Their own net in it, before and after; `after` is 0 once it's voided. */
   netCents: { before: number; after: number }
+  /** Whether they were in it when it was voided. */
   voided: boolean
 }
 
 /**
- * Folds a window's rows, in `at` order, into what each person is told: per transaction, the first
- * `before` and the last `after` of each field, the total and the date from the rows that changed
- * them or else `current`, and each person's net summed over the entries that name them once
- * `personOf` has followed merges. Someone hears about a transaction only when someone else changed
- * it and their net, the total or the date differs, or it was voided.
+ * Folds a window's rows, sorted by `at` and then `$id`, into what each person is told: per
+ * transaction, the first `before` and the last `after` of each field, the total and the date from
+ * the rows that changed them or else `current`, and each person's net summed over the entries that
+ * name them once `personOf` has followed merges. Someone hears about a transaction only when
+ * someone else changed it (its total, its date or a part, or voided it) and their net, the total
+ * or the date differs, or they were in it when it was voided.
  */
 export function transactionChanges(
   rows: readonly ChangeRow[],
@@ -48,13 +50,16 @@ export function transactionChanges(
     const now = current(transactionId)
     const totalCents = folded(list, (row) => row.totalCents, now.totalCents)
     const date = folded(list, (row) => row.date, now.date)
-    const voided = list.some((row) => row.voided)
-    const actors = [...new Set(list.map((row) => personOf(row.actorPersonId)))]
+    const voidRow = list.find((row) => row.voided)
+    const inVoid = voidRow ? summed(voidRow.nets.before, personOf) : new Map<string, number>()
+    const changers = list.filter((row) => changesWhatsTold(row, personOf))
+    const actors = [...new Set(changers.map((row) => personOf(row.actorPersonId)))]
     const before = summed(first.nets.before, personOf)
     const after = summed(last.nets.after, personOf)
     for (const personId of new Set([...before.keys(), ...after.keys()])) {
       const changedBy = actors.filter((actor) => actor !== personId)
       const netCents = { before: before.get(personId) ?? 0, after: after.get(personId) ?? 0 }
+      const voided = inVoid.has(personId)
       const differs =
         voided ||
         netCents.before !== netCents.after ||
@@ -68,6 +73,20 @@ export function transactionChanges(
     }
   }
   return told
+}
+
+/**
+ * Whether a row changed something an email shows: it voided the transaction, changed its total or
+ * date, or changed someone's net. A change only to the note, the description or the category
+ * doesn't make its author one who changed it.
+ */
+function changesWhatsTold(row: ChangeRow, personOf: (personId: string) => string): boolean {
+  if (row.voided || row.totalCents !== undefined || row.date !== undefined) return true
+  const before = summed(row.nets.before, personOf)
+  const after = summed(row.nets.after, personOf)
+  return [...new Set([...before.keys(), ...after.keys()])].some(
+    (personId) => (before.get(personId) ?? 0) !== (after.get(personId) ?? 0),
+  )
 }
 
 /** The first `before` and the last `after` among the rows that changed a field, or `now`'s. */

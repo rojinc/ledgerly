@@ -951,7 +951,7 @@ describe('transactionChangesEmail', () => {
     expect(content.text).toContain(
       'Open “Groceries”: https://app.example/groups/house/transactions/t1',
     )
-    expect(content.text).toContain('Change your emails: https://app.example/profile')
+    expect(content.text).toContain('Change your email settings: https://app.example/profile')
     expect(content.html.match(/<a /g)).toHaveLength(2)
   })
 
@@ -970,6 +970,14 @@ describe('transactionChangesEmail', () => {
     const voided = changes({ ...groceries, changedBy: ['Alice', 'Cara'], voided: true })
     expect(voided.text).toContain('“Groceries” in Flat 4, voided by Alice and Cara:')
     expect(voided.text).toContain('- Your part: you’re owed $45.00, and nothing now it’s voided')
+    const atZero = changes({ ...groceries, voided: true, netCents: { before: 0, after: 0 } })
+    expect(atZero.text).toContain('- Your part: nothing owed either way\n')
+    expect(atZero.text).not.toContain('now it’s voided')
+  })
+
+  it('says someone changed it when it isn’t given who', () => {
+    const content = changes({ ...groceries, changedBy: [] })
+    expect(content.text).toContain('“Groceries” in Flat 4, changed by someone:')
   })
 
   it('writes a part past the amount cap', () => {
@@ -1002,6 +1010,7 @@ describe('transactionChangesEmail', () => {
     expect(content.html).toContain('&lt;b&gt;Pay now&lt;/b&gt;')
     expect(content.html).not.toContain('<b>Pay')
     expect(content.text).toContain(`“Rent <b>Pay now</b>” in <i>${'g'.repeat(36)}…, changed by`)
+    expect(content.text).toContain(`Open “Rent <b>Pay now</b>”: ${groceries.url}`)
     expect(content.text).toContain(`changed by ${'b'.repeat(39)}…:`)
   })
 })

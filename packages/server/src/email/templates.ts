@@ -530,14 +530,14 @@ export function transactionChangesEmail(input: {
         : `Someone changed ${input.changes.length} transactions you’re in.`,
       ...shown.flatMap(changeBlocks),
       ...(more > 0 ? [`And ${more} more. Open Ledgerly to see them.`] : []),
-      'You can turn these emails off in your profile.',
+      TURN_OFF,
     ],
     [
       ...shown.map((change) => ({
         label: `Open “${shortLine(change.description)}”`,
         url: change.url,
       })),
-      { label: 'Change your emails', url: input.profileUrl },
+      { label: CHANGE_EMAILS, url: input.profileUrl },
     ],
   )
 }
@@ -553,17 +553,19 @@ function changeBlocks(change: ChangedTransaction): Block[] {
         : 'nothing owed either way'
   const names = change.changedBy.map(shortLine)
   const who =
-    names.length === 1
-      ? names[0]
+    names.length <= 1
+      ? (names[0] ?? 'someone')
       : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
   return [
     `“${oneLine(change.description)}” in ${shortLine(change.groupName)}, ${change.voided ? 'voided' : 'changed'} by ${who}:`,
     [
       `Total: ${fromTo(change.totalCents, total)}`,
       `Date: ${fromTo(change.date, longDate)}`,
-      change.voided
-        ? `Your part: ${part(change.netCents.before)}, and nothing now it’s voided`
-        : `Your part: ${fromTo(change.netCents, part)}`,
+      !change.voided
+        ? `Your part: ${fromTo(change.netCents, part)}`
+        : change.netCents.before === 0
+          ? `Your part: ${part(0)}`
+          : `Your part: ${part(change.netCents.before)}, and nothing now it’s voided`,
     ],
   ]
 }
