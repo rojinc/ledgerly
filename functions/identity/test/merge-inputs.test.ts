@@ -781,6 +781,12 @@ describe('moveInputs (step 3)', () => {
       mode: 'exact',
       amounts: [{ personId: 'pU', cents: 500 }],
     })
+    // Nothing names P now: a second run writes nothing.
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 0,
+      skipped: 0,
+      done: true,
+    })
   })
 
   // #348: the split is written out from the total, so a total changed meanwhile is a race.
@@ -1756,6 +1762,8 @@ describe('moveTemplates (step 3)', () => {
       ...RENT,
       split: { mode: 'exact', amounts: [{ personId: 'pU', cents: 90000 }] },
     })
+    // Nothing names P now: a second run writes nothing.
+    expect(await moveTemplates(store, merge, ['g1'], FAR)).toMatchObject({ rewritten: 0 })
   })
 
   it('renames no template into a person whose account is being deleted (#246)', async () => {
