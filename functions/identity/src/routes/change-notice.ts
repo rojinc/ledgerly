@@ -125,9 +125,10 @@ export async function changeNotice(
 /**
  * Step 8: tries the `changeNotices` rows again, oldest first, in identity's hourly run, after its
  * merges, leaving rows an event run may still be sending (RUN_MS). Step 6's limits count from the
- * run's start (`started`), so the merges' time comes off them. A row is deleted once its email is sent, or can never be (refused, gone, or 23 hours
- * old). A 429 ends the retries for the run, since Resend's limit is shared; any other failure
- * adds 1 to `attempts`. Rows it doesn't reach wait for the next hour.
+ * run's start (`started`), so the merges' time comes off them. A row is deleted once its email is
+ * sent, or can never be (refused, gone, or 23 hours old). A 429 ends the retries for the run,
+ * since Resend's limit is shared; any other failure adds 1 to `attempts`. Rows it doesn't reach
+ * wait for the next hour.
  */
 export async function retryNotices(services: Services, started: number): Promise<NoticeCounts> {
   const counts: NoticeCounts = { retried: 0, failed: 0, expired: 0, gone: 0 }
