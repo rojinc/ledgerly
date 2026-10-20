@@ -1093,6 +1093,14 @@ describe('PairPage: settings (#403)', () => {
     expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
   })
 
+  it('leaves focus alone when the page opens with Settings', async () => {
+    mockGroup(0)
+    mockRows()
+    renderAt('/people/g1')
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeTruthy()
+    expect(document.activeElement).toBe(document.body)
+  })
+
   it('leaves focus alone when Settings appear as the role loads', async () => {
     // As in the app: the caller's role arrives after the page's first render.
     mockGroup(0)
