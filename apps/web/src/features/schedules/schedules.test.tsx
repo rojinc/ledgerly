@@ -1,6 +1,6 @@
 import type { Groups, Members, Schedules } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
@@ -649,10 +649,19 @@ describe('Restart', () => {
   it('sends the stopped schedule’s stored input unchanged, then says so and refreshes the list', async () => {
     mockGroup(acme)
     mockSchedules([stopped])
-    mockScheduler({ ok: true, data: { schedule: thursdays, created: 4, updated: 0, removed: 0 } })
+    // Running again: the list then reads it as stored.
+    const running = { ...stopped, nextRunAt: '2026-10-19T19:00:00.000Z' }
+    call.mockImplementation(async () => {
+      mockSchedules([running])
+      return { ok: true, data: { schedule: running, created: 4, updated: 0, removed: 0 } }
+    })
     const { queryClient } = renderAt('/schedules?groupId=g1')
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    fireEvent.click(await screen.findByRole('button', { name: 'Restart' }))
+    const restart = await screen.findByRole('button', { name: 'Restart' })
+    // Stopped: Restart and End, no Pause, which would start it again without Restart's checks.
+    expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+    fireEvent.click(restart)
     await waitFor(() => expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(1))
     const [fn, method, , input] = callsTo(`/schedules/${thursdays.$id}`)[0] ?? []
     expect([fn, method]).toEqual(['scheduler', 'PATCH'])
@@ -669,10 +678,16 @@ describe('Restart', () => {
       skipPublicHolidays: true,
       autoPost: false,
     })
-    expect(await screen.findByText('Thursday shift is running again, from today.')).toBeTruthy()
-    expect(document.activeElement).toBe(
-      screen.getByRole('heading', { level: 2, name: /^Shift schedules in/ }),
+    expect(
+      await screen.findByText(
+        'Restarted. Shifts carry on from today; the days it was stopped aren’t added.',
+      ),
+    ).toBeTruthy()
+    // Its Restart goes, and Pause (#430) takes its place.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause' })),
     )
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['schedules', 'g1'] })
   })
 
@@ -842,6 +857,211 @@ describe('Restart', () => {
     })
     expect((await screen.findByRole('alert')).textContent).toBe('Someone it names has left.')
     expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(1)
-    expect(screen.queryByText(/is running again/)).toBeNull()
+    expect(screen.queryByText(/^Restarted\./)).toBeNull()
+  })
+})
+
+describe('SchedulesPage: pause and resume (#430)', () => {
+  // 11:00 on Monday 19 Oct 2026 in Sydney.
+  const NOW = new Date('2026-10-19T00:00:00.000Z')
+  const running = { ...thursdays, startsOn: '2026-10-01' }
+  const paused = { ...running, pausedFrom: '2026-11-02' }
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  /** The scheduler answers with `after`, which the list then reads as stored. */
+  function answerWith(after: Schedules, extra: object) {
+    call.mockImplementation(async () => {
+      mockSchedules([after])
+      return { ok: true, data: { schedule: after, ...extra } }
+    })
+  }
+
+  it('pauses from today by default, then shows the pause, with focus on Resume', async () => {
+    mockGroup(acme)
+    mockSchedules([running])
+    answerWith({ ...running, pausedFrom: '2026-10-19' }, { removed: 2 })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    const field = screen.getByLabelText('Pause from') as HTMLInputElement
+    expect(document.activeElement).toBe(field)
+    expect(field.value).toBe('2026-10-19')
+    expect(field.min).toBe('2026-10-19')
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('scheduler', 'POST', `/schedules/${running.$id}/pause`, {
+        pausedFrom: '2026-10-19',
+      }),
+    )
+    expect(await screen.findByText(/· Paused from Mon, (19 Oct|Oct 19),? 2026$/)).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toMatch(
+      /^Paused from Mon, (19 Oct|Oct 19),? 2026\.$/,
+    )
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Resume' })),
+    )
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
+  })
+
+  it('pauses from a later date picked, and says that date', async () => {
+    mockGroup(acme)
+    mockSchedules([running])
+    answerWith(paused, { removed: 1 })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    fireEvent.change(screen.getByLabelText('Pause from'), { target: { value: '2026-11-02' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('scheduler', 'POST', `/schedules/${running.$id}/pause`, {
+        pausedFrom: '2026-11-02',
+      }),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(
+        /^Paused from Mon, (2 Nov|Nov 2),? 2026\.$/,
+      ),
+    )
+  })
+
+  it('checks the date in words before sending, and puts focus back on Pause after Cancel', async () => {
+    mockGroup(acme)
+    mockSchedules([running])
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    const field = screen.getByLabelText('Pause from')
+    fireEvent.change(field, { target: { value: '2026-10-18' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    expect(
+      screen.getByText(/^Pick today, Mon, (19 Oct|Oct 19),? 2026, or a later date$/),
+    ).toBeTruthy()
+    fireEvent.change(field, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    expect(screen.getByText('Required')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause' }))
+  })
+
+  it('resumes with no body, says so, and puts focus on Pause', async () => {
+    mockGroup(acme)
+    mockSchedules([paused])
+    answerWith({ ...paused, pausedFrom: null }, { created: 3 })
+    renderAt('/schedules?groupId=g1')
+    expect(await screen.findByText(/· Paused from Mon, (2 Nov|Nov 2),? 2026$/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith(
+        'scheduler',
+        'POST',
+        `/schedules/${paused.$id}/resume`,
+        undefined,
+      ),
+    )
+    expect((await screen.findByRole('status')).textContent).toBe(
+      'Resumed. Shifts carry on from today; the days in between aren’t added.',
+    )
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause' })),
+    )
+    expect(screen.queryByText(/Paused from/)).toBeNull()
+  })
+
+  it('shows a refusal from pause in its form, and from resume under the row', async () => {
+    mockGroup(acme)
+    mockSchedules([running, { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays' }])
+    mockScheduler({ ok: false, error: { code: 'FORBIDDEN', message: 'Only an admin can.' } })
+    renderAt('/schedules?groupId=g1')
+    const row = (await screen.findByText('Thursday shift')).closest('li') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Pause' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Pause schedule' }))
+    expect((await within(row).findByRole('alert')).textContent).toBe('Only an admin can.')
+    // The form stays, to try again or cancel.
+    expect(within(row).getByLabelText('Pause from')).toBeTruthy()
+    const other = screen.getByText('Saturdays').closest('li') as HTMLElement
+    fireEvent.click(within(other).getByRole('button', { name: 'Resume' }))
+    expect((await within(other).findByRole('alert')).textContent).toBe('Only an admin can.')
+    expect(within(other).getByText(/Paused from/)).toBeTruthy()
+  })
+
+  it('offers no Pause or Resume to a viewer, on someone else’s schedule, when archived, or once ended', async () => {
+    const rows = [running, { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays' }]
+    for (const [role, group, createdBy] of [
+      ['viewer', acme, 'pw'],
+      ['member', acme, 'pe'],
+      ['admin', { ...acme, archivedAt: '2026-10-01T00:00:00.000Z' }, 'pw'],
+    ] as const) {
+      mockGroup(group as Groups, role)
+      mockSchedules(rows.map((row) => ({ ...row, createdBy })))
+      renderAt('/schedules?groupId=g1')
+      expect(await screen.findByText('Saturdays')).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull()
+      cleanup()
+    }
+    mockGroup(acme)
+    mockSchedules([
+      { ...running, endsOn: '2026-10-18' },
+      { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays', endsOn: '2026-10-18' },
+    ])
+    renderAt('/schedules?groupId=g1')
+    expect(await screen.findAllByText(/· Ended$/)).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull()
+  })
+
+  it('lets a member pause and resume a schedule they set up', async () => {
+    mockGroup(acme, 'member')
+    mockSchedules([running, { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays' }])
+    renderAt('/schedules?groupId=g1')
+    expect(await screen.findByRole('button', { name: 'Pause' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy()
+  })
+
+  it('lets End wait for a resume on its way, so what the resume says isn’t lost', async () => {
+    mockGroup(acme)
+    mockSchedules([paused])
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }))
+    await screen.findByRole('button', { name: 'Resuming…' })
+    fireEvent.click(screen.getByRole('button', { name: 'End' }))
+    expect(screen.queryByLabelText('Last date')).toBeNull()
+  })
+
+  it('sends one resume however often Resume is pressed while it’s on its way', async () => {
+    mockGroup(acme)
+    mockSchedules([paused])
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Resuming…' }))
+    // Long enough for a second request to have gone out.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a pause at once, before the list reloads, and says the date it was given', async () => {
+    mockGroup(acme)
+    mockSchedules([running])
+    call.mockResolvedValue({
+      ok: true,
+      data: { schedule: { ...running, pausedFrom: '2026-11-09' }, removed: 0 },
+    })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    fireEvent.change(screen.getByLabelText('Pause from'), { target: { value: '2026-11-09' } })
+    // Every reload from here never answers: what shows is the pause's own answer.
+    listRows.mockReturnValue(new Promise(() => {}))
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    expect(await screen.findByRole('button', { name: 'Resume' })).toBeTruthy()
+    expect(screen.getByText(/· Paused from Mon, (9 Nov|Nov 9),? 2026$/)).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toMatch(
+      /^Paused from Mon, (9 Nov|Nov 9),? 2026\.$/,
+    )
   })
 })

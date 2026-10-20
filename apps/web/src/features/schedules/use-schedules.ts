@@ -1,7 +1,10 @@
 import type { Schedules } from '@ledgerly/core/generated/rows'
 import {
   type endScheduleBodySchema,
+  type PausedSchedule,
+  type pauseScheduleBodySchema,
   previewScheduleBodySchema,
+  type ResumedSchedule,
   type ScheduleInput,
   type SchedulePreview,
 } from '@ledgerly/core/schemas/scheduler'
@@ -11,6 +14,7 @@ import { useEffect, useState } from 'react'
 import type { z } from 'zod'
 import { callFunction, type Method } from '../../lib/api'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
+import { billKeys } from '../bills/use-bills'
 import { writeErrorMessage } from '../groups/archive-group'
 
 // Appwrite's limit for one page.
@@ -110,6 +114,37 @@ export function useEndSchedule(id: string) {
       scheduler<{ schedule: Schedules }>('POST', `/schedules/${id}/end`, body),
     onSuccess: ({ schedule }) => refresh(queryClient, schedule),
   })
+}
+
+/** `POST /schedules/{id}/pause`: nothing is made from `pausedFrom` until a resume. */
+export function usePauseSchedule(schedule: Schedules) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (body: z.input<typeof pauseScheduleBodySchema>) =>
+      scheduler<PausedSchedule>('POST', `/schedules/${schedule.$id}/pause`, body),
+    onSuccess: ({ schedule }) => refreshListed(queryClient, schedule),
+  })
+}
+
+/** `POST /schedules/{id}/resume`: occurrences again from today, none for the days missed. */
+export function useResumeSchedule(schedule: Schedules) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => scheduler<ResumedSchedule>('POST', `/schedules/${schedule.$id}/resume`),
+    onSuccess: ({ schedule }) => refreshListed(queryClient, schedule),
+  })
+}
+
+// A pause or resume shows at once in the lists that hold the schedule (Schedules, and Bills'
+// recurring ones), so its button doesn't flip back until they reload; the bills it removed or
+// made reload too.
+function refreshListed(queryClient: ReturnType<typeof useQueryClient>, schedule: Schedules) {
+  const replace = (rows: Schedules[] | undefined) =>
+    rows?.map((row) => (row.$id === schedule.$id ? schedule : row))
+  queryClient.setQueryData(scheduleKeys.list(schedule.groupId), replace)
+  queryClient.setQueryData(billKeys.recurring(schedule.groupId), replace)
+  refresh(queryClient, schedule)
+  void queryClient.invalidateQueries({ queryKey: billKeys.all(schedule.groupId) })
 }
 
 // A schedule's change adds or removes occurrences: the calendar, Today and history are out of

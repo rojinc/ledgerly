@@ -19,7 +19,7 @@ import {
   listAll,
 } from '../shared'
 import { computeSnapshot, statementTypeOf } from '../snapshot'
-import { finalizeStatement } from './finalize'
+import { finalizeStatement, isOldestUnfinished } from './finalize'
 
 // Inside the function's 300 s timeout (environments-and-deploys.md), with room for one more
 // group's finalize: what's left waits an hour.
@@ -116,11 +116,13 @@ async function draftFor(
     // The draft is made; the email is a courtesy, even when it can't be built at all.
     logProblem('ready_email_failed', { statementId, error })
   }
-  // An admin may have discarded the new draft already.
+  // An admin may have discarded the new draft already. While an earlier one is unfinished (an
+  // early close's draft, statements.md#6), rule 5 would refuse it: it waits for an admin, as one
+  // whose finalize fails does, with nothing to log (#420).
   const draft = autoFinalizes(group)
     ? await getRowOrNull<Statements>(db, TABLES.statements, statementId)
     : null
-  if (draft) {
+  if (draft && (await isOldestUnfinished(db, draft))) {
     try {
       // No actor: the job finalizes it. Sending stays the admin's call.
       await finalizeStatement(services, group, draft, null, false)
