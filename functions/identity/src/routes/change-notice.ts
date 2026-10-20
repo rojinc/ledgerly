@@ -146,10 +146,15 @@ export async function retryNotices(services: Services, started: number): Promise
       }
       if (!(await pace.start())) break
       error = await sendOnce(pace, email)
-      if (error === undefined || refused(error)) {
-        if (error === undefined) counts.retried += 1
-        else counts.failed += 1
-        log(error === undefined ? { outcome: 'retried' } : { outcome: 'failed', error })
+      if (error === undefined) {
+        counts.retried += 1
+        log({ outcome: 'retried' })
+        await forget(services.db, row.$id)
+        continue
+      }
+      if (refused(error)) {
+        counts.failed += 1
+        log({ outcome: 'failed', error })
         await forget(services.db, row.$id)
         continue
       }
