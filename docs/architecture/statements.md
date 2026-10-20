@@ -25,7 +25,7 @@ A **statement** summarises a group for a period and then locks that period. The 
 | `fortnightly` | 14 days, starting on `cycleAnchor` |
 | `monthly` | Calendar month (the anchor is ignored) |
 
-Dates before the anchor fall into earlier periods of the same length, counted backwards. When a group with a weekly or fortnightly cycle sets a future anchor, the `groups` function takes its first `nextCloseAt` from the period that contains the anchor, not today's, so nothing closes before the first real period. Monthly cycles ignore the anchor.
+Dates before the anchor fall into earlier periods of the same length, counted backwards. So when a weekly or fortnightly group's anchor is later than the day a close is worked out from, the next close is the end of the period that contains the anchor, not of the period that contains that day: nothing closes before the first real period, and the days before the anchor fold into it. That holds both when the `groups` function takes a new `nextCloseAt` from today, and when the statements job moves `nextCloseAt` on from the day after the period it drafted ([§1](#1-draft-statements-job-hourly); [#405](https://github.com/rojinc/ledgerly/issues/405)). For example, a monthly group whose October close is kept while it changes to weekly, anchored on Monday 2 November, drafts 1–31 October and then 1–8 November, never a 1 November stub. Core's `firstPeriodEnd(cycle, anchor, from)` is the one rule both use. Monthly cycles ignore the anchor.
 
 `groups.nextCloseAt` = 06:00 local time on the day after the current period ends, converted to UTC. The six-hour grace lets late entries from the last day make it in.
 
@@ -47,7 +47,7 @@ The job's period ends on the group's local date 12 hours before the stored `next
 Appwrite runs the job as `POST /` on the `statements` function; nobody else can call it. For each group where `nextCloseAt <= now` and that isn't archived, in **one database transaction**:
 
 - create a `draft` statement for the period, with a computed snapshot,
-- move `groups.nextCloseAt` to the next period's close.
+- move `groups.nextCloseAt` to the next period's close, worked out from the day after this period's end, with a future anchor's rule ([periods](#periods)).
 
 The period is the one that ended the day before the stored `nextCloseAt`, so a cycle or time zone change made after it ended can't skip it. If two job runs race, the second one's commit fails because the group row changed. So there are never two drafts for one period, and the run that lost doesn't count it as a failure. The job reads its period again after staging the group row: if a [discard](#5-discard-post-statementsiddiscard) committed meanwhile and moved the period's start, the group is left for the next run. A discard that commits later fails one of the two commits, since both write the group row. If a statement that isn't void already reaches the period's end (an [early close](#6-close-a-period-now-post-statementsclose) that ended on the period's last day, or one reissued before the reissue rules in [§4](#4-void-post-statementsidvoid)), the job only moves `nextCloseAt` on. The job lists every due group first and then works through them, so a group that fails every time never keeps the others waiting; a failure is logged (IDs only) and tried again on the next run. The job drafts an invoice for an employer group and a divide for a house.
 
