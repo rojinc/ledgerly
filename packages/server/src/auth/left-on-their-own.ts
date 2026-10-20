@@ -9,7 +9,10 @@ import { DATABASE_ID, TABLES } from '../appwrite/tables'
  * since this member row was created, is member.left. A later member.joined (they came back, say
  * through a merge) means a fresh membership. With `before`, only rows written before it count:
  * a deleted person's leave of their own from before the deletion, not the deletion's keep.
- * Uses idx_group_at (groupId, at).
+ * Newest by `$createdAt`, which Appwrite stamps, then `at`: `at` is a request's start, so a merge's
+ * member.joined can carry an earlier `at` than a leave written while the merge ran (#457).
+ * Uses idx_group_at (groupId, at) for the filter: the read is to one group and one person, so the
+ * few rows that match are sorted in memory.
  */
 export async function leftOnTheirOwn(
   db: Db,
@@ -27,6 +30,7 @@ export async function leftOnTheirOwn(
       Query.equal('actorPersonId', personId),
       Query.greaterThanEqual('$createdAt', memberCreatedAt),
       ...(before ? [Query.lessThan('$createdAt', before)] : []),
+      Query.orderDesc('$createdAt'),
       Query.orderDesc('at'),
       Query.limit(1),
     ],

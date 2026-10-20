@@ -246,6 +246,37 @@ describe('POST /groups/{id}/leave', () => {
     expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
   })
 
+  it('needs a balance of 0 when a merge’s join is dated before their leave but written after it (#457)', async () => {
+    // p2 left on their own while a merge ran; its member.joined, dated at its request's start,
+    // was written after that leave, so it's the newest: a fresh membership, then moved out owing.
+    const activity = (id: string, action: string, at: string, createdAt: string) => ({
+      $id: id,
+      $createdAt: createdAt,
+      at,
+      groupId: 'g1',
+      actorPersonId: 'p2',
+      action,
+      transactionId: null,
+      summary: 'Member m2',
+      changesJson: null,
+    })
+    const services = houseFixture({
+      m2: {
+        status: 'left',
+        role: 'viewer',
+        leftOn: '2026-10-10',
+        $createdAt: '2026-09-01T00:00:00.000Z',
+      },
+      shares: [share('s1', 'g1', 'p2', 0, 400)],
+      activity: [
+        activity('a1', 'member.left', '2026-09-20T00:00:01.000Z', '2026-09-20T00:00:01.000Z'),
+        activity('a2', 'member.joined', '2026-09-20T00:00:00.000Z', '2026-09-20T00:00:02.000Z'),
+      ],
+    })
+    expect(await leave(services, 'u2')).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(teamUsers(services, 'g1')).toEqual(['u1', 'u2'])
+  })
+
   it("can't be made a member again after leaving on their own (#121)", async () => {
     // Leaving on your own is final for that row: an admin can't make them a member again, so
     // the interrupted leave can still finish.

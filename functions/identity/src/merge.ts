@@ -21,7 +21,7 @@ import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { listAll, Raced } from '@ledgerly/server/ledger/transactions'
 import { ID, Permission, Query, Role } from 'node-appwrite'
-import { isBeingDeleted, joinTeam } from './join-group'
+import { isBeingDeleted, joinTeam, markMergesToResume } from './join-group'
 import { getRowOrNull, isAppwriteError, tryAgain, typedKeyDeletes } from './rows'
 import type { Services } from './services'
 
@@ -327,6 +327,8 @@ async function moveMember(
       }
       // Only where U's row wasn't joined yet: a claim may have just joined U's own row (#349).
       if (own && own.status !== 'placeholder') return
+      // Another merge into U may have skipped this group earlier while U wasn't joined (#358).
+      await markMergesToResume(tx, db, intoId, theirs.groupId, now, theirs.personId)
       await tx.write({
         action: 'create',
         tableId: TABLES.activity,

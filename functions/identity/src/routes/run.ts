@@ -5,7 +5,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
 import { Query } from 'node-appwrite'
 import { findIdentity, getRowOrNull, isAppwriteError } from '../rows'
-import { finishMerges, MERGE_BUDGET_MS } from '../run-merge'
+import { clearResume, finishMerges, MERGE_BUDGET_MS } from '../run-merge'
 import type { Services } from '../services'
 import { markVerified, verifiedIdentities } from './claim'
 
@@ -53,6 +53,19 @@ export async function run(scheduled: boolean, services: () => Services): Promise
       const into = await getRowOrNull<Persons>(built.db, TABLES.persons, intoId)
       if (!into?.userId || into.deletedAt) {
         result.skipped += count
+        // A skipped U's merges never go on: a later join's mark (#358) would be skipped hourly.
+        // Best effort, within the budget: one left is cleared by a later run.
+        for (const fromId of fromIds) {
+          if (Date.now() >= deadline) break
+          const from = await getRowOrNull<Persons>(built.db, TABLES.persons, fromId)
+          // Only a marked P: there's nothing to clear on the others.
+          if (!from?.mergeResumeAt) continue
+          // A race comes back false. Anything else is a real failure: an error line, and the next
+          // run tries again.
+          await clearResume(built.db, from).catch((error: unknown) =>
+            logProblem('merge_run_failed', { intoPersonId: intoId, personId: fromId, error }),
+          )
+        }
         continue
       }
       // /claim's own code: it never marks a new merge. Only the merges found above count; one
@@ -80,8 +93,9 @@ export async function run(scheduled: boolean, services: () => Services): Promise
 
 /**
  * Each U with a merge still to finish, and its Ps: P has `mergedInto` set (`idx_mergedInto`) and
- * still holds an identity, since identities move last. Only a placeholder is ever merged, so a P
- * with an account, or deleted, is left out, as `finishMerges` leaves it alone. `read` counts the
+ * still holds an identity, since identities move last, or has `mergeResumeAt` set (#358). Only a
+ * placeholder is ever merged, so a P with an account, or deleted, is left out, as `finishMerges`
+ * leaves it alone. `read` counts the
  * persons read, and `complete` says whether the walk reached the end before `deadline` passed.
  */
 async function unfinishedMerges(
@@ -109,7 +123,9 @@ async function unfinishedMerges(
     )
     read += rows.length
     for (const row of rows) {
-      if (row.mergedInto && !row.userId && !row.deletedAt && holding.has(row.$id)) {
+      // Or a later join's mark: U joined one of P's groups since (#358).
+      const unfinished = holding.has(row.$id) || Boolean(row.mergeResumeAt)
+      if (row.mergedInto && !row.userId && !row.deletedAt && unfinished) {
         merges.set(row.mergedInto, [...(merges.get(row.mergedInto) ?? []), row.$id])
       }
     }
