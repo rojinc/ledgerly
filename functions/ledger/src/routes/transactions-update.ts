@@ -1,4 +1,4 @@
-import { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
+import { everyPersonId, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMemberOf } from '@ledgerly/server/auth/require-member'
@@ -136,14 +136,22 @@ export const updateTransaction = (services: ServicesFor) =>
             throw new Unchanged()
           }
           await guardGroupAndMembers(tx, db, membership.group, ledger, planned.people)
+          const before = await storedInput(db, existing)
           await refuseDeletedPeople(tx, db, ledger, {
             kind: input.kind,
-            // As stored: without payers, the payer resolved above (a row's creator) is stored too.
-            input: {
-              ...input,
-              payers: storedInputSchema.parse(JSON.parse(planned.inputJson)).payers,
-            },
-            before: await storedInput(db, existing),
+            // With the payer resolved above (a row's creator, say) and the default split.
+            people: planned.people,
+            before: [
+              ...everyPersonId(before),
+              ...oldShares.map((share) => share.personId),
+              // A posted shift has its two people on it, even one of no minutes, with no shares.
+              ...(existing.status === 'posted' && existing.kind === 'shift'
+                ? ledger.memberIds
+                : []),
+            ],
+            ...(existing.status === 'posted'
+              ? {}
+              : { unposted: { madeAt: existing.$createdAt, input: before } }),
           })
           await requireNotFinalizing(db, existing.groupId, [existing.date, input.date])
           await requireNoOpenMerge(db, existing, oldShares, oldItems)

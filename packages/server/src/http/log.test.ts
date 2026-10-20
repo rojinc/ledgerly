@@ -152,7 +152,9 @@ group('logProblem', () => {
     for (const outcome of changes) {
       logProblem('change_notice', { userId: 'u1', identityType: 'phone', outcome })
     }
-    // A merge (#242): what it did logs, what it left warns, what stops it is an error.
+    // A merge (#242): what it did logs, what it left warns, what stops it is an error. The
+    // hourly run's tally of merges (#246) logs, a U it can't carry on is an error, and a walk
+    // cut short warns.
     const merge = { personId: 'pP', intoPersonId: 'pU' }
     logProblem('merge_typed_keys_deleted', { ...merge, count: 1 })
     logProblem('merge_finished', merge)
@@ -162,10 +164,14 @@ group('logProblem', () => {
     logProblem('merge_left_locked_transaction', { ...merge, transactionId: 't1' })
     logProblem('merge_left_schedule', { ...merge, scheduleId: 's1' })
     logProblem('merge_left_stray_row', { ...merge, table: 'shares', rowId: 'r1' })
+    logProblem('merge_left_subjects', { ...merge, groupId: 'g1', count: 2 })
     logProblem('merge_put_off_team_gone', { personId: 'pP', groupId: 'g1' })
     logProblem('merge_stopped', { intoPersonId: 'pU', error: new Error('x') })
     logProblem('merge_no_member_dates', { personId: 'pP', groupId: 'g1' })
     logProblem('merge_member_dates_unreadable', { personId: 'pP' })
+    logProblem('merge_run', { counts: { unfinished: 1, stopped: 1 } })
+    logProblem('merge_run_failed', { intoPersonId: 'pU', error: new Error('x') })
+    logProblem('merge_walk_cut_off', { count: 100 })
     expect(levels()).toEqual([
       'error',
       'error',
@@ -194,8 +200,12 @@ group('logProblem', () => {
       'warn',
       'warn',
       'warn',
+      'warn',
       'error',
       'error',
+      'log',
+      'error',
+      'warn',
     ])
     expect(lines()[1]).toEqual({
       fn: 'unknown',
@@ -215,6 +225,9 @@ group('logProblem', () => {
     logProblem('merge_carries_on', {
       counts: { groupsPutOff: 1, ...({ name: 7 } as Record<string, number>) },
     })
+    logProblem('merge_run', {
+      counts: { personsRead: 3, cutOff: 1, skipped: 0, finished: 1, unfinished: 2 },
+    })
     expect(lines()).toEqual([
       {
         fn: 'unknown',
@@ -225,6 +238,11 @@ group('logProblem', () => {
         counts: { groupsJoined: 2, inputs: 0, shares: 'invalid', identities: 'invalid' },
       },
       { fn: 'unknown', event: 'merge_carries_on', counts: { groupsPutOff: 1 } },
+      {
+        fn: 'unknown',
+        event: 'merge_run',
+        counts: { unfinished: 2, finished: 1, skipped: 0, cutOff: 1, personsRead: 3 },
+      },
     ])
   })
 

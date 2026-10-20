@@ -1,6 +1,7 @@
 import { MAX_OPS_PER_DB_TRANSACTION } from '@ledgerly/core/constants/limits'
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type {
+  Activity,
   Balances,
   Groups,
   Identities,
@@ -363,7 +364,7 @@ async function moveMember(
 }
 
 /** Whether the person has a joined row in the group (`active` or `left`) they didn't leave on their own. */
-async function joinedHere(db: Db, groupId: string, personId: string): Promise<boolean> {
+export async function joinedHere(db: Db, groupId: string, personId: string): Promise<boolean> {
   const row = await memberOf(db, groupId, personId)
   if (!row || row.status === 'placeholder') return false
   return !(await leftOnTheirOwn(db, groupId, personId, row.$createdAt))
@@ -683,6 +684,87 @@ export async function moveReminders(
       if (!(error instanceof Raced || isAppwriteError(error, 409))) throw error
     }
   }
+}
+
+/**
+ * Step 3, activity subjects: in `groupIds` (P's groups but the kept ones), every activity row
+ * about P (`idx_group_subject`) is about U instead, the one update an activity row ever gets
+ * (data-model.md#activity). Batches of at most 90 writes, each row staged, then read again: only a
+ * purge or another run of this merge can race it, and either runs the batch again. It stops once
+ * `deadline` (epoch ms) has passed; `done` is true once none is left.
+ */
+export async function moveSubjects(
+  db: Db,
+  fromId: string,
+  intoId: string,
+  groupIds: readonly string[],
+  deadline: number,
+): Promise<{ moved: number; done: boolean }> {
+  let moved = 0
+  for (const groupId of groupIds) {
+    for (;;) {
+      if (Date.now() >= deadline) return { moved, done: false }
+      const { rows } = await db.listRows<Activity>({
+        databaseId: DATABASE_ID,
+        tableId: TABLES.activity,
+        queries: [
+          Query.equal('groupId', groupId),
+          Query.equal('subjectPersonId', fromId),
+          Query.limit(MAX_OPS_PER_DB_TRANSACTION),
+        ],
+        total: false,
+      })
+      if (rows.length === 0) break
+      try {
+        await withTransaction(db, async (tx) => {
+          await tx.write(
+            ...rows.map((row) => ({
+              action: 'update' as const,
+              tableId: TABLES.activity,
+              rowId: row.$id,
+              data: { subjectPersonId: intoId },
+            })),
+          )
+          const { rows: stored } = await db.listRows<Activity>({
+            databaseId: DATABASE_ID,
+            tableId: TABLES.activity,
+            queries: [
+              Query.equal(
+                '$id',
+                rows.map((row) => row.$id),
+              ),
+              Query.limit(rows.length),
+            ],
+            total: false,
+          })
+          if (
+            stored.length !== rows.length ||
+            stored.some((row) => row.subjectPersonId !== fromId)
+          ) {
+            throw new Raced()
+          }
+        })
+        moved += rows.length
+      } catch (error) {
+        if (!(error instanceof Raced || isAppwriteError(error, 409))) throw error
+      }
+    }
+  }
+  return { moved, done: true }
+}
+
+/** How many activity rows in the group are about P (`idx_group_subject`). */
+export async function subjectsOf(db: Db, fromId: string, groupId: string): Promise<number> {
+  const { total } = await db.listRows<Activity>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.activity,
+    queries: [
+      Query.equal('groupId', groupId),
+      Query.equal('subjectPersonId', fromId),
+      Query.limit(1),
+    ],
+  })
+  return total
 }
 
 /** Whether a statement of the group is `finalizing` (statements.md#2-finalize). */

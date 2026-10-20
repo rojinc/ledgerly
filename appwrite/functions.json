@@ -46,7 +46,7 @@
       "users.*.update.email",
       "users.*.update.phone"
     ],
-    "schedule": "",
+    "interval": 60,
     "timeout": 15,
     "enabled": true,
     "logging": true,
