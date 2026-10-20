@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { parseLocalDate } from './local-date'
-import { periodFor } from './periods'
+import { firstPeriodEnd, periodFor } from './periods'
 
 const d = (text: string) => parseLocalDate(text)
 
@@ -68,5 +68,33 @@ describe('periodFor', () => {
   it('needs an anchor for weekly and fortnightly cycles', () => {
     expect(() => periodFor('weekly', null, d('2026-10-18'))).toThrow(RangeError)
     expect(() => periodFor('fortnightly', null, d('2026-10-18'))).toThrow(RangeError)
+  })
+})
+
+describe('firstPeriodEnd (#405)', () => {
+  const monday = d('2026-11-02')
+
+  it('ends the period that contains the day, with no anchor or one already passed', () => {
+    expect(firstPeriodEnd('monthly', null, d('2026-11-01'))).toBe('2026-11-30')
+    expect(firstPeriodEnd('weekly', d('2026-10-05'), d('2026-11-01'))).toBe('2026-11-01')
+  })
+
+  it('ends the period that starts on the anchor, when the anchor is that day', () => {
+    expect(firstPeriodEnd('weekly', monday, monday)).toBe('2026-11-08')
+  })
+
+  it('folds the days before a later anchor into its first period', () => {
+    // Counted backwards, 1 November would be the last day of a stub week.
+    expect(periodFor('weekly', monday, d('2026-11-01')).end).toBe('2026-11-01')
+    expect(firstPeriodEnd('weekly', monday, d('2026-11-01'))).toBe('2026-11-08')
+    expect(firstPeriodEnd('fortnightly', monday, d('2026-10-20'))).toBe('2026-11-15')
+  })
+
+  it('ignores a later anchor for a monthly cycle', () => {
+    expect(firstPeriodEnd('monthly', d('2026-12-07'), d('2026-11-01'))).toBe('2026-11-30')
+  })
+
+  it('needs an anchor for a weekly or fortnightly cycle', () => {
+    expect(() => firstPeriodEnd('fortnightly', null, d('2026-11-01'))).toThrow(RangeError)
   })
 })

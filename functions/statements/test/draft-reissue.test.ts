@@ -287,6 +287,25 @@ describe('the statements job (POST /, cron)', () => {
       expect(periods(services)).toEqual(['2026-10-01..2026-10-31', '2026-11-01..2026-11-01'])
     })
 
+    it('folds the days before a future anchor into its first week, with no stub before it (#405)', async () => {
+      // The cycle went from monthly to weekly, anchored on Monday 2 November, while October's
+      // close was kept. Counted back from the anchor, 1 November would close alone.
+      const weekly = { statementCycle: 'weekly', cycleAnchor: '2026-11-02' }
+      const services = fakes({
+        groups: [job({}, { ...weekly, nextCloseAt: OCTOBER_CLOSE })],
+        statements: [septemberFinal],
+      })
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      expect(periods(services)).toEqual(['2026-10-01..2026-10-31'])
+      // The next close is the first real week's, 06:00 on 9 November in Sydney, so 1 November
+      // goes into it: nothing more is due yet.
+      expect(services.db.rows('groups')[0]?.nextCloseAt).toBe('2026-11-08T19:00:00.000Z')
+      expect(await runJob(services)).toEqual({ drafted: 0, failed: 0 })
+      services.now = new Date('2026-11-08T20:00:00.000Z')
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      expect(periods(services)).toEqual(['2026-10-01..2026-10-31', '2026-11-01..2026-11-08'])
+    })
+
     it('takes the latest statement of this group, not a void one ending on the period end', async () => {
       // October's first half is final and its second half void; another group's statement
       // ends on 20 October.
