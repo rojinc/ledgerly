@@ -235,7 +235,10 @@ function closeRange(group: Groups, statements: Statements[]): { first?: string; 
             ends.reduce((a, b) => (a > b ? a : b)),
             1,
           )
-        : undefined,
+        : // With no cycle, a first close ending before the group was created is refused (#420).
+          group.statementCycle === 'none'
+          ? localToday(group.timezone, new Date(group.$createdAt))
+          : undefined,
     latest: due && due < today ? due : today,
   }
 }
@@ -326,7 +329,10 @@ function CloseForm({
           return
         }
         close.mutate(periodEnd, {
-          onSuccess: (statement) => navigate(`/groups/${group.$id}/statements/${statement.$id}`),
+          onSuccess: (statement) =>
+            navigate(`/groups/${group.$id}/statements/${statement.$id}`, {
+              state: { drafted: true },
+            }),
         })
       }}
     >
