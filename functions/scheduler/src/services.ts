@@ -2,7 +2,8 @@ import { clientFromRequest, type Db } from '@ledgerly/server/appwrite/client'
 import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import { type Email, sendEmail } from '@ledgerly/server/email/send-email'
 import type { RouteContext } from '@ledgerly/server/http/create-handler'
-import { type Models, Teams, Users } from 'node-appwrite'
+import { type Models, Storage, Teams, Users } from 'node-appwrite'
+import { type ReceiptsBucket, receiptsBucket } from './steps/receipts'
 
 // One cron run stops taking new rows after this, well inside the function's 900 s
 // timeout; the next hourly run picks up the rest (scheduling.md#the-scheduler-job).
@@ -26,6 +27,8 @@ export type Services = {
   teams: Pick<TeamsApi, 'listMemberships' | 'deleteMembership' | 'createMembership'>
   users: UsersApi
   sendEmail: (email: Email) => Promise<unknown>
+  /** The receipts bucket, for step 5. */
+  files: ReceiptsBucket
   now: Date
   /** The web app's address, for links in emails (environments-and-deploys.md). */
   appUrl: string
@@ -53,6 +56,7 @@ export function servicesFromRequest(ctx: Pick<RouteContext, 'db' | 'headers'>): 
     teams: new Teams(client),
     users: new Users(client),
     sendEmail,
+    files: receiptsBucket(new Storage(client)),
     now: new Date(),
     appUrl: process.env.APP_URL ?? '',
     outOfTime: () => performance.now() >= stopAt,
