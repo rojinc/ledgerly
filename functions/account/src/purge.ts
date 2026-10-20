@@ -12,7 +12,7 @@ import type {
 } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows, pages } from '@ledgerly/server/appwrite/pages'
-import { TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
+import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import {
@@ -37,20 +37,28 @@ const STATEMENTS_BUCKET = 'statements'
 const IDS_PER_QUERY = 100
 
 /**
- * The purge of a group nobody else is in (identity-and-invites.md#each-group-they-joined), once
- * its `archivedAt` is set and its team is gone: its statements' PDFs, then its rows, each
+ * The purge of a group nobody else is in (identity-and-invites.md#purging-a-group), once its
+ * `archivedAt` is set and its team is gone: its statements' PDFs, then its rows, each
  * transaction's receipts just before the batch that deletes it, then each other member row,
- * marking a placeholder it leaves with none, then the group row with their own member row, which
- * ends it. Each step reads what's left, so a rerun carries on from wherever the last one stopped;
- * lists are paged by $id (pages.ts), since their rows go meanwhile. False when the time budget is
- * used up first.
+ * marking a placeholder it leaves with none, then the group row with the member row of
+ * `endsWith`, which ends it: the person being deleted, or a group delete's `deletingBy`, so two
+ * purges by one person never delete each other's last row. Each step reads what's left, so a
+ * rerun carries on from wherever the last one stopped; lists are paged by $id (pages.ts), since
+ * their rows go meanwhile. False when the time budget is used up first, or when that member row
+ * is gone: the purge that deleted it ends the group.
  */
-export async function purge(services: Services, own: Members): Promise<boolean> {
-  if (!(await deletePdfs(services, own.groupId))) return false
-  if (!(await deleteRows(services, own.groupId))) return false
-  if (!(await deleteMembers(services, own))) return false
+export async function purge(
+  services: Services,
+  groupId: string,
+  endsWith: string,
+): Promise<boolean> {
   const { db } = services
-  const group = await getRowOrNull<Groups>(db, TABLES.groups, own.groupId)
+  const own = await memberOf(db, groupId, endsWith)
+  if (!own) return false
+  if (!(await deletePdfs(services, groupId))) return false
+  if (!(await deleteRows(services, groupId))) return false
+  if (!(await deleteMembers(services, own))) return false
+  const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
   await withTransaction(db, async (tx) => {
     await tx.write(
       ...(group ? [remove(TABLES.groups, group.$id)] : []),
@@ -59,11 +67,22 @@ export async function purge(services: Services, own: Members): Promise<boolean> 
     // A nightly check that read the team before it went may have built the balances row again.
     // Read once the group row is staged: a rebuild writes that row too, so one that commits
     // after this read fails this commit, and one before it is seen here.
-    if (await getRowOrNull<Balances>(db, TABLES.balances, own.groupId)) {
-      await tx.write(remove(TABLES.balances, own.groupId))
+    if (await getRowOrNull<Balances>(db, TABLES.balances, groupId)) {
+      await tx.write(remove(TABLES.balances, groupId))
     }
   })
   return true
+}
+
+// The person's member row in the group (uniq_group_person), or null.
+async function memberOf(db: Db, groupId: string, personId: string): Promise<Members | null> {
+  const { rows } = await db.listRows<Members>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.members,
+    queries: [Query.equal('groupId', groupId), Query.equal('personId', personId), Query.limit(1)],
+    total: false,
+  })
+  return rows[0] ?? null
 }
 
 // Its statements' PDFs, before the rows that name them; a group has one statement a period at

@@ -162,6 +162,42 @@ describe('POST /groups/{id}/unarchive', () => {
     expect(services.db.rows('activity')).toHaveLength(1)
   })
 
+  it('answers CONFLICT once the group’s delete has started, writing nothing', async () => {
+    const services = houseFixture()
+    await updateRow(services.db, 'groups', 'g1', {
+      deletingAt: NOW.toISOString(),
+      deletingBy: 'p1',
+    })
+    const write = vi.spyOn(services.db, 'createOperations')
+    expect(await failure(services, 'POST', '/groups/g1/unarchive')).toMatchObject({
+      status: 409,
+      code: 'CONFLICT',
+    })
+    expect(write).not.toHaveBeenCalled()
+    expect(stored(services)).toMatchObject({ archivedAt: ARCHIVED_AT, nextCloseAt: null })
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it.each([
+    ['between its read and its staging', 'staging'],
+    ['between its staging and its commit', 'commit'],
+  ])('answers CONFLICT, writing nothing, when a delete starts %s', async (_, when) => {
+    const services = houseFixture()
+    const startDelete = () =>
+      updateRow(services.db, 'groups', 'g1', { deletingAt: NOW.toISOString(), deletingBy: 'p1' })
+    if (when === 'staging') beforeStaging(services.db, 1, startDelete)
+    else beforeCommit(services.db, startDelete)
+    expect(await failure(services, 'POST', '/groups/g1/unarchive')).toMatchObject({
+      status: 409,
+      code: 'CONFLICT',
+    })
+    expect(stored(services)).toMatchObject({ archivedAt: ARCHIVED_AT, deletingBy: 'p1' })
+    expect(services.db.rows('activity')).toEqual([])
+    vi.restoreAllMocks()
+    // Still refused: the delete only goes on from here.
+    expect((await failure(services, 'POST', '/groups/g1/unarchive')).code).toBe('CONFLICT')
+  })
+
   it('makes the group writable again for the writes the archive refused', async () => {
     const services = houseFixture()
     const rename = { name: 'Flat 4' }

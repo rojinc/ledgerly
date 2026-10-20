@@ -168,7 +168,7 @@ export function beforeCommit(db: FakeDb, change: () => Promise<unknown>, nth = 1
 /** Commits one row update outside the request under test. */
 export function updateRow(
   db: Db,
-  tableId: 'members' | 'persons' | 'profiles',
+  tableId: 'groups' | 'members' | 'persons' | 'profiles',
   rowId: string,
   data: object,
 ) {

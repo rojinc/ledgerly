@@ -21,7 +21,7 @@ import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { listAll, Raced } from '@ledgerly/server/ledger/transactions'
 import { ID, Permission, Query, Role } from 'node-appwrite'
-import { joinTeam } from './join-group'
+import { isBeingDeleted, joinTeam } from './join-group'
 import { getRowOrNull, isAppwriteError, tryAgain, typedKeyDeletes } from './rows'
 import type { Services } from './services'
 
@@ -190,8 +190,9 @@ export type MembersResult = { kept: Set<string>; joined: string[]; putOff: strin
  * finalized is put off whole, P's row included: its inputs and shares must wait, and P's row
  * moved without them would let a leave, a removal or an edit count P's part as someone else's.
  * A group step 3 can't go on in (`ready` false) is put off the same way, before anything is
- * written, and so is one whose team is gone (logged by ID): an account deletion is purging it,
- * its rows last (#334). A row is finished once it no longer points at P, so a retry carries on.
+ * written, and so is one whose team is gone or that is being deleted (#429), logged by ID: a
+ * purge is deleting it, its rows last (#334). A row is finished once it no longer points at P,
+ * so a retry carries on.
  */
 export async function moveMembers(
   services: Services,
@@ -272,7 +273,8 @@ export async function memberOf(
  * account is being deleted. True if this call moved it and U is joined there; false if a merge
  * running at the same time moved it, or a leave of U's own landed just after, or the team was
  * gone by the add after the commit (so the group isn't one U joined). Throws `TeamGone` if the
- * team is gone at the first add, before anything is written.
+ * team is gone at the first add, before anything is written, or if the group is being deleted
+ * (#429), with the team membership taken back.
  */
 async function moveMember(
   { db, teams, now }: Services,
@@ -294,6 +296,8 @@ async function moveMember(
         data: { rev: randomId() },
       })
       if (await isFinalizing(db, theirs.groupId)) throw new Finalizing()
+      // A group delete's step 2 writes the same row: as for a team that's gone.
+      if (await isBeingDeleted(db, theirs.groupId)) throw new TeamGone()
       await tx.write(
         ...(own
           ? [
@@ -503,7 +507,10 @@ export async function moveShares(
 /** Thrown inside a batch when the group has a statement being finalized. */
 export class Finalizing extends Error {}
 
-/** Thrown in step 2 when the group's team is gone: the group is put off until the purge ends. */
+/**
+ * Thrown in step 2 when the group's team is gone, or the group is being deleted (#429): the
+ * group is put off until the purge ends.
+ */
 class TeamGone extends Error {}
 
 /** Thrown inside a share batch when U has no joined row in the group any more. */

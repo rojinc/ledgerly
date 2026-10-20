@@ -15,6 +15,7 @@ import {
   ok,
   placeholderRow,
   TRY_AGAIN,
+  updateRow,
 } from './harness'
 
 type Row = Record<string, unknown> & { $id: string }
@@ -219,8 +220,9 @@ describe('POST /invites/accept', () => {
       expect.objectContaining({ groupId: 'g1', actorPersonId: 'pSam', action: 'member.joined' }),
     ])
     expect(rowOf(services, 'invites', 'inv1')).toMatchObject({ acceptedAt: NOW.toISOString() })
-    // The join stages a guard write on the person (guardPerson, identity-and-invites.md#order).
-    expect(staged).toEqual(['members', 'persons', 'activity', 'invites'])
+    // The join stages a guard write on the group (#429) and on the person (guardPerson,
+    // identity-and-invites.md#order).
+    expect(staged).toEqual(['groups', 'members', 'persons', 'activity', 'invites'])
   })
 
   it('adopts: a new user who signed up with the invited email joins through bootstrap', async () => {
@@ -325,6 +327,23 @@ describe('POST /invites/accept', () => {
     expect(services.db.rows('members').map((row) => row.$id)).toEqual(['mAnn', 'mAnn2'])
     expect(teamUsers(services, 'g1')).toEqual(['u2'])
     expect(services.db.rows('activity')).toEqual([])
+    expect(rowOf(services, 'invites', 'inv1')).toMatchObject({ acceptedAt: NOW.toISOString() })
+  })
+
+  it('joins nothing and answers the group in a group being deleted, as for a team that’s gone (#429)', async () => {
+    const services = setup()
+    // A group delete's step 2 set `deletingAt`, its point of no return, before the team goes.
+    await updateRow(services.db, 'groups', 'g1', {
+      archivedAt: BEFORE,
+      deletingAt: NOW.toISOString(),
+      deletingBy: 'pAnn',
+    })
+    const group = rowOf(services, 'groups', 'g1')
+    expect(await accept(services)).toEqual({ groupId: 'g1' })
+    expect(rowOf(services, 'members', 'mSam')).toMatchObject({ status: 'placeholder' })
+    expect(teamUsers(services, 'g1')).toEqual(['u2'])
+    expect(services.db.rows('activity')).toEqual([])
+    expect(rowOf(services, 'groups', 'g1')).toEqual(group)
     expect(rowOf(services, 'invites', 'inv1')).toMatchObject({ acceptedAt: NOW.toISOString() })
   })
 

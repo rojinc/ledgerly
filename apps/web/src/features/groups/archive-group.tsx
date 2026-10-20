@@ -2,10 +2,13 @@ import type { Groups } from '@ledgerly/core/generated/rows'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
+import { Link } from 'react-router'
 import { callFunction, type Err } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
-import { Button } from '../../ui/button'
+import { cn } from '../../lib/utils'
+import { Button, buttonVariants } from '../../ui/button'
 import { useCurrentUser } from '../auth/use-current-user'
+import { useMembers } from '../transactions/use-transactions'
 
 /** Shown on every page of an archived group (#37). */
 export const ARCHIVED_NOTICE = 'This group is archived. You can see its history but not change it.'
@@ -126,7 +129,8 @@ export function useUnarchiveGroup(groupId: string, onUnarchived: () => void) {
 /**
  * Unarchive behind a confirmation, for an admin of an archived group (#428), next to its
  * archived notice; the page decides who sees it. `onUnarchived` says so on the page and moves
- * focus there, since the button goes. `name` as for ArchiveGroup.
+ * focus there, since the button goes. `name` as for ArchiveGroup. Beside it, Delete group (#429)
+ * links to its screen (DeleteGroupPage) while nobody else is in the group.
  */
 export function UnarchiveGroup({
   group,
@@ -144,6 +148,13 @@ export function UnarchiveGroup({
     flushSync(() => setOpen(false))
     onUnarchived()
   })
+  // The app can't see the team. Someone else whose row is `active` has joined, so is in it
+  // (permissions.md#teams), and the delete would be refused; the admin's own row is the other
+  // `active` one. Anyone else in it (someone who moved out) gets the delete's own refusal.
+  const members = useMembers(group.$id)
+  const alone =
+    members.data !== undefined &&
+    members.data.filter((member) => member.status === 'active').length <= 1
 
   function close() {
     flushSync(() => setOpen(false))
@@ -152,27 +163,38 @@ export function UnarchiveGroup({
   }
 
   return (
-    <div className="flex flex-col items-start">
-      <Button ref={trigger} variant="outline" onClick={() => setOpen(true)}>
-        Unarchive group
-      </Button>
-      {open && (
-        <Confirm
-          title={`Unarchive ${name}?`}
-          action="Unarchive group"
-          pendingAction="Unarchiving…"
-          pending={unarchive.isPending}
-          error={unarchive.error?.message}
-          onConfirm={() => unarchive.mutate()}
-          onCancel={close}
+    <>
+      <div className="flex flex-col items-start">
+        <Button ref={trigger} variant="outline" onClick={() => setOpen(true)}>
+          Unarchive group
+        </Button>
+        {open && (
+          <Confirm
+            title={`Unarchive ${name}?`}
+            action="Unarchive group"
+            pendingAction="Unarchiving…"
+            pending={unarchive.isPending}
+            error={unarchive.error?.message}
+            onConfirm={() => unarchive.mutate()}
+            onCancel={close}
+          >
+            <p>The group can be changed again. Nothing in its history changes.</p>
+            <p>
+              Schedules stopped while it was archived stay stopped until they’re restarted or
+              changed.
+            </p>
+          </Confirm>
+        )}
+      </div>
+      {alone && (
+        <Link
+          to={`/groups/${group.$id}/delete`}
+          className={cn(buttonVariants({ variant: 'outline' }), 'self-start')}
         >
-          <p>The group can be changed again. Nothing in its history changes.</p>
-          <p>
-            Schedules stopped while it was archived stay stopped until they’re restarted or changed.
-          </p>
-        </Confirm>
+          Delete group
+        </Link>
       )}
-    </div>
+    </>
   )
 }
 

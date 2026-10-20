@@ -1,4 +1,4 @@
-import type { Persons } from '@ledgerly/core/generated/rows'
+import type { Groups, Persons } from '@ledgerly/core/generated/rows'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { AppError } from '@ledgerly/server/http/app-error'
@@ -8,8 +8,9 @@ import type { Deleting } from '../groups'
 import { personsOfUser } from '../rows'
 import type { AccountUser, Services } from '../services'
 import { DELETED_LABEL, deleteUser, finish } from './delete-account'
+import { type DeletingGroup, finishDelete } from './delete-group'
 
-export type JobResult = { finished: number; users: number; failed: number }
+export type JobResult = { finished: number; users: number; groups: number; failed: number }
 
 // A deletion started less recently than this is the job's. The route stops after 20 s, inside
 // the 30 s synchronous limit, and a bootstrap that read the user before step 3 labelled it ends
@@ -19,11 +20,12 @@ const SETTLE_MS = 60_000
 const PAGE = 100
 
 /**
- * The hourly job (identity-and-invites.md#order): Appwrite sends it as `POST /` with the
- * `schedule` trigger. It finishes every deletion that still names its user, then deletes each
- * user labelled `deleted` that no deleted person names any more, skipping both while they're
- * less than a minute old, until the time budget is used up. Returns counts only, and logs IDs
- * only, so the execution log holds no personal data.
+ * The hourly job (identity-and-invites.md#finishing-purges): Appwrite sends it as `POST /` with
+ * the `schedule` trigger. The account pass finishes every deletion that still names its user,
+ * then deletes each user labelled `deleted` that no deleted person names any more; then the group
+ * pass finishes each group delete. It skips all three while they're less than a minute old, until
+ * the time budget is used up. Returns counts only, and logs IDs only, so the execution log holds
+ * no personal data.
  */
 export async function hourlyJob(scheduled: boolean, services: () => Services): Promise<JobResult> {
   // Before the services, which need the execution's API key.
@@ -31,7 +33,7 @@ export async function hourlyJob(scheduled: boolean, services: () => Services): P
     throw new AppError('FORBIDDEN', 'Only the account job’s own scheduled run does this.')
   const built = services()
   const settled = built.now.getTime() - SETTLE_MS
-  const counts: JobResult = { finished: 0, users: 0, failed: 0 }
+  const counts: JobResult = { finished: 0, users: 0, groups: 0, failed: 0 }
   // idx_deletedAt. Paged by $id: finishing clears `userId`, which takes the row out of the list.
   const persons = pages<Persons>(built, TABLES.persons, [
     Query.lessThanEqual('deletedAt', new Date(settled).toISOString()),
@@ -52,6 +54,19 @@ export async function hourlyJob(scheduled: boolean, services: () => Services): P
     }
     await counted(counts, { userId: user.$id }, async () => {
       if (await deleteLeftUser(built, user.$id)) counts.users += 1
+    })
+  }
+  // After the account pass, so someone whose account is being deleted while they delete a group
+  // settles that purge as part of their own deletion. idx_deletingAt. Paged by $id: a finished
+  // purge deletes the group row, which takes it out of the list. One whose `deletingBy` row is
+  // gone is another person's account deletion's to end, and purge() leaves it to them.
+  const groups = pages<Groups>(built, TABLES.groups, [
+    Query.lessThanEqual('deletingAt', new Date(settled).toISOString()),
+  ])
+  for await (const group of groups) {
+    await counted(counts, { groupId: group.$id }, async () => {
+      // The query says `deletingAt` is set, and `deletingBy` is written with it.
+      if (await finishDelete(built, group as DeletingGroup)) counts.groups += 1
     })
   }
   return counts
@@ -94,7 +109,7 @@ async function* labelledUsers({ users, outOfTime }: Services): AsyncGenerator<Ac
 // run.
 async function counted(
   counts: JobResult,
-  ids: Pick<LogFields, 'personId' | 'userId'>,
+  ids: Pick<LogFields, 'personId' | 'userId' | 'groupId'>,
   work: () => Promise<void>,
 ): Promise<void> {
   try {

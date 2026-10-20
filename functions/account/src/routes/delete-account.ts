@@ -61,30 +61,13 @@ export async function deleteAccount(
 
 // Step 1, in order; each refusal changes nothing.
 async function refuse(
-  { db, users, now }: Services,
+  services: Services,
   userId: string,
   sessionId: string | null,
   personId: string,
 ): Promise<void> {
-  // A stolen session that's been open a while can't delete the account. Fails closed: no
-  // session ID, a session Appwrite doesn't return, or a date that doesn't parse.
-  const session = sessionId
-    ? (await users.listSessions({ userId })).sessions.find((found) => found.$id === sessionId)
-    : undefined
-  const age = session ? now.getTime() - Date.parse(session.$createdAt) : Number.NaN
-  if (!(age <= REAUTH_WINDOW_MINUTES * MS_PER_MINUTE)) {
-    throw forbidden('Sign in again to delete your account.', { reason: 'reauth' })
-  }
-  // Nor can one that set a first password, then signed in again. Never set: no date.
-  const user = await users.get({ userId })
-  if (
-    now.getTime() - Date.parse(user.passwordUpdate) <
-    RECENT_PASSWORD_CHANGE_HOURS * MS_PER_HOUR
-  ) {
-    throw forbidden('Your password changed in the last day. Try again later.', {
-      reason: 'recent_password_change',
-    })
-  }
+  const { db } = services
+  await requireRecentSignIn(services, userId, sessionId, 'delete your account')
   if (await hasRunningTimer(db, personId)) {
     throw new AppError('CONFLICT', 'A timer is running. Stop or void it first.')
   }
@@ -96,6 +79,38 @@ async function refuse(
   if (groupIds.length > 0) {
     const details: DeleteAccountRefusal = { groupIds }
     throw new AppError('VALIDATION_FAILED', 'Make someone else an admin first.', details)
+  }
+}
+
+/**
+ * Refusals 2 and 3 (identity-and-invites.md#refusals), which `POST /groups/{id}/delete` checks
+ * too: `FORBIDDEN` with `reauth` or `recent_password_change`. `action` is what they'd sign in
+ * again to do.
+ */
+export async function requireRecentSignIn(
+  { users, now }: Services,
+  userId: string,
+  sessionId: string | null,
+  action: string,
+): Promise<void> {
+  // A stolen session that's been open a while can't delete the account, or a group. Fails
+  // closed: no session ID, a session Appwrite doesn't return, or a date that doesn't parse.
+  const session = sessionId
+    ? (await users.listSessions({ userId })).sessions.find((found) => found.$id === sessionId)
+    : undefined
+  const age = session ? now.getTime() - Date.parse(session.$createdAt) : Number.NaN
+  if (!(age <= REAUTH_WINDOW_MINUTES * MS_PER_MINUTE)) {
+    throw forbidden(`Sign in again to ${action}.`, { reason: 'reauth' })
+  }
+  // Nor can one that set a first password, then signed in again. Never set: no date.
+  const user = await users.get({ userId })
+  if (
+    now.getTime() - Date.parse(user.passwordUpdate) <
+    RECENT_PASSWORD_CHANGE_HOURS * MS_PER_HOUR
+  ) {
+    throw forbidden('Your password changed in the last day. Try again later.', {
+      reason: 'recent_password_change',
+    })
   }
 }
 

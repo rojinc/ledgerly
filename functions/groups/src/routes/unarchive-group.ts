@@ -4,6 +4,7 @@ import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
+import { AppError } from '@ledgerly/server/http/app-error'
 import type { Services } from '../services'
 import {
   activityWrite,
@@ -18,7 +19,8 @@ import {
  * `groups POST /groups/{id}/unarchive` (#428): admin only. The group is writable again from
  * today; nothing in its past changes. Unarchiving a group that isn't archived returns it
  * unchanged, so a retry is safe. Allowed with a timer still running: unarchiving is the only way
- * to stop it. Returns the group as stored.
+ * to stop it. Refused once its delete has started (`deletingAt`, account POST
+ * /groups/{id}/delete), which only goes on from there. Returns the group as stored.
  */
 export async function unarchiveGroup(
   { db, teams, now }: Services,
@@ -32,6 +34,7 @@ export async function unarchiveGroup(
     allowArchived: true,
   })
   if (!group.archivedAt) return group
+  if (group.deletingAt) throw beingDeleted()
   const anchor = group.cycleAnchor === null ? null : parseLocalDate(group.cycleAnchor)
   await conflictAsTryAgain(() =>
     withTransaction(db, async (tx) => {
@@ -50,6 +53,8 @@ export async function unarchiveGroup(
       // get a second group.unarchived. The retry returns the stored group instead.
       const current = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
       if (!current?.archivedAt) throw tryAgain()
+      // A delete that set `deletingAt` since the first read.
+      if (current.deletingAt) throw beingDeleted()
       // Names no one, nor the group, as group.archived: a pair's name is its creator's label for
       // the other person.
       await tx.write(
@@ -58,4 +63,8 @@ export async function unarchiveGroup(
     }),
   )
   return db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId })
+}
+
+function beingDeleted(): AppError {
+  return new AppError('CONFLICT', 'This group is being deleted, so it can’t be unarchived.')
 }

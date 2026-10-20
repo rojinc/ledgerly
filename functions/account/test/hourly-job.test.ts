@@ -134,7 +134,7 @@ function state(services: Fakes) {
 
 async function finishedOnce() {
   const services = unfinished()
-  expect(await runJob(services)).toEqual({ finished: 1, users: 0, failed: 0 })
+  expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
   return state(services)
 }
 
@@ -189,7 +189,7 @@ describe('POST / (the hourly job)', () => {
       userId: null,
       scheduled: true,
     })
-    expect(body).toEqual({ ok: true, data: { finished: 1, users: 0, failed: 0 } })
+    expect(body).toEqual({ ok: true, data: { finished: 1, users: 0, groups: 0, failed: 0 } })
     expect(logs).toHaveLength(1)
     expect(JSON.parse(logs[0] ?? '')).toMatchObject({ route: 'POST /', status: 200 })
   })
@@ -201,7 +201,7 @@ describe('POST /: finishing deletions', () => {
     ['an hour', 60],
   ])('finishes steps 3 to 7 of a deletion started %s ago', async (_, minutes) => {
     const services = unfinished(minutesAgo(minutes))
-    expect(await runJob(services)).toEqual({ finished: 1, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
     // Their personal group is purged, and the employer group kept and archived.
     expect(rowOf(services, 'groups', 'me')).toBeUndefined()
     expect(teamOf(services, 'me')).toBeUndefined()
@@ -225,21 +225,21 @@ describe('POST /: finishing deletions', () => {
     const services = unfinished(STARTED, account())
     crashOnCall(services.teams, 'listMemberships')
     vi.spyOn(console, 'error').mockImplementation(() => {})
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, failed: 1 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 1 })
     expect(services.users.account('u1')).toMatchObject({
       labels: ['deleted'],
       status: false,
       sessions: [],
     })
     vi.restoreAllMocks()
-    expect(await runJob(services)).toEqual({ finished: 1, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
     expect(services.users.account('u1')).toBeUndefined()
   })
 
   it('skips a deletion started in the last minute, which the route may still be running', async () => {
     const services = unfinished(minutesAgo(0.5), labelled({ $updatedAt: minutesAgo(0.5) }))
     const before = state(services)
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
     expect(state(services)).toEqual(before)
   })
 
@@ -293,12 +293,12 @@ describe('POST /: finishing deletions', () => {
         snapshotJson: '{}',
       },
     ])
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
     // Labelled long ago, and named by no person without `deletedAt`, but p1 still names it.
     expect(services.users.account('u1')).toBeDefined()
     expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: 'u1' })
     await setRow(services, 'statements', 'st1', { status: 'final' })
-    expect(await runJob(services)).toEqual({ finished: 1, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
     expect(services.users.account('u1')).toBeUndefined()
   })
 })
@@ -307,7 +307,7 @@ describe('POST /: users labelled deleted', () => {
   it('deletes one that no person names any more, and changes nothing else', async () => {
     const services = leftUser()
     const { users: _, ...before } = state(services)
-    expect(await runJob(services)).toEqual({ finished: 0, users: 1, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 1, groups: 0, failed: 0 })
     expect(services.users.account('u1')).toBeUndefined()
     const { users, ...after } = state(services)
     expect(after).toEqual(before)
@@ -322,10 +322,10 @@ describe('POST /: users labelled deleted', () => {
     expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: null })
     // The route labelled u1 just now, on the real clock.
     services.now = new Date()
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
     expect(services.users.account('u1')).toMatchObject({ labels: ['deleted'] })
     services.now = new Date(Date.now() + 2 * 60_000)
-    expect(await runJob(services)).toEqual({ finished: 0, users: 1, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 1, groups: 0, failed: 0 })
     expect(services.users.account('u1')).toBeUndefined()
   })
 
@@ -334,9 +334,9 @@ describe('POST /: users labelled deleted', () => {
     const others = [account({ $id: 'u7' }), account({ $id: 'u8', labels: ['vip'] })]
     const services = leftUser()
     services.users = new FakeUsers([labelled(), ...others])
-    expect(await runJob(services)).toEqual({ finished: 0, users: 1, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 1, groups: 0, failed: 0 })
     vi.spyOn(services.users, 'list').mockImplementation(async () => ({ users: others }))
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
     expect(services.users.account('u7')).toBeDefined()
     expect(services.users.account('u8')).toBeDefined()
   })
@@ -344,7 +344,7 @@ describe('POST /: users labelled deleted', () => {
   it('purges a person a bootstrap made after step 2, with its personal group, then deletes the user', async () => {
     const services = leftUser()
     await withStray(services)
-    expect(await runJob(services)).toEqual({ finished: 0, users: 1, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 1, groups: 0, failed: 0 })
     for (const [tableId, rowId] of [
       ['persons', 'pNew'],
       ['profiles', 'u1'],
@@ -367,7 +367,7 @@ describe('POST /: users labelled deleted', () => {
     await insert(services, 'members', [
       member('h1', 'pNew', { role: 'member', status: 'placeholder' }),
     ])
-    expect(await runJob(services)).toEqual({ finished: 0, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 0, failed: 0 })
     expect(rowOf(services, 'persons', 'pNew')).toMatchObject({ userId: 'u1' })
     expect(services.users.account('u1')).toBeDefined()
   })
@@ -388,7 +388,7 @@ describe('POST /: users labelled deleted', () => {
       },
     )
     const list = vi.spyOn(services.users, 'list')
-    expect(await runJob(services)).toEqual({ finished: 0, users: 106, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 0, users: 106, groups: 0, failed: 0 })
     expect(ids('a', 150).every((id) => services.users.account(id))).toBe(true)
     expect(ids('c', 100).every((id) => services.users.account(id))).toBe(true)
     expect(services.users.account('z')).toBeUndefined()
@@ -407,11 +407,11 @@ describe('POST /: the time budget', () => {
       ['u1', 'u4', 'u5', 'u9'].map(($id) => labelled({ $id })).concat(account({ $id: 'u3' })),
     )
     services.outOfTime = () => services.users.account('u1') === undefined
-    expect(await runJob(services)).toEqual({ finished: 1, users: 0, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
     expect(rowOf(services, 'persons', 'p4')).toMatchObject({ userId: 'u4' })
     expect(services.users.account('u9')).toBeDefined()
     services.outOfTime = () => false
-    expect(await runJob(services)).toEqual({ finished: 2, users: 1, failed: 0 })
+    expect(await runJob(services)).toEqual({ finished: 2, users: 1, groups: 0, failed: 0 })
     expect(['u4', 'u5', 'u9'].map((id) => services.users.account(id))).toEqual([
       undefined,
       undefined,

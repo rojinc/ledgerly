@@ -80,8 +80,13 @@ async function leaveGroup(
   try {
     const others = await othersInTeam(teams, member.groupId, userId)
     // The team is gone: a purge was started, and carries on. Their own member row, deleted
-    // last, ends it.
-    if (others === null) return await purge(services, member)
+    // last, ends it. A kept row is done: they never purge a group once they've kept a row
+    // there, so another purge deleted the team and deletes the row with the others. Purging
+    // from it too, the two could delete each other's end row and leave the group (#446, S2).
+    if (others === null) {
+      if (await isKept(db, person, member)) return true
+      return await purge(services, member.groupId, person.$id)
+    }
     const group = await getRowOrNull<Groups>(db, TABLES.groups, member.groupId)
     if (!group) return false
     if (!(await isKept(db, person, member))) {
@@ -92,7 +97,7 @@ async function leaveGroup(
         // the team, so a rerun decides from it again.
         if (!group.archivedAt) await archive(services, person.$id, group, true)
         await deleteTeam(teams, group.$id)
-        return await purge(services, member)
+        return await purge(services, member.groupId, person.$id)
       }
       await keep(services, person, member, group)
     }
