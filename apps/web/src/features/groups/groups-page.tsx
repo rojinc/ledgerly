@@ -1,7 +1,7 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { formatNet } from '@ledgerly/core/money/format'
 import { useEffect, useRef, useState } from 'react'
-import { Link, useLocation } from 'react-router'
+import { Link, useLocation, useNavigate } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
@@ -28,11 +28,21 @@ export function GroupsPage() {
   const groups = useGroups()
   const heading = useRef<HTMLHeadingElement>(null)
   const [joined, setJoined] = useState('')
-  // Sent here by the delete page (#429), whose button is gone: focus and the news start here.
-  const deleted = useLocation().state as GroupDeleted | null
+  // Sent here by the delete page (#429), whose button is gone: the news goes in a status region
+  // that was already there, so it's read out, and focus starts here. The state is cleared, so a
+  // reload or Back doesn't say it again (as statements-page.tsx does for a discard).
+  const location = useLocation()
+  const navigate = useNavigate()
+  const [deleted, setDeleted] = useState('')
   useEffect(() => {
-    if (deleted?.name) heading.current?.focus()
-  }, [deleted])
+    const news = location.state as GroupDeleted | null
+    if (!news?.name) return
+    setDeleted(
+      `Deleted ${news.name}.${news.finished ? '' : ' The rest of it is removed within the hour.'}`,
+    )
+    heading.current?.focus()
+    navigate(location.pathname, { replace: true, state: null })
+  }, [location.state, location.pathname, navigate])
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -56,10 +66,7 @@ export function GroupsPage() {
       </div>
       {/* Mounted from the start, so the announcement is read out when it changes. */}
       <p role="status" className="text-sm text-muted-foreground empty:hidden">
-        {joined
-          ? `Joined ${joined}.`
-          : deleted?.name &&
-            `Deleted ${deleted.name}.${deleted.finished ? '' : ' The rest of it is removed within the hour.'}`}
+        {joined ? `Joined ${joined}.` : deleted}
       </p>
       <PendingGroups
         onJoined={(name) => {

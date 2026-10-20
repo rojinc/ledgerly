@@ -36,6 +36,8 @@ function refusalOf(error: Err['error'], passwordUpdate?: string): Refusal {
       signIn: true,
     }
   }
+  // The session is over: the same way on.
+  if (error.code === 'UNAUTHENTICATED') return { message: error.message, signIn: true }
   if (error.code === 'FORBIDDEN' && details.reason === 'recent_password_change') {
     return {
       message: `A sign-in detail (your password, email or phone) changed in the last ${RECENT_PASSWORD_CHANGE_HOURS} hours. For your safety, you can delete the group ${tryAgainAt(passwordUpdate)}.`,
@@ -118,11 +120,17 @@ function DeleteGroup({ group }: { group: Groups }) {
       return
     }
     const deleted: GroupDeleted = { name, finished: !result.ok || result.data.finished }
+    const groups = queryKeys.groups(user?.$id ?? '')
+    // Off the cached list first, which the groups list shows while it's read again.
+    queryClient.setQueryData<Groups[]>(groups, (old) => old?.filter(({ $id }) => $id !== group.$id))
     // Unblocked first: the blocker reads `busy` as last rendered.
     flushSync(() => setBusy(false))
     navigate('/groups', { replace: true, state: deleted })
+    // Then everything read for the group (each key has its ID second): read again, it fails, and
+    // the cached group would stay on its own page, Back to it included.
+    queryClient.removeQueries({ predicate: ({ queryKey }) => queryKey[1] === group.$id })
     // Its team is gone, so the list no longer has it.
-    await queryClient.invalidateQueries({ queryKey: queryKeys.groups(user?.$id ?? '') })
+    await queryClient.invalidateQueries({ queryKey: groups })
   }
 
   return (

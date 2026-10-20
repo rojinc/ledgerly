@@ -91,7 +91,10 @@ export async function joinGroup(
 /** Thrown inside the join's transaction when the group is being deleted. */
 class Deleting extends Error {}
 
-/** Whether the group, as stored, is being deleted (`deletingAt`, #429), or its row is gone. */
+/**
+ * Whether the group, as stored, is being deleted (`deletingAt`, #429). A row gone between the
+ * guard's staging and this read counts too; one gone before it fails the staging (`CONFLICT`).
+ */
 export async function isBeingDeleted(db: Db, groupId: string): Promise<boolean> {
   const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
   return !group || Boolean(group.deletingAt)

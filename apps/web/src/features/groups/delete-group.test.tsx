@@ -151,9 +151,10 @@ describe('DeleteGroupPage', () => {
     const heading = await screen.findByRole('heading', { level: 1, name: 'Groups' })
     expect(call).toHaveBeenCalledWith('account', 'POST', PATH, { confirm: 'DELETE' })
     expect(router.state.location.pathname).toBe('/groups')
-    expect(router.state.location.state).toEqual({ name: 'Flat 2/14', finished: true })
     await waitFor(() => expect(document.activeElement).toBe(heading))
     expect(screen.getByText('Deleted Flat 2/14.')).toBeTruthy()
+    // Said once: the state that carried it is cleared, so a reload doesn't say it again.
+    expect(router.state.location.state).toBeNull()
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
     // Not in the history: back doesn't return to a deleted group's screen.
     expect(router.state.historyAction).toBe('REPLACE')
@@ -168,7 +169,50 @@ describe('DeleteGroupPage', () => {
     expect(
       await screen.findByText('Deleted Flat 2/14. The rest of it is removed within the hour.'),
     ).toBeTruthy()
-    expect(router.state.location.state).toEqual({ name: 'Flat 2/14', finished: false })
+    expect(router.state.location.state).toBeNull()
+  })
+
+  it('takes the group off the cached list and drops what was read for it (AI E on #449)', async () => {
+    const other = { ...flat, $id: 'g2', name: 'Old office', archivedAt: null }
+    // The list is read again but never answers, so only the cache shows.
+    vi.mocked(teams.list).mockReturnValue(new Promise(() => {}))
+    const { queryClient } = renderPage()
+    queryClient.setQueryData(queryKeys.groups('u1'), [flat, other])
+    queryClient.setQueryData(queryKeys.members('g1'), [])
+    queryClient.setQueryData(queryKeys.myMember('g1', 'p1'), { role: 'admin' })
+    queryClient.setQueryData(queryKeys.balances('g1'), { people: [], transfers: [] })
+    queryClient.setQueryData(queryKeys.members('g2'), [])
+    await loaded()
+    confirm()
+    submit()
+    await screen.findByText('Deleted Flat 2/14.')
+    expect(await screen.findByRole('link', { name: /Old office/ })).toBeTruthy()
+    expect(screen.queryByRole('link', { name: /Flat 2\/14/ })).toBeNull()
+    for (const key of [
+      queryKeys.group('g1'),
+      queryKeys.members('g1'),
+      queryKeys.myMember('g1', 'p1'),
+      queryKeys.balances('g1'),
+    ]) {
+      expect(queryClient.getQueryData(key)).toBeUndefined()
+    }
+    expect(queryClient.getQueryData(queryKeys.members('g2'))).toEqual([])
+  })
+
+  it('says it once: Back to the groups list later doesn’t say it again', async () => {
+    const { router } = renderPage()
+    await loaded()
+    confirm()
+    submit()
+    await screen.findByText('Deleted Flat 2/14.')
+    await act(async () => {
+      await router.navigate('/elsewhere')
+    })
+    await act(async () => {
+      await router.navigate(-1)
+    })
+    await screen.findByRole('heading', { level: 1, name: 'Groups' })
+    expect(screen.queryByText(/Deleted Flat/)).toBeNull()
   })
 
   it('treats NOT_A_MEMBER as done: a delete that finished took their member row', async () => {
@@ -231,6 +275,16 @@ describe('DeleteGroupPage', () => {
     expect(queryClient.getQueryData(queryKeys.currentUser)).toBeNull()
   })
 
+  it('asks to sign in again when the session is over', async () => {
+    answer(refused('UNAUTHENTICATED', 'Please log in again.'))
+    renderPage()
+    await loaded()
+    confirm()
+    submit()
+    expect((await screen.findByRole('alert')).textContent).toMatch(/^Please log in again\./)
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeTruthy()
+  })
+
   it('says when the password changed too recently, and when to try again', async () => {
     const changedAt = Date.now() - HOUR
     vi.mocked(useCurrentUser).mockReturnValue({
@@ -268,7 +322,6 @@ describe('DeleteGroupPage', () => {
     ['FORBIDDEN', 'Not allowed', { reason: 'other' }],
     ['VALIDATION_FAILED', 'Archive the group first, then delete it.', undefined],
     ['VALIDATION_FAILED', 'Not an object', 'shared'],
-    ['UNAUTHENTICATED', 'Please log in again.', undefined],
   ])('shows %s in the function’s words: %s', async (code, message, details) => {
     answer(refused(code, message, details))
     const { router } = renderPage()

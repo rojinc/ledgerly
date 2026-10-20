@@ -398,6 +398,16 @@ describe('POST /claim', () => {
       expect(groupRow(services, 'g1')?.rev).not.toBe('r0')
       expect(groupRow(services, 'g1')?.deletingAt ?? null).toBeNull()
     })
+
+    it('gives the group a fresh rev on every join, so each is a real change (AI E on #449)', async () => {
+      const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+      expect(await claimed(services)).toEqual(['g1'])
+      const first = groupRow(services, 'g1')?.rev
+      // A second join in the same group: the row pending again (the team add counts as done).
+      await updateRow(services.db, 'members', 'm1', { status: 'placeholder' })
+      expect(await claimed(services)).toEqual(['g1'])
+      expect(new Set(['r0', first, groupRow(services, 'g1')?.rev]).size).toBe(3)
+    })
   })
 
   it('still fails the claim for any other team error', async () => {
