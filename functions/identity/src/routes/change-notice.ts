@@ -4,13 +4,20 @@ import { identityKey } from '@ledgerly/core/identity/normalize'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { type Email, EmailError } from '@ledgerly/server/email/send-email'
 import { emailChangedEmail, phoneChangedEmail } from '@ledgerly/server/email/templates'
 import { type ChangeNoticeOutcome, logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { Query } from 'node-appwrite'
-import { findPersonOfUser, getRowOrNull, isAppwriteError } from '../rows'
+import {
+  findIdentity,
+  findPersonOfUser,
+  getRowOrNull,
+  guardPerson,
+  isAppwriteError,
+  tryAgain,
+} from '../rows'
 import type { AccountUser, Services } from '../services'
 import { appBase } from './password-notice'
 
@@ -31,21 +38,30 @@ const KEEP_MS = 23 * 60 * 60 * 1000
 const PAGE = 100
 // Step 8: identity's timeout. A row younger than this may still be its event run's to send.
 const RUN_MS = 15_000
+// Step 6: one user's rows at most, so one account holds back anyone else's retries by 3 sends at
+// most (the lead on #462).
+const CAP_PER_USER = 3
 const EMAIL_KEY = 'email:'
 
 type Notice = 'email' | 'phone'
-type Outcome = Exclude<ChangeNoticeOutcome, 'failed'>
+type Outcome = Exclude<ChangeNoticeOutcome, 'failed' | 'dropped'>
 // What one log line says beyond the user and the notice (step 7): the outcome and, for a failure,
-// the error, or `budget` with how many addresses were left, or `queue`.
+// the error, or `budget` with how many addresses were left, or `queue`; or how many emails got no
+// row (`dropped`).
 type Line =
   | { outcome: Outcome }
   | { outcome: 'failed'; error: unknown }
   | { outcome: 'failed'; cause: 'budget'; count: number }
   | { outcome: 'failed'; cause: 'queue' }
+  | { outcome: 'dropped'; count: number }
 // An email to send, with the key its row is found by.
 type Keyed = Email & { idempotencyKey: string }
-// One email of the event run, and the old address's identity row it goes to, if any.
+// One email of the event run, and the identity row of the address it goes to: an email notice's
+// old address, or the verified email a phone notice goes to. None for that email with no
+// verified identity on the person, which then gets no row.
 type Pending = { email: Keyed; identityId: string | null }
+// The event run's emails, and the person whose row guards the cap.
+type Notices = { personId: string | undefined; pending: Pending[] }
 
 /** What identity's hourly run did with the notices it tried (step 8). */
 export type NoticeCounts = { retried: number; failed: number; dropped: number }
@@ -71,14 +87,18 @@ export async function changeNotice(
     log({ outcome: 'mismatch' })
     return
   }
-  const pending = await noticesFor(services, userId, notice)
-  if (typeof pending === 'string') {
-    log({ outcome: pending })
+  const found = await noticesFor(services, userId, notice)
+  if (typeof found === 'string') {
+    log({ outcome: found })
     return
   }
+  const { personId, pending } = found
   let rows = new Map<string, string>()
   try {
-    rows = await queue(services.db, userId, notice, pending)
+    rows = await queue(services.db, userId, personId, notice, pending)
+    // Past the cap, or with no identity to name: sent now, and never retried.
+    const unkept = pending.length - rows.size
+    if (unkept > 0) log({ outcome: 'dropped', count: unkept })
   } catch {
     // Sent anyway, with nothing kept to retry.
     log({ outcome: 'failed', cause: 'queue' })
@@ -187,42 +207,49 @@ async function noticesFor(
   services: Services,
   userId: string,
   notice: Notice,
-): Promise<Pending[] | Outcome> {
+): Promise<Notices | Outcome> {
   const found = await accountOf(services, userId)
   if (found === 'gone') return found
   const { user, person } = found
+  const personId = person?.$id
   if (notice === 'phone') {
+    if (!user.email || !user.emailVerification) return 'unverified'
     const key = `phone-change-notice-${sha256(`${userId}:${user.$updatedAt}`)}`
-    const email = phoneEmail(services, user, key)
-    return email ? [{ email, identityId: null }] : 'unverified'
+    // Its row names the email's identity, so a retry goes to this address too (#462).
+    const identity = personId ? await verifiedIdentity(services.db, personId, user.email) : null
+    const email = phoneEmail(services, user, user.email, key)
+    return { personId, pending: [{ email, identityId: identity?.$id ?? null }] }
   }
-  const old = person ? await oldAddresses(services.db, person.$id, user.email) : []
+  const old = personId ? await oldAddresses(services.db, personId, user.email) : []
   if (old.length === 0) return 'no_old_address'
-  return old.map((identity) => ({
+  const pending = old.map((identity) => ({
     // One per address and change: a replay reuses it, and a new change gets a new one.
     email: emailEmail(
       services,
       user,
-      identity,
+      addressOf(identity),
       `email-change-notice-${sha256(`${userId}:${identity.key}:${user.$updatedAt}`)}`,
     ),
     identityId: identity.$id,
   }))
+  return { personId, pending }
 }
 
-// Step 8: a row's email built again as steps 2–5 build it, but with the row's own key, since
-// the user's `$updatedAt` may have changed since; or why there's none to send now.
+// Step 8: a row's email built again as steps 2–5 build it, to the row's identity and with the
+// row's own key, since the user's `$updatedAt` may have changed since; or why there's none to
+// send now.
 async function rebuilt(services: Services, row: ChangeNotices): Promise<Keyed | Outcome> {
   const found = await accountOf(services, row.userId)
   if (found === 'gone') return found
   const { user, person } = found
-  if (row.kind === 'phone') return phoneEmail(services, user, row.idempotencyKey) ?? 'unverified'
-  const identity = row.identityId
-    ? await getRowOrNull<Identities>(services.db, TABLES.identities, row.identityId)
-    : null
-  // Gone, moved to another person, or no longer verified.
-  const still = identity?.type === 'email' && identity.verified && identity.personId === person?.$id
-  return identity && still ? emailEmail(services, user, identity, row.idempotencyKey) : 'gone'
+  const identity = await getRowOrNull<Identities>(services.db, TABLES.identities, row.identityId)
+  // Gone, moved to another person, or no longer verified. A phone notice goes to its identity
+  // too, not the account's email now, which whoever changed the phone may have changed (#462).
+  if (!identity || !isVerifiedEmailOf(identity, person?.$id)) return 'gone'
+  const to = addressOf(identity)
+  return row.kind === 'phone'
+    ? phoneEmail(services, user, to, row.idempotencyKey)
+    : emailEmail(services, user, to, row.idempotencyKey)
 }
 
 // Step 2: the user as Appwrite has them now, and their person; `gone` for a user that's gone or
@@ -242,24 +269,37 @@ async function accountOf(
   return person?.deletedAt ? 'gone' : { user, person }
 }
 
-// Steps 4 and 5: a phone notice goes to the account's verified email, or nowhere.
-function phoneEmail(services: Services, user: AccountUser, key: string): Keyed | null {
-  if (!user.email || !user.emailVerification) return null
+// Steps 4 and 5: a phone notice, to the account's verified email.
+function phoneEmail(services: Services, user: AccountUser, to: string, key: string): Keyed {
   const { supportEmail } = services
   const content = phoneChangedEmail({ newPhone: user.phone, supportEmail, url: signIn(services) })
-  return { to: user.email, ...content, idempotencyKey: key }
+  return { to, ...content, idempotencyKey: key }
 }
 
 // Steps 3 and 5: an email notice to one old address.
-function emailEmail(
-  services: Services,
-  user: AccountUser,
-  identity: Identities,
-  key: string,
-): Keyed {
+function emailEmail(services: Services, user: AccountUser, to: string, key: string): Keyed {
   const { supportEmail } = services
   const content = emailChangedEmail({ newEmail: user.email, supportEmail, url: signIn(services) })
-  return { to: identity.key.slice(EMAIL_KEY.length), ...content, idempotencyKey: key }
+  return { to, ...content, idempotencyKey: key }
+}
+
+function addressOf(identity: Identities): string {
+  return identity.key.slice(EMAIL_KEY.length)
+}
+
+function isVerifiedEmailOf(identity: Identities, personId: string | undefined): boolean {
+  return identity.type === 'email' && identity.verified && identity.personId === personId
+}
+
+// Step 6: the person's verified identity for `email`, which a phone notice's row names.
+async function verifiedIdentity(
+  db: Db,
+  personId: string,
+  email: string,
+): Promise<Identities | null> {
+  const key = keyOrNull(email)
+  const identity = key ? await findIdentity(db, key) : undefined
+  return identity && isVerifiedEmailOf(identity, personId) ? identity : null
 }
 
 // Step 3: every verified email identity on the person but the current email's, newest
@@ -288,39 +328,74 @@ function keyOrNull(email: string): string | null {
 }
 
 /**
- * Step 6: a `changeNotices` row for each email, in one transaction, before the first send. A row
- * already there with the key, from a replayed event, is kept as it is. Returns each key's row ID,
- * so the row can be deleted once its email is sent.
+ * Step 6: a `changeNotices` row for each email, in one transaction, before the first send, and at
+ * most CAP_PER_USER for the user, counting their rows already there (#462). A guard write on the
+ * user's person comes first, then their rows as committed, so two runs for one user never both
+ * pass the cap; a 409 runs it once more. A row already there with the key, from a replayed event,
+ * is kept as it is and counts once. Returns each kept key's row ID, so the row can be deleted
+ * once its email is sent. An email with none, past the cap or with no identity, isn't retried.
  */
 async function queue(
   db: Db,
   userId: string,
+  personId: string | undefined,
   notice: Notice,
   pending: readonly Pending[],
 ): Promise<Map<string, string>> {
-  const keys = pending.map(({ email }) => email.idempotencyKey)
-  const stored = await allRows<ChangeNotices>(db, TABLES.changeNotices, [
-    Query.equal('idempotencyKey', keys),
-  ])
-  const rows = new Map(stored.map((row) => [row.idempotencyKey, row.$id]))
-  const created = new Map<string, string>()
-  const writes: Write[] = []
-  for (const { email, identityId } of pending) {
-    if (rows.has(email.idempotencyKey)) continue
-    const rowId = randomId()
-    created.set(email.idempotencyKey, rowId)
-    const data = {
-      userId,
-      kind: notice,
-      identityId,
-      idempotencyKey: email.idempotencyKey,
-      attempts: 0,
+  const named = pending.flatMap(({ email, identityId }) =>
+    identityId ? [{ email, identityId }] : [],
+  )
+  if (!personId || named.length === 0) return new Map()
+  const keep = async () => {
+    const rows = new Map<string, string>()
+    try {
+      await withTransaction(db, (tx) => keepRows(tx, rows))
+    } catch (error) {
+      if (!(error instanceof NothingToKeep)) throw error
     }
-    writes.push({ action: 'create', tableId: TABLES.changeNotices, rowId, data })
+    return rows
   }
-  if (writes.length > 0) await withTransaction(db, (tx) => tx.write(...writes))
-  return new Map([...rows, ...created])
+  // Fills `rows` with each key's row ID, kept already or written now.
+  const keepRows = async (tx: Tx, rows: Map<string, string>) => {
+    // A deletion past its point of no return since the lookup refuses it: logged as `queue`,
+    // and the emails still go.
+    await guardPerson(tx, db, personId, tryAgain)
+    const stored = await allRows<ChangeNotices>(db, TABLES.changeNotices, [
+      Query.equal('userId', userId),
+    ])
+    const keys = new Set(named.map(({ email }) => email.idempotencyKey))
+    for (const row of stored)
+      if (keys.has(row.idempotencyKey)) rows.set(row.idempotencyKey, row.$id)
+    let free = CAP_PER_USER - stored.length
+    const writes: Write[] = []
+    for (const { email, identityId } of named) {
+      if (rows.has(email.idempotencyKey) || free <= 0) continue
+      free -= 1
+      const rowId = randomId()
+      rows.set(email.idempotencyKey, rowId)
+      const data = {
+        userId,
+        kind: notice,
+        identityId,
+        idempotencyKey: email.idempotencyKey,
+        attempts: 0,
+      }
+      writes.push({ action: 'create', tableId: TABLES.changeNotices, rowId, data })
+    }
+    // Nothing new to keep: rolled back, so the guard leaves the person as it was.
+    if (writes.length === 0) throw new NothingToKeep()
+    await tx.write(...writes)
+  }
+  try {
+    return await keep()
+  } catch (error) {
+    if (!isAppwriteError(error, 409)) throw error
+    return keep()
+  }
 }
+
+// queue() had nothing new to write, so its transaction rolls back.
+class NothingToKeep extends Error {}
 
 // Deletes the row of an email that was sent or never can be. One a failed delete leaves is
 // harmless: its key has been seen, so its retry sends nothing, and it goes then.

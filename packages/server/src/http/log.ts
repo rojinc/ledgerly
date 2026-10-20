@@ -60,8 +60,8 @@ export type LogEvent =
  * How each event is written. Most are problems, written with `console.error`: until alerting
  * exists, the error lines are the alert (scheduling.md#step-6-nightly-check). These aren't: `log`
  * for what went as it should, `warn` for something to look at that isn't a failure. A password or
- * change notice is an error only when a send failed, and a change notice's `mismatch` or `expired`
- * a warning.
+ * change notice is an error only when a send failed, and a change notice's `mismatch`, `expired`
+ * or `dropped` a warning.
  */
 const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   typed_keys_deleted: 'log',
@@ -102,6 +102,7 @@ export type ChangeNoticeOutcome =
   | 'failed'
   | 'retried'
   | 'expired'
+  | 'dropped'
 
 /**
  * What a merge moved or left (identity-and-invites.md#merging-two-persons); what the hourly run
@@ -231,7 +232,7 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
     event === 'password_notice' || event === 'change_notice'
       ? outcome === 'failed'
         ? 'error'
-        : outcome === 'mismatch' || outcome === 'expired'
+        : outcome === 'mismatch' || outcome === 'expired' || outcome === 'dropped'
           ? 'warn'
           : 'log'
       : (LEVELS[event] ?? 'error')
