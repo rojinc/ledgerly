@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { MAX_WEIGHT } from '../constants/limits'
 import type { LocalDate } from '../dates/local-date'
 import { buildShares } from '../ledger/build-shares'
 import { splitAmount } from '../ledger/split-amount'
@@ -640,6 +641,21 @@ describe('mergeUnpostedSplit', () => {
       amounts: [
         { personId: 'X', cents: 1 },
         { personId: 'U', cents: 8999 },
+      ],
+    })
+  })
+
+  it('splits by the weights in their stored order, so a tied cent goes to whoever comes first', () => {
+    // 0.01 by X, P and U at MAX_WEIGHT each: X comes first, so X gets it, not U.
+    const tied: SplitSpec = {
+      mode: 'weights',
+      weights: ['X', 'P', 'U'].map((personId) => ({ personId, weight: MAX_WEIGHT })),
+    }
+    expect(mergeUnpostedSplit(tied, merge, 1)).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'X', cents: 1 },
+        { personId: 'U', cents: 0 },
       ],
     })
   })
