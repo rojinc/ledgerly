@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { ID } from 'appwrite'
 import type { FormEvent } from 'react'
-import { Link } from 'react-router'
+import { Link, useLocation } from 'react-router'
 import { account } from '../../lib/appwrite'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
@@ -14,6 +14,8 @@ import { verificationUrl } from './verify-email-page'
 
 export function SignupPage() {
   const signedIn = useSignedIn()
+  // Passed on to log-in, so logging in there still goes back where they were going.
+  const from = (useLocation().state as { from?: string } | null)?.from
   const signup = useMutation({
     mutationFn: async (input: { name: string; email: string; password: string }) => {
       await account.create({ userId: ID.unique(), ...input })
@@ -67,7 +69,11 @@ export function SignupPage() {
       </form>
       <p className="text-center text-sm text-muted-foreground">
         Already have an account?{' '}
-        <Link to="/login" className="font-medium text-foreground underline underline-offset-4">
+        <Link
+          to="/login"
+          state={{ from }}
+          className="font-medium text-foreground underline underline-offset-4"
+        >
           Log in
         </Link>
       </p>

@@ -25,13 +25,46 @@ vi.mock('../auth/use-current-user', async () => {
       }),
   }
 })
-let mockBootstrapped = true
-vi.mock('../auth/use-bootstrap', () => ({
-  useBootstrap: () => ({ data: mockBootstrapped ? { personId: 'p1' } : undefined }),
-}))
+// Bootstrapped by default; tests make it wait or fail. A query, so Try again can run it again.
+let mockBootstrap: 'done' | 'waiting' | 'failed' = 'done'
+vi.mock('../auth/use-bootstrap', async () => {
+  const { useQuery } = await import('@tanstack/react-query')
+  const { queryKeys } = await import('../../lib/query-keys')
+  return {
+    useBootstrap: (userId: string) =>
+      useQuery({
+        queryKey: queryKeys.bootstrap(userId),
+        queryFn: async () => {
+          if (mockBootstrap === 'failed') throw new Error('Offline.')
+          if (mockBootstrap === 'waiting') await new Promise(() => {})
+          return { personId: 'p1' }
+        },
+        staleTime: Number.POSITIVE_INFINITY,
+      }),
+  }
+})
 
 const call = vi.mocked(callFunction)
 const TOKEN = 'Ab9_-'.repeat(8)
+const REFUSED = { ok: false, error: { code: 'INTERNAL', message: 'Try again.' } } as const
+
+/** An answer the test gives when it's ready, to see the page while it waits. */
+function later() {
+  let give: (result: Result<unknown>) => void = () => {}
+  call.mockReturnValueOnce(
+    new Promise((resolve) => {
+      give = resolve
+    }),
+  )
+  return (result: Result<unknown>) => act(async () => give(result))
+}
+
+/** Clicks a button the way a keyboard user does: it has the focus first. */
+function press(name: string) {
+  const button = screen.getByRole('button', { name })
+  button.focus()
+  fireEvent.click(button)
+}
 
 function Where({ name }: { name: string }) {
   const location = useLocation()
@@ -49,6 +82,7 @@ function renderAt(path: string, strict = false) {
       { path: '/login', element: <Where name="Login" /> },
       { path: '/signup', element: <Where name="Signup" /> },
       { path: '/groups', element: <p>Groups</p> },
+      { path: '/', element: <p>Home</p> },
     ],
     { initialEntries: [path] },
   )
@@ -69,7 +103,7 @@ function answer(data: unknown): Result<unknown> {
 
 beforeEach(() => {
   mockUser = { $id: 'u1' }
-  mockBootstrapped = true
+  mockBootstrap = 'done'
   sessionStorage.clear()
 })
 
@@ -99,10 +133,24 @@ describe('InvitePage', () => {
   })
 
   it('waits for bootstrap before accepting', async () => {
-    mockBootstrapped = false
+    mockBootstrap = 'waiting'
     renderAt(`/invite#${TOKEN}`)
     expect(await screen.findByText('Joining the group…')).toBeTruthy()
     expect(call).not.toHaveBeenCalled()
+  })
+
+  it('offers Try again when setting up the account fails, then joins', async () => {
+    mockBootstrap = 'failed'
+    call.mockResolvedValue(answer({ groupId: 'g1' }))
+    renderAt(`/invite#${TOKEN}`)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toBe('We couldn’t set up your account. Try again in a moment.')
+    expect(document.activeElement).toBe(alert)
+    expect(call).not.toHaveBeenCalled()
+    mockBootstrap = 'done'
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }))
+    expect(await screen.findByText('Groups')).toBeTruthy()
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('offers log in or sign up when signed out, and keeps the token for after', async () => {
@@ -145,6 +193,53 @@ describe('InvitePage', () => {
     expect(await screen.findByText('Groups')).toBeTruthy()
     expect(call).toHaveBeenCalledTimes(2)
     expect(call.mock.calls[1]?.[3]).toEqual({ token: TOKEN })
+  })
+
+  it('reads out the verify prompt in the status that said “Joining the group…”', async () => {
+    const give = later()
+    renderAt(`/invite#${TOKEN}`)
+    const status = await screen.findByRole('status')
+    expect(status.textContent).toBe('Joining the group…')
+    await give(answer({ needsVerification: 'email' }))
+    await waitFor(() =>
+      expect(status.textContent).toBe(
+        'To join, first verify your email: open the link we sent you, then come back here.',
+      ),
+    )
+    expect(status.isConnected).toBe(true)
+  })
+
+  it('moves the focus from Try again and “I’ve verified it” to what replaces them', async () => {
+    call.mockResolvedValueOnce(REFUSED)
+    renderAt(`/invite#${TOKEN}`)
+    await screen.findByRole('alert')
+    let give = later()
+    press('Try again')
+    await waitFor(() => expect(document.activeElement?.textContent).toBe('Joining the group…'))
+    await give(answer({ needsVerification: 'email' }))
+    await waitFor(() =>
+      expect(document.activeElement?.textContent).toMatch(/^To join, first verify your email/),
+    )
+    give = later()
+    press('I’ve verified it, join now')
+    await waitFor(() => expect(document.activeElement?.textContent).toBe('Joining the group…'))
+    await give(REFUSED)
+    const alert = await screen.findByRole('alert')
+    expect(document.activeElement).toBe(alert)
+  })
+
+  it.each([
+    ['an incomplete link', () => {}],
+    [
+      'an expired invite',
+      () => call.mockResolvedValue({ ok: false, error: { code: 'INVITE_INVALID', message: '' } }),
+    ],
+    ['a phone invite', () => call.mockResolvedValue(answer({ needsVerification: 'phone' }))],
+  ])('offers a way into the app from %s', async (state, answerWith) => {
+    answerWith()
+    renderAt(state === 'an incomplete link' ? '/invite' : `/invite#${TOKEN}`)
+    fireEvent.click(await screen.findByRole('link', { name: 'Go to Ledgerly' }))
+    expect(await screen.findByText('Home')).toBeTruthy()
   })
 
   it('says plainly that joining by phone isn’t ready', async () => {
