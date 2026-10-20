@@ -1414,6 +1414,19 @@ describe('POST /schedules/{id}/pause and /resume', () => {
     expect(scheduleRow(services)?.nextRunAt).toBeNull()
   })
 
+  it('resumes a schedule that never expanded from its start, not from today', async () => {
+    const services = seeded()
+    // Its expansion timed out, and it was paused before any cron run.
+    const timeout = failCommit(services, 2)
+    await failure(services, 'POST', '/schedules', { body: thursdays })
+    timeout.mockRestore()
+    await pause(services, '2026-10-26')
+    const { schedule } = await resume(services)
+    // From 1 October, as a new schedule would: its past dates were never made.
+    expect(dates(services).slice(0, 3)).toEqual(['2026-10-01', '2026-10-08', '2026-10-15'])
+    expect(schedule).toMatchObject({ pausedFrom: null, generatedThrough: '2026-12-14' })
+  })
+
   it.each([
     // 07:00 on Monday 19 October in Sydney.
     [NOW.toISOString(), '2026-10-18', '2026-10-19'],

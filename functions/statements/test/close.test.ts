@@ -98,6 +98,30 @@ describe('POST /statements/close', () => {
     expect(services.db.rows('statements').map((row) => row.status)).toEqual(['final', 'draft'])
   })
 
+  it('leaves the rest for the admin, and logs nothing, while the early close is unfinished (#420)', async () => {
+    const errors: string[] = []
+    vi.spyOn(console, 'error').mockImplementation((line: string) => {
+      errors.push(line)
+    })
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-11-01', 60), shift('s2', '2026-11-20', 60), {
+        statements: [octoberFinal],
+      }),
+      groups: [job({ autoFinalize: true }, { nextCloseAt: NOVEMBER_CLOSE })],
+    })
+    const early = await close(services)
+    // 07:00 on 1 December in Sydney: November is due, and the early close is still a draft.
+    services.now = new Date('2026-11-30T20:00:00.000Z')
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    const rows = services.db.rows('statements')
+    expect(rows.map((row) => [row.periodEnd, row.status])).toEqual([
+      ['2026-10-31', 'final'],
+      [early.periodEnd, 'draft'],
+      ['2026-11-30', 'draft'],
+    ])
+    expect(errors).toEqual([])
+  })
+
   it('takes the end it is given', async () => {
     const draft = await close(midNovember(), { periodEnd: '2026-11-01' })
     expect(draft).toMatchObject({ periodStart: '2026-11-01', periodEnd: '2026-11-01' })

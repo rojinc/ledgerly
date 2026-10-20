@@ -238,14 +238,16 @@ describe('BillsPage: recurring', () => {
     const region = within(await screen.findByRole('region', { name: 'Recurring' }))
     const items = await region.findAllByRole('listitem')
     expect(items.map((item) => item.textContent)).toEqual([
-      expect.stringMatching(/^RentEvery Monday · A?\$400\.00 · AutopayStop$/),
+      expect.stringMatching(/^RentEvery Monday · A?\$400\.00 · AutopayPauseStop$/),
       expect.stringMatching(/^GymLast day of each month · A?\$30\.00 · Ended$/),
-      expect.stringMatching(/^PhoneEvery Monday · A?\$400\.00 · Last due (31 Dec|Dec 31,) 2026$/),
+      expect.stringMatching(
+        /^PhoneEvery Monday · A?\$400\.00 · Last due (31 Dec|Dec 31,) 2026Pause$/,
+      ),
     ])
-    // Only the one that hasn't been given an end can be stopped.
+    // Only the one that hasn't been given an end can be stopped; any that hasn't ended, paused.
     expect(
       region.getAllByRole('button').map((button) => button.getAttribute('aria-label')),
-    ).toEqual(['Stop Rent'])
+    ).toEqual(['Pause Rent', 'Stop Rent', 'Pause Phone'])
     const params = listRows.mock.calls
       .map(([call]) => call as unknown as { tableId: string; queries: string[] })
       .find((call) => call.tableId === 'schedules')
@@ -415,6 +417,119 @@ describe('BillsPage: recurring', () => {
     // Asked again, the last refusal is gone.
     fireEvent.click(screen.getByRole('button', { name: 'Stop Rent' }))
     expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('pauses one from today after confirming, then shows it paused with Resume (#430)', async () => {
+    mockLists([schedule('s1')])
+    const paused = schedule('s1', { pausedFrom: '2026-10-19' })
+    call.mockImplementation(async () => {
+      mockLists([paused])
+      return ok({ schedule: paused, removed: 1 })
+    })
+    renderAt('/bills')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause Rent' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+    expect(
+      screen.getByRole('group', {
+        name: 'Pause Rent from today? Bills due from today that you haven’t paid or changed are removed, and no more are made until you resume it.',
+      }),
+    ).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Pause it' }))
+    expect(await screen.findByText('Paused Rent from today. Resume it to carry on.')).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('scheduler', 'POST', '/schedules/s1/pause', {
+      pausedFrom: '2026-10-19',
+    })
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Bills' }))
+    const region = within(screen.getByRole('region', { name: 'Recurring' }))
+    expect(region.getByRole('listitem').textContent).toMatch(
+      /· Paused from (19 Oct|Oct 19,) 2026ResumeStop$/,
+    )
+    expect(region.queryByRole('button', { name: 'Pause Rent' })).toBeNull()
+  })
+
+  it('resumes a paused one with no body, and says the days in between aren’t added (#430)', async () => {
+    const paused = schedule('s1', { pausedFrom: '2026-10-12' })
+    mockLists([paused])
+    call.mockImplementation(async () => {
+      mockLists([schedule('s1')])
+      return ok({ schedule: { ...paused, pausedFrom: null }, created: 4 })
+    })
+    renderAt('/bills')
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume Rent' }))
+    expect(
+      await screen.findByText(
+        'Resumed Rent. Bills are made again from today; none are made for the days in between.',
+      ),
+    ).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('scheduler', 'POST', '/schedules/s1/resume', undefined)
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1, name: 'Bills' }))
+    expect(await screen.findByRole('button', { name: 'Pause Rent' })).toBeTruthy()
+    expect(screen.queryByText(/Paused from/)).toBeNull()
+  })
+
+  it('cancels a pause, putting focus back on Pause, and shows refusals of a pause or resume (#430)', async () => {
+    mockLists([schedule('s1'), schedule('s2', { description: 'Gym', pausedFrom: '2026-10-12' })])
+    call.mockResolvedValue({ ok: false, error: { code: 'INTERNAL', message: 'Try again later.' } })
+    renderAt('/bills')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause Rent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Pause it' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Try again later.')
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    await act(() => new Promise((resolve) => requestAnimationFrame(resolve)))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause Rent' }))
+    expect(screen.queryByRole('alert')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Gym' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Try again later.')
+    expect(screen.getByText(/Paused from/)).toBeTruthy()
+  })
+
+  it('keeps a paused bill’s last due date, and finishes a resume before Stop can ask (#430)', async () => {
+    mockLists([
+      schedule('s1', { pausedFrom: '2026-11-02' }),
+      schedule('s2', { description: 'Gym', endsOn: '2026-12-28', pausedFrom: '2026-11-02' }),
+    ])
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/bills')
+    const region = within(await screen.findByRole('region', { name: 'Recurring' }))
+    const items = await region.findAllByRole('listitem')
+    expect(items[1]?.textContent).toMatch(
+      /· Paused from (2 Nov|Nov 2,) 2026 · Last due (28 Dec|Dec 28,) 2026Resume$/,
+    )
+    fireEvent.click(region.getByRole('button', { name: 'Resume Rent' }))
+    await waitFor(() =>
+      expect(region.getByRole('button', { name: 'Resume Rent' }).textContent).toBe('Resuming…'),
+    )
+    fireEvent.click(region.getByRole('button', { name: 'Stop Rent' }))
+    expect(screen.queryByRole('group')).toBeNull()
+  })
+
+  it('shows a pause at once, before the lists reload, then reads the bills again (#430)', async () => {
+    mockLists([schedule('s1')])
+    call.mockResolvedValue(
+      ok({ schedule: schedule('s1', { pausedFrom: '2026-10-19' }), removed: 1 }),
+    )
+    const { queryClient } = renderAt('/bills')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause Rent' }))
+    // Every reload from here never answers: what shows is the pause's own answer.
+    listRows.mockReturnValue(new Promise(() => {}))
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: 'Pause it' }))
+    await screen.findByText('Paused Rent from today. Resume it to carry on.')
+    const region = within(screen.getByRole('region', { name: 'Recurring' }))
+    expect(region.getByRole('button', { name: 'Resume Rent' })).toBeTruthy()
+    const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey)
+    // The bills it removed from today go from the due list.
+    expect(keys).toContainEqual(billKeys.all('g1'))
+  })
+
+  it('shows a paused bill that has ended as ended, not paused (#430)', async () => {
+    mockLists([schedule('s1', { endsOn: '2026-10-12', pausedFrom: '2026-10-05' })])
+    renderAt('/bills')
+    const region = within(await screen.findByRole('region', { name: 'Recurring' }))
+    const item = await region.findByRole('listitem')
+    expect(item.textContent).toMatch(/· Ended$/)
+    expect(item.textContent).not.toMatch(/Paused/)
   })
 
   it('links to New recurring bill', async () => {
