@@ -146,10 +146,14 @@ export function billDueSoonEmail(input: {
 }): EmailContent {
   const day = dayLabel(input.dueOn)
   const amount = formatMoney(input.amountCents, input.currency, LOCALE)
+  // Text someone typed, on one line (functions-api.md#validation), so a line break or a bidi
+  // control in a group name can't make a line of its own or reorder the text around it.
+  const description = oneLine(input.description)
+  const groupName = oneLine(input.groupName)
   return message(
-    `${input.description} is due on ${day}`,
+    `${description} is due on ${day}`,
     [
-      `${input.description} in ${input.groupName} (${amount}) is due on ${day}.`,
+      `${description} in ${groupName} (${amount}) is due on ${day}.`,
       input.autoPay
         ? 'Autopay puts it on the ledger as paid that day.'
         : 'Once it’s paid, mark it paid so it goes on the ledger.',

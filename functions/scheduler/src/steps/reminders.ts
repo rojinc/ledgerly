@@ -130,7 +130,9 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       const soon =
         compareDates(dueOn, local) >= 0 && compareDates(dueOn, addDays(local, BILL_DAYS)) <= 0
       if (!isAwake(group, now) || !soon) return
-      // Step 2 posts the bills of schedules that auto-post, on their due date.
+      // Step 2 posts the bills of schedules that auto-post, on their due date. One due today is
+      // still due here only if step 2, earlier in this run, left it (its creator has moved out, a
+      // statement is being finalized, or the post failed), so it asks to mark it paid.
       const schedule = bill.scheduleId ? await schedules(bill.scheduleId) : undefined
       const content = billDueSoonEmail({
         groupName: group.name,
@@ -138,7 +140,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
         amountCents: bill.totalCents,
         currency: group.currency,
         dueOn,
-        autoPay: schedule?.autoPost === true,
+        autoPay: schedule?.autoPost === true && compareDates(dueOn, local) > 0,
         url: link(bill),
       })
       // A new due date needs its own reminder, so it's in the key.

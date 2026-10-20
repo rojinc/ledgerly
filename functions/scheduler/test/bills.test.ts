@@ -384,6 +384,33 @@ describe('step 3: bill due soon', () => {
     expect(sent(services)[0]?.text).toContain('Autopay puts it on the ledger as paid that day.')
   })
 
+  it('asks to mark paid an autopay bill due today that step 2 had to leave', async () => {
+    const services = seeded(MORNING)
+    // Alex adds the rent due today with no payers, so Alex would pay it, then moves out: step 2
+    // leaves it (C1), earlier in the same run.
+    await ok<ScheduleResult>(services, 'POST', '/schedules', { body: rent(19, true), userId: 'u2' })
+    await update(services, 'members', 'elm-pAlex', { status: 'left', role: 'viewer' })
+    const result = await runCron(services)
+    expect(result.posted.posted).toBe(0)
+    expect(result.reminders.sent).toBe(1)
+    expect(sent(services)[0]?.text).toContain('mark it paid')
+    expect(sent(services)[0]?.text).not.toContain('Autopay')
+  })
+
+  it('sends the description as it is when the reminder is marked, not as the page read it', async () => {
+    const services = seeded(MORNING)
+    await create(services, rent(21, false))
+    // The description changes after the page was read, just before the reminder is staged.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('remindedAt'),
+      () => update(services, 'transactions', occurrence(21), { description: 'Rent and water' }),
+    )
+    expect((await runCron(services)).reminders.sent).toBe(0)
+    expect((await runCron(services)).reminders.sent).toBe(1)
+    expect(sent(services)[0]?.subject).toBe('Rent and water is due on Wednesday 21 October')
+  })
+
   it('waits for a bill whose due date changes after the page was read', async () => {
     const services = seeded(MORNING)
     await create(services, rent(21, false))

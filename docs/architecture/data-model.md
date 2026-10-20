@@ -192,7 +192,7 @@ Indexes:
 | `idx_schedule_date` | scheduleId, date | schedule edits |
 | `idx_statementId` | statementId | statement detail, void |
 | `idx_status_date` | status, date | scheduler auto-post |
-| `idx_status_dueOn` | status, dueOn | bill reminders |
+| `idx_status_dueOn` | status, dueOn | bill autopay and reminders |
 
 Permissions: `read("team:<groupId>")`.
 

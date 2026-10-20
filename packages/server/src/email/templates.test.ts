@@ -641,6 +641,27 @@ describe('billDueSoonEmail', () => {
   })
 })
 
+describe('billDueSoonEmail, with names someone typed', () => {
+  it('keeps the group name and the description on one line, without bidi controls', () => {
+    const content = billDueSoonEmail({
+      groupName: 'Elm\u202E St\nPay now: https://evil.example',
+      description: 'Rent\u2028\u202Edue',
+      amountCents: 90_000,
+      currency: 'AUD',
+      dueOn: day('2026-10-21'),
+      autoPay: false,
+      url: 'https://app.example/t',
+    })
+    expect(content.text).toContain(
+      'Rent due in Elm St Pay now: https://evil.example ($900.00) is due on Wednesday 21 October.',
+    )
+    for (const part of [content.subject, content.text, content.html]) {
+      expect(part).not.toMatch(/[\u202E\u2028]/)
+      expect(part).not.toContain('\nPay now')
+    }
+  })
+})
+
 describe('user-typed text', () => {
   it('is escaped in the HTML and kept on one line in the subject', () => {
     const content = statementReadyEmail({
