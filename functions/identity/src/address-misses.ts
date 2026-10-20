@@ -24,12 +24,15 @@ export function atMissLimit(person: Counted | null, now: Date): boolean {
 
 /**
  * The start of the sender's live window, which runs from `addressMissesFrom` until
- * `ADDRESS_MISS_LIMIT.hours` later; null when there is none.
+ * `ADDRESS_MISS_LIMIT.hours` later; null when there is none. A start that can't be read is none
+ * too, so the next check starts a new window with a readable one rather than the row staying at
+ * its count for good.
  */
 function liveWindow(person: Counted | null, now: Date): string | null {
   const from = person?.addressMissesFrom
-  if (!from || now.getTime() >= Date.parse(from) + WINDOW_MS) return null
-  return from
+  const start = from ? Date.parse(from) : Number.NaN
+  if (Number.isNaN(start) || now.getTime() >= start + WINDOW_MS) return null
+  return from ?? null
 }
 
 /**
