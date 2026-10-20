@@ -96,6 +96,13 @@ export async function finalizeStatement(
 
 /** statements.md#core-rules, rule 5: periods lock in order. */
 async function requireOldestUnfinished(db: Db, statement: Statements): Promise<void> {
+  if (!(await isOldestUnfinished(db, statement))) {
+    throw new AppError('CONFLICT', 'Finalize the earlier statement of this group first.')
+  }
+}
+
+/** Whether no unfinished statement of the group comes before this one, so rule 5 lets it finalize. */
+export async function isOldestUnfinished(db: Db, statement: Statements): Promise<boolean> {
   const {
     rows: [oldest],
   } = await db.listRows<Statements>({
@@ -109,9 +116,7 @@ async function requireOldestUnfinished(db: Db, statement: Statements): Promise<v
     ],
     total: false,
   })
-  if (oldest && oldest.$id !== statement.$id) {
-    throw new AppError('CONFLICT', 'Finalize the earlier statement of this group first.')
-  }
+  return !oldest || oldest.$id === statement.$id
 }
 
 /**
