@@ -557,7 +557,8 @@ function changeBlocks(change: ChangedTransaction): Block[] {
       ? (names[0] ?? 'someone')
       : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
   return [
-    `“${oneLine(change.description)}” in ${shortLine(change.groupName)}, ${change.voided ? 'voided' : 'changed'} by ${who}:`,
+    // Who voided it isn't known, so a void doesn't name anyone as having voided it.
+    `“${oneLine(change.description)}” in ${shortLine(change.groupName)}, changed by ${who}${change.voided ? '; it’s now voided' : ''}:`,
     [
       `Total: ${fromTo(change.totalCents, total)}`,
       `Date: ${fromTo(change.date, longDate)}`,

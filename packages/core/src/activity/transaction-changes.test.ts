@@ -161,8 +161,29 @@ describe('transactionChanges', () => {
     expect(told.get('alice')?.[0]).toMatchObject({ changedBy: ['bob'], voided: true })
   })
 
+  it('tells someone taken off it before the void that their part went', () => {
+    // Bob takes Cara, who owed $10.00, off it, then voids it in the same hour.
+    const withCara = [
+      { personId: 'alice', netCents: 5500 },
+      { personId: 'bob', netCents: -4500 },
+      { personId: 'cara', netCents: -1000 },
+    ]
+    const rows = [
+      edit({ nets: { before: withCara, after: split(9000) }, totalCents: undefined }),
+      edit({ voided: true, nets: { before: split(9000), after: [] }, totalCents: undefined }),
+    ]
+    expect(transactionChanges(rows, current, samePerson).get('cara')).toEqual([
+      expect.objectContaining({
+        changedBy: ['bob'],
+        netCents: { before: -1000, after: 0 },
+        voided: false,
+      }),
+    ])
+  })
+
   it('doesn’t count who changed only what the email doesn’t show as having changed it', () => {
-    // Bob changes the total, then Alice edits only the note, and swaps Dan at 0 for Cara at 0.
+    // Bob changes the total. Then Alice edits the note and swaps Dan for Cara, both at 0: no
+    // part changes.
     const dan = { personId: 'dan', netCents: 0 }
     const rows = [
       edit({ nets: { before: [...split(9000), dan], after: [...split(12000), dan] } }),
@@ -182,7 +203,8 @@ describe('transactionChanges', () => {
   })
 
   it('counts who added people whose parts cancel out, though nobody else’s part changed', () => {
-    // Dan paid $5.00 of Alice's $90.00 for Cara's share, and Alice owes $5.00 less.
+    // Dan paid $5.00 of the $90.00, for Cara's share: Alice paid $5.00 less, and her share is
+    // $5.00 less, so her part stays.
     const row = edit({
       actorPersonId: 'alice',
       nets: {
@@ -250,6 +272,14 @@ describe('transactionChanges', () => {
       totalCents: undefined,
     })
     expect(transactionChanges([byBob, moved], current, personOf).has('bob')).toBe(false)
+    // Alice voids it with P's part in it: Bob was in it when it was voided.
+    const voided = edit({
+      actorPersonId: 'alice',
+      voided: true,
+      nets: { before, after: [] },
+      totalCents: undefined,
+    })
+    expect(transactionChanges([voided], current, personOf).get('bob')?.[0]?.voided).toBe(true)
   })
 
   it('lists each person’s transactions, in the window’s order', () => {
