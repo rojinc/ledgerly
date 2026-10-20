@@ -39,5 +39,7 @@ export default defineConfig({
     url: `http://localhost:${PORT}`,
     // Always this checkout's code: a server already on the port (another worktree's) is an error.
     reuseExistingServer: false,
+    // The server gets the runner's environment, but not the dev key: only the runner uses it.
+    env: { E2E_APPWRITE_API_KEY: '' },
   },
 })

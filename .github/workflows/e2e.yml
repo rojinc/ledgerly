@@ -25,9 +25,12 @@ jobs:
   e2e:
     if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # The install, then the suite's own 10 minutes (playwright.config.ts), with room for its
+    # teardown: a job stopped before then leaves the run's users in dev.
+    timeout-minutes: 25
     # The deploy's own secrets name the dev project. The dev-only key (#78) is passed only to the
-    # step that runs the flows, never to npm or the install.
+    # step that runs the flows, never to the install. There it reaches npm and Playwright, but not
+    # the Vite server (playwright.config.ts).
     env:
       VITE_APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
       VITE_APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_DEV_PROJECT_ID }}

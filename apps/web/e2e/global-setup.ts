@@ -28,7 +28,12 @@ export default async function globalSetup() {
     }
     process.env.E2E_USERS = JSON.stringify(users)
   } catch (error) {
-    await teardown()
+    // The setup's error is the one to see; a failed clean-up is added to it. Both messages
+    // name routes and status codes only (dev-project.ts).
+    await teardown().catch((cleanup: Error) => {
+      const message = `${(error as Error).message}; deleting the run's users failed too: ${cleanup.message}`
+      throw new Error(message, { cause: error })
+    })
     throw error
   }
   return teardown
