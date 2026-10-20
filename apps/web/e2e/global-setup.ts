@@ -1,10 +1,11 @@
 import { randomBytes } from 'node:crypto'
-import { createUser, deleteRunUsers, ENV_NAMES } from './dev-project'
+import { createUser, ENV_NAMES, handOverRunUsers } from './dev-project'
 
 /**
  * Before any flow: the dev project's variables, this run's ID, and the users the flows log in
  * as (verified, through the API). Workers get them through the environment. Returns the
- * teardown, which deletes every user the run made; if setup fails partway, it deletes them then.
+ * teardown, which hands every user the run made to the `account` job to delete (#386); if setup
+ * fails partway, it hands them over then.
  */
 export default async function globalSetup() {
   const missing = ENV_NAMES.filter((name) => !process.env[name])
@@ -17,7 +18,7 @@ export default async function globalSetup() {
   const runId = `e2e${Date.now().toString(36)}${randomBytes(3).toString('hex')}`
   process.env.E2E_RUN_ID = runId
   const teardown = async () => {
-    await deleteRunUsers(runId)
+    await handOverRunUsers(runId)
   }
   try {
     const users = {
@@ -34,7 +35,7 @@ export default async function globalSetup() {
     // The setup's error is the one to see; a failed clean-up is added to it. Both messages
     // name routes and status codes only (dev-project.ts).
     await teardown().catch((cleanup: Error) => {
-      const message = `${(error as Error).message}; deleting the run's users failed too: ${cleanup.message}`
+      const message = `${(error as Error).message}; handing the run's users over failed too: ${cleanup.message}`
       throw new Error(message, { cause: error })
     })
     throw error

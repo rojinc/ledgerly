@@ -15,6 +15,7 @@ import { buildShares, type LedgerContext, type Share } from '@ledgerly/core/ledg
 import { assertShareInvariants } from '@ledgerly/core/ledger/invariants'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
 import { formatMoney } from '@ledgerly/core/money/format'
+import { type ChangeNets, changeNetsSchema } from '@ledgerly/core/schemas/activity'
 import { localDateSchema, type MergingRefusal } from '@ledgerly/core/schemas/common'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import {
@@ -24,6 +25,7 @@ import {
   type TransactionView,
   transactionTemplateSchema,
 } from '@ledgerly/core/schemas/ledger'
+import { netsFromShares } from '@ledgerly/core/settle/nets'
 import { AppwriteException, ID, type Models, Query } from 'node-appwrite'
 import { z } from 'zod'
 import type { Db } from '../appwrite/client'
@@ -639,6 +641,17 @@ export function activityWrite(
     data,
     permissions: teamRead(row.groupId),
   }
+}
+
+/**
+ * `changesJson.nets` for an edit or void of a posted transaction: each person's net in it before
+ * and after (ledger.md#editing-and-voiding), which scheduler step 3b reads.
+ */
+export function changeNets(
+  before: readonly Pick<Shares, 'personId' | 'givenCents' | 'receivedCents'>[],
+  after: readonly Pick<Shares, 'personId' | 'givenCents' | 'receivedCents'>[],
+): ChangeNets {
+  return changeNetsSchema.parse({ before: netsFromShares(before), after: netsFromShares(after) })
 }
 
 export function money(cents: number, group: Groups): string {

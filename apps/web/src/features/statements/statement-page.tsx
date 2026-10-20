@@ -220,6 +220,7 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       <p className="text-muted-foreground">
         {STATUS_LABEL[row.status]}
         {row.sentAt && group.data ? ` · Sent ${sentOn(row.sentAt, group.data)}` : ''}
+        {autoSendNote(row, new Date())}
       </p>
       {/* Mounted from the start, so a change is read out. */}
       <p role="status" className="text-sm break-words empty:hidden">
@@ -282,6 +283,17 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
       )}
     </>
   )
+}
+
+/**
+ * An invoice the job finalized with autoSend on, not sent yet: being emailed while its window is
+ * open, and not after (statements.md#auto-send). Send stays either way.
+ */
+export function autoSendNote(row: Statements, now: Date): string {
+  if (row.status !== 'final' || row.sentAt || !row.autoSendUntil) return ''
+  return Date.parse(row.autoSendUntil) > now.getTime()
+    ? ' · Being emailed automatically'
+    : ' · Couldn’t be emailed automatically'
 }
 
 /** The day it was sent, in the group's time zone. */

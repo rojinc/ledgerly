@@ -3,7 +3,8 @@ import { randomBytes, randomUUID } from 'node:crypto'
 /**
  * The dev project's REST API, with the dev-only E2E_APPWRITE_API_KEY (scopes `users.read` and
  * `users.write`): users for the flows, marked verified because tests can't open an inbox, and
- * deleted after the run. Everything else goes through the app, as a user would.
+ * handed to the `account` job to delete after the run. Everything else goes through the app, as a
+ * user would.
  */
 export const ENV_NAMES = [
   'VITE_APPWRITE_ENDPOINT',
@@ -89,18 +90,23 @@ export async function userIdByEmail(email: string): Promise<string> {
   return user.$id
 }
 
-/** A run ID as global setup makes it: nothing else is ever used to pick users to delete. */
+/** A run ID as global setup makes it: nothing else is ever used to pick users to hand over. */
 export const RUN_ID = /^e2e[a-z0-9]{10,}$/
 
+/** What the `account` job deletes a run's users by (identity-and-invites.md#finishing-purges). */
+const E2E_LABEL = 'e2e'
+
 /**
- * Deletes every user the run made, through the API or the app: those whose address starts with
- * its mark. The server does the filtering, so no other user of dev is ever read, let alone
- * deleted. One failed delete doesn't stop the others; any failure is thrown at the end.
+ * Hands every user the run made, through the API or the app (those whose address starts with its
+ * mark), to the `account` job: labelled `e2e` and blocked, so the job deletes each one as an
+ * account deletion does, with the rows and files they made (#386). The server does the filtering,
+ * so no other user of dev is ever read, let alone changed. One it can't label and block it deletes
+ * outright, as before. One failure doesn't stop the others; any failure is thrown at the end.
  */
-export async function deleteRunUsers(id: string): Promise<number> {
-  if (!RUN_ID.test(id)) throw new Error('Not a run ID: nothing deleted')
-  const ours: { $id: string; email: string }[] = []
-  // All of them first: a deleted user can't be the next page's cursor.
+export async function handOverRunUsers(id: string): Promise<number> {
+  if (!RUN_ID.test(id)) throw new Error('Not a run ID: nothing handed over')
+  const ours: { $id: string; email: string; labels: string[] }[] = []
+  // All of them first, as when they were deleted here: a deleted user can't be a cursor.
   let cursor: string | undefined
   for (;;) {
     const page = [
@@ -108,7 +114,7 @@ export async function deleteRunUsers(id: string): Promise<number> {
       query('limit', [100]),
       ...(cursor ? [query('cursorAfter', [cursor])] : []),
     ].join('&')
-    const { users } = await api<{ users: { $id: string; email: string }[] }>(
+    const { users } = await api<{ users: { $id: string; email: string; labels: string[] }[] }>(
       'GET',
       `/users?${page}`,
     )
@@ -120,8 +126,20 @@ export async function deleteRunUsers(id: string): Promise<number> {
   for (const user of ours) {
     // Checked here too: only this run's addresses, whatever the server answered.
     if (!user.email.startsWith(`delivered+${id}-`)) continue
-    await api('DELETE', `/users/${user.$id}`).catch((error: Error) => failed.push(error.message))
+    try {
+      const labels = [...new Set([...user.labels, E2E_LABEL])]
+      await api('PUT', `/users/${user.$id}/labels`, { labels })
+      await api('PATCH', `/users/${user.$id}/status`, { status: false })
+    } catch (error) {
+      // Not left to sign in with: deleted outright, though the rows it made stay in dev.
+      failed.push((error as Error).message)
+      await api('DELETE', `/users/${user.$id}`).catch((deleting: Error) =>
+        failed.push(deleting.message),
+      )
+    }
   }
-  if (failed.length > 0) throw new Error(`${failed.length} users not deleted: ${failed.join('; ')}`)
+  if (failed.length > 0) {
+    throw new Error(`${failed.length} failures handing users over: ${failed.join('; ')}`)
+  }
   return ours.length
 }

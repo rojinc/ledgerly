@@ -6,6 +6,7 @@ import {
   type UpdateGroupBody,
   updateGroupBodySchema,
 } from '@ledgerly/core/schemas/groups'
+import { useEffect } from 'react'
 import { type FieldError, type FieldErrors, get, type Resolver, useForm } from 'react-hook-form'
 import type { z } from 'zod'
 import { schemaResolver } from '../../lib/schema-resolver'
@@ -25,6 +26,7 @@ export type EmployerValues = PlaceValues & {
   cycleAnchor: string
   paymentTermsDays: string
   autoFinalize: boolean
+  autoSend: boolean
 }
 
 const CYCLE_OPTIONS = [
@@ -79,6 +81,11 @@ function rateCents(text: string, currency: string): number {
   }
 }
 
+/** Auto-send needs automatic finalizing and a billing email (statements.md#auto-send). */
+export function canAutoSend(values: Pick<EmployerValues, 'autoFinalize' | 'recipients'>): boolean {
+  return values.autoFinalize && splitRecipients(values.recipients).length > 0
+}
+
 function toSettings(values: EmployerValues, currency: string): EmployerSettings {
   const days = values.paymentTermsDays.trim()
   return {
@@ -86,6 +93,8 @@ function toSettings(values: EmployerValues, currency: string): EmployerSettings 
     defaultRateCents: rateCents(values.defaultRate, currency),
     paymentTermsDays: /^\d+$/.test(days) ? Number(days) : Number.NaN,
     autoFinalize: values.autoFinalize,
+    // Left out when off, as in settings stored before it.
+    ...(values.autoSend && canAutoSend(values) ? { autoSend: true } : {}),
     recipients: splitRecipients(values.recipients),
   }
 }
@@ -150,6 +159,7 @@ export function toEmployerValues(group: StoredGroup): EmployerValues {
     cycleAnchor: group.cycleAnchor ?? '',
     paymentTermsDays: String(settings.paymentTermsDays),
     autoFinalize: settings.autoFinalize,
+    autoSend: settings.autoSend ?? false,
   }
 }
 
@@ -240,7 +250,18 @@ export function EmployerForm(props: Props) {
     defaultValues,
   })
   const { errors, isDirty, isSubmitting, isSubmitSuccessful } = form.formState
-  const [cycle, currency] = form.watch(['statementCycle', 'currency'])
+  const [cycle, currency, autoFinalize, recipients] = form.watch([
+    'statementCycle',
+    'currency',
+    'autoFinalize',
+    'recipients',
+  ])
+  const sendable = canAutoSend({ autoFinalize, recipients })
+  // Clearing automatic finalizing or the last billing email clears auto-send too.
+  useEffect(() => {
+    if (!sendable && form.getValues('autoSend'))
+      form.setValue('autoSend', false, { shouldDirty: true })
+  }, [sendable, form])
 
   return (
     <form
@@ -345,6 +366,25 @@ export function EmployerForm(props: Props) {
           <label htmlFor="autoFinalize" className="text-sm">
             Finalize invoices automatically when the period ends
           </label>
+        </div>
+        <div className="flex items-start gap-3">
+          <input
+            id="autoSend"
+            type="checkbox"
+            className="mt-0.5 size-5 shrink-0 accent-primary"
+            disabled={!sendable}
+            aria-describedby="autoSend-hint"
+            {...form.register('autoSend')}
+          />
+          <div className="flex min-w-0 flex-col gap-1">
+            <label htmlFor="autoSend" className="text-sm">
+              Also email it to the billing emails
+            </label>
+            <p id="autoSend-hint" className="text-sm text-muted-foreground">
+              Needs automatic finalizing and a billing email. If it can’t be emailed, you’re told
+              instead.
+            </p>
+          </div>
         </div>
       </fieldset>
       {!readOnly && (

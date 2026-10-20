@@ -49,6 +49,7 @@ export type LogEvent =
   | 'invite_cleanup_failed'
   | 'placeholder_cleanup_failed'
   | 'account_finish_failed'
+  | 'e2e_user_not_deleted'
   | 'receipt_cleanup_behind'
   | 'receipt_cleanup_failed'
   | 'receipt_row_listed'

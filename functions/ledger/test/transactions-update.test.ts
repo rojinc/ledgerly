@@ -50,6 +50,42 @@ describe('PATCH /transactions/{id}', () => {
     })
   })
 
+  it('records each person’s net before and after an edit of a posted expense (#433)', async () => {
+    const db = await withExpense()
+    await call(db, 'PATCH', '/transactions/t1', expense({ totalCents: 12000 }))
+    const updated = rows.activity(db).find((row) => row.action === 'transaction.updated')
+    expect(JSON.parse(updated?.changesJson ?? '').nets).toEqual({
+      before: [
+        { personId: 'alice', netCents: 4500 },
+        { personId: 'bob', netCents: -4500 },
+      ],
+      after: [
+        { personId: 'alice', netCents: 6000 },
+        { personId: 'bob', netCents: -6000 },
+      ],
+    })
+  })
+
+  it('records no nets for an edit of a bill not posted yet (#433)', async () => {
+    const db = seed()
+    const bill = {
+      id: 'b1',
+      groupId: 'house',
+      kind: 'bill',
+      date: '2026-10-20',
+      description: 'Electricity',
+      totalCents: 1200,
+      split: { mode: 'equal', personIds: ['alice', 'bob'] },
+      bill: { status: 'due', dueOn: '2026-10-25' },
+    }
+    await call(db, 'POST', '/transactions', bill)
+    expect(
+      (await call(db, 'PATCH', '/transactions/b1', { ...bill, totalCents: 1500 })).status,
+    ).toBe(200)
+    const updated = rows.activity(db).find((row) => row.action === 'transaction.updated')
+    expect(JSON.parse(updated?.changesJson ?? '')).not.toHaveProperty('nets')
+  })
+
   it('drops shares and items nobody has any more, and adds new ones', async () => {
     const db = await withExpense()
     const response = await call(
@@ -162,11 +198,16 @@ describe('PATCH /transactions/{id}', () => {
       expense({ totalCents: undefined, split: undefined, items: items('Oat milk') }),
     )
     const updated = rows.activity(db).find((row) => row.action === 'transaction.updated')
+    const half = [
+      { personId: 'alice', netCents: 4500 },
+      { personId: 'bob', netCents: -4500 },
+    ]
     expect(JSON.parse(updated?.changesJson ?? '')).toEqual({
       items: {
         before: [{ name: 'Milk', amountCents: 9000 }],
         after: [{ name: 'Oat milk', amountCents: 9000 }],
       },
+      nets: { before: half, after: half },
     })
   })
 
