@@ -13,6 +13,7 @@ import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroups, useMyMember } from '../groups/use-groups'
+import { AdjustmentForm } from './adjustment-form'
 import { HouseExpenseForm } from './house-expense-form'
 import {
   amountError,
@@ -82,7 +83,7 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 
 /**
  * `/transactions/new?groupId=`: an employer expense preset or a payment received (#31), or a
- * house expense (#180).
+ * house expense (#180). With `&kind=adjustment`, an adjustment (#400).
  */
 export function NewTransactionPage() {
   const userId = useCurrentUser().data?.$id ?? ''
@@ -95,8 +96,11 @@ export function NewTransactionPage() {
   )
   const member = useMyMember(group?.$id ?? '', personId)
   const members = useMembers(group?.$id ?? '')
+  const adjusting = params.get('kind') === 'adjustment'
 
   let content: ReactNode
+  // Whether the caller can add here, so the other form is offered too.
+  let adding = false
   if (!groups.data || (group && (member.data === undefined || !members.data))) {
     content =
       (groups.isError && !groups.data) || member.isError || members.isError || bootstrap.isError ? (
@@ -130,10 +134,15 @@ export function NewTransactionPage() {
         it.
       </Message>
     )
+  } else if (adjusting) {
+    adding = true
+    content = <AdjustmentForm group={group} members={members.data ?? []} personId={personId} />
   } else if (group.type === 'house') {
+    adding = true
     content = <HouseExpenseForm group={group} members={members.data ?? []} personId={personId} />
   } else {
     const people = employerPeople(group, members.data)
+    adding = people !== undefined
     content = people ? (
       <EntryForm group={group} people={people} />
     ) : (
@@ -146,8 +155,24 @@ export function NewTransactionPage() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-semibold">
-        {group?.type === 'house' ? 'Add expense' : 'Add expense or payment'}
+        {adjusting
+          ? 'Add adjustment'
+          : group?.type === 'house'
+            ? 'Add expense'
+            : 'Add expense or payment'}
       </h1>
+      {group && adding && (
+        <Link
+          to={`/transactions/new?groupId=${group.$id}${adjusting ? '' : '&kind=adjustment'}`}
+          className="self-start text-sm underline underline-offset-4"
+        >
+          {adjusting
+            ? group.type === 'house'
+              ? 'Add an expense instead'
+              : 'Add an expense or payment instead'
+            : `Correct a final ${group.type === 'house' ? 'divide' : 'invoice'} with an adjustment`}
+        </Link>
+      )}
       {content}
     </div>
   )

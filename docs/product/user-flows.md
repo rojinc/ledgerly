@@ -39,7 +39,7 @@ To fix a posted entry, the worker opens it and taps **Edit**, which shows the sa
 1. Just after the period ends (06:00 local time on 1 Nov), the statements job creates a **draft** invoice for October.
 2. The user gets an email ("Your October invoice for Acme is ready"), opens the draft and checks it. They can still add or fix transactions; the draft is recalculated each time it is opened.
 3. **Finalize & send** → `statements POST /statements/{id}/finalize`. This locks the transactions, gives the invoice its number, makes the PDF and emails the employer.
-4. A mistake found later is fixed with an **adjustment** transaction, which appears on the next invoice. Sent invoices never change.
+4. A mistake found later is fixed with an **adjustment** transaction, which appears on the next invoice. Sent invoices never change. On the final invoice, an admin taps **Correct with an adjustment** (or, on the add page, *Correct a final invoice with an adjustment*): who is owed more, who owes more, the amount, the date and the reason, which the next invoice shows → `ledger POST /transactions` with `kind: adjustment`. The person owed more gives the amount and the one who owes more receives it, so their balances move by it and the shares balance. A house corrects a final divide the same way.
 
 ## 6. Create a house and add a bill
 
