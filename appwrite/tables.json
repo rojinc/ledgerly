@@ -418,6 +418,21 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "deletingAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "deletingBy",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
@@ -438,6 +453,12 @@
         "type": "key",
         "columns": ["ownerPersonId", "type"],
         "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_deletingAt",
+        "type": "key",
+        "columns": ["deletingAt"],
+        "orders": ["ASC"]
       }
     ]
   },

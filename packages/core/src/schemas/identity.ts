@@ -161,6 +161,15 @@ export const deleteAccountBodySchema = z.strictObject({ confirm: z.literal('DELE
 
 export type DeleteAccountBody = z.infer<typeof deleteAccountBodySchema>
 
+/**
+ * `account POST /groups/{id}/delete` (#429, identity-and-invites.md#deleting-a-group): an archived
+ * group nobody else is in, with everything in it. Typing DELETE is the confirmation; there is no
+ * undo.
+ */
+export const deleteGroupBodySchema = z.strictObject({ confirm: z.literal('DELETE') })
+
+export type DeleteGroupBody = z.infer<typeof deleteGroupBodySchema>
+
 // Responses (functions-api.md#identity), shared by the function and the web app. `PATCH /profile`
 // returns the profile row itself.
 
@@ -209,6 +218,16 @@ export type DeleteAccountResult = { deletedAt: string; finished: boolean }
 export type DeleteAccountRefusal =
   | { reason: 'reauth' | 'recent_password_change' }
   | { groupIds: string[] }
+
+/** `account POST /groups/{id}/delete`. With `finished: false`, the hourly job deletes the rest. */
+export type DeleteGroupResult = { finished: boolean }
+
+/**
+ * `details` of a refused `account POST /groups/{id}/delete`, which changes nothing: `FORBIDDEN`
+ * with `reauth` or `recent_password_change`, as for `POST /delete`; or `VALIDATION_FAILED` with
+ * `shared` when anyone else is in the group's team.
+ */
+export type DeleteGroupRefusal = { reason: 'reauth' | 'recent_password_change' | 'shared' }
 
 const memberDatesSchema = z.strictObject({
   joinedOn: localDateSchema,

@@ -6,6 +6,7 @@ import {
   businessDetailsSchema,
   createInviteBodySchema,
   deleteAccountBodySchema,
+  deleteGroupBodySchema,
   hoursCapSchema,
   mergeCursorsSchema,
   mergeMembersSchema,
@@ -225,6 +226,20 @@ describe('deleteAccountBodySchema (#50)', () => {
     }
     expect(paths(deleteAccountBodySchema, {})).toEqual(['confirm'])
     expect(paths(deleteAccountBodySchema, { confirm: 'DELETE', userId: 'u1' })).toEqual([''])
+  })
+})
+
+describe('deleteGroupBodySchema (#429)', () => {
+  it('takes only DELETE, typed exactly, and nothing else', () => {
+    expect(deleteGroupBodySchema.parse({ confirm: 'DELETE' })).toEqual({ confirm: 'DELETE' })
+    for (const confirm of ['delete', 'DELETE ', '', null, undefined, true]) {
+      expect(paths(deleteGroupBodySchema, { confirm })).toEqual(['confirm'])
+    }
+    expect(paths(deleteGroupBodySchema, {})).toEqual(['confirm'])
+    expect(paths(deleteGroupBodySchema, null)).toEqual([''])
+    expect(paths(deleteGroupBodySchema, undefined)).toEqual([''])
+    // The group comes from the path, never the body.
+    expect(paths(deleteGroupBodySchema, { confirm: 'DELETE', groupId: 'g1' })).toEqual([''])
   })
 })
 
