@@ -2,6 +2,7 @@ import { Link } from 'react-router'
 import { useCurrentUser } from '../auth/use-current-user'
 import { BusinessForm } from './business-form'
 import { EmailSection } from './email-section'
+import { EmailSettingsForm } from './email-settings-form'
 import { HoursCapForm } from './hours-cap-form'
 import { OtherDevicesSection } from './other-devices-section'
 import { PasswordSection } from './password-section'
@@ -40,6 +41,7 @@ export function ProfilePage() {
       />
       <BusinessForm profile={profile.data} onSave={update.mutateAsync} />
       <HoursCapForm profile={profile.data} onSave={update.mutateAsync} />
+      <EmailSettingsForm profile={profile.data} onSave={update.mutateAsync} />
       <EmailSection />
       <PasswordSection />
       <OtherDevicesSection />

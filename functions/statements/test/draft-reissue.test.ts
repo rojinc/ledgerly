@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   afterLatestFinalRead,
   beforeStaging,
+  commitNow,
   failure,
   fakes,
   job,
@@ -70,6 +71,8 @@ describe('the statements job (POST /, cron)', () => {
     expect(services.sent[0]?.text).toContain(
       `https://app.example.com/groups/job/statements/${draft?.$id}`,
     )
+    // Where to turn it off (#431).
+    expect(services.sent[0]?.text).toContain('https://app.example.com/profile')
   })
 
   it('leaves groups alone that are not due, or have no statements', async () => {
@@ -642,6 +645,79 @@ describe('who the job emails', () => {
     })
     expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
     expect(services.sent).toEqual([])
+  })
+
+  /** Sam and Dan both run Acme's group, each with a verified address and these opt-outs. */
+  async function samAndDan(
+    emailOptOuts: { sam: string[] | null; dan: string[] | null },
+    settings: object = {},
+  ) {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-02', 60)),
+      groups: [job(settings)],
+      identities: ['sam', 'dan'].map((personId) => ({
+        $id: `i-${personId}`,
+        key: `email:${personId}@example.com`,
+        type: 'email',
+        personId,
+        verified: true,
+        verifiedAt: '2026-01-01T00:00:00.000Z',
+      })),
+      members: [
+        member('m-sam', 'job', 'sam', 'admin'),
+        member('m-acme', 'job', 'acme', 'viewer', 'placeholder'),
+        member('m-dan', 'job', 'dan', 'admin'),
+      ],
+    })
+    await commitNow(services.db, [
+      op('profiles', 'u-sam', { emailOptOuts: emailOptOuts.sam }),
+      op(
+        'profiles',
+        'u-dan',
+        {
+          personId: 'dan',
+          timezone: 'Australia/Sydney',
+          region: 'AU-NSW',
+          emailOptOuts: emailOptOuts.dan,
+        },
+        'create',
+      ),
+    ])
+    return services
+  }
+
+  it('skips an admin who turned the ready email off, and still emails the others', async () => {
+    // Dan turned other emails off, which doesn't mute this one.
+    const services = await samAndDan({
+      sam: ['statementReady'],
+      dan: ['billDue', 'shiftToConfirm'],
+    })
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    expect(services.sent.map((email) => email.to)).toEqual([['dan@example.com']])
+  })
+
+  it('emails every admin when nobody turned anything off', async () => {
+    const services = await samAndDan({ sam: null, dan: [] })
+    await runJob(services)
+    expect(services.sent.map((email) => email.to)).toEqual([
+      ['dan@example.com'],
+      ['sam@example.com'],
+    ])
+  })
+
+  it('still drafts and auto-finalizes when every admin turned the ready email off', async () => {
+    const services = await samAndDan(
+      { sam: ['statementReady'], dan: ['statementReady'] },
+      { autoFinalize: true },
+    )
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    expect(services.sent).toEqual([])
+    expect(services.db.rows('statements')).toMatchObject([{ status: 'final' }])
+    expect(services.db.rows('activity').map((row) => row.action)).toEqual([
+      'statement.drafted',
+      'statement.finalized',
+    ])
+    expect(errors).toEqual([])
   })
 })
 

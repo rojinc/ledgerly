@@ -31,10 +31,13 @@ const MONTHS = [
   'December',
 ]
 const WEEKDAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
+// The emails someone can turn off on Profile (#431) say so, and link there.
+const TURN_OFF = 'You can turn these emails off in your profile.'
+const CHANGE_EMAILS = 'Change your email settings'
 
 /**
  * To the group admins when the statements job drafts a statement: "Your October invoice for
- * Acme is ready to review" (statements.md#1-draft).
+ * Acme is ready to review" (statements.md#1-draft). `profileUrl` is where they turn it off (#431).
  */
 export function statementReadyEmail(input: {
   type: 'invoice' | 'divide'
@@ -42,6 +45,7 @@ export function statementReadyEmail(input: {
   periodStart: LocalDate
   periodEnd: LocalDate
   url: string
+  profileUrl: string
 }): EmailContent {
   const period = periodLabel(input.periodStart, input.periodEnd)
   const groupName = oneLine(input.groupName)
@@ -50,8 +54,12 @@ export function statementReadyEmail(input: {
     [
       `Your ${period} ${input.type} for ${groupName} has been drafted.`,
       'Check it before you finalize it. You can still add or fix transactions until then.',
+      TURN_OFF,
     ],
-    [{ label: `Review the ${input.type}`, url: input.url }],
+    [
+      { label: `Review the ${input.type}`, url: input.url },
+      { label: CHANGE_EMAILS, url: input.profileUrl },
+    ],
   )
 }
 
@@ -148,6 +156,7 @@ export function billDueSoonEmail(input: {
   // Its schedule auto-posts it on the due date.
   autoPay: boolean
   url: string
+  profileUrl: string
 }): EmailContent {
   const day = dayLabel(input.dueOn)
   const amount = formatMoney(input.amountCents, input.currency, LOCALE)
@@ -162,8 +171,12 @@ export function billDueSoonEmail(input: {
       input.autoPay
         ? 'Autopay puts it on the ledger as paid that day.'
         : 'Once it’s paid, mark it paid so it goes on the ledger.',
+      TURN_OFF,
     ],
-    [{ label: 'Open the bill', url: input.url }],
+    [
+      { label: 'Open the bill', url: input.url },
+      { label: CHANGE_EMAILS, url: input.profileUrl },
+    ],
   )
 }
 
@@ -175,6 +188,7 @@ export function shiftToConfirmEmail(input: {
   groupName: string
   date: LocalDate
   url: string
+  profileUrl: string
 }): EmailContent {
   const day = dayLabel(input.date)
   return message(
@@ -182,8 +196,12 @@ export function shiftToConfirmEmail(input: {
     [
       `Your shift in ${oneLine(input.groupName)} on ${day} hasn't been confirmed yet.`,
       'Confirm it, or change the hours if they were different, so it goes on your invoice.',
+      TURN_OFF,
     ],
-    [{ label: 'Confirm the shift', url: input.url }],
+    [
+      { label: 'Confirm the shift', url: input.url },
+      { label: CHANGE_EMAILS, url: input.profileUrl },
+    ],
   )
 }
 

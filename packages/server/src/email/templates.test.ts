@@ -38,6 +38,15 @@ function expectWellFormed(content: EmailContent) {
   expect(content.text).toContain('Sent with Ledgerly.')
 }
 
+// The three emails someone can turn off say so, and link to Profile (#431).
+function expectProfileLink(content: EmailContent) {
+  expect(content.text).toContain('You can turn these emails off in your profile.')
+  expect(content.text).toContain('Change your email settings: https://app.example/profile')
+  expect(content.html).toContain(
+    '<a href="https://app.example/profile">Change your email settings</a>',
+  )
+}
+
 describe('statementReadyEmail', () => {
   const ready = (type: 'invoice' | 'divide', start: string, end: string) =>
     statementReadyEmail({
@@ -46,6 +55,7 @@ describe('statementReadyEmail', () => {
       periodStart: day(start),
       periodEnd: day(end),
       url: 'https://app.example/statements/stmt-1',
+      profileUrl: 'https://app.example/profile',
     })
 
   it('names a whole month, as in statements.md', () => {
@@ -57,6 +67,7 @@ describe('statementReadyEmail', () => {
     expect(content.html).toContain(
       '<a href="https://app.example/statements/stmt-1">Review the invoice</a>',
     )
+    expectProfileLink(content)
   })
 
   it.each([
@@ -225,6 +236,7 @@ describe('shiftToConfirmEmail', () => {
       groupName: 'Acme',
       date: day('2026-10-15'),
       url: 'https://app.example/groups/g1/transactions/t1',
+      profileUrl: 'https://app.example/profile',
     })
     expectWellFormed(content)
     expect(content.subject).toBe('Confirm your shift on Thursday 15 October')
@@ -234,6 +246,7 @@ describe('shiftToConfirmEmail', () => {
     expect(content.text).toContain(
       'Confirm the shift: https://app.example/groups/g1/transactions/t1',
     )
+    expectProfileLink(content)
   })
 })
 
@@ -250,6 +263,8 @@ describe('timerRunningEmail', () => {
     // 21:02 UTC is 08:02 the next morning in Sydney (AEDT, UTC+11).
     const content = timer('2026-10-15T21:02:00.000Z')
     expectWellFormed(content)
+    // No opt-out: it's about a timer still running (#431 Q4).
+    expect(content.text).not.toContain('turn these emails off')
     expect(content.subject).toBe('Your timer is still running')
     expect(content.text).toContain(
       'Your timer in Acme has been running since Friday 16 October, 8:02 am.',
@@ -603,12 +618,14 @@ describe('billDueSoonEmail', () => {
       dueOn: day('2026-10-21'),
       autoPay: false,
       url: 'https://app.example/groups/elm/transactions/t1',
+      profileUrl: 'https://app.example/profile',
     })
     expectWellFormed(content)
     expect(content.subject).toBe('Rent is due on Wednesday 21 October')
     expect(content.text).toContain('Rent in Elm St ($900.00) is due on Wednesday 21 October.')
     expect(content.text).toContain('mark it paid')
     expect(content.text).toContain('Open the bill: https://app.example/groups/elm/transactions/t1')
+    expectProfileLink(content)
   })
 
   it('says autopay will post it, rather than asking to mark it paid', () => {
@@ -620,6 +637,7 @@ describe('billDueSoonEmail', () => {
       dueOn: day('2026-10-21'),
       autoPay: true,
       url: 'https://app.example/t',
+      profileUrl: 'https://app.example/profile',
     })
     expect(content.text).toContain('Autopay puts it on the ledger as paid that day.')
     expect(content.text).not.toContain('mark it paid')
@@ -634,6 +652,7 @@ describe('billDueSoonEmail', () => {
       dueOn: day('2026-10-21'),
       autoPay: false,
       url: 'https://app.example/t',
+      profileUrl: 'https://app.example/profile',
     })
     expect(content.subject).toBe('<b>Gas</b> Bcc: x@example.com is due on Wednesday 21 October')
     expect(content.html).toContain('&lt;b&gt;Gas&lt;/b&gt;')
@@ -651,6 +670,7 @@ describe('billDueSoonEmail, with names someone typed', () => {
       dueOn: day('2026-10-21'),
       autoPay: false,
       url: 'https://app.example/t',
+      profileUrl: 'https://app.example/profile',
     })
     expect(content.text).toContain(
       'Rent due in Elm St Pay now: https://evil.example ($900.00) is due on Wednesday 21 October.',
@@ -682,6 +702,7 @@ describe('names someone typed, in the other templates', () => {
       periodStart: day('2026-10-01'),
       periodEnd: day('2026-10-31'),
       url: 'https://app.example/s',
+      profileUrl: 'https://app.example/profile',
     })
     expectOneLine(content)
     expect(content.subject).toBe(`Your October divide for ${FOLDED} is ready to review`)
@@ -724,6 +745,7 @@ describe('names someone typed, in the other templates', () => {
       groupName: TYPED,
       date: day('2026-10-15'),
       url: 'https://app.example/t',
+      profileUrl: 'https://app.example/profile',
     })
     expectOneLine(content)
     expect(content.text).toContain(`Your shift in ${FOLDED} on Thursday 15 October`)
@@ -766,6 +788,7 @@ describe('user-typed text', () => {
       periodStart: day('2026-10-01'),
       periodEnd: day('2026-10-31'),
       url: 'https://app.example/s?a=1&b="2"',
+      profileUrl: 'https://app.example/profile',
     })
     expect(content.subject).toBe(
       `Your October invoice for <b>Tom & Jo's</b> Bcc: x@example.com "Ltd" is ready to review`,
@@ -781,7 +804,12 @@ describe('user-typed text', () => {
     'refuses a link to %s',
     (url) => {
       expect(() =>
-        shiftToConfirmEmail({ groupName: 'Acme', date: day('2026-10-15'), url }),
+        shiftToConfirmEmail({
+          groupName: 'Acme',
+          date: day('2026-10-15'),
+          url,
+          profileUrl: 'https://app.example/profile',
+        }),
       ).toThrow('Email links must be http(s)')
     },
   )

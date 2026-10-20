@@ -1,4 +1,5 @@
-import type { Groups, Members, Persons } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Persons, Profiles } from '@ledgerly/core/generated/rows'
+import type { EmailType } from '@ledgerly/core/schemas/identity'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import type { Email } from '@ledgerly/server/email/send-email'
@@ -85,6 +86,15 @@ export class FakeBucket implements ReceiptsBucket {
 
 export function person(id: string, userId: string | null): SeedRow<Persons> {
   return { $id: id, userId, displayName: id, claimedAt: null, mergedInto: null, deletedAt: null }
+}
+
+/** A user's profile (row ID = user ID) with the emails they turned off: null is every email on. */
+export function profile(
+  userId: string,
+  personId: string,
+  emailOptOuts: EmailType[] | null,
+): SeedRow<Profiles> {
+  return { $id: userId, personId, nextSummaryAt: null, emailOptOuts }
 }
 
 export function group(id: string, ownerPersonId: string, extra: Partial<Groups> = {}) {
