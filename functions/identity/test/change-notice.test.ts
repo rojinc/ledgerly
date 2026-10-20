@@ -238,7 +238,6 @@ describe('an email change', () => {
       identity('iX', 'email:x@example.com', { personId: 'p2', verifiedAt: at(12) }),
     ])
     const before = structuredClone([services.db.rows('identities'), services.db.rows('persons')])
-    const transaction = vi.spyOn(services.db, 'createTransaction')
     expect((await fire(services, 'email')).body).toEqual({ ok: true, data: {} })
     const emails = sent(services)
     expect(emails.map((email) => email.to)).toEqual([
@@ -262,9 +261,9 @@ describe('an email change', () => {
     }
     expect(lines()).toEqual(Array(5).fill(logLine('email', 'sent')))
     expect(levels()).toEqual(Array(5).fill('log'))
-    // It writes nothing, ever.
-    expect(transaction).not.toHaveBeenCalled()
+    // Nothing about the change itself is stored, and each pending send's row went once it was sent.
     expect([services.db.rows('identities'), services.db.rows('persons')]).toEqual(before)
+    expect(services.db.rows('changeNotices')).toEqual([])
   })
 
   it('tells the reader to write to SUPPORT_EMAIL when it is set', async () => {
