@@ -176,7 +176,8 @@ export async function requireNotFinalizing(
  * CONFLICT, with `merging`, when the row names a person whose merge is still open in its group
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): its shares, stored input or item
  * splits name a P with `mergedInto` set who lists the group in `mergeGroupIds` and has no member
- * row there, while U (P's `mergedInto`) has a joined one (not `placeholder`). Per group, so it
+ * row there, while U (P's `mergedInto`) has a joined one (not `placeholder`, and not one U left
+ * on their own, where step 3 leaves P's rows on P). Per group, so it
  * holds whether or not the merge finishes elsewhere. Planning the row again with today's members
  * would count P's part as someone else's before the merge writes it out. Routes call it before
  * planning, and again after staging the group row, so a merge's step 2 that lands meanwhile fails

@@ -249,7 +249,8 @@ export async function hasShares(db: Db, groupId: string, personId: string): Prom
  * Refuses, with CONFLICT and `merging`, while a merge into the person is open in the group
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): a P merged into them
  * (`idx_mergedInto`) lists the group in `mergeGroupIds`, has no member row here any more while
- * theirs is joined (step 2 gave P's place to them), and is still `named` here, which a leave or a
+ * theirs is joined (step 2 gave P's place to them; a row they left on their own doesn't count, as
+ * step 3 leaves P's rows on P there), and is still `named` here, which a leave or a
  * removal would count as someone else's. Per group, so a merge stuck elsewhere doesn't hold this one.
  *
  * Inside the transaction (`tx`), call it after staging the member row and before reading the

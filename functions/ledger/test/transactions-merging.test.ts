@@ -200,7 +200,14 @@ describe('while a merge is open in the row’s group', () => {
     ]
     const due = { ...byDays, split: withPat, bill: { status: 'due', dueOn: '2026-10-25' } }
     const db = await written(due, marked(), ...stepTwo, ...bobQuit)
-    // An edit must name someone else instead of Pat, as for any non-member.
+    // Still naming Pat, an edit or a post answers as for any non-member, not `merging`.
+    const patch = await call(db, 'PATCH', '/transactions/b1', { ...due, description: 'Power' })
+    const post = await call(db, 'POST', '/transactions/b1/post', {})
+    for (const response of [patch, post]) {
+      expect(response.status).toBe(400)
+      expect(response.body.error?.code).toBe('VALIDATION_FAILED')
+    }
+    // An edit must name someone else instead of Pat.
     const alone = { ...due, split: { mode: 'equal', personIds: ['alice'] } }
     expect((await call(db, 'PATCH', '/transactions/b1', alone)).status).toBe(200)
   })

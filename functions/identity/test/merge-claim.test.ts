@@ -930,7 +930,15 @@ describe('POST /claim, merging a placeholder', () => {
     'leaves Sammy’s activity and inputs in a group where Sam has %s, and still finishes',
     async (_, more) => {
       const services = await sammyInG3(more)
-      await claim(services)
+      const { body } = await claim(services)
+      // Sam's row in g3, if any, stays as it was, and the claim links no g3.
+      expect(body).toEqual({
+        ok: true,
+        data: { linkedGroupIds: expect.not.arrayContaining(['g3']) },
+      })
+      expect(services.db.rows('members').find((row) => row.$id === 'm9')?.status).toBe(
+        more.members[0]?.status,
+      )
       expect(namingSammy(services)).toEqual({
         identities: [],
         members: [],
@@ -983,10 +991,9 @@ describe('POST /claim, merging a placeholder', () => {
   })
 
   // The self-review's race on #347: Sam's placeholder row in g3 (added after Sam signed up, so
-  // the claim doesn't join it) becomes joined from the app while the claim is past g3's check.
-  // Nothing in g3 moves this run, shares included (so g3's shares are never listed, and the
-  // mock's join never fires), and the next run renames the input before it moves the shares,
-  // as everywhere else.
+  // the claim doesn't join it) becomes joined from the app just after the claim checked g3.
+  // Nothing in g3 moves this run, shares included, and the next run renames the input before it
+  // moves the shares, as everywhere else.
   it('moves nothing in a group where Sam joins after its check, and the next claim does it all', async () => {
     const services = house({
       groups: [group('g3')],
@@ -1021,14 +1028,17 @@ describe('POST /claim, merging a placeholder', () => {
         },
       }),
     )
-    // Sam's row in g3 is joined as soon as anything lists g3's shares.
+    // Sam's row in g3 is joined just after the claim reads it to check g3 (joinedHere).
     const list = services.db.listRows.bind(services.db)
     let joinedMeanwhile = false
     vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const found = await list(params)
+      const queries = JSON.stringify(params.queries)
       if (
         !joinedMeanwhile &&
-        params.tableId === 'shares' &&
-        JSON.stringify(params.queries).includes('g3')
+        params.tableId === 'members' &&
+        queries.includes('g3') &&
+        queries.includes('pSam')
       ) {
         joinedMeanwhile = true
         await withTransaction(services.db, (tx) =>
@@ -1040,16 +1050,13 @@ describe('POST /claim, merging a placeholder', () => {
           }),
         )
       }
-      return list(params)
+      return found
     })
     await claim(services)
+    expect(joinedMeanwhile).toBe(true)
     expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
     vi.mocked(services.db.listRows).mockRestore()
-    // Sam joins g3 from the app (as the race did, had g3's shares been listed): the next claim
-    // finds Sam joined there.
-    await withTransaction(services.db, (tx) =>
-      tx.write({ action: 'update', tableId: 'members', rowId: 'm9', data: { status: 'active' } }),
-    )
+    // Sam is joined in g3 now, by the join that raced the first claim.
     await claim(services)
     expect(namingSammy(services)).toEqual({
       identities: [],
