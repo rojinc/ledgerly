@@ -92,6 +92,17 @@ export function peopleList<T extends z.ZodType>(
     })
 }
 
+/** Adds an issue unless the list is in ascending `personId` order, naming each person once. */
+export function checkPersonIdOrder(people: readonly { personId: string }[], ctx: z.RefinementCtx) {
+  people.forEach((person, index) => {
+    const before = people[index - 1]
+    if (before !== undefined && before.personId >= person.personId) {
+      const message = 'In ascending personId order, each once'
+      ctx.addIssue({ code: 'custom', message, path: [index, 'personId'] })
+    }
+  })
+}
+
 /** Adds an issue at `path` unless `from` is on or before `to`. */
 export function checkDateOrder(
   from: LocalDate | undefined,

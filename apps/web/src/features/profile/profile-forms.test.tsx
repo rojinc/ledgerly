@@ -290,7 +290,12 @@ describe('EmailSettingsForm (#431)', () => {
   it('ticks every email when none is turned off, and saves the ones unticked', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined)
     render(<EmailSettingsForm profile={{ ...profile, emailOptOuts: null }} onSave={onSave} />)
-    for (const name of ['Bill due soon', 'Shift to confirm', 'Statement ready']) {
+    for (const name of [
+      'Bill due soon',
+      'Shift to confirm',
+      'A transaction you’re in was changed',
+      'Statement ready',
+    ]) {
       expect(
         (screen.getByRole('checkbox', { name: new RegExp(name) }) as HTMLInputElement).checked,
       ).toBe(true)
@@ -320,6 +325,17 @@ describe('EmailSettingsForm (#431)', () => {
     fireEvent.click(shift)
     fireEvent.click(screen.getByRole('button', { name: 'Save email settings' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledWith({ emailOptOuts: [] }))
+  })
+
+  it('turns off the change email too, saved in the contract’s order (#433)', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(<EmailSettingsForm profile={{ ...profile, emailOptOuts: null }} onSave={onSave} />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /Statement ready/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /A transaction you’re in was changed/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save email settings' }))
+    const body = { emailOptOuts: ['transactionChanged', 'statementReady'] }
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith(body))
+    expect(updateProfileBodySchema.safeParse(body).success).toBe(true)
   })
 
   it('says drafts still appear under Statements, and shows the function error', async () => {
