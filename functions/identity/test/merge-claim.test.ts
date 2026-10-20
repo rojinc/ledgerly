@@ -10,6 +10,7 @@ import {
   call,
   type Fakes,
   fakes,
+  NOW,
   placeholderRow,
 } from './harness'
 
@@ -511,6 +512,46 @@ describe('POST /claim, merging a placeholder', () => {
     })
     expect(services.teams.members('g3')?.map((member) => member.userId)).toEqual(['u2'])
     expect(nets(services, 'g3')).toEqual({ pX: 1000, pP: -1000 })
+  })
+
+  it('joins Sam where Sam’s own row was left and removed while the claim ran (#457)', async () => {
+    // Sam left g3 on their own during this request, after its start, and an admin removed that
+    // row. Step 2's member.joined is dated at the start (NOW), so it's older by `at`, but written
+    // later: FakeDb stamps it with the real clock, which is past NOW.
+    const LEFT = new Date(NOW.getTime() + 1000).toISOString()
+    const services = house({
+      groups: [group('g3')],
+      members: [placeholderRow('m6', 'g3', 'pP', BEFORE)],
+      transactions: [
+        transaction('t3', 'g3', {
+          payers: [{ personId: 'pX', cents: 1000 }],
+          split: { mode: 'equal', personIds: ['pP'] },
+        }),
+      ],
+      shares: [share('s5', 't3', 'g3', 'pX', 1000, 0), share('s6', 't3', 'g3', 'pP', 0, 1000)],
+      activity: [
+        {
+          $id: 'aLeft',
+          $createdAt: LEFT,
+          at: LEFT,
+          groupId: 'g3',
+          actorPersonId: 'pSam',
+          action: 'member.left',
+          summary: 'Left',
+        },
+      ],
+    })
+    expect((await claim(services)).body).toEqual({
+      ok: true,
+      data: { linkedGroupIds: ['g1', 'g3'] },
+    })
+    expect(Object.values(namingSammy(services)).flat()).toEqual([])
+    expect(services.db.rows('members').find((row) => row.$id === 'm6')).toMatchObject({
+      personId: 'pSam',
+      status: 'active',
+    })
+    expect(nets(services, 'g3')).toEqual({ pX: 1000, pSam: -1000 })
+    expect(services.teams.members('g3')?.map((member) => member.userId)).toEqual(['u2', 'u1'])
   })
 
   it('puts off a group being finalized, keeps the merge open, and a later claim finishes it', async () => {
