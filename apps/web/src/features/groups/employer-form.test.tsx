@@ -7,7 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { callFunction } from '../../lib/api'
 import { useProfile } from '../profile/use-profile'
 import { ArchiveGroup } from './archive-group'
-import { centsToText, toEmployerValues } from './employer-form'
+import { centsToText, toEmployerValues, toUpdateBody } from './employer-form'
 import { EmployerSettingsPage } from './employer-settings-page'
 import { NewEmployerPage } from './new-employer-page'
 import { useGroup, useMyMember } from './use-groups'
@@ -400,6 +400,52 @@ describe('EmployerSettingsPage', () => {
     expect(queryClient.getQueryData(['group', 'g1'])).toEqual(saved)
   })
 
+  it('emails auto-finalized invoices only with automatic finalizing and a billing email (#432)', async () => {
+    mockGroup(employer)
+    call.mockResolvedValue({ ok: true, data: employer })
+    renderAt('/groups/g1/settings')
+    const autoSend = input('Also email it to the billing emails')
+    const autoFinalize = input('Finalize invoices automatically when the period ends')
+    expect(autoSend.checked).toBe(false)
+    expect(autoSend.disabled).toBe(false)
+    expect(autoSend.getAttribute('aria-describedby')).toBe('autoSend-hint')
+    fireEvent.click(autoSend)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      settings: {
+        autoFinalize: true,
+        autoSend: true,
+        recipients: ['pay@acme.test', 'boss@acme.test'],
+      },
+    })
+    // Clearing either clears it, and it can't be ticked again until both are back.
+    fireEvent.click(autoFinalize)
+    await waitFor(() => expect(autoSend.checked).toBe(false))
+    expect(autoSend.disabled).toBe(true)
+    fireEvent.click(autoFinalize)
+    expect(autoSend.disabled).toBe(false)
+    fireEvent.click(autoSend)
+    type('Billing emails', '')
+    await waitFor(() => expect(autoSend.checked).toBe(false))
+    expect(autoSend.disabled).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    expect(call.mock.calls[1]?.[3]).toMatchObject({
+      settings: { autoFinalize: true, recipients: [] },
+    })
+    expect(call.mock.calls[1]?.[3]).not.toHaveProperty('settings.autoSend')
+  })
+
+  it('shows auto-send as stored', () => {
+    mockGroup({
+      ...employer,
+      settingsJson: JSON.stringify({ ...JSON.parse(employer.settingsJson), autoSend: true }),
+    })
+    renderAt('/groups/g1/settings')
+    expect(input('Also email it to the billing emails').checked).toBe(true)
+  })
+
   it('shows the group’s own time zone, region and currency, and sends only those changed', async () => {
     mockGroup({ ...employer, timezone: 'Pacific/Auckland', region: 'NZ-AUK', currency: 'NZD' })
     call.mockResolvedValue({ ok: true, data: { ...employer, timezone: 'Asia/Tokyo' } })
@@ -616,7 +662,20 @@ describe('toEmployerValues', () => {
       cycleAnchor: '',
       paymentTermsDays: '14',
       autoFinalize: false,
+      autoSend: false,
     })
+  })
+})
+
+describe('toUpdateBody', () => {
+  it('sends autoSend only with automatic finalizing and a billing email (#432)', () => {
+    const values = {
+      ...toEmployerValues({ ...employer, settings: JSON.parse(employer.settingsJson) }),
+      autoSend: true,
+    }
+    expect(toUpdateBody(values).settings).toMatchObject({ autoSend: true })
+    expect(toUpdateBody({ ...values, autoFinalize: false }).settings).not.toHaveProperty('autoSend')
+    expect(toUpdateBody({ ...values, recipients: ' ' }).settings).not.toHaveProperty('autoSend')
   })
 })
 

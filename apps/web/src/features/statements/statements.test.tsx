@@ -814,6 +814,42 @@ describe('StatementPage: a final invoice', () => {
     await screen.findByRole('button', { name: 'Download PDF' })
     expect(screen.queryByRole('link', LINK)).toBeNull()
   })
+
+  it.each([
+    // The window ends in an hour: the job is still emailing it.
+    [new Date(Date.now() + 60 * 60 * 1000).toISOString(), 'Being emailed automatically'],
+    // It ended, or a send failed for good.
+    [new Date(Date.now() - 60 * 1000).toISOString(), 'Couldn’t be emailed automatically'],
+  ])(
+    'says how an auto-finalized invoice is being emailed, and keeps Send (#432)',
+    async (until, note) => {
+      store(statement('s1', { ...FINAL, sentAt: null, autoSendUntil: until }))
+      renderAt('/groups/g1/statements/s1')
+      expect(await screen.findByText(new RegExp(`· ${note}$`))).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Send' })).toBeTruthy()
+    },
+  )
+
+  it('says nothing about auto-send once sent, or for an invoice an admin finalized (#432)', async () => {
+    const later = new Date(Date.now() + 60 * 60 * 1000).toISOString()
+    store(
+      statement('s1', { ...FINAL, sentAt: '2026-11-02T00:00:00.000Z', autoSendUntil: later }),
+      statement('s0', {
+        ...FINAL,
+        displayNumber: 'INV-0006',
+        periodStart: '2026-09-01',
+        periodEnd: '2026-09-30',
+        sentAt: null,
+        autoSendUntil: null,
+      }),
+    )
+    for (const id of ['s1', 's0']) {
+      renderAt(`/groups/g1/statements/${id}`)
+      await screen.findByRole('button', { name: 'Download PDF' })
+      expect(screen.queryByText(/emailed automatically/)).toBeNull()
+      cleanup()
+    }
+  })
 })
 
 // A house of three, Alice (pa), Bob (pb) and Cara (pc), divides October (#166).

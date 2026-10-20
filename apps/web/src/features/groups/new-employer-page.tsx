@@ -19,6 +19,7 @@ const DEFAULTS: Omit<EmployerValues, keyof PlaceValues> = {
   cycleAnchor: '',
   paymentTermsDays: '14',
   autoFinalize: false,
+  autoSend: false,
 }
 
 export function NewEmployerPage() {
