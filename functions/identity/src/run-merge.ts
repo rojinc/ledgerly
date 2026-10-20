@@ -2,7 +2,9 @@ import type { Groups, Identities, Members, Persons, Shares } from '@ledgerly/cor
 import { type MergeMembers, mergeMembersSchema } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { logProblem } from '@ledgerly/server/http/log'
+import { Raced } from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
 import {
   IntoDeleted,
@@ -17,6 +19,7 @@ import {
   subjectsOf,
 } from './merge'
 import { cursorsOf, moveInputs, moveTemplates } from './merge-inputs'
+import { getRowOrNull, isAppwriteError } from './rows'
 import type { Services } from './services'
 
 // identity-and-invites.md#merging-two-persons, steps 2–4, run by /claim (and bootstrap's claim).
@@ -34,7 +37,8 @@ export type MergesResult = { joined: string[]; finished: string[] }
  * Carries on with every merge into U (`idx_mergedInto`) that isn't finished, until `deadline`
  * (epoch ms). A merge moves P's identities last, once everything else is done, so P still
  * having an identity is what marks it unfinished: P had one to be merged at all, and
- * `resolvePerson()` adds any new one for U.
+ * `resolvePerson()` adds any new one for U. So does `mergeResumeAt`: U has since joined one of
+ * P's groups, and the merge carries on there, even one that had finished (#358).
  */
 export async function finishMerges(
   services: Services,
@@ -47,7 +51,7 @@ export async function finishMerges(
     if (Date.now() >= deadline) break
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
     if (placeholder.userId || placeholder.deletedAt) continue
-    if (!(await hasIdentity(services.db, placeholder.$id))) continue
+    if (!placeholder.mergeResumeAt && !(await hasIdentity(services.db, placeholder.$id))) continue
     try {
       // A deletion ends every merge into U (step 2), one with only unguarded writes left too.
       if (await intoDeleted(services.db, intoId)) throw new IntoDeleted()
@@ -198,8 +202,10 @@ async function runSteps(
   ) {
     const identities = await moveIdentities(db, fromId, intoId, deadline)
     logProblem('merge_finished', { ...ids, counts: { ...counts, identities } })
-    // Cut off partway, some identities are still P's, and the next claim moves the rest.
-    return { joined, finished: !(await hasIdentity(db, fromId)) }
+    // A later join's mark goes with them, unless a newer one landed meanwhile (#358). Cut off
+    // partway, some identities are still P's, and the next claim moves the rest.
+    const unmarked = await clearResume(db, placeholder)
+    return { joined, finished: unmarked && !(await hasIdentity(db, fromId)) }
   }
   logProblem('merge_carries_on', { ...ids, counts: { ...counts, groupsPutOff: putOff.size } })
   return { joined, finished: false }
@@ -278,6 +284,36 @@ async function mergedInto(db: Db, intoId: string): Promise<Persons[]> {
     const last = rows.at(-1)
     if (!last || rows.length < PAGE) return found
     cursor = last.$id
+  }
+}
+
+/**
+ * Clears P's `mergeResumeAt` (#358), staged and then checked: only if P's mark and `rev` are still
+ * as read with P (each mark writes a fresh `rev`), so a join that marked P again meanwhile isn't
+ * lost. True once P has no mark; false if a write to P raced it (a 409 at the commit included).
+ */
+export async function clearResume(db: Db, placeholder: Persons): Promise<boolean> {
+  // Read without one: a join (another merge's step 2, say) may have marked P since.
+  if (!placeholder.mergeResumeAt) {
+    return !(await getRowOrNull<Persons>(db, TABLES.persons, placeholder.$id))?.mergeResumeAt
+  }
+  try {
+    await withTransaction(db, async (tx) => {
+      await tx.write({
+        action: 'update',
+        tableId: TABLES.persons,
+        rowId: placeholder.$id,
+        data: { mergeResumeAt: null },
+      })
+      const stored = await getRowOrNull<Persons>(db, TABLES.persons, placeholder.$id)
+      if (stored?.mergeResumeAt !== placeholder.mergeResumeAt || stored.rev !== placeholder.rev) {
+        throw new Raced()
+      }
+    })
+    return true
+  } catch (error) {
+    if (error instanceof Raced || isAppwriteError(error, 409)) return false
+    throw error
   }
 }
 
