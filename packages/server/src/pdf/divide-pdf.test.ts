@@ -320,6 +320,73 @@ describe('renderDividePdf', () => {
     expect(await textBeyondPage(pdf)).toEqual([])
   })
 
+  // #346: pdfmake starts a line at each break, which a count of characters misses.
+  it.each([
+    { what: 'a description of line feeds', description: `${'x\n'.repeat(99)}x`, names: ['Alice'] },
+    {
+      what: 'names of other line breaks',
+      description: 'Power',
+      names: [`${'b\r'.repeat(49)}b`, `${'c\u2028'.repeat(49)}c`],
+    },
+  ])('keeps the table when a line holds $what', async ({ description, names }) => {
+    const people = names.map((name, index) => ({ personId: `p${index}`, name }))
+    const lines = [
+      line(
+        '2026-10-03',
+        'expense',
+        3000,
+        people.map((person, at) =>
+          share(person.personId, at === 0 ? 3000 : 0, 3000 / names.length),
+        ),
+        { description },
+      ),
+      line('2026-10-04', 'expense', 1500, [share('p0', 1500, 1500)], { description: 'Milk' }),
+    ]
+    const text = await pdfText(
+      await renderDividePdf(
+        buildStatementSnapshot({ ...goldenInput(lines), people, previousClosing: [] }),
+      ),
+    )
+    expect(text).toContain('Transactions Date Description Paid Share Total 3 Oct 2026')
+    expect(text).toMatch(/\$30\.00 .*4 Oct 2026 Milk/)
+  })
+
+  // Each of pdfmake's mandatory breaks, and empty lines, which still take a line each.
+  it.each([
+    ['LF', '\n'],
+    ['CR', '\r'],
+    ['CR LF', '\r\n'],
+    ['VT', '\v'],
+    ['FF', '\f'],
+    ['NEL', '\u0085'],
+    ['LS', '\u2028'],
+    ['PS', '\u2029'],
+  ])('keeps the table when a name breaks 99 times with %s', async (_, lineBreak) => {
+    await expectTable(`b${lineBreak.repeat(99)}b`)
+  })
+
+  it('keeps the table when a name is mostly empty lines', async () => {
+    await expectTable(`a${'\n'.repeat(99)}b`)
+  })
+
+  // A line for one person named `name`, then Milk: the table, and the line after it, are there.
+  async function expectTable(name: string) {
+    const lines = [
+      line('2026-10-03', 'expense', 3000, [share('p0', 3000, 3000)], { description: 'Power' }),
+      line('2026-10-04', 'expense', 1500, [share('p0', 1500, 1500)], { description: 'Milk' }),
+    ]
+    const people = [{ personId: 'p0', name }]
+    const text = await pdfText(
+      await renderDividePdf(
+        buildStatementSnapshot({ ...goldenInput(lines), people, previousClosing: [] }),
+      ),
+    )
+    expect(text).toContain('Transactions Date Description Paid Share Total 3 Oct 2026')
+    expect(text).toMatch(/\$30\.00 .*4 Oct 2026 Milk/)
+    // Each break prints as one: none is a character no font has.
+    expect(text).not.toContain('\uFFFD')
+  }
+
   it('renders 500 lines between 15 people, well under the 10 MB bucket limit', async () => {
     const people = Array.from({ length: 15 }, (_, index) => ({
       personId: `p${String(index).padStart(2, '0')}`,
@@ -518,6 +585,8 @@ describe('wrappedLines', () => {
     ['three words that fit one to a line', 'abcdefg abcdefg abcdefg', 3],
     ['a line feed', 'a\nb', 2],
     ['a carriage return', 'a\rb', 2],
+    // Twice, which is safe: pdfmake starts one line.
+    ['a CR LF', 'a\r\nb', 3],
     // Noto Emoji's characters are 12.7 pt: 13 fit.
     ['13 emoji', '😀'.repeat(13), 1],
     ['14 emoji', '😀'.repeat(14), 3],

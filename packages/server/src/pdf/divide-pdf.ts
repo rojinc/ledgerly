@@ -27,6 +27,11 @@ type FontRun = ReturnType<typeof fontRuns>[number]
 
 // Wide enough for -$1,234,567.89 on one line.
 const AMOUNT = 70
+// Unicode's mandatory breaks other than a line feed or carriage return, which a stored name or
+// description can hold (#346). No font has them, so they'd print as �, which pdfmake doesn't break
+// at, and breakable() takes them for spaces: a name of them would widen its column until the
+// amounts fall off the page. They print as line feeds instead, so pdfmake breaks there.
+const OTHER_BREAKS = /[\v\f\u0085\u2028\u2029]/g
 
 /**
  * The house divide PDF, laid out as statements.md#monthly-divide-pdf-layout-house says: who
@@ -44,8 +49,9 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   // the first time a run needs it.
   let replaced = 0
   const print = (text: string): FontRun[] => {
-    replaced += missingGlyphs(text).length
-    const runs = fontRuns(text)
+    const shown = text.replace(OTHER_BREAKS, '\n')
+    replaced += missingGlyphs(shown).length
+    const runs = fontRuns(shown)
     loadFonts(runs.map((run) => run.font))
     return runs
   }
@@ -137,7 +143,8 @@ const CJK_LINE = 1.25
  * The most lines of Roboto's height that `runs`, as printed, can take in a cell CELL_WIDTH wide.
  * It wraps words greedily, as pdfmake does, with every character as wide as its font's widest:
  * a word ends after a space or a zero-width space, and a line feed or carriage return starts a new
- * line. pdfmake may also break inside a word, which only fills its lines fuller, or keep a space
+ * line (CR LF counts twice, which is safe); Unicode's other mandatory breaks print as line feeds
+ * (OTHER_BREAKS). pdfmake may also break inside a word, which only fills its lines fuller, or keep a space
  * with the word after it (`ѸѸ !ѸѸ`), which costs less than the 11.79 pt the space counts.
  *
  * A word wider than the cell starts a new line, and the next word starts another. pdfmake breaks it

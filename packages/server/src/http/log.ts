@@ -34,6 +34,7 @@ export type LogEvent =
   | 'merge_left_schedule'
   | 'merge_left_stray_row'
   | 'merge_left_subjects'
+  | 'merge_put_off_team_gone'
   | 'merge_typed_keys_deleted'
   | 'merge_finished'
   | 'merge_carries_on'
@@ -42,6 +43,7 @@ export type LogEvent =
   | 'merge_run_failed'
   | 'merge_walk_cut_off'
   | 'merge_run'
+  | 'invite_cleanup_failed'
   | 'account_finish_failed'
 
 /**
@@ -65,6 +67,7 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_left_schedule: 'warn',
   merge_left_stray_row: 'warn',
   merge_left_subjects: 'warn',
+  merge_put_off_team_gone: 'warn',
   merge_stopped: 'warn',
   merge_walk_cut_off: 'warn',
 }
