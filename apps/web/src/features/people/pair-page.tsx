@@ -4,7 +4,7 @@ import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import { type TransactionInput, transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import { useQueryClient } from '@tanstack/react-query'
 import { ID } from 'appwrite'
-import { type ReactNode, useEffect, useState } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { type FieldErrors, get, type Resolver, useForm } from 'react-hook-form'
 import { Link, useParams } from 'react-router'
 import { queryKeys } from '../../lib/query-keys'
@@ -25,6 +25,7 @@ import {
   useHistory,
   useMembers,
 } from '../transactions/use-transactions'
+import { PairSettings } from './pair-settings'
 import {
   balanceText,
   cents,
@@ -113,6 +114,17 @@ export function PairPage() {
   const member = useMyMember(groupId, me)
   // Until the viewer's person is known, either member could be the other one.
   const them = me ? members.data?.find((row) => row.personId !== me) : undefined
+  const heading = useRef<HTMLHeadingElement>(null)
+  // #403: both people are admins of a pair, so either can manage it until it's archived.
+  const manages = member.data?.role === 'admin' && !group.data?.archivedAt
+  // Settings go when the pair is archived or the role changes meanwhile, with any open form and
+  // its refusal: focus, if it went with them, goes to the heading.
+  const managed = useRef(manages)
+  useEffect(() => {
+    if (managed.current === manages) return
+    managed.current = manages
+    if (document.activeElement === document.body) heading.current?.focus()
+  }, [manages])
 
   let content: ReactNode
   if (!group.data || !members.data || member.data === undefined) {
@@ -129,19 +141,33 @@ export function PairPage() {
     content = <Message>This isn’t a lend & borrow group.</Message>
   } else {
     content = (
-      <PairDetails
-        group={group.data}
-        people={{ me, them: them.personId }}
-        name={them.displayName}
-        // D-016: a placeholder may or may not have an account; this says only that they haven't joined.
-        joined={them.status !== 'placeholder'}
-        mayAdd={member.data?.role === 'admin' || member.data?.role === 'member'}
-      />
+      <>
+        <PairDetails
+          group={group.data}
+          people={{ me, them: them.personId }}
+          name={them.displayName}
+          // D-016: a placeholder may or may not have an account; this says only that they haven't joined.
+          joined={them.status !== 'placeholder'}
+          mayAdd={member.data?.role === 'admin' || member.data?.role === 'member'}
+        />
+        {manages && (
+          <PairSettings
+            group={group.data}
+            them={them}
+            personId={me}
+            focusHeading={() => heading.current?.focus()}
+          />
+        )}
+      </>
     )
   }
   return (
     <div className="flex flex-col gap-6">
-      <h1 className="min-w-0 text-2xl font-semibold break-words">
+      <h1
+        ref={heading}
+        tabIndex={-1}
+        className="min-w-0 text-2xl font-semibold break-words outline-none"
+      >
         {them?.displayName ?? group.data?.name ?? 'Lend & borrow'}
       </h1>
       {content}
