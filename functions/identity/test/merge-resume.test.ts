@@ -6,6 +6,7 @@ import { clearResume } from '../src/run-merge'
 import {
   account,
   BEFORE,
+  beforeCommit,
   call,
   type Fakes,
   fakes,
@@ -186,7 +187,8 @@ describe('a later join carries a merge on in that group (#358)', () => {
 
   it('marks it when U, re-added after leaving on their own, joins again (AI C’s third case)', async () => {
     // Step 2 gave Sammy's row to Sam (the merge's member.joined), Sam then left g1 on their own
-    // before the merge renamed Sammy's rent there, and an admin removed that row and added Sam again.
+    // before the merge renamed Sammy's rent there, and an admin removed that row and added Sam
+    // again.
     const services = seeded({
       transactions: [RENT],
       activity: [
@@ -380,6 +382,19 @@ describe('a later join carries a merge on in that group (#358)', () => {
     expect(personOf(services, 'pP')?.mergeResumeAt).toBeNull()
   })
 
+  it('leaves the mark, and doesn’t throw, when a join marks P between the clear’s stage and commit', async () => {
+    const services = seeded({}, null)
+    await updateRow(services.db, 'persons', 'pP', { mergeResumeAt: NOW.toISOString() })
+    const later = new Date(NOW.getTime() + 60_000).toISOString()
+    // The clear's own check passes; the join's write lands just before its commit, which then
+    // fails with 409.
+    beforeCommit(services.db, () =>
+      updateRow(services.db, 'persons', 'pP', { mergeResumeAt: later, rev: 'rAgain' }),
+    )
+    expect(await clearResume(services.db, personOf(services, 'pP') as Persons)).toBe(false)
+    expect(personOf(services, 'pP')?.mergeResumeAt).toBe(later)
+  })
+
   it('clears the marks of a deleted U’s merges, which never go on, so they’re skipped once', async () => {
     const services = seeded({}, null)
     await updateRow(services.db, 'persons', 'pP', { mergeResumeAt: NOW.toISOString() })
@@ -387,5 +402,36 @@ describe('a later join carries a merge on in that group (#358)', () => {
     expect(await hourly(services)).toMatchObject({ ok: true, data: { unfinished: 1, skipped: 1 } })
     expect(personOf(services, 'pP')?.mergeResumeAt).toBeNull()
     expect(await hourly(services)).toMatchObject({ ok: true, data: { unfinished: 0, skipped: 0 } })
+  })
+
+  it('logs a clear that fails for a deleted U’s merge, and reads an unmarked one only once', async () => {
+    // Sammy is marked and Pat isn't; Pat still holds a key, so the walk finds both.
+    const services = seeded(
+      {
+        persons: [{ ...SAMMY, $id: 'pPat' }],
+        identities: [
+          {
+            $id: 'iPat',
+            key: 'email:pat@example.com',
+            type: 'email',
+            personId: 'pPat',
+            verified: true,
+          },
+        ],
+      },
+      null,
+    )
+    await updateRow(services.db, 'persons', 'pP', { mergeResumeAt: NOW.toISOString() })
+    await updateRow(services.db, 'persons', 'pSam', { deletedAt: NOW.toISOString() })
+    const getRow = vi.spyOn(services.db, 'getRow')
+    vi.spyOn(services.db, 'updateTransaction').mockRejectedValue(new Error('Appwrite is down'))
+    expect(await hourly(services)).toMatchObject({ ok: true, data: { unfinished: 2, skipped: 2 } })
+    const reads = (id: string) => getRow.mock.calls.filter(([params]) => params.rowId === id)
+    expect(reads('pPat')).toHaveLength(1)
+    const lines = vi.mocked(console.error).mock.calls.map(([line]) => JSON.parse(String(line)))
+    expect(lines).toContainEqual(
+      expect.objectContaining({ event: 'merge_run_failed', personId: 'pP', intoPersonId: 'pSam' }),
+    )
+    expect(personOf(services, 'pP')?.mergeResumeAt).toBe(NOW.toISOString())
   })
 })

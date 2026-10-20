@@ -58,7 +58,13 @@ export async function run(scheduled: boolean, services: () => Services): Promise
         for (const fromId of fromIds) {
           if (Date.now() >= deadline) break
           const from = await getRowOrNull<Persons>(built.db, TABLES.persons, fromId)
-          if (from) await clearResume(built.db, from).catch(() => false)
+          // Only a marked P: there's nothing to clear on the others.
+          if (!from?.mergeResumeAt) continue
+          // A race comes back false. Anything else is a real failure: an error line, and the next
+          // run tries again.
+          await clearResume(built.db, from).catch((error: unknown) =>
+            logProblem('merge_run_failed', { intoPersonId: intoId, personId: fromId, error }),
+          )
         }
         continue
       }
@@ -87,8 +93,9 @@ export async function run(scheduled: boolean, services: () => Services): Promise
 
 /**
  * Each U with a merge still to finish, and its Ps: P has `mergedInto` set (`idx_mergedInto`) and
- * still holds an identity, since identities move last, or has `mergeResumeAt` set (#358). Only a placeholder is ever merged, so a P
- * with an account, or deleted, is left out, as `finishMerges` leaves it alone. `read` counts the
+ * still holds an identity, since identities move last, or has `mergeResumeAt` set (#358). Only a
+ * placeholder is ever merged, so a P with an account, or deleted, is left out, as `finishMerges`
+ * leaves it alone. `read` counts the
  * persons read, and `complete` says whether the walk reached the end before `deadline` passed.
  */
 async function unfinishedMerges(

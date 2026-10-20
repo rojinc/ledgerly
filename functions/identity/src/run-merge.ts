@@ -288,9 +288,9 @@ async function mergedInto(db: Db, intoId: string): Promise<Persons[]> {
 }
 
 /**
- * Clears P's `mergeResumeAt` (#358), staged and then checked: only if P's mark and `rev` are still as
- * read with P (each mark writes a fresh `rev`), so a join that marked P again meanwhile isn't lost.
- * True once P has no mark.
+ * Clears P's `mergeResumeAt` (#358), staged and then checked: only if P's mark and `rev` are still
+ * as read with P (each mark writes a fresh `rev`), so a join that marked P again meanwhile isn't
+ * lost. True once P has no mark; false if a write to P raced it (a 409 at the commit included).
  */
 export async function clearResume(db: Db, placeholder: Persons): Promise<boolean> {
   // Read without one: a join (another merge's step 2, say) may have marked P since.
