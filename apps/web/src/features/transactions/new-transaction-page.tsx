@@ -19,9 +19,12 @@ import {
   amountError,
   amountExample,
   type EmployerPeople,
+  ENTRY_KIND,
   ENTRY_TYPES,
   type EntryValues,
+  PERSONAL_ENTRY_TYPES,
   toEntryBody,
+  toPersonalBody,
 } from './presets'
 import { employerPeople, LedgerError, useCreateTransaction, useMembers } from './use-transactions'
 
@@ -70,6 +73,13 @@ function entryResolver(
   }
 }
 
+// The description hint's example, where it isn't “Cleaning supplies”.
+const DESCRIPTION_EXAMPLE: Partial<Record<EntryValues['type'], string>> = {
+  paymentReceived: 'October pay',
+  income: 'Tax refund',
+  expense: 'Groceries',
+}
+
 function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
   return (
     <p
@@ -82,8 +92,9 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 }
 
 /**
- * `/transactions/new?groupId=`: an employer expense preset or a payment received (#31), or a
- * house expense (#180). With `&kind=adjustment`, an adjustment (#400).
+ * `/transactions/new?groupId=`: an employer expense preset or a payment received (#31), a
+ * house expense (#180), or personal income or an expense (#402). With `&kind=adjustment`, an
+ * adjustment (#400), except in a personal group.
  */
 export function NewTransactionPage() {
   const userId = useCurrentUser().data?.$id ?? ''
@@ -92,11 +103,14 @@ export function NewTransactionPage() {
   const groups = useGroups()
   const [params] = useSearchParams()
   const group = groups.data?.find(
-    (g) => g.$id === params.get('groupId') && (g.type === 'employer' || g.type === 'house'),
+    (g) =>
+      g.$id === params.get('groupId') &&
+      (g.type === 'employer' || g.type === 'house' || g.type === 'personal'),
   )
   const member = useMyMember(group?.$id ?? '', personId)
   const members = useMembers(group?.$id ?? '')
-  const adjusting = params.get('kind') === 'adjustment'
+  // A personal group has only its owner, so nobody to adjust against.
+  const adjusting = params.get('kind') === 'adjustment' && group?.type !== 'personal'
 
   let content: ReactNode
   // Whether the caller can add here, so the other form is offered too.
@@ -140,6 +154,8 @@ export function NewTransactionPage() {
   } else if (group.type === 'house') {
     adding = true
     content = <HouseExpenseForm group={group} members={members.data ?? []} personId={personId} />
+  } else if (group.type === 'personal') {
+    content = <EntryForm group={group} />
   } else {
     const people = employerPeople(group, members.data)
     adding = people !== undefined
@@ -159,7 +175,9 @@ export function NewTransactionPage() {
           ? 'Add adjustment'
           : group?.type === 'house'
             ? 'Add expense'
-            : 'Add expense or payment'}
+            : group?.type === 'personal'
+              ? 'Add income or expense'
+              : 'Add expense or payment'}
       </h1>
       {group && adding && (
         <Link
@@ -191,8 +209,9 @@ export type EntryEdit = {
 }
 
 /**
- * The employer entry form (#31): a new entry, or a posted one being changed. On a change the
- * kind stays: an expense switches between the expense presets, and a payment stays one.
+ * The employer entry form (#31), or with no `people` the personal one (#402): a new entry, or a
+ * posted one being changed. On a change the kind stays: an employer expense switches between the
+ * expense presets, and a payment, an income or a personal expense stays one.
  */
 export function EntryForm({
   group,
@@ -200,28 +219,32 @@ export function EntryForm({
   edit,
 }: {
   group: Groups
-  people: EmployerPeople
+  /** The employer group's two people; a personal group has only its owner. */
+  people?: EmployerPeople
   edit?: EntryEdit
 }) {
   const navigate = useNavigate()
   const create = useCreateTransaction()
   // One ID per visit, so a retry after an error can't add it twice. A change keeps the row's.
   const [id] = useState(() => edit?.row.$id ?? ID.unique())
+  const choices = people ? ENTRY_TYPES : PERSONAL_ENTRY_TYPES
   const types = edit
-    ? ENTRY_TYPES.filter(
-        (entry) => (entry.value === 'paymentReceived') === (edit.row.kind === 'payment'),
-      )
-    : ENTRY_TYPES
-  const toBody = (values: EntryValues) =>
-    toEntryBody(values, { id, groupId: group.$id }, group.currency, people)
+    ? choices.filter((entry) => ENTRY_KIND[entry.value] === edit.row.kind)
+    : choices
+  const toBody = (values: EntryValues) => {
+    const ids = { id, groupId: group.$id }
+    return people
+      ? toEntryBody(values, ids, group.currency, people)
+      : toPersonalBody(values, ids, group.currency, group.ownerPersonId)
+  }
   const form = useForm<EntryValues, unknown, TransactionInput>({
     resolver: entryResolver(toBody, group.currency),
     defaultValues: edit?.values ?? {
-      type: 'reimbursable',
+      type: people ? 'reimbursable' : 'income',
       amount: '',
       date: localToday(group.timezone, new Date()),
       description: '',
-      category: 'work',
+      category: people ? 'work' : '',
       note: '',
     },
   })
@@ -266,7 +289,9 @@ export function EntryForm({
       )}
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
       <fieldset className="flex flex-col gap-2">
-        <legend className="mb-1 text-sm font-medium">What happened with {group.name}?</legend>
+        <legend className="mb-1 text-sm font-medium">
+          {people ? `What happened with ${group.name}?` : 'What happened?'}
+        </legend>
         {types.map((entry) => (
           <label key={entry.value} className="flex items-start gap-2 text-sm">
             <input type="radio" value={entry.value} className="mt-1" {...form.register('type')} />
@@ -295,11 +320,7 @@ export function EntryForm({
       <TextField
         id="description"
         label="Description"
-        hint={
-          type === 'paymentReceived'
-            ? 'For example “October pay”.'
-            : 'For example “Cleaning supplies”.'
-        }
+        hint={`For example “${DESCRIPTION_EXAMPLE[type] ?? 'Cleaning supplies'}”.`}
         error={errors.description}
         {...form.register('description')}
       />

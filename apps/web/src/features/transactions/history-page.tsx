@@ -30,8 +30,12 @@ export const STATUS_LABEL: Record<Transactions['status'], string> = {
   void: 'Void',
 }
 
-// The kinds an employer group has (ledger.md#transaction-kinds).
+// The kinds an employer and a personal group have (ledger.md#transaction-kinds).
 const EMPLOYER_KINDS: Transactions['kind'][] = ['shift', 'expense', 'payment', 'adjustment']
+const PERSONAL_KINDS: Transactions['kind'][] = ['expense', 'bill', 'income', 'adjustment']
+
+const ADD_LINK =
+  'inline-flex h-10 items-center self-start rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
 
 function Message({ children, alert = false }: { children: ReactNode; alert?: boolean }) {
   return (
@@ -45,18 +49,23 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 }
 
 /**
- * `/transactions?groupId=`: an employer group's balance and history, filtered by kind, dates
- * and category (#31). Archived groups stay readable.
+ * `/transactions?groupId=`: an employer group's balance and history (#31), or the personal
+ * group's history (#402), filtered by kind, dates and category. Archived groups stay readable.
  */
 export function HistoryPage() {
   const groups = useGroups()
   const [params, setParams] = useSearchParams()
-  const employers = groups.data?.filter((group) => group.type === 'employer')
-  const group = employers?.find((g) => g.$id === params.get('groupId')) ?? employers?.[0]
+  // Employers first, so History still opens on one when there is one.
+  const shown = groups.data && [
+    ...groups.data.filter((group) => group.type === 'employer'),
+    ...groups.data.filter((group) => group.type === 'personal'),
+  ]
+  const group = shown?.find((g) => g.$id === params.get('groupId')) ?? shown?.[0]
+  const kinds = group?.type === 'personal' ? PERSONAL_KINDS : EMPLOYER_KINDS
 
   // The filters live in the URL, so a refresh or a shared link keeps them.
   // A hand-edited link with an unknown kind or category is ignored, not sent to Appwrite.
-  const kind = EMPLOYER_KINDS.find((k) => k === params.get('kind'))
+  const kind = kinds.find((k) => k === params.get('kind'))
   const category = CATEGORIES.find((c) => c === params.get('category'))
   const filters: HistoryFilters = {
     ...(kind ? { kind } : {}),
@@ -73,7 +82,7 @@ export function HistoryPage() {
   }
 
   let content: ReactNode
-  if (!employers) {
+  if (!shown) {
     content =
       groups.isError && !groups.data ? (
         <Message alert>We couldn’t load your groups. Reload the page to try again.</Message>
@@ -92,14 +101,14 @@ export function HistoryPage() {
   } else {
     content = (
       <>
-        {employers.length > 1 && (
+        {shown.length > 1 && (
           <SelectField
             id="historyGroup"
-            label="Employer"
+            label="Group"
             value={group.$id}
             onChange={(event) => setParam('groupId', event.target.value)}
           >
-            {employers.map((g) => (
+            {shown.map((g) => (
               <option key={g.$id} value={g.$id}>
                 {g.name}
                 {g.archivedAt ? ' (archived)' : ''}
@@ -107,7 +116,14 @@ export function HistoryPage() {
             ))}
           </SelectField>
         )}
-        <GroupSummary group={group} />
+        {group.type === 'personal' ? (
+          // Only its owner is in a personal group, and it has no balance with anyone.
+          <Link to={`/transactions/new?groupId=${group.$id}`} className={ADD_LINK}>
+            Add income or expense
+          </Link>
+        ) : (
+          <GroupSummary group={group} />
+        )}
         <fieldset className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <legend className="sr-only">Filters</legend>
           <SelectField
@@ -117,7 +133,7 @@ export function HistoryPage() {
             onChange={(event) => setParam('kind', event.target.value)}
           >
             <option value="">All</option>
-            {EMPLOYER_KINDS.map((kind) => (
+            {kinds.map((kind) => (
               <option key={kind} value={kind}>
                 {KIND_LABEL[kind]}
               </option>
@@ -210,10 +226,7 @@ function GroupSummary({ group }: { group: Groups }) {
       </div>
       {group.archivedAt && <Message>{ARCHIVED_NOTICE}</Message>}
       {canAdd && (
-        <Link
-          to={`/transactions/new?groupId=${group.$id}`}
-          className="inline-flex h-10 items-center self-start rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-        >
+        <Link to={`/transactions/new?groupId=${group.$id}`} className={ADD_LINK}>
           Add expense or payment
         </Link>
       )}

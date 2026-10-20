@@ -5,8 +5,27 @@ import type { transactionInputSchema } from '@ledgerly/core/schemas/ledger'
 import type { z } from 'zod'
 import { centsToText } from '../groups/employer-form'
 
-/** What an employer entry records (ledger.md#employer-presets; user-flows.md#4). */
-export type EntryType = 'reimbursable' | 'onTheirCard' | 'personalOnTheirCard' | 'paymentReceived'
+/**
+ * What an entry records: an employer preset or payment (ledger.md#employer-presets;
+ * user-flows.md#4), or personal income or an expense (#402).
+ */
+export type EntryType =
+  | 'reimbursable'
+  | 'onTheirCard'
+  | 'personalOnTheirCard'
+  | 'paymentReceived'
+  | 'income'
+  | 'expense'
+
+/** The kind of transaction each choice makes: on a change it stays (the ledger refuses a new one). */
+export const ENTRY_KIND: Record<EntryType, Transactions['kind']> = {
+  reimbursable: 'expense',
+  onTheirCard: 'expense',
+  personalOnTheirCard: 'expense',
+  paymentReceived: 'payment',
+  income: 'income',
+  expense: 'expense',
+}
 
 export const ENTRY_TYPES: { value: EntryType; label: string; effect: string }[] = [
   {
@@ -25,6 +44,12 @@ export const ENTRY_TYPES: { value: EntryType; label: string; effect: string }[] 
     effect: 'They owe you this amount less.',
   },
   { value: 'paymentReceived', label: 'Payment received', effect: 'They owe you this amount less.' },
+]
+
+/** A personal group's choices (ledger.md#transaction-kinds: `income` and `expense`). */
+export const PERSONAL_ENTRY_TYPES: { value: EntryType; label: string; effect: string }[] = [
+  { value: 'income', label: 'Income', effect: 'Shown as personal income.' },
+  { value: 'expense', label: 'Expense', effect: 'Shown in your spending.' },
 ]
 
 /** The entry form's fields, all as typed. */
@@ -114,6 +139,36 @@ export function toEntryBody(
   }
 }
 
+/**
+ * `POST /transactions` for a personal entry (#402). The owner is the group's only member
+ * (permissions.md). Income gives and gets them the total, and takes no payers or split
+ * (ledger.md#transaction-kinds). An expense is paid by them, for them, sent with its payers and
+ * split like the other expense forms. NaN makes the schema refuse an amount that isn't one.
+ */
+export function toPersonalBody(
+  values: EntryValues,
+  ids: { id: string; groupId: string },
+  currency: string,
+  ownerPersonId: string,
+): z.input<typeof transactionInputSchema> {
+  const totalCents = cents(values.amount, currency)
+  const common = {
+    ...ids,
+    date: values.date,
+    description: values.description.trim(),
+    totalCents,
+    ...(values.category === '' ? {} : { category: values.category }),
+    ...(values.note.trim() === '' ? {} : { note: values.note.trim() }),
+  }
+  if (values.type === 'income') return { ...common, kind: 'income' }
+  return {
+    ...common,
+    kind: 'expense',
+    payers: [{ personId: ownerPersonId, cents: totalCents }],
+    split: { mode: 'equal', personIds: [ownerPersonId] },
+  }
+}
+
 /** The parts of a stored input (`transactions.inputJson`) an entry's choice comes from. */
 type StoredEntry = {
   payers?: { personId: string; cents: number }[]
@@ -182,4 +237,42 @@ function entryType(
   if (paidBy === employer && forWhom === employer) return 'onTheirCard'
   if (paidBy === employer && forWhom === worker) return 'personalOnTheirCard'
   return undefined
+}
+
+/**
+ * The entry form's values for a posted personal income or expense (#402), or undefined when its
+ * stored input isn't one the form makes: an expense paid by or for anyone but the owner, a total
+ * of 0 or less, or an empty note. `toPersonalBody()` of the result gives the stored input back.
+ */
+export function toPersonalValues(
+  row: Pick<
+    Transactions,
+    'kind' | 'totalCents' | 'date' | 'description' | 'category' | 'inputJson'
+  >,
+  ownerPersonId: string,
+  currency: string,
+): EntryValues | undefined {
+  const { payers, split, note } = readStored(row.inputJson)
+  if (note === '' || row.totalCents <= 0) return undefined
+  if (row.kind === 'expense') {
+    const paidByOwner =
+      payers?.length === 1 &&
+      payers[0]?.personId === ownerPersonId &&
+      payers[0].cents === row.totalCents
+    const forOwner =
+      split?.mode === 'equal' &&
+      split.personIds?.length === 1 &&
+      split.personIds[0] === ownerPersonId
+    if (!paidByOwner || !forOwner) return undefined
+  } else if (row.kind !== 'income') {
+    return undefined
+  }
+  return {
+    type: row.kind,
+    amount: centsToText(row.totalCents, currency),
+    date: row.date,
+    description: row.description,
+    category: (row.category ?? '') as Category | '',
+    note: typeof note === 'string' ? note : '',
+  }
 }

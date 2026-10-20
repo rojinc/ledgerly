@@ -17,7 +17,7 @@ import { KIND_LABEL, STATUS_LABEL } from './history-page'
 import { toHouseExpenseValues } from './house-expense'
 import { HouseExpenseForm } from './house-expense-form'
 import { EntryForm } from './new-transaction-page'
-import { toEntryValues } from './presets'
+import { toEntryValues, toPersonalValues } from './presets'
 import {
   CHANGED_MEANWHILE,
   employerPeople,
@@ -212,7 +212,8 @@ function Details({ row }: { row: Transactions }) {
           We couldn’t load this expense’s items. Reload the page to try again.
         </Message>
       )}
-      {shares.data && shares.data.length > 0 && (
+      {/* A personal group's one person gives and gets it all: the amount says as much (#402). */}
+      {group.data.type !== 'personal' && shares.data && shares.data.length > 0 && (
         <section aria-labelledby="shares-heading" className="flex flex-col gap-2">
           <h2 id="shares-heading" className="font-medium">
             {row.kind === 'shift'
@@ -354,8 +355,8 @@ type EditState = {
 
 /**
  * How the row is changed, for someone who may change it (#184): a posted employer, lend &
- * borrow or house entry here (#202), with the form it was made with; a personal bill or a shift
- * on its own page.
+ * borrow, house (#202) or personal income or expense (#402) entry here, with the form it was made
+ * with; a personal bill or a shift on its own page.
  */
 function Change({
   row,
@@ -395,7 +396,8 @@ function Change({
   const employer = group.type === 'employer' && (row.kind === 'expense' || row.kind === 'payment')
   const pair = group.type === 'pair' && (row.kind === 'loan' || row.kind === 'payment')
   const house = group.type === 'house' && row.kind === 'expense'
-  if (!employer && !pair && !house) return null
+  const personal = group.type === 'personal' && (row.kind === 'income' || row.kind === 'expense')
+  if (!employer && !pair && !house && !personal) return null
   // As on create, only the worker: the presets are worded from their side.
   if (employer && group.ownerPersonId !== personId) {
     return <Message>Only the person this group pays changes expenses and payments here.</Message>
@@ -433,6 +435,15 @@ function EditEntry({
         group={group}
         members={members}
         personId={personId}
+        edit={{ row, values, heading: swap.heading, save, onDone: swap.close }}
+      />
+    )
+  } else if (group.type === 'personal') {
+    const values = toPersonalValues(row, group.ownerPersonId, group.currency)
+    if (!values) return <Message>{UNMATCHED}</Message>
+    form = (
+      <EntryForm
+        group={group}
         edit={{ row, values, heading: swap.heading, save, onDone: swap.close }}
       />
     )
@@ -488,7 +499,7 @@ function hoursText(minutes: number): string {
 function GroupLink({ group }: { group: Groups }) {
   const name = useGroupName(group)
   const to =
-    group.type === 'employer'
+    group.type === 'employer' || group.type === 'personal'
       ? `/transactions?groupId=${group.$id}`
       : group.type === 'house'
         ? `/groups/${group.$id}`
