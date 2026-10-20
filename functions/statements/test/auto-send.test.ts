@@ -371,6 +371,27 @@ describe('the statements job, with autoSend on', () => {
     ])
   })
 
+  it('still tries an invoice after a "ready" email met a 403 in the same run: one line each (#476)', async () => {
+    // September is final with its window open; October is idle, so its "ready" email goes.
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-09-02', 60), {
+        statements: [statement('st-sep', { periodStart: '2026-09-01', periodEnd: '2026-09-30' })],
+      }),
+      groups: [job(AUTO)],
+    })
+    await ok(services, 'POST', '/statements/st-sep/finalize', { send: false })
+    await commitNow(services.db, [op('statements', 'st-sep', { autoSendUntil: WINDOW_END })])
+    const tried: string[] = []
+    failing(services, (email) => {
+      tried.push(email.idempotencyKey ?? '')
+      return new EmailError('Resend answered 403 validation_error', 'validation_error', 403)
+    })
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    const october = invoices(services).find((row) => row.$id !== 'st-sep')
+    expect(tried).toEqual([`ready/${october?.$id}/sam`, 'invoice/st-sep/first/employer'])
+    expect(logged().map((line) => line.event)).toEqual(['ready_email_failed', 'auto_send_failed'])
+  })
+
   it('takes concurrent_idempotent_requests, an admin’s Send at the same moment, as transient', async () => {
     const services = octoberDue()
     const send = services.sendEmail

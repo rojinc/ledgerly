@@ -2,6 +2,7 @@ import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { closeAtFor } from '@ledgerly/core/dates/time-zone'
 import type { Statements } from '@ledgerly/core/generated/rows'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
+import { EmailError } from '@ledgerly/server/email/send-email'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
@@ -718,6 +719,112 @@ describe('who the job emails', () => {
       'statement.finalized',
     ])
     expect(errors).toEqual([])
+  })
+})
+
+describe('the "ready" emails, when sends fail (#476)', () => {
+  /** Acme and Bobs Bakery are both due, and Sam and Dan run both, with verified addresses. */
+  function twoGroups() {
+    return fakes({
+      groups: [job(), { ...job(), $id: 'job2', name: 'Bobs Bakery' }],
+      identities: ['sam', 'dan'].map((personId) => ({
+        $id: `i-${personId}`,
+        key: `email:${personId}@example.com`,
+        type: 'email',
+        personId,
+        verified: true,
+        verifiedAt: '2026-01-01T00:00:00.000Z',
+      })),
+      members: ['job', 'job2'].flatMap((groupId) => [
+        member(`m-sam-${groupId}`, groupId, 'sam', 'admin'),
+        member(`m-acme-${groupId}`, groupId, 'acme', 'viewer', 'placeholder'),
+        member(`m-dan-${groupId}`, groupId, 'dan', 'admin'),
+      ]),
+    })
+  }
+
+  // Every send fails with `error`; the keys tried, in order.
+  function failingWith(services: ReturnType<typeof fakes>, error: Error): string[] {
+    const tried: string[] = []
+    services.sendEmail = async (email) => {
+      tried.push(email.idempotencyKey ?? '')
+      throw error
+    }
+    return tried
+  }
+
+  const drafts = (services: ReturnType<typeof fakes>) =>
+    services.db.rows('statements') as unknown as Statements[]
+
+  it.each([
+    ['a 401', new EmailError('Resend answered 401 validation_error', 'validation_error', 401)],
+    ['a 403', new EmailError('Resend answered 403 validation_error', 'validation_error', 403)],
+    ['an invalid key', new EmailError('Resend answered 400', 'invalid_api_key', 400)],
+    ['a missing setting', new EmailError('RESEND_API_KEY is not set', 'missing_config')],
+  ])(
+    'stops at %s, our key, domain or settings: one try, one line, both drafted',
+    async (_, error) => {
+      const services = twoGroups()
+      const tried = failingWith(services, error)
+      expect(await runJob(services)).toEqual({ drafted: 2, failed: 0 })
+      expect(drafts(services).map((row) => [row.groupId, row.status])).toEqual([
+        ['job', 'draft'],
+        ['job2', 'draft'],
+      ])
+      // The first admin of the first group only: not the other admin, nor the next group's.
+      expect(tried).toHaveLength(1)
+      const first = drafts(services).find((row) => tried[0]?.startsWith(`ready/${row.$id}/`))
+      expect(errors.map((line) => JSON.parse(line))).toEqual([
+        {
+          fn: 'unknown',
+          event: 'ready_email_failed',
+          statementId: first?.$id,
+          cause: `EmailError ${error.type} ${error.status ?? ''}`.trim(),
+        },
+      ])
+    },
+  )
+
+  it.each([
+    ['a 500', new EmailError('Resend answered 500 application_error', 'application_error', 500)],
+    ['a 422', new EmailError('Resend answered 422 validation_error', 'validation_error', 422)],
+    ['a timeout', new EmailError('Resend could not be reached: timeout', 'timeout')],
+  ])('tries every admin of every group after %s, a line each, as before', async (_, error) => {
+    const services = twoGroups()
+    const tried = failingWith(services, error)
+    expect(await runJob(services)).toEqual({ drafted: 2, failed: 0 })
+    expect(tried.toSorted()).toEqual(
+      drafts(services)
+        .flatMap((row) => [`ready/${row.$id}/dan`, `ready/${row.$id}/sam`])
+        .toSorted(),
+    )
+    expect(errors.map((line) => JSON.parse(line).event)).toEqual(
+      Array(4).fill('ready_email_failed'),
+    )
+  })
+
+  it('stops at a 403 met after a send went through, before the next admin', async () => {
+    const services = twoGroups()
+    const send = services.sendEmail
+    let count = 0
+    services.sendEmail = async (email) => {
+      count += 1
+      if (count === 1) return send(email)
+      throw new EmailError('Resend answered 403 validation_error', 'validation_error', 403)
+    }
+    expect(await runJob(services)).toEqual({ drafted: 2, failed: 0 })
+    expect(count).toBe(2)
+    expect(services.sent).toHaveLength(1)
+    expect(errors).toHaveLength(1)
+  })
+
+  it('stops for that run only: the next run tries its "ready" emails again', async () => {
+    const blocked = twoGroups()
+    failingWith(blocked, new EmailError('Resend answered 403', 'validation_error', 403))
+    await runJob(blocked)
+    const fixed = twoGroups()
+    expect(await runJob(fixed)).toEqual({ drafted: 2, failed: 0 })
+    expect(fixed.sent).toHaveLength(4)
   })
 })
 
