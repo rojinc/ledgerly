@@ -390,6 +390,17 @@ describe('address misses (#274)', () => {
       }
     })
 
+    // A start that can't be read would otherwise count as a live window for good, so a sender at
+    // the limit would stay locked out. It counts as no window instead: the next check starts a
+    // new one, which writes a readable start, so the row heals.
+    it('reads a window start it can\u2019t parse as no window, and starts a new one', async () => {
+      const services = fixture({ addressMisses: 10, addressMissesFrom: 'not a date' })
+      await ok(services, 'POST', route.path, route.body(RIGHT))
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      // Its check started a new window at 1, and the send took that back.
+      expect(missesOf(services)).toEqual(misses(0))
+    })
+
     it('takes back only its own count on a successful send, never earlier misses', async () => {
       const services = fixture(misses(9, ago(HOUR)))
       await ok(services, 'POST', route.path, route.body(RIGHT, 1))
