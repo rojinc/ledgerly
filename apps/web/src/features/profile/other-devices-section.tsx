@@ -28,7 +28,8 @@ export function OtherDevicesSection() {
       {/* aria-disabled, not disabled: a disabled button loses focus. */}
       <Button
         variant="outline"
-        className="self-start"
+        // Wraps at large text sizes rather than running past a phone's edge.
+        className="h-auto min-h-10 self-start whitespace-normal"
         aria-disabled={signOut.isPending}
         onClick={() => !signOut.isPending && signOut.mutate()}
       >
