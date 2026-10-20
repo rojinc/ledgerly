@@ -15,6 +15,7 @@ import {
   failure,
   fakes,
   group,
+  insert,
   member,
   minutesAgo,
   NOW,
@@ -593,6 +594,44 @@ describe('POST /: the group pass', () => {
     ])
     vi.restoreAllMocks()
     expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 1, failed: 0 })
+    expectPurged(services)
+  })
+})
+
+describe('a group delete and another person’s account deletion that kept a row in it', () => {
+  // Ray's account deletion kept their row in h2 ("Former member", left on their own after
+  // deletedAt) and left its team, and is still under way when Sam deletes h2.
+  async function rayKept(services: Fakes) {
+    await setRow(services, 'persons', 'p3', { deletedAt: CUT_OFF, displayName: 'Former member' })
+    await setRow(services, 'members', 'h2-p3', { displayName: 'Former member' })
+    await insert(services, 'activity', [
+      {
+        $id: 'aRay',
+        groupId: 'h2',
+        actorPersonId: 'p3',
+        action: 'member.left',
+        subjectPersonId: 'p3',
+        summary: 'left',
+        at: CUT_OFF,
+      },
+    ])
+    services.users = new FakeUsers([
+      account(),
+      account({ $id: 'u3', labels: ['deleted'], status: false, sessions: [], $updatedAt: CUT_OFF }),
+    ])
+  }
+
+  it('the rerun leaves the group to the delete, which deletes the kept row and finishes', async () => {
+    const services = world()
+    await rayKept(services)
+    // Under a minute old, so the group pass leaves it: only Ray's rerun runs.
+    await deleting(services, NOW.toISOString())
+    const h2 = leftOf(services, ['h2'])
+    expect(await runJob(services)).toEqual({ finished: 1, users: 0, groups: 0, failed: 0 })
+    expect(services.users.account('u3')).toBeUndefined()
+    // Purging from the kept row too, each purge could delete the other's end row (#446, S2).
+    expect(leftOf(services, ['h2'])).toEqual(h2)
+    expect(await remove(services)).toEqual({ finished: true })
     expectPurged(services)
   })
 })
