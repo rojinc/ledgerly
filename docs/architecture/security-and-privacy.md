@@ -96,7 +96,7 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 | Secret | Lives in | Used by |
 | --- | --- | --- |
 | Appwrite API key (deploy) | GitHub Actions secret per environment | CI deploy |
-| `E2E_APPWRITE_API_KEY` (the dev project, `users.read` and `users.write`) | GitHub Actions secret; for a person the owner gives it to, their own `.env.local` | e2e: creates, verifies and deletes test users ([testing](../engineering/testing.md#end-to-end)). Dev has real users, so it can read and change any of them: it's handled like the deploy key. |
+| `E2E_APPWRITE_API_KEY` (the dev project, `users.read` and `users.write`) | GitHub Actions secret; for a person the owner gives it to, their own `.env.local` | e2e: creates and verifies test users, then labels them `e2e` and blocks them at teardown, for the `account` job to delete, which deletes only a labelled user whose address is a run's test address ([finishing purges](identity-and-invites.md#finishing-purges)). It deletes outright a user it can't label ([testing](../engineering/testing.md#end-to-end)). Dev has real users, so it can read and change any of them: it's handled like the deploy key. |
 | Resend API key | Appwrite project variable `RESEND_API_KEY` | functions |
 | SMS provider keys (M3) | Appwrite project variables | `identity` |
 | Sentry DSN (M4) | Project variable / Vite env | functions, web |
