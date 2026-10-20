@@ -209,6 +209,7 @@ All reports are sums over the user's shares in groups they have joined ([D-016](
 
 - **Edit**: replace the transaction's input. Shares and items are rebuilt and an activity row records before and after. Allowed until the transaction is locked.
 - **Void**: set status `void`, delete shares and keep the row. Allowed until locked.
+- **Who was in it:** for a posted transaction, the activity row that `PATCH /transactions/{id}` or `POST /transactions/{id}/void` writes also records each person's net in it before and after (`changesJson.nets`, [data model](data-model.md#activity)), from the shares the write already reads, so with no extra operation. The receipts route and a merge's voids don't. The hourly [change email](scheduling.md#step-3b-transaction-change-emails) reads it.
 - **Locked**: create an `adjustment` instead. It shows on the next statement.
 - Editing a schedule-generated occurrence sets `overridden = true`. See [Scheduling](scheduling.md).
 

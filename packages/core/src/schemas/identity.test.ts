@@ -93,7 +93,7 @@ describe('updateProfileBodySchema', () => {
   })
 
   it('takes the emails to turn off, each at most once, or [] for none (#431)', () => {
-    const all = ['billDue', 'shiftToConfirm', 'statementReady']
+    const all = ['billDue', 'shiftToConfirm', 'transactionChanged', 'statementReady']
     expect(paths(updateProfileBodySchema, { emailOptOuts: all })).toEqual([])
     expect(paths(updateProfileBodySchema, { emailOptOuts: [] })).toEqual([])
     expect(paths(updateProfileBodySchema, { emailOptOuts: ['timerRunning'] })).toEqual([

@@ -83,10 +83,15 @@ export type HoursCap = z.infer<typeof hoursCapSchema>
 
 /**
  * The emails a user can turn off on Profile (data-model.md#profiles): bill due and shift to
- * confirm (scheduler step 3), and statement ready (the statements job). No other email is in this
- * list.
+ * confirm (scheduler step 3), a transaction someone else changed (step 3b), and statement ready
+ * (the statements job). No other email is in this list.
  */
-export const emailTypeSchema = z.enum(['billDue', 'shiftToConfirm', 'statementReady'])
+export const emailTypeSchema = z.enum([
+  'billDue',
+  'shiftToConfirm',
+  'transactionChanged',
+  'statementReady',
+])
 
 export type EmailType = z.infer<typeof emailTypeSchema>
 
