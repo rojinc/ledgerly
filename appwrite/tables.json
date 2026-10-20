@@ -1027,6 +1027,14 @@
         "default": null
       },
       {
+        "key": "pausedFrom",
+        "type": "varchar",
+        "size": 10,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
         "key": "exdates",
         "type": "varchar",
         "size": 10,

@@ -293,12 +293,13 @@ Permissions: none (server only).
 | `rrule` | varchar(255) | RFC 5545 rule, e.g. `FREQ=WEEKLY;BYDAY=TH` |
 | `startsOn` | varchar(10) | First possible occurrence (local date) |
 | `endsOn` | varchar(10)? | Last possible occurrence. Empty = until stopped. |
+| `pausedFrom` | varchar(10)? | First local date a pause skips: from it on, nothing is made ([pause and resume](scheduling.md#pausing-a-schedule)). Empty = not paused. Only `POST /schedules/{id}/pause` sets it and `/resume` clears it. |
 | `exdates` | varchar(10)[]? | Dates to skip |
 | `skipPublicHolidays` | boolean | Uses the group's `region` |
 | `autoPost` | boolean | Shifts: post after the day ends. Bills: post on the due date (autopay). |
 | `horizonDays` | integer | default 56 |
 | `generatedThrough` | varchar(10)? | Last local date already expanded |
-| `nextRunAt` | datetime? | When the scheduler should next look at it. Empty = finished. |
+| `nextRunAt` | datetime? | When the scheduler should next look at it. Empty = finished, or paused with everything up to the pause made. |
 | `createdBy` | varchar(36) | personId |
 
 Indexes: `idx_nextRunAt (nextRunAt)`, `idx_groupId (groupId)`.

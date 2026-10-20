@@ -263,6 +263,8 @@ Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger.
 | `POST /schedules` | `ScheduleInput` | `{ schedule, created: number }` | admin; house members for their own |
 | `PATCH /schedules/{id}` | `ScheduleInput` (same `id`) | `{ schedule, created, updated, removed }` | creator or admin |
 | `POST /schedules/{id}/end` | `{ endsOn: LocalDate }` | `{ schedule, removed }` | creator or admin |
+| `POST /schedules/{id}/pause` | `{ pausedFrom: LocalDate }` (local today or later) | `{ schedule, removed }` | creator or admin |
+| `POST /schedules/{id}/resume` | none | `{ schedule, created }` | creator or admin; not while the creator has `deletedAt`, nor with a template naming someone who has (`VALIDATION_FAILED`) |
 | `DELETE /schedules/{id}` | none | `{}` | creator or admin; no posted occurrences |
 | `POST /schedules/preview` | `ScheduleInput` without `id` + `{ count?: number }` (1–100, default 10) | `{ dates: LocalDate[], skipped: { date, reason: 'exdate' \| 'holiday' }[] }` | any member; not in an archived group |
 

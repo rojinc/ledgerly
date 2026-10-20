@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import {
   endScheduleBodySchema,
+  pauseScheduleBodySchema,
   previewScheduleBodySchema,
   rruleSchema,
   scheduleInputSchema,
@@ -293,6 +294,22 @@ describe('endScheduleBodySchema', () => {
     expect(paths(endScheduleBodySchema, { endsOn: '2026-12-31' })).toEqual([])
     expect(paths(endScheduleBodySchema, {})).toEqual(['endsOn'])
     expect(paths(endScheduleBodySchema, { endsOn: '1999-12-31' })).toEqual(['endsOn'])
+  })
+})
+
+describe('pauseScheduleBodySchema', () => {
+  it('needs the first day the pause skips, and nothing else', () => {
+    expect(paths(pauseScheduleBodySchema, { pausedFrom: '2026-11-03' })).toEqual([])
+    expect(paths(pauseScheduleBodySchema, {})).toEqual(['pausedFrom'])
+    expect(paths(pauseScheduleBodySchema, { pausedFrom: '2026-11-31' })).toEqual(['pausedFrom'])
+    expect(paths(pauseScheduleBodySchema, { pausedFrom: '1999-12-31' })).toEqual(['pausedFrom'])
+    expect(
+      paths(pauseScheduleBodySchema, { pausedFrom: '2026-11-03', resumesOn: '2026-12-01' }),
+    ).toEqual([''])
+  })
+
+  it('is set only by pause, never by POST or PATCH', () => {
+    expect(paths(scheduleInputSchema, { ...shiftSchedule, pausedFrom: '2026-11-03' })).toEqual([''])
   })
 })
 
