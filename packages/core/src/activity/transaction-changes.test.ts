@@ -272,11 +272,17 @@ describe('transactionChanges', () => {
       totalCents: undefined,
     })
     expect(transactionChanges([byBob, moved], current, personOf).has('bob')).toBe(false)
-    // Alice voids it with P's part in it: Bob was in it when it was voided.
+    // Alice voids one only P's part is in: Bob was in it when it was voided.
     const voided = edit({
       actorPersonId: 'alice',
       voided: true,
-      nets: { before, after: [] },
+      nets: {
+        before: [
+          { personId: 'alice', netCents: 4500 },
+          { personId: 'p', netCents: -4500 },
+        ],
+        after: [],
+      },
       totalCents: undefined,
     })
     expect(transactionChanges([voided], current, personOf).get('bob')?.[0]?.voided).toBe(true)
