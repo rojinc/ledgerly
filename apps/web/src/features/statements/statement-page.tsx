@@ -3,7 +3,7 @@ import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router'
+import { Link, useLocation, useNavigate, useParams } from 'react-router'
 import { useSwap } from '../../lib/use-swap'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
@@ -196,6 +196,20 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
     setDone(message)
     onDone()
   }
+  // A close opens its new draft here from the list (#420): said as a reissue says it. The state
+  // is cleared, so a reload doesn't say it again.
+  const location = useLocation()
+  const navigate = useNavigate()
+  const drafted = (location.state as { drafted?: boolean } | null)?.drafted === true
+  const closed = useRef(false)
+  useEffect(() => {
+    if (!drafted || closed.current) return
+    closed.current = true
+    setRefused('')
+    setDone(`Drafted for ${periodText(row)}. Review it, then finalize it.`)
+    onDone()
+    navigate(location.pathname, { replace: true, state: null })
+  }, [drafted, row, onDone, navigate, location.pathname])
   const refuse = (message: string) => {
     setRefused(message)
     onDone()

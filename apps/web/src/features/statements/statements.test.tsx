@@ -38,6 +38,8 @@ const clientCall = vi.mocked(client.call)
 
 const acme = {
   $id: 'g1',
+  // 10:00 on 1 September in Sydney.
+  $createdAt: '2026-09-01T00:00:00.000Z',
   type: 'employer',
   name: 'Acme',
   currency: 'AUD',
@@ -1733,6 +1735,16 @@ describe('StatementsPage: the period so far, and closing it now (#398)', () => {
       groupId: 'g1',
       periodEnd: '2026-11-05',
     })
+    // The draft says what happened, as a reissue does, with focus on its heading (#420).
+    const note = await screen.findByText(
+      /^Drafted for .+\. Review it, then finalize it\.$/,
+      {},
+      { timeout: 3000 },
+    )
+    expect(note.getAttribute('role')).toBe('status')
+    expect(document.activeElement?.tagName).toBe('H1')
+    // Said once: the state is cleared, so a reload doesn't say it again.
+    expect(router.state.location.state).toBeNull()
   })
 
   it('shows a refused close, and links to the earlier draft when one is unfinished', async () => {
@@ -1834,6 +1846,24 @@ describe('StatementsPage: the period so far, and closing it now (#398)', () => {
       },
     )
     expect(screen.queryByText('Close period now…')).toBeNull()
+  })
+
+  it('starts a no-cycle group’s first close no earlier than the day it was created', async () => {
+    // Created on 1 September in Sydney, with no statement yet (#420).
+    mockGroup('admin', { statementCycle: 'none' })
+    store()
+    answer({ start: '2026-09-01' })
+    renderAt('/groups/g1/statements')
+    fireEvent.click(await screen.findByText('Close period now…', {}, { timeout: 3000 }))
+    const input = screen.getByLabelText('Last day') as HTMLInputElement
+    expect(input.min).toBe('2026-09-01')
+    fireEvent.change(input, { target: { value: '2026-08-31' } })
+    await screen.findByText(
+      `The next one starts on ${formatDate('2026-09-01')}, so pick that day or a later one.`,
+      {},
+      { timeout: 3000 },
+    )
+    expect(call.mock.calls.map(([, , path]) => path)).not.toContain('/statements/close')
   })
 
   it('doesn’t promise a draft at period end to a group with no cycle', async () => {

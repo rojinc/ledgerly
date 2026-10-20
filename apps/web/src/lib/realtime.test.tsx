@@ -433,6 +433,7 @@ describe('staleKeys', () => {
         ['today'],
         ['myShares'],
         ['bills', 'group1'],
+        ['statements', 'group1'],
         ['activity', 'group1'],
       ],
     ]),
@@ -551,7 +552,8 @@ describe('useRealtimeSync', () => {
     act(() => vi.advanceTimersByTime(FLUSH_MS - 1))
     expect(invalidate).not.toHaveBeenCalled()
     act(() => vi.advanceTimersByTime(1))
-    expect(invalidate).toHaveBeenCalledTimes(9)
+    // One per key a transaction event makes stale.
+    expect(invalidate).toHaveBeenCalledTimes(10)
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['transaction', 'tx1'] })
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['calendar'] })
   })
