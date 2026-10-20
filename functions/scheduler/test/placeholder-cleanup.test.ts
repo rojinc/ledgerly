@@ -91,6 +91,70 @@ describe('step 5c: placeholder clean-up', () => {
     expect(services.db.rows('invites').map((row) => row.$id)).toEqual(['vOther'])
   })
 
+  // #388: more invites than one transaction takes (90 writes) go in their own batches first.
+  const oldInvites = (count: number) =>
+    Array.from({ length: count }, (_, index) =>
+      invite(`vMany${1000 + index}`, 'email:iLone@example.com'),
+    )
+
+  it('clears a placeholder with 95 invites to its key, and the one after it, in one run', async () => {
+    const services = seeded({
+      invites: [...oldInvites(95), invite('vOther', 'email:iOther@example.com')],
+    })
+    expect(await cleanUpPlaceholders(services)).toEqual({
+      cleared: 2,
+      kept: 0,
+      skipped: 0,
+      failed: 0,
+    })
+    expect(services.db.rows('invites').map((row) => row.$id)).toEqual(['vOther'])
+    expect(identityIds(services)).toEqual(['iOther'])
+    expect(errors).not.toHaveBeenCalled()
+  })
+
+  it('keeps an invite to its key sent after the cutoff', async () => {
+    const services = seeded({
+      invites: [
+        invite('vOld', 'email:iLone@example.com'),
+        { ...invite('vNew', 'email:iLone@example.com'), sentAt: ago(29 * DAY) },
+      ],
+    })
+    expect((await cleanUpPlaceholders(services)).cleared).toBe(2)
+    expect(services.db.rows('invites').map((row) => row.$id)).toEqual(['vNew'])
+  })
+
+  it('skips a placeholder when a race deletes one of its invites first, and the next run clears it', async () => {
+    const services = seeded({ invites: oldInvites(95) })
+    // Another run's step 5b or 5c deleted one invite of the second batch just before it staged.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('vMany1094'),
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'invites', rowId: 'vMany1093' }),
+        ),
+    )
+    expect(await cleanUpPlaceholders(services)).toEqual({
+      cleared: 1,
+      kept: 0,
+      skipped: 1,
+      failed: 0,
+    })
+    expect(personOf(services, 'pLone')).toMatchObject({ orphanedAt: ago(30 * DAY) })
+    vi.restoreAllMocks()
+    expect(await cleanUpPlaceholders(services)).toEqual({
+      cleared: 1,
+      kept: 0,
+      skipped: 0,
+      failed: 0,
+    })
+    expect(services.db.rows('invites')).toEqual([])
+    expect(personOf(services, 'pLone')).toMatchObject({
+      displayName: 'Former member',
+      orphanedAt: null,
+    })
+  })
+
   it('clears a lone placeholder 30 days after its last member row went, and keeps its row', async () => {
     const services = seeded()
     expect(await cleanUpPlaceholders(services)).toEqual({

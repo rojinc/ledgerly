@@ -1,4 +1,11 @@
-import { addDays, type DateRange, daysBetween, endOfMonth, type LocalDate } from './local-date'
+import {
+  addDays,
+  compareDates,
+  type DateRange,
+  daysBetween,
+  endOfMonth,
+  type LocalDate,
+} from './local-date'
 
 /** Statement cycles that have periods (`none` has none). */
 export type PeriodCycle = 'weekly' | 'fortnightly' | 'monthly'
@@ -21,4 +28,18 @@ export function periodFor(
   const length = cycle === 'weekly' ? 7 : 14
   const start = addDays(anchor, Math.floor(daysBetween(anchor, date) / length) * length)
   return { start, end: addDays(start, length - 1) }
+}
+
+/**
+ * The end of the period a close worked out from `from` waits for (statements.md#periods): the
+ * period that contains `from`, or, for a weekly or fortnightly cycle whose anchor is later, the
+ * anchor's first period, so nothing closes before the first real period (#405).
+ */
+export function firstPeriodEnd(
+  cycle: PeriodCycle,
+  anchor: LocalDate | null,
+  from: LocalDate,
+): LocalDate {
+  const later = cycle !== 'monthly' && anchor !== null && compareDates(anchor, from) > 0
+  return periodFor(cycle, anchor, later ? anchor : from).end
 }

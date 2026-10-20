@@ -2,7 +2,7 @@ import type { Identities, Invites, Persons } from '@ledgerly/core/generated/rows
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows, pages } from '@ledgerly/server/appwrite/pages'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
-import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Write, withTransaction, writeInBatches } from '@ledgerly/server/appwrite/transaction'
 import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import {
@@ -62,52 +62,56 @@ export async function cleanUpPlaceholders(services: Services): Promise<Placehold
 }
 
 /**
- * One person (step 2): decide from the stored rows, stage, then read them again and roll back
- * (Raced) if the answer or `orphanedAt` changed. An add, a claim, a merge's step 1, an invite
- * and a removal each write the person row, so one that commits after the staging fails this
- * commit. A person whose `orphanedAt` a removal has set again since it was listed, or another run
- * has cleared, is skipped with nothing written: it isn't due.
+ * One person (step 2): decide from the stored rows; for a lone placeholder, delete the invites to
+ * its keys first, in their own batches (#388); then stage the person's write and its identities'
+ * deletes, read the stored rows again and roll back (Raced) if the answer or `orphanedAt` changed.
+ * An add, a claim, a merge's step 1, an invite and a removal each write the person row, so one
+ * that commits after the staging fails this commit. A person whose `orphanedAt` a removal has set
+ * again since it was listed, or another run has cleared, is skipped with nothing written: it
+ * isn't due.
  */
 async function clear(
   db: Db,
   personId: string,
   cutoff: number,
 ): Promise<'cleared' | 'kept' | 'skipped'> {
+  const before = await decide(db, personId)
+  if (before.orphanedAt === null || Date.parse(before.orphanedAt) > cutoff) return 'skipped'
+  // idx_personId
+  const identities = before.lone
+    ? await allRows<Identities>(db, TABLES.identities, [Query.equal('personId', personId)])
+    : []
+  if (identities.length > 0) {
+    // idx_identity_sentAt. Every invite to its keys is this old (a person with no member row
+    // can't be invited), so deleting them changes no rate limit, and step 5b would delete them
+    // anyway. Apart from the person's own transaction, so however many there are, that one stays
+    // small and can't fail every run. One a race deleted first fails its batch with a 409.
+    const invites = await allRows<Invites>(db, TABLES.invites, [
+      Query.equal(
+        'identityKey',
+        identities.map(({ key }) => key),
+      ),
+      Query.lessThanEqual('sentAt', new Date(cutoff).toISOString()),
+    ])
+    await writeInBatches(
+      db,
+      invites.map(({ $id }) => remove(TABLES.invites, $id)),
+    )
+  }
   return withTransaction(db, async (tx) => {
-    const before = await decide(db, personId)
-    if (before.orphanedAt === null || Date.parse(before.orphanedAt) > cutoff) return 'skipped'
-    await tx.write({
-      action: 'update',
-      tableId: TABLES.persons,
-      rowId: personId,
-      data: {
-        orphanedAt: null,
-        rev: randomId(),
-        ...(before.lone ? { displayName: FORMER_MEMBER } : {}),
+    await tx.write(
+      {
+        action: 'update',
+        tableId: TABLES.persons,
+        rowId: personId,
+        data: {
+          orphanedAt: null,
+          rev: randomId(),
+          ...(before.lone ? { displayName: FORMER_MEMBER } : {}),
+        },
       },
-    })
-    if (before.lone) {
-      // idx_personId
-      const identities = await allRows<Identities>(db, TABLES.identities, [
-        Query.equal('personId', personId),
-      ])
-      // idx_identity_sentAt. Each is 30 days old or more by now (a person with no member row
-      // can't be invited), so deleting them changes no rate limit.
-      const invites =
-        identities.length > 0
-          ? await allRows<Invites>(db, TABLES.invites, [
-              Query.equal(
-                'identityKey',
-                identities.map(({ key }) => key),
-              ),
-            ])
-          : []
-      const deletes = [
-        ...identities.map(({ $id }) => remove(TABLES.identities, $id)),
-        ...invites.map(({ $id }) => remove(TABLES.invites, $id)),
-      ]
-      if (deletes.length > 0) await tx.write(...deletes)
-    }
+      ...identities.map(({ $id }) => remove(TABLES.identities, $id)),
+    )
     // Stage, then check (ledger.md#concurrency): the stored rows, not this transaction's view.
     const after = await decide(db, personId)
     if (after.orphanedAt !== before.orphanedAt || after.lone !== before.lone) throw new Raced()

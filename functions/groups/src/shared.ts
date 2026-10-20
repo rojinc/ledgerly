@@ -1,5 +1,5 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
-import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
+import { firstPeriodEnd, type PeriodCycle } from '@ledgerly/core/dates/periods'
 import { closeAtFor, localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Members, Persons, Shares } from '@ledgerly/core/generated/rows'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
@@ -159,9 +159,7 @@ export function nextCloseAtFor(
   now: Date,
 ): string | null {
   if (cycle === 'none') return null
-  const todayHere = localToday(timeZone, now)
-  const from = cycle !== 'monthly' && anchor !== null && anchor > todayHere ? anchor : todayHere
-  return closeAtFor(periodFor(cycle, anchor, from).end, timeZone)
+  return closeAtFor(firstPeriodEnd(cycle, anchor, localToday(timeZone, now)), timeZone)
 }
 
 /** Read access for the group's team: every row of a group carries it (permissions.md). */

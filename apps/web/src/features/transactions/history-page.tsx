@@ -1,14 +1,17 @@
 import { CATEGORIES } from '@ledgerly/core/constants/categories'
+import { TRANSACTION_KINDS } from '@ledgerly/core/constants/domain'
 import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
+import { KINDS_BY_GROUP } from '@ledgerly/core/ledger/build-shares'
 import { formatMoney, formatNet } from '@ledgerly/core/money/format'
-import type { ReactNode } from 'react'
+import { type ReactNode, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
+import { GroupName, useSortedByName } from '../groups/use-group-name'
 import { useBalances, useGroups, useMyMember } from '../groups/use-groups'
 import { type HistoryFilters, useHistory, useMembers } from './use-transactions'
 
@@ -30,9 +33,13 @@ export const STATUS_LABEL: Record<Transactions['status'], string> = {
   void: 'Void',
 }
 
-// The kinds an employer and a personal group have (ledger.md#transaction-kinds).
-const EMPLOYER_KINDS: Transactions['kind'][] = ['shift', 'expense', 'payment', 'adjustment']
-const PERSONAL_KINDS: Transactions['kind'][] = ['expense', 'bill', 'income', 'adjustment']
+// Where each group type adds entries: an employer's link is in its summary, and a pair records
+// them on its own page.
+const ADD: Partial<Record<Groups['type'], { label: string; path: string }>> = {
+  house: { label: 'Add expense', path: '/transactions/new?groupId=' },
+  pair: { label: 'Record money lent or borrowed', path: '/people/' },
+  personal: { label: 'Add income or expense', path: '/transactions/new?groupId=' },
+}
 
 const ADD_LINK =
   'inline-flex h-10 items-center self-start rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground outline-none hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2'
@@ -49,31 +56,46 @@ function Message({ children, alert = false }: { children: ReactNode; alert?: boo
 }
 
 /**
- * `/transactions?groupId=`: an employer group's balance and history (#31), or the personal
- * group's history (#402), filtered by kind, dates and category. Archived groups stay readable.
+ * `/transactions?groupId=`: every group's history (All groups, F-71), or one group's: an
+ * employer's with its balance (#31), any other with its Add link. Filtered by kind, category,
+ * dates and description, and in one group by person. Archived groups stay readable.
  */
 export function HistoryPage() {
   const groups = useGroups()
+  const sorted = useSortedByName(groups.data ?? [])
   const [params, setParams] = useSearchParams()
-  // Employers first, so History still opens on one when there is one.
-  const shown = groups.data && [
-    ...groups.data.filter((group) => group.type === 'employer'),
-    ...groups.data.filter((group) => group.type === 'personal'),
-  ]
-  const group = shown?.find((g) => g.$id === params.get('groupId')) ?? shown?.[0]
-  const kinds = group?.type === 'personal' ? PERSONAL_KINDS : EMPLOYER_KINDS
+  // No ?groupId=, or one that isn't the user's: All groups.
+  const group = sorted.find((g) => g.$id === params.get('groupId'))
+  const members = useMembers(group?.$id ?? '')
+  // The kinds the picked group's type allows (ledger.md#transaction-kinds), or every kind.
+  const kinds = group ? KINDS_BY_GROUP[group.type] : TRANSACTION_KINDS
 
   // The filters live in the URL, so a refresh or a shared link keeps them.
   // A hand-edited link with an unknown kind or category is ignored, not sent to Appwrite.
   const kind = kinds.find((k) => k === params.get('kind'))
   const category = CATEGORIES.find((c) => c === params.get('category'))
+  const q = params.get('q')?.trim() ?? ''
+  // A person is one of the group's members: none under All groups, and none in the personal
+  // group, whose owner is its only member.
+  const byPerson = group !== undefined && group.type !== 'personal'
+  const person = byPerson
+    ? members.data?.find((m) => m.personId === params.get('person'))
+    : undefined
   const filters: HistoryFilters = {
     ...(kind ? { kind } : {}),
     ...(category ? { category } : {}),
     // A hand-edited link with a date that isn't one is ignored too.
     ...(isLocalDate(params.get('from')) ? { from: params.get('from') as string } : {}),
     ...(isLocalDate(params.get('to')) ? { to: params.get('to') as string } : {}),
+    ...(q ? { q } : {}),
+    ...(person ? { personId: person.personId } : {}),
   }
+  // Until the members are known, the link's person can't be checked: wait, rather than list
+  // everyone's rows first.
+  const checkingPerson = Boolean(byPerson && params.get('person') && members.isPending)
+  // What's typed, spaces and all; the URL keeps it trimmed. A link that changes ?q= wins.
+  const [typed, setTyped] = useState(q)
+  const search = typed.trim() === q ? typed : q
   function setParam(name: string, value: string) {
     const next = new URLSearchParams(params)
     if (value === '') next.delete(name)
@@ -81,51 +103,87 @@ export function HistoryPage() {
     setParams(next, { replace: true })
   }
 
+  // A person is one group's, and a kind may not be the next group's, so neither carries over.
+  function pickGroup(id: string) {
+    const next = new URLSearchParams(params)
+    if (id === '') next.delete('groupId')
+    else next.set('groupId', id)
+    next.delete('person')
+    const picked = sorted.find((g) => g.$id === id)
+    const allowed = picked ? KINDS_BY_GROUP[picked.type] : TRANSACTION_KINDS
+    if (!allowed.some((k) => k === next.get('kind'))) next.delete('kind')
+    setParams(next, { replace: true })
+  }
+
   let content: ReactNode
-  if (!shown) {
-    content =
-      groups.isError && !groups.data ? (
-        <Message alert>We couldn’t load your groups. Reload the page to try again.</Message>
-      ) : (
-        <Message>Loading…</Message>
-      )
-  } else if (!group) {
+  if (!groups.data) {
+    content = groups.isError ? (
+      <Message alert>We couldn’t load your groups. Reload the page to try again.</Message>
+    ) : (
+      <Message>Loading…</Message>
+    )
+  } else if (sorted.length === 0) {
     content = (
       <Message>
-        Add an employer first:{' '}
-        <Link to="/groups/new-employer" className="underline underline-offset-4">
-          New employer
+        You aren’t in any group yet. Start one from{' '}
+        <Link to="/groups" className="underline underline-offset-4">
+          Groups
         </Link>
+        .
       </Message>
     )
   } else {
     content = (
       <>
-        {shown.length > 1 && (
-          <SelectField
-            id="historyGroup"
-            label="Group"
-            value={group.$id}
-            onChange={(event) => setParam('groupId', event.target.value)}
-          >
-            {shown.map((g) => (
-              <option key={g.$id} value={g.$id}>
-                {g.name}
-                {g.archivedAt ? ' (archived)' : ''}
-              </option>
-            ))}
-          </SelectField>
-        )}
-        {group.type === 'personal' ? (
-          // Only its owner is in a personal group, and it has no balance with anyone.
-          <Link to={`/transactions/new?groupId=${group.$id}`} className={ADD_LINK}>
-            Add income or expense
-          </Link>
-        ) : (
-          <GroupSummary group={group} />
-        )}
+        <SelectField
+          id="historyGroup"
+          label="Group"
+          value={group?.$id ?? ''}
+          onChange={(event) => pickGroup(event.target.value)}
+        >
+          <option value="">All groups</option>
+          {sorted.map((g) => (
+            <option key={g.$id} value={g.$id}>
+              <GroupName group={g} />
+              {g.archivedAt ? ' (archived)' : ''}
+            </option>
+          ))}
+        </SelectField>
+        {group &&
+          (group.type === 'employer' ? <GroupSummary group={group} /> : <AddLink group={group} />)}
         <fieldset className="grid grid-cols-2 gap-3 sm:grid-cols-4">
           <legend className="sr-only">Filters</legend>
+          <div className="col-span-2 sm:col-span-4">
+            <TextField
+              id="filterSearch"
+              type="search"
+              label="Search descriptions"
+              value={search}
+              onChange={(event) => {
+                setTyped(event.target.value)
+                setParam('q', event.target.value.trim())
+              }}
+            />
+          </div>
+          {byPerson && (
+            <div className="col-span-2 sm:col-span-1">
+              <SelectField
+                id="filterPerson"
+                label="Person"
+                value={person?.personId ?? ''}
+                onChange={(event) => setParam('person', event.target.value)}
+              >
+                <option value="">Everyone</option>
+                {[...(members.data ?? [])]
+                  .sort((a, b) => a.displayName.localeCompare(b.displayName))
+                  .map((member) => (
+                    <option key={member.personId} value={member.personId}>
+                      {member.displayName}
+                    </option>
+                  ))}
+              </SelectField>
+            </div>
+          )}
           <SelectField
             id="filterKind"
             label="Kind"
@@ -168,7 +226,11 @@ export function HistoryPage() {
             onChange={(event) => setParam('to', event.target.value)}
           />
         </fieldset>
-        <History group={group} filters={filters} />
+        {checkingPerson ? (
+          <Message>Loading…</Message>
+        ) : (
+          <History group={group} groups={groups.data} filters={filters} />
+        )}
       </>
     )
   }
@@ -240,8 +302,37 @@ function GroupSummary({ group }: { group: Groups }) {
   )
 }
 
-function History({ group, filters }: { group: Groups; filters: HistoryFilters }) {
-  const history = useHistory(group.$id, filters)
+/**
+ * A house's, a pair's or the personal group's add link, for its admins and members
+ * (permissions.md). An archived group takes no entries.
+ */
+function AddLink({ group }: { group: Groups }) {
+  const userId = useCurrentUser().data?.$id ?? ''
+  const personId = useBootstrap(userId).data?.personId ?? ''
+  const role = useMyMember(group.$id, personId).data?.role
+  const add = ADD[group.type]
+  if (group.archivedAt) return <Message>{ARCHIVED_NOTICE}</Message>
+  if (!add || (role !== 'admin' && role !== 'member')) return null
+  return (
+    <Link to={`${add.path}${group.$id}`} className={ADD_LINK}>
+      {add.label}
+    </Link>
+  )
+}
+
+/** One group's history, or with no `group` every group's, each row naming its group. */
+function History({
+  group,
+  groups,
+  filters,
+}: {
+  group?: Groups
+  /** Every group the user is in. */
+  groups: Groups[]
+  filters: HistoryFilters
+}) {
+  const history = useHistory(group?.$id ?? groups.map((g) => g.$id), filters)
+  const byId = new Map(groups.map((g) => [g.$id, g]))
   if (!history.data) {
     return history.isError ? (
       <div className="flex flex-col items-start gap-3">
@@ -261,33 +352,48 @@ function History({ group, filters }: { group: Groups; filters: HistoryFilters })
         Transactions
       </h2>
       {rows.length === 0 ? (
-        <p className="text-muted-foreground">Nothing here yet.</p>
+        <p className="text-muted-foreground">
+          {/* A person's page of shares can match none of the other filters, with more after it. */}
+          {history.hasNextPage
+            ? 'None of the latest entries match. Load more to look further back.'
+            : 'Nothing here yet.'}
+        </p>
       ) : (
         <ul className="divide-y divide-border rounded-md border border-border">
-          {rows.map((row) => (
-            <li key={row.$id}>
-              <Link
-                to={`/transactions/${row.$id}`}
-                className="flex items-center justify-between gap-3 px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
-              >
-                <span className="min-w-0">
-                  <span
-                    className={`block truncate font-medium ${row.status === 'void' ? 'line-through' : ''}`}
-                  >
-                    {row.description}
+          {rows.map((row) => {
+            // The query reads only these groups.
+            const rowGroup = byId.get(row.groupId) as Groups
+            return (
+              <li key={row.$id}>
+                <Link
+                  to={`/transactions/${row.$id}`}
+                  className="flex items-center justify-between gap-3 px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                >
+                  <span className="min-w-0">
+                    <span
+                      className={`block truncate font-medium ${row.status === 'void' ? 'line-through' : ''}`}
+                    >
+                      {row.description}
+                    </span>
+                    <span className="block truncate text-sm text-muted-foreground">
+                      {row.date} · {KIND_LABEL[row.kind]} · {STATUS_LABEL[row.status]}
+                    </span>
+                    {/* A line of its own, so the status still fits at 375 px. */}
+                    {!group && (
+                      <span className="block truncate text-sm text-muted-foreground">
+                        <GroupName group={rowGroup} />
+                      </span>
+                    )}
                   </span>
-                  <span className="block truncate text-sm text-muted-foreground">
-                    {row.date} · {KIND_LABEL[row.kind]} · {STATUS_LABEL[row.status]}
-                  </span>
-                </span>
-                {row.status !== 'running' && (
-                  <span className="shrink-0 tabular-nums">
-                    {formatMoney(row.totalCents, group.currency)}
-                  </span>
-                )}
-              </Link>
-            </li>
-          ))}
+                  {row.status !== 'running' && (
+                    <span className="shrink-0 tabular-nums">
+                      {formatMoney(row.totalCents, rowGroup.currency)}
+                    </span>
+                  )}
+                </Link>
+              </li>
+            )
+          })}
         </ul>
       )}
       {history.isFetchNextPageError && <Message alert>We couldn’t load more. Try again.</Message>}

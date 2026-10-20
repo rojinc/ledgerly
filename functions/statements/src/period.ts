@@ -4,7 +4,7 @@ import {
   type DateRange,
   type LocalDate,
 } from '@ledgerly/core/dates/local-date'
-import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
+import { firstPeriodEnd, type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
 import { closeAtFor, localToday, periodEndClosedAt } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Statements, Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
@@ -124,5 +124,6 @@ export function jobPeriodEnd(group: Groups): LocalDate | null {
 export function closeAfter(group: Groups, periodEnd: LocalDate): string | null {
   if (group.statementCycle === 'none') return null
   const { cycle, anchor } = cycleOf(group)
-  return closeAtFor(periodFor(cycle, anchor, addDays(periodEnd, 1)).end, group.timezone)
+  // A future anchor's first period, not a stub before it (statements.md#periods, #405).
+  return closeAtFor(firstPeriodEnd(cycle, anchor, addDays(periodEnd, 1)), group.timezone)
 }
