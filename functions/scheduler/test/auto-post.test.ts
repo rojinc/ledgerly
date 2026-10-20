@@ -95,7 +95,7 @@ function sharesOf(services: Fakes, transactionId: string): Shares[] {
 
 function update(
   services: Fakes,
-  tableId: 'transactions' | 'groups' | 'schedules' | 'members',
+  tableId: 'transactions' | 'groups' | 'schedules' | 'members' | 'persons',
   rowId: string,
   data: object,
 ) {
@@ -256,6 +256,65 @@ describe('step 2: auto-post', () => {
     })
     expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
     expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('leaves an expense its creator would pay once they have deleted their account', async () => {
+    // Before the deletion reaches the group: Alex's member row is still active. The split names
+    // Alex, so only this check keeps Alex from paying.
+    const services = seeded()
+    await create(services, groceries, 'u2')
+    await update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' })
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('doesn’t post an expense its creator would pay if they delete their account just before its guard', async () => {
+    const services = seeded()
+    await create(services, groceries, 'u2')
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, id).status).toBe('scheduled')
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('is refused by the ledger when the creator it would pay deletes their account just before its guard', async () => {
+    // The split leaves Alex out, so only the payer it fills in would name Alex, and a filled-in
+    // payer is never kept (functions-api.md#ledger).
+    const services = seeded()
+    const forSam = {
+      ...groceries,
+      template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, forSam, 'u2')
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 1 })
+    expect(row(services, id).status).toBe('scheduled')
+  })
+
+  it('is refused too when the default split leaves out the creator it would pay', async () => {
+    // Alex joined on the 13th, so the default split on the 12th is Sam's alone. The occurrence
+    // was made before the deletion, but the payer it fills in still isn't kept (#337 re-check).
+    const services = seeded()
+    await create(services, { ...groceries, template: { totalCents: 6_000 } }, 'u2')
+    await update(services, 'members', 'elm-pAlex', { joinedOn: '2026-10-13' })
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 1 })
+    expect(row(services, id).status).toBe('scheduled')
   })
 
   it('doesn’t post an expense its creator would pay if they move out just before its guard', async () => {

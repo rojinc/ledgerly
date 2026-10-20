@@ -33,11 +33,15 @@ export type LogEvent =
   | 'merge_left_locked_transaction'
   | 'merge_left_schedule'
   | 'merge_left_stray_row'
+  | 'merge_left_subjects'
   | 'merge_typed_keys_deleted'
   | 'merge_finished'
   | 'merge_carries_on'
   | 'merge_stopped_into_deleted'
   | 'merge_stopped'
+  | 'merge_run_failed'
+  | 'merge_walk_cut_off'
+  | 'merge_run'
 
 /**
  * How each event is written. Most are problems, written with `console.error`: until alerting
@@ -51,6 +55,7 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_finished: 'log',
   merge_carries_on: 'log',
   merge_stopped_into_deleted: 'log',
+  merge_run: 'log',
   claim_identity_unusable: 'warn',
   nightly_check_cut_off: 'warn',
   pdf_characters_replaced: 'warn',
@@ -58,7 +63,9 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_left_locked_transaction: 'warn',
   merge_left_schedule: 'warn',
   merge_left_stray_row: 'warn',
+  merge_left_subjects: 'warn',
   merge_stopped: 'warn',
+  merge_walk_cut_off: 'warn',
 }
 
 /** What the password notice did (identity-and-invites.md#password-notice). */
@@ -76,16 +83,26 @@ export type ChangeNoticeOutcome =
   | 'mismatch'
   | 'failed'
 
-/** What a merge moved or left (identity-and-invites.md#merging-two-persons), each a count. */
+/**
+ * What a merge moved or left (identity-and-invites.md#merging-two-persons), and what the hourly
+ * run found (#finishing-merges): merges, and the merged persons it read. Each a count.
+ */
 const COUNTS = [
   'groupsJoined',
   'inputs',
   'voided',
   'shares',
+  'subjects',
   'reminders',
   'leftAsTheyAre',
   'identities',
   'groupsPutOff',
+  'unfinished',
+  'finished',
+  'skipped',
+  'cutOff',
+  'stopped',
+  'personsRead',
 ] as const
 export type LogCount = (typeof COUNTS)[number]
 
