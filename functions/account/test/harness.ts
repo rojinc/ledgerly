@@ -404,6 +404,27 @@ export function beforeCommit(db: FakeDb, change: () => Promise<unknown>) {
   })
 }
 
+/** Runs `change` just before the commit of the first transaction whose writes include `text`. */
+export function beforeCommitOf(services: Fakes, text: string, change: () => Promise<unknown>) {
+  const stage = services.db.createOperations.bind(services.db)
+  const commit = services.db.updateTransaction.bind(services.db)
+  let target: string | undefined
+  let done = false
+  vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+    if (target === undefined && JSON.stringify(params.operations).includes(text)) {
+      target = params.transactionId
+    }
+    return stage(params)
+  })
+  vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+    if (!done && params.commit && params.transactionId === target) {
+      done = true
+      await change()
+    }
+    return commit(params)
+  })
+}
+
 export function setRow(services: Fakes, tableId: TableId, rowId: string, data: object) {
   return withTransaction(services.db, (tx) =>
     tx.write({ action: 'update', tableId, rowId, data: { ...data } }),

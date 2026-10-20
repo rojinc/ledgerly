@@ -27,9 +27,10 @@ type Refusal = { message: string; groupIds?: string[]; signIn?: boolean }
 
 /**
  * When a sign-in detail changed at `passwordUpdate` is old enough to delete, in words. A time not
- * in the future (a change made on another device since) gets the general wording.
+ * in the future (a change made on another device since) gets the general wording. The group
+ * delete screen says it too.
  */
-function tryAgainAt(passwordUpdate: string | undefined): string {
+export function tryAgainAt(passwordUpdate: string | undefined): string {
   const changed = passwordUpdate ? Date.parse(passwordUpdate) : Number.NaN
   const at = changed + RECENT_PASSWORD_CHANGE_HOURS * 60 * 60 * 1000
   if (Number.isNaN(changed) || at <= Date.now()) {
@@ -70,7 +71,7 @@ export function refusalOf(error: Err['error'], passwordUpdate?: string): Refusal
 }
 
 /** Ends this device's session: false when that failed for any reason but its being gone already. */
-async function endSession(): Promise<boolean> {
+export async function endSession(): Promise<boolean> {
   try {
     await account.deleteSession({ sessionId: 'current' })
     return true
