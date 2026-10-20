@@ -1,7 +1,7 @@
 import type { Schedules } from '@ledgerly/core/generated/rows'
 import { parseMoney } from '@ledgerly/core/money/format'
 import { transactionTemplateSchema } from '@ledgerly/core/schemas/ledger'
-import type { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
+import { type ScheduleInput, scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
 import type { z } from 'zod'
 import { centsToText } from '../groups/employer-form'
 import { hoursText, parseHours } from '../shifts/shift-values'
@@ -87,4 +87,32 @@ export function fromSchedule(schedule: Schedules, currency: string): ScheduleVal
     skipPublicHolidays: schedule.skipPublicHolidays,
     autoPost: schedule.autoPost,
   }
+}
+
+/** What a stored schedule has that the form doesn't show, which a save keeps as it was. */
+export function keptOf(schedule: Schedules): {
+  endsOn?: string
+  exdates?: string[]
+  horizonDays: number
+} {
+  return {
+    ...(schedule.endsOn ? { endsOn: schedule.endsOn } : {}),
+    ...(schedule.exdates?.length ? { exdates: schedule.exdates } : {}),
+    horizonDays: schedule.horizonDays,
+  }
+}
+
+/**
+ * The stored schedule's input as its edit form would save it untouched, checked by the same
+ * schema, for Restart (scheduling.md#step-1-expand-due-schedules). Undefined when the form can't
+ * show it (`fromSchedule`), as it can't change it either.
+ */
+export function storedInput(schedule: Schedules, currency: string): ScheduleInput | undefined {
+  const values = fromSchedule(schedule, currency)
+  if (!values) return undefined
+  const ids = { id: schedule.$id, groupId: schedule.groupId }
+  const input = scheduleInputSchema.safeParse(
+    toScheduleInput(values, ids, currency, keptOf(schedule)),
+  )
+  return input.success ? input.data : undefined
 }

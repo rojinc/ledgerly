@@ -26,13 +26,26 @@ export const statementCycleSchema = z.enum(['none', 'weekly', 'fortnightly', 'mo
 
 /** `groups.settingsJson` */
 export const groupSettingsSchema = z.discriminatedUnion('type', [
-  z.strictObject({
-    type: z.literal('employer'),
-    defaultRateCents: rateCentsSchema,
-    paymentTermsDays: z.int().min(0).max(MAX_PAYMENT_TERMS_DAYS),
-    autoFinalize: z.boolean(),
-    recipients: z.array(emailSchema).max(MAX_RECIPIENTS), // billing emails
-  }),
+  z
+    .strictObject({
+      type: z.literal('employer'),
+      defaultRateCents: rateCentsSchema,
+      paymentTermsDays: z.int().min(0).max(MAX_PAYMENT_TERMS_DAYS),
+      autoFinalize: z.boolean(),
+      // The job emails what it auto-finalizes to `recipients` (statements.md#auto-send).
+      // Missing is off, so settings stored before it still pass.
+      autoSend: z.boolean().optional(),
+      recipients: z.array(emailSchema).max(MAX_RECIPIENTS), // billing emails
+    })
+    .superRefine((settings, ctx) => {
+      if (settings.autoSend && !(settings.autoFinalize && settings.recipients.length > 0)) {
+        ctx.addIssue({
+          code: 'custom',
+          message: 'Needs autoFinalize and a billing email',
+          path: ['autoSend'],
+        })
+      }
+    }),
   z.strictObject({
     type: z.literal('house'),
     autoFinalize: z.boolean(),

@@ -38,7 +38,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-26 | Expenses with presets: *I paid for them* (they owe you), *bought on their card for work* (shown for information only), *personal purchase on their card or a cash advance* (deducted from what they owe). | M1 |
 | F-27 | Record payments received. | M1 |
 | F-28 | Balance: what the employer owes you right now. | M1 |
-| F-29 | Invoices on a weekly, fortnightly or monthly cycle, or none. A draft is created at the end of each period, or whenever an admin closes the period now; you review it, then finalize and email the PDF. Optional auto-finalize of the period-end draft, which doesn't send it (auto-send is post-launch, [#404](https://github.com/rojinc/ledgerly/issues/404)). Numbering such as `INV-0001` per user. Payment terms. | M1 |
+| F-29 | Invoices on a weekly, fortnightly or monthly cycle, or none. A draft is created at the end of each period, or whenever an admin closes the period now; you review it, then finalize and email the PDF. Optional auto-finalize of the period-end draft, and with it an optional auto-send to the billing emails (post-launch, [#432](https://github.com/rojinc/ledgerly/issues/432)). Numbering such as `INV-0001` per user. Payment terms. | M1 |
 | F-30 | Rate changes only affect future shifts. Past shifts keep their rate. | M1 |
 
 ## House

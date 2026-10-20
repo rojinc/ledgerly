@@ -275,6 +275,7 @@ export type Statements = Models.Row & {
     pdfFileId: string | null;
     sentAt: string | null;
     finalizedBy: string | null;
+    autoSendUntil: string | null;
 }
 
 export type Activity = Models.Row & {

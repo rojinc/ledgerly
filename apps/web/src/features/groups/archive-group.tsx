@@ -1,6 +1,6 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { useEffect, useId, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { callFunction, type Err } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
@@ -9,6 +9,9 @@ import { useCurrentUser } from '../auth/use-current-user'
 
 /** Shown on every page of an archived group (#37). */
 export const ARCHIVED_NOTICE = 'This group is archived. You can see its history but not change it.'
+
+/** The page's news once an admin has unarchived the group (#428). */
+export const UNARCHIVED_NEWS = 'This group is unarchived, so it can be changed again.'
 
 /**
  * A write's error in plain words: `ARCHIVED` from an old tab says what happened, not the raw
@@ -22,8 +25,8 @@ export function writeErrorMessage(error: Err['error']): string {
 
 /**
  * `groups POST /groups/{id}/archive` behind a confirmation: admins only, never a personal group
- * (functions-api.md#groups). Archiving is permanent in v1. `name` is the group as the page shows
- * it: a pair by its other person, not by its creator's label (#145).
+ * (functions-api.md#groups). An admin can unarchive it again (UnarchiveGroup). `name` is the
+ * group as the page shows it: a pair by its other person, not by its creator's label (#145).
  */
 export function ArchiveGroup({
   group,
@@ -78,26 +81,116 @@ export function ArchiveGroup({
         Archive group
       </Button>
       {open && (
-        <ConfirmArchive
-          name={name}
+        <Confirm
+          title={`Archive ${name}?`}
+          action="Archive group"
+          pendingAction="Archiving…"
           pending={archive.isPending}
           error={archive.error?.message}
           onConfirm={() => archive.mutate()}
           onCancel={close}
-        />
+        >
+          <p>The group becomes read-only. Its schedules, reminders and statements stop.</p>
+          <p>Its history stays, and you can still see it. An admin can unarchive it later.</p>
+        </Confirm>
       )}
     </section>
   )
 }
 
-function ConfirmArchive({
-  name,
+/**
+ * `groups POST /groups/{id}/unarchive` (functions-api.md#groups): the group as stored goes in the
+ * cache, so the page turns writable at once, then `onUnarchived` runs, then the groups list is
+ * read again. A refusal throws the function's message in plain words.
+ */
+export function useUnarchiveGroup(groupId: string, onUnarchived: () => void) {
+  const userId = useCurrentUser().data?.$id ?? ''
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async () => {
+      // The server answers a repeat with the group, so a retry after a lost answer is fine.
+      const result = await callFunction<Groups>('groups', 'POST', `/groups/${groupId}/unarchive`)
+      if (!result.ok) throw new Error(writeErrorMessage(result.error))
+      return result.data
+    },
+    onSuccess: async (unarchived) => {
+      queryClient.setQueryData(queryKeys.group(groupId), unarchived)
+      // Here, not in mutate's own callbacks, which never run once their component is gone: the
+      // button goes as the page turns writable.
+      onUnarchived()
+      await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
+    },
+  })
+}
+
+/**
+ * Unarchive behind a confirmation, for an admin of an archived group (#428), next to its
+ * archived notice; the page decides who sees it. `onUnarchived` says so on the page and moves
+ * focus there, since the button goes. `name` as for ArchiveGroup.
+ */
+export function UnarchiveGroup({
+  group,
+  name = group.name,
+  onUnarchived,
+}: {
+  group: Groups
+  name?: string
+  onUnarchived: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const unarchive = useUnarchiveGroup(group.$id, () => {
+    // The modal must be gone first, as the page behind it is inert until then.
+    flushSync(() => setOpen(false))
+    onUnarchived()
+  })
+
+  function close() {
+    flushSync(() => setOpen(false))
+    unarchive.reset()
+    trigger.current?.focus()
+  }
+
+  return (
+    <div className="flex flex-col items-start">
+      <Button ref={trigger} variant="outline" onClick={() => setOpen(true)}>
+        Unarchive group
+      </Button>
+      {open && (
+        <Confirm
+          title={`Unarchive ${name}?`}
+          action="Unarchive group"
+          pendingAction="Unarchiving…"
+          pending={unarchive.isPending}
+          error={unarchive.error?.message}
+          onConfirm={() => unarchive.mutate()}
+          onCancel={close}
+        >
+          <p>The group can be changed again. Nothing in its history changes.</p>
+          <p>
+            Schedules stopped while it was archived stay stopped until they’re restarted or changed.
+          </p>
+        </Confirm>
+      )}
+    </div>
+  )
+}
+
+/** A confirmation in a native modal dialog, for archiving and unarchiving. */
+function Confirm({
+  title,
+  children,
+  action,
+  pendingAction,
   pending,
   error,
   onConfirm,
   onCancel,
 }: {
-  name: string
+  title: string
+  children: ReactNode
+  action: string
+  pendingAction: string
   pending: boolean
   error: string | undefined
   onConfirm: () => void
@@ -123,13 +216,13 @@ function ConfirmArchive({
       role="alertdialog"
       aria-labelledby={titleId}
       aria-describedby={textId}
-      // Esc: React decides, so it can wait while archiving; the dialog closes by unmounting.
+      // Esc: React decides, so it can wait while sending; the dialog closes by unmounting.
       onCancel={(event) => {
         event.preventDefault()
         if (!pending) onCancel()
       }}
       // The browser can still close it itself: a second Esc without a click in between can't be
-      // cancelled. Reopen while archiving, so the answer has somewhere to show; else it's a Cancel.
+      // cancelled. Reopen while sending, so the answer has somewhere to show; else it's a Cancel.
       onClose={() => {
         const element = dialog.current
         if (!element || element.open) return
@@ -140,12 +233,10 @@ function ConfirmArchive({
     >
       <div className="flex flex-col gap-4">
         <h2 id={titleId} className="text-lg font-semibold break-words">
-          Archive {name}?
+          {title}
         </h2>
         <div id={textId} className="flex flex-col gap-2 text-sm">
-          <p>The group becomes read-only. Its schedules, reminders and statements stop.</p>
-          <p>Its history stays, and you can still see it.</p>
-          <p className="font-medium">This can’t be undone.</p>
+          {children}
         </div>
         {error && (
           <p role="alert" className="text-sm text-destructive">
@@ -163,7 +254,7 @@ function ConfirmArchive({
             Cancel
           </Button>
           <Button aria-disabled={pending} onClick={() => !pending && onConfirm()}>
-            {pending ? 'Archiving…' : 'Archive group'}
+            {pending ? pendingAction : action}
           </Button>
         </div>
       </div>

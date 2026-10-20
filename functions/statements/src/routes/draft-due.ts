@@ -7,7 +7,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { statementReadyEmail } from '@ledgerly/server/email/templates'
 import { logProblem } from '@ledgerly/server/http/log'
 import { ID, Query } from 'node-appwrite'
-import { joinedAdmins, verifiedEmails } from '../people'
+import { joinedAdmins, optedOut, verifiedEmails } from '../people'
 import { closeAfter, closingPeriodOf } from '../period'
 import type { Services } from '../services'
 import {
@@ -155,14 +155,23 @@ function autoFinalizes(group: Groups): boolean {
   return 'autoFinalize' in settings && settings.autoFinalize
 }
 
-/** "Your October invoice for Acme is ready to review", to every joined admin. Best effort. */
+/**
+ * "Your October invoice for Acme is ready to review", to every joined admin who hasn't turned it
+ * off on Profile. Best effort.
+ */
 async function emailAdmins(
   services: Services,
   group: Groups,
   statementId: string,
   period: { start: LocalDate; end: LocalDate },
 ): Promise<void> {
-  const admins = await joinedAdmins(services.db, group.$id)
+  const joined = await joinedAdmins(services.db, group.$id)
+  const off = await optedOut(
+    services.db,
+    joined.map((admin) => admin.personId),
+    'statementReady',
+  )
+  const admins = joined.filter((admin) => !off.has(admin.personId))
   const emails = await verifiedEmails(
     services.db,
     admins.map((admin) => admin.personId),
@@ -173,6 +182,7 @@ async function emailAdmins(
     periodStart: period.start,
     periodEnd: period.end,
     url: `${services.appUrl}/groups/${group.$id}/statements/${statementId}`,
+    profileUrl: `${services.appUrl}/profile`,
   })
   for (const admin of admins) {
     const to = emails.get(admin.personId)

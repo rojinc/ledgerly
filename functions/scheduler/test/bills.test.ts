@@ -4,7 +4,18 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import type { Email } from '@ledgerly/server/email/send-email'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RunResult } from '../src/routes/run'
-import { beforeStaging, call, type Fakes, fakes, group, member, ok, person } from './harness'
+import {
+  APP_URL,
+  beforeStaging,
+  call,
+  type Fakes,
+  fakes,
+  group,
+  member,
+  ok,
+  person,
+  profile,
+} from './harness'
 
 // 07:30 on Monday 19 October in Sydney (#33's test plan).
 const MORNING = new Date('2026-10-18T20:30:00.000Z')
@@ -12,8 +23,8 @@ const MORNING = new Date('2026-10-18T20:30:00.000Z')
 const NIGHT = new Date('2026-10-18T14:30:00.000Z')
 
 // Elm St, a house: Sam owns it, Kim is an admin whose email isn't verified, Alex is a member and
-// Pat a placeholder admin. Sam also has a personal group.
-function seeded(now: Date, statements: object[] = []) {
+// Pat a placeholder admin. Sam also has a personal group. `profiles` hold the emails turned off.
+function seeded(now: Date, statements: object[] = [], profiles: ReturnType<typeof profile>[] = []) {
   return fakes(
     {
       persons: [
@@ -38,6 +49,7 @@ function seeded(now: Date, statements: object[] = []) {
         member('mine', 'pSam'),
       ],
       statements: statements as { $id: string }[],
+      profiles,
     },
     {
       now,
@@ -362,6 +374,40 @@ describe('step 3: bill due soon', () => {
     expect(sent(services).map((email) => email.to)).toEqual(['sam@example.com'])
   })
 
+  it('leaves out an admin who turned the email off; other admins still get theirs', async () => {
+    const services = seeded(
+      MORNING,
+      [],
+      [
+        profile('u1', 'pSam', ['billDue']),
+        // Other emails turned off don't touch this one.
+        profile('u2', 'pAlex', ['shiftToConfirm', 'statementReady']),
+      ],
+    )
+    await update(services, 'members', 'elm-pAlex', { role: 'admin' })
+    await create(services, rent(21, false))
+    expect((await runCron(services)).reminders).toEqual({ sent: 1, skipped: 0, failed: 0 })
+    expect(sent(services).map((email) => email.to)).toEqual(['alex@example.com'])
+  })
+
+  it('marks it reminded and counts it skipped when every admin turned the email off; autopay still posts it', async () => {
+    const services = seeded(
+      MORNING,
+      [],
+      [profile('u1', 'pSam', ['billDue']), profile('u2', 'pAlex', ['billDue'])],
+    )
+    await update(services, 'members', 'elm-pAlex', { role: 'admin' })
+    // Autopay, due in 2 days.
+    await create(services, rent(21, true))
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 1, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
+    expect(row(services, occurrence(21)).remindedAt).not.toBeNull()
+    // 07:30 on Wednesday 21 October in Sydney.
+    services.now = new Date('2026-10-20T20:30:00.000Z')
+    expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
+    expect(row(services, occurrence(21)).status).toBe('posted')
+  })
+
   it('sends the amount as it is when the reminder is marked, not as the page read it', async () => {
     const services = seeded(MORNING)
     await create(services, rent(21, false))
@@ -475,6 +521,21 @@ describe('step 3: bill due soon', () => {
       to: 'sam@example.com',
       subject: 'Phone is due on Tuesday 20 October',
     })
+  })
+
+  it('reminds an owner who turned no email off, with a link to Profile', async () => {
+    const services = seeded(MORNING, [], [profile('u1', 'pSam', null)])
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'create',
+        tableId: 'transactions',
+        rowId: 'phoneBill00000000001',
+        data: personalBill('2026-10-20'),
+      }),
+    )
+    expect((await runCron(services)).reminders.sent).toBe(1)
+    expect(sent(services)[0]?.to).toBe('sam@example.com')
+    expect(sent(services)[0]?.text).toContain(`${APP_URL}/profile`)
   })
 
   it('skips an archived group, and marks its bills', async () => {

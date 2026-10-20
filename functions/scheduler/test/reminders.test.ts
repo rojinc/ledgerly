@@ -1,4 +1,5 @@
 import type { Transactions } from '@ledgerly/core/generated/rows'
+import { type EmailType, emailTypeSchema } from '@ledgerly/core/schemas/identity'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { createHandler } from '@ledgerly/server/http/create-handler'
@@ -17,6 +18,7 @@ import {
   NOW,
   ok,
   person,
+  profile,
 } from './harness'
 
 // Every logProblem line a test writes, checked for personal data after each test.
@@ -82,7 +84,10 @@ function schedule(id: string, autoPost: boolean) {
 // Sam (u1) owns Acme in Sydney; Alex (u2) is a member there.
 function seeded(
   transactions: ReturnType<typeof transaction>[],
-  options: Parameters<typeof fakes>[1] = {},
+  {
+    profiles = [],
+    ...options
+  }: Parameters<typeof fakes>[1] & { profiles?: ReturnType<typeof profile>[] } = {},
 ) {
   return fakes(
     {
@@ -103,6 +108,7 @@ function seeded(
       ],
       schedules: [schedule('manual', false), schedule('auto', true)],
       transactions,
+      profiles,
     },
     options,
   )
@@ -202,6 +208,7 @@ describe('step 3: shift to confirm', () => {
       idempotencyKey: `reminder-t1-${SYDNEY_YESTERDAY}`,
     })
     expect(email?.text).toContain(`${APP_URL}/groups/acme/transactions/t1`)
+    expect(email?.text).toContain(`${APP_URL}/profile`)
     expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
 
     // The next run sends nothing more.
@@ -359,6 +366,43 @@ describe('step 3: shift to confirm', () => {
       expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
     },
   )
+
+  it('marks it reminded without sending when the owner turned the email off', async () => {
+    const services = seeded([transaction('t1')], {
+      profiles: [profile('u1', 'pSam', ['shiftToConfirm'])],
+    })
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 1, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
+    expect(remindedAt(services, 't1')).toBe(NOW.toISOString())
+  })
+
+  it('leaves an auto-post shift unmarked when the owner turned the email off', async () => {
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const services = seeded([transaction('t1', { scheduleId: 'auto' })], {
+      profiles: [profile('u1', 'pSam', ['shiftToConfirm'])],
+    })
+    expect(await runCron(services)).toMatchObject({
+      posted: { posted: 0, skipped: 0, failed: 1 },
+      reminders: { sent: 0, skipped: 0, failed: 0 },
+    })
+    expect(services.sendEmail).not.toHaveBeenCalled()
+    expect(remindedAt(services, 't1')).toBeNull()
+    quiet.mockRestore()
+  })
+
+  it.each<[string, EmailType[] | null]>([
+    ['no email turned off', null],
+    ['an empty list', []],
+    ['only the other emails turned off', ['billDue', 'statementReady']],
+  ])('emails an owner with %s', async (_case, emailOptOuts) => {
+    const services = seeded([transaction('t1')], {
+      profiles: [profile('u1', 'pSam', emailOptOuts)],
+    })
+    expect((await runCron(services)).reminders).toEqual({ sent: 1, skipped: 0, failed: 0 })
+    expect(services.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'sam@example.com' }),
+    )
+  })
 
   it('tries again next run when the email fails', async () => {
     const services = seeded([transaction('t1')])
@@ -563,6 +607,20 @@ describe('step 3: timer still running', () => {
     expect(services.sendEmail.mock.calls[0]?.[0].text).toMatch(/18 October.*6:00/i)
     expect(remindedAt(services, 'short')).toBeNull()
     expect((await runCron(services)).reminders.sent).toBe(0)
+  })
+
+  it('emails the starter who turned every email off, after a shift email the same run held back', async () => {
+    // Sam owns Acme and started the timer: one address lookup serves both reminders.
+    const services = seeded(
+      [transaction('shift'), transaction('timer', { status: 'running', startedAt: started(13) })],
+      { profiles: [profile('u1', 'pSam', [...emailTypeSchema.options])] },
+    )
+    expect((await runCron(services)).reminders).toEqual({ sent: 1, skipped: 1, failed: 0 })
+    expect(services.sendEmail).toHaveBeenCalledTimes(1)
+    expect(services.sendEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ to: 'sam@example.com', subject: 'Your timer is still running' }),
+    )
+    expect(remindedAt(services, 'shift')).toBe(NOW.toISOString())
   })
 
   it('sends nothing before 07:00 or in archived groups', async () => {

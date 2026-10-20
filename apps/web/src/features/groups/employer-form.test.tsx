@@ -761,7 +761,9 @@ describe('archiving a group (#37)', () => {
     expect(dialog.textContent).toContain('read-only')
     expect(dialog.textContent).toContain('schedules, reminders and statements stop')
     expect(dialog.textContent).toContain('history stays')
-    expect(dialog.textContent).toContain('can’t be undone')
+    // An admin can unarchive it now (#428).
+    expect(dialog.textContent).not.toContain('can’t be undone')
+    expect(dialog.textContent).toContain('An admin can unarchive it later.')
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
     esc(dialog)
     expect(screen.queryByRole('alertdialog')).toBeNull()
@@ -833,5 +835,85 @@ describe('archiving a group (#37)', () => {
     fireEvent.click(busy)
     expect(screen.getByRole('alertdialog')).toBeTruthy()
     expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  describe('and unarchiving it (#428)', () => {
+    const archived = { ...employer, archivedAt: '2026-10-01T00:00:00.000Z' }
+
+    it('is offered to an admin of an archived group only', () => {
+      mockGroup(archived)
+      renderAt('/groups/g1/settings')
+      expect(
+        screen.getByText('This group is archived. You can see its history but not change it.'),
+      ).toBeTruthy()
+      expect(screen.getByRole('button', { name: 'Unarchive group' })).toBeTruthy()
+      cleanup()
+      mockGroup(archived, 'member')
+      renderAt('/groups/g1/settings')
+      expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+      cleanup()
+      mockGroup(archived, 'viewer')
+      renderAt('/groups/g1/settings')
+      expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+      cleanup()
+      mockGroup(employer)
+      renderAt('/groups/g1/settings')
+      expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+    })
+
+    it('explains it in a native modal, and gives focus back on Esc', () => {
+      mockGroup(archived)
+      renderAt('/groups/g1/settings')
+      const trigger = screen.getByRole('button', { name: 'Unarchive group' })
+      fireEvent.click(trigger)
+      const dialog = screen.getByRole('alertdialog', { name: 'Unarchive Acme Cafe?' })
+      expect(dialog.dataset.modal).toBe('')
+      expect(dialog.textContent).toContain('can be changed again')
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
+      esc(dialog)
+      expect(screen.queryByRole('alertdialog')).toBeNull()
+      expect(document.activeElement).toBe(trigger)
+      expect(call).not.toHaveBeenCalled()
+    })
+
+    it('unarchives on confirm, refreshes the group, says so and moves focus to the heading', async () => {
+      mockGroup(archived)
+      const refetch = liveGroup(archived)
+      call.mockResolvedValue({ ok: true, data: employer })
+      const { queryClient } = renderAt('/groups/g1/settings')
+      const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+      fireEvent.click(screen.getByRole('button', { name: 'Unarchive group' }))
+      fireEvent.click(
+        within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Unarchive group' }),
+      )
+      await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull())
+      expect(call).toHaveBeenCalledWith('groups', 'POST', '/groups/g1/unarchive')
+      // The group as stored goes in the cache, so the page reads it writable.
+      expect(queryClient.getQueryData(['group', 'g1'])).toMatchObject({ archivedAt: null })
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['groups', 'u1'] })
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+      refetch(employer)
+      expect(screen.getByText('This group is unarchived, so it can be changed again.')).toBeTruthy()
+      expect(input('Group name').matches(':disabled')).toBe(false)
+      expect(screen.getByRole('button', { name: 'Archive group' })).toBeTruthy()
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+    })
+
+    it('shows the function’s refusal in the dialog', async () => {
+      mockGroup(archived)
+      call.mockResolvedValue({
+        ok: false,
+        error: { code: 'FORBIDDEN', message: 'Your role in this group can’t do this.' },
+      })
+      renderAt('/groups/g1/settings')
+      fireEvent.click(screen.getByRole('button', { name: 'Unarchive group' }))
+      const dialog = screen.getByRole('alertdialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Unarchive group' }))
+      expect((await within(dialog).findByRole('alert')).textContent).toBe(
+        'Your role in this group can’t do this.',
+      )
+      expect(within(dialog).getByRole('button', { name: 'Unarchive group' })).toBeTruthy()
+      expect(screen.queryByText(/is unarchived/)).toBeNull()
+    })
   })
 })

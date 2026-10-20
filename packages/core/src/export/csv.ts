@@ -150,6 +150,7 @@ export type ProfileExport = {
     | 'hoursCapMinutes'
     | 'hoursCapPeriod'
     | 'hoursCapStartsOn'
+    | 'emailOptOuts'
   >
   business: BusinessDetails | null
 }
@@ -170,6 +171,8 @@ export function profileCsv({ name, email, phone, profile, business }: ProfileExp
     ['hoursCapMinutes', profile.hoursCapMinutes],
     ['hoursCapPeriod', profile.hoursCapPeriod],
     ['hoursCapStartsOn', profile.hoursCapStartsOn],
+    // The emails they turned off (#431), e.g. `billDue statementReady`.
+    ['emailOptOuts', profile.emailOptOuts?.join(' ')],
     ...Object.entries(details).map(([key, value]): [string, string] => [`business.${key}`, value]),
     ['business.bank.accountName', bank?.accountName],
     ['business.bank.bsb', bank?.bsb],

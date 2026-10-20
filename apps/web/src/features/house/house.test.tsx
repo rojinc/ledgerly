@@ -390,12 +390,15 @@ describe('HousePage', () => {
       expect(await within(history).findByText('No expenses yet.')).toBeTruthy()
     })
 
-    it('makes an archived house read-only for everyone', async () => {
+    it('makes an archived house read-only for everyone, but an admin can unarchive it', async () => {
       seed('admin', { archivedAt: '2026-10-01T00:00:00.000Z' })
       renderAt('/groups/g1')
       expect(await screen.findByText(/This group is archived/)).toBeTruthy()
       await row('Alex')
-      expect(screen.queryAllByRole('button')).toEqual([])
+      // #428: Unarchive, and nothing else.
+      expect(screen.getAllByRole('button').map((button) => button.textContent)).toEqual([
+        'Unarchive group',
+      ])
       expect(screen.queryByRole('textbox')).toBeNull()
       expect(screen.queryByRole('link', { name: 'Add expense' })).toBeNull()
       const history = screen.getByRole('region', { name: 'History' })
@@ -1134,6 +1137,72 @@ describe('HousePage', () => {
         /couldn’t read this house’s settings/,
       )
       expect(within(unread).queryByRole('button')).toBeNull()
+    })
+  })
+
+  describe('unarchiving (#428)', () => {
+    // jsdom has no modal dialogs (employer-form.test.tsx has the full stand-in).
+    const { showModal, close } = HTMLDialogElement.prototype
+    beforeEach(() => {
+      HTMLDialogElement.prototype.showModal = function () {
+        this.setAttribute('open', '')
+      }
+      HTMLDialogElement.prototype.close = function () {
+        this.removeAttribute('open')
+      }
+    })
+    afterEach(() => {
+      // An open dialog closes as it unmounts: before the stand-ins go.
+      cleanup()
+      Object.assign(HTMLDialogElement.prototype, { showModal, close })
+    })
+
+    const ARCHIVED = { archivedAt: '2026-10-01T00:00:00.000Z' }
+
+    it.each(['member', 'viewer'] as const)('isn’t offered to a %s', async (role) => {
+      seed(role, ARCHIVED)
+      renderAt('/groups/g1')
+      await row('Alex')
+      expect(screen.queryAllByRole('button')).toEqual([])
+    })
+
+    it('unarchives on confirm: the house turns writable, says so and focuses the heading', async () => {
+      seed('admin', ARCHIVED)
+      call.mockImplementation(async () => {
+        stored.group = { ...stored.group, archivedAt: null }
+        return ok(stored.group)
+      })
+      renderAt('/groups/g1')
+      fireEvent.click(await screen.findByRole('button', { name: 'Unarchive group' }))
+      const dialog = screen.getByRole('alertdialog', { name: 'Unarchive Flat 3?' })
+      expect(dialog.textContent).toContain('stay stopped until they’re restarted or changed')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Unarchive group' }))
+      expect(
+        await screen.findByText('This group is unarchived, so it can be changed again.'),
+      ).toBeTruthy()
+      expect(sent()).toEqual(['groups', 'POST', '/groups/g1/unarchive'])
+      expect(screen.queryByRole('alertdialog')).toBeNull()
+      expect(screen.queryByText(/This group is archived/)).toBeNull()
+      expect(screen.getByRole('region', { name: 'Archive group' })).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+      expect(document.activeElement).toBe(screen.getByRole('heading', { name: 'Flat 3', level: 1 }))
+      // Still said once the house reads as unarchived.
+      expect(screen.getByText('This group is unarchived, so it can be changed again.')).toBeTruthy()
+    })
+
+    it('shows the function’s refusal in the dialog, and keeps it open', async () => {
+      seed('admin', ARCHIVED)
+      call.mockResolvedValue(refused('FORBIDDEN', 'Your role in this group can’t do this.'))
+      renderAt('/groups/g1')
+      fireEvent.click(await screen.findByRole('button', { name: 'Unarchive group' }))
+      const dialog = screen.getByRole('alertdialog')
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Unarchive group' }))
+      expect((await within(dialog).findByRole('alert')).textContent).toBe(
+        'Your role in this group can’t do this.',
+      )
+      expect(screen.getByText(/This group is archived/)).toBeTruthy()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Unarchive group' }))
     })
   })
 })

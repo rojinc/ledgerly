@@ -182,6 +182,7 @@ describe('profileCsv', () => {
     hoursCapMinutes: null,
     hoursCapPeriod: null,
     hoursCapStartsOn: null,
+    emailOptOuts: null,
   }
 
   it('writes the user’s own details, business details included, leaving out empty ones', () => {
@@ -189,7 +190,12 @@ describe('profileCsv', () => {
       name: 'Sam Lee',
       email: 'sam@example.com',
       phone: null,
-      profile: { ...profile, hoursCapMinutes: 2400, hoursCapPeriod: 'week' },
+      profile: {
+        ...profile,
+        hoursCapMinutes: 2400,
+        hoursCapPeriod: 'week',
+        emailOptOuts: ['billDue', 'statementReady'],
+      },
       business: {
         businessName: 'Sam Lee Cleaning',
         abn: '51824753556',
@@ -208,6 +214,7 @@ describe('profileCsv', () => {
       'summaryFrequency,weekly',
       'hoursCapMinutes,2400',
       'hoursCapPeriod,week',
+      'emailOptOuts,billDue statementReady',
       'business.businessName,Sam Lee Cleaning',
       'business.abn,51824753556',
       'business.bank.accountName,Sam Lee',
@@ -221,7 +228,8 @@ describe('profileCsv', () => {
       name: '+Sam',
       email: null,
       phone: '+61412345678',
-      profile: { ...profile, invoicePrefix: '' },
+      // `[]` is every email on, as null is: no row.
+      profile: { ...profile, invoicePrefix: '', emailOptOuts: [] },
       business: null,
     })
     expect(lines(csv)).toEqual([

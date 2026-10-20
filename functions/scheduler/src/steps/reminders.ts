@@ -1,6 +1,13 @@
 import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localTimeToUtc, localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Persons, Transactions } from '@ledgerly/core/generated/rows'
+import type {
+  Groups,
+  Members,
+  Persons,
+  Profiles,
+  Transactions,
+} from '@ledgerly/core/generated/rows'
+import type { EmailType } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
@@ -16,7 +23,7 @@ import { logProblem } from '@ledgerly/server/http/log'
 import { loadGroupLedger } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 import { findSchedule } from '../schedule-rows'
-import { appBase, type Services } from '../services'
+import { type AccountUser, appBase, type Services } from '../services'
 import { creatorWouldPayAfterLeaving } from './auto-post'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
@@ -32,6 +39,8 @@ const BILL_DAYS = 2
 
 /** One email of a reminder; Resend delivers one per `key` within 24 hours. */
 type Outgoing = { to: string; content: EmailContent; key: string }
+/** A verified address, and the emails its person turned off on Profile (null or `[]`: none). */
+type Recipient = { to: string; optOuts: string[] | null }
 
 /**
  * Step 3 (scheduling.md#step-3-reminders): "shift to confirm" to the group owner, "timer still
@@ -41,6 +50,8 @@ type Outgoing = { to: string; content: EmailContent; key: string }
 export async function sendReminders(services: Services): Promise<ReminderCounts> {
   const { db, now } = services
   const link = linkTo(services.appUrl)
+  // Where the bill-due and shift-to-confirm emails can be turned off (#431).
+  const profileUrl = `${appBase(services.appUrl)}/profile`
   const counts: ReminderCounts = { sent: 0, skipped: 0, failed: 0 }
   // Read once per run. Groups are never deleted.
   const groups = memo((rowId) =>
@@ -72,7 +83,9 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       }
       // Any shift still `scheduled`, auto-post ones too: step 2 runs first every hour from just
       // after local midnight, so by 07:00 an auto-post shift left here is one it couldn't post.
-      const to = await recipients(`${group.$id}/${group.ownerPersonId}`)
+      const owner = await recipients(`${group.$id}/${group.ownerPersonId}`)
+      // An owner who turned this email off counts as nobody to ask.
+      const to = owner && wants(owner, 'shiftToConfirm') ? owner.to : undefined
       // Nobody to ask: a shift of a schedule that auto-posts isn't marked, so step 2 keeps trying
       // it. Step 2 never posts a marked row, so marking it would leave it `scheduled` for good.
       if (!to && shift.scheduleId && (await schedules(shift.scheduleId))?.autoPost) return
@@ -80,6 +93,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
         groupName: group.name,
         date: shift.date as LocalDate,
         url: link(shift),
+        profileUrl,
       })
       await remind(
         services,
@@ -101,7 +115,8 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       const group = await groups(timer.groupId)
       if (group.archivedAt) return remind(services, timer, [], counts)
       if (!isAwake(group, now)) return
-      const to = await recipients(`${group.$id}/${timer.createdBy}`)
+      // No opt-out: the timer email is always sent (#431).
+      const to = (await recipients(`${group.$id}/${timer.createdBy}`))?.to
       const content = timerRunningEmail({
         groupName: group.name,
         startedAt: timer.startedAt as string,
@@ -154,13 +169,16 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
         dueOn,
         autoPay,
         url: link(bill),
+        profileUrl,
       })
       // A new due date needs its own reminder, so it's in the key.
-      const emails = (await admins(group.$id)).map(({ personId, to }) => ({
-        to,
-        content,
-        key: `reminder-${bill.$id}-${dueOn}-${personId}`,
-      }))
+      const emails = (await admins(group.$id))
+        .filter((admin) => wants(admin, 'billDue'))
+        .map(({ personId, to }) => ({
+          to,
+          content,
+          key: `reminder-${bill.$id}-${dueOn}-${personId}`,
+        }))
       await remind(services, bill, emails, counts)
     })
   }
@@ -284,7 +302,7 @@ async function verifiedEmail(
   services: Services,
   groupId: string,
   personId: string,
-): Promise<string | undefined> {
+): Promise<Recipient | undefined> {
   // uniq_group_person
   const { rows } = await services.db.listRows<Members>({
     databaseId: DATABASE_ID,
@@ -299,7 +317,7 @@ async function verifiedEmail(
 async function adminEmails(
   services: Services,
   groupId: string,
-): Promise<{ personId: string; to: string }[]> {
+): Promise<({ personId: string } & Recipient)[]> {
   // idx_groupId. A group has at most 15 people.
   const { rows } = await services.db.listRows<Members>({
     databaseId: DATABASE_ID,
@@ -312,33 +330,43 @@ async function adminEmails(
     ],
     total: false,
   })
-  const found: { personId: string; to: string }[] = []
+  const found: ({ personId: string } & Recipient)[] = []
   for (const { personId } of rows) {
-    const to = await accountEmail(services, personId)
-    if (to) found.push({ personId, to })
+    const recipient = await accountEmail(services, personId)
+    if (recipient) found.push({ personId, ...recipient })
   }
   return found
 }
 
-// The person's account email, once it's verified.
+// The person's account email, once it's verified, and the emails they turned off.
 async function accountEmail(
   { db, users }: Services,
   personId: string,
-): Promise<string | undefined> {
+): Promise<Recipient | undefined> {
   const person = await getOrUndefined<Persons>(db, TABLES.persons, personId)
   if (!person?.userId) return undefined
+  let user: AccountUser
   try {
-    const user = await users.get({ userId: person.userId })
-    // Not once the account is blocked: deleting it blocks it first (identity-and-invites.md#order).
-    return user.status && user.emailVerification && user.email ? user.email : undefined
+    user = await users.get({ userId: person.userId })
   } catch (error) {
     // The account was deleted.
     if (error instanceof AppwriteException && error.code === 404) return undefined
     throw error
   }
+  // Not once the account is blocked: deleting it blocks it first (identity-and-invites.md#order).
+  if (!(user.status && user.emailVerification && user.email)) return undefined
+  // Its row ID is the user ID. Read before staging, so a change during the run may let one
+  // email through (#431).
+  const profile = await getOrUndefined<Profiles>(db, TABLES.profiles, person.userId)
+  return { to: user.email, optOuts: profile?.emailOptOuts ?? null }
 }
 
-async function getOrUndefined<R extends Persons | Transactions>(
+// Unless they turned this email off on Profile.
+function wants({ optOuts }: Recipient, type: EmailType): boolean {
+  return !optOuts?.includes(type)
+}
+
+async function getOrUndefined<R extends Persons | Profiles | Transactions>(
   db: Db,
   tableId: string,
   rowId: string,
