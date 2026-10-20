@@ -156,19 +156,22 @@ function breaks(text: string): { position: number; required: boolean }[] {
   return found
 }
 
-/** One run's words, as pdfmake's `splitWords()` makes them (pdfmake/js/TextBreaker.js). */
-function splitWords(text: string): { text: string; lineEnd: boolean }[] {
-  if (text === '') return [{ text, lineEnd: false }]
+/**
+ * One run's words, as pdfmake's `splitWords()` makes them (pdfmake/js/TextBreaker.js): `text`
+ * without the line break that ends it, which `raw` keeps.
+ */
+function splitWords(text: string): { text: string; raw: string; lineEnd: boolean }[] {
+  if (text === '') return [{ text, raw: text, lineEnd: false }]
   let start = 0
   return breaks(text).map(({ position, required }) => {
-    const word = text.slice(start, position)
+    const raw = text.slice(start, position)
     start = position
-    const lineEnd = required || LINE_END.test(word)
-    return { text: lineEnd ? word.replace(LINE_END, '') : word, lineEnd }
+    const lineEnd = required || LINE_END.test(raw)
+    return { text: lineEnd ? raw.replace(LINE_END, '') : raw, raw, lineEnd }
   })
 }
 
-type Word = { font: PdfFont; text: string; glued: boolean; lineEnd: boolean }
+type Word = { font: PdfFont; text: string; raw: string; glued: boolean; lineEnd: boolean }
 
 /**
  * The words pdfmake lays `runs` out in, as its `TextBreaker` makes them: each run split on its
@@ -191,11 +194,14 @@ function pdfWords(runs: readonly FontRun[]): Word[] {
 }
 
 /**
- * `runs` with a zero-width space wherever a word would print wider than NAME_COLUMN, at its fonts'
- * widest. pdfmake widens a column to its widest word, so a longer one pushes the amounts off the
- * page. breakable() can't see that: it counts the text as typed, but a Thai letter prints as one
- * `�` or more, and a space pdfmake doesn't break at (a tab, say) prints as `�`. The space goes
- * between grapheme clusters, so it never cuts an emoji apart, and in Roboto, which has it.
+ * `runs` with a zero-width space wherever a word, or words pdfmake glues together, would print
+ * wider than NAME_COLUMN, at their fonts' widest. pdfmake widens a column to its widest word, and
+ * never cuts a glued piece of one character, so either way a longer one runs into the amounts or
+ * pushes them off the page. breakable() can't see that: it counts the text as typed, but a Thai
+ * letter prints as one `�` or more, a space pdfmake doesn't break at (a tab, say) prints as `�`,
+ * and a run in another font can glue to the next. The space goes between grapheme clusters, so it
+ * never cuts an emoji apart, unless one cluster is wider than the column (emoji joined by U+200D,
+ * say), and in Roboto, which has it.
  */
 function narrow(runs: readonly FontRun[]): FontRun[] {
   const narrowed: FontRun[] = []
@@ -204,26 +210,20 @@ function narrow(runs: readonly FontRun[]): FontRun[] {
     if (last?.font === font) last.text += text
     else if (text !== '') narrowed.push({ font, text })
   }
-  for (const { font, text } of runs) {
-    let start = 0
-    for (const { position } of breaks(text)) {
-      const word = text.slice(start, position)
-      start = position
-      if (widthOf(font, word) <= NAME_COLUMN) {
-        add(font, word)
-        continue
-      }
-      let width = 0
-      for (const { segment } of graphemes.segment(word)) {
-        const char = widthOf(font, segment)
-        if (width > 0 && width + char > NAME_COLUMN) {
+  let width = 0
+  for (const { font, raw, glued } of pdfWords(runs)) {
+    for (const { segment } of graphemes.segment(raw)) {
+      for (const piece of widthOf(font, segment) > NAME_COLUMN ? segment : [segment]) {
+        const char = widthOf(font, piece)
+        if (width + char > NAME_COLUMN) {
           add('Roboto', '\u200B')
           width = 0
         }
-        add(font, segment)
+        add(font, piece)
         width += char
       }
     }
+    if (!glued) width = 0
   }
   return narrowed
 }

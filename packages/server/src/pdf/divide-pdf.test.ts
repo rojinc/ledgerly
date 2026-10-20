@@ -596,8 +596,11 @@ describe('renderDividePdf', () => {
 
   // A Thai letter prints as one `�` or more, and a tab, an ogham space mark, a narrow no-break space
   // or a medium mathematical space as one each: none is where pdfmake breaks, though breakable()
-  // takes the spaces for spaces. The divide's own zero-width spaces keep each word narrower than
-  // its column, the People table's names (151 pt) included, so no amount is pushed into the margin.
+  // takes the spaces for spaces. Emoji joined by U+200D, or Hangul's leading consonants, are one
+  // grapheme cluster; and pdfmake glues a word in one font to a no-break space or U+FEFF in the next, but
+  // never cuts a piece of one character. The divide's own zero-width spaces keep each word, glued or
+  // not, narrower than its column, the People table's names (151 pt) included, so no amount is
+  // pushed into the margin or printed over.
   it.each([
     ['Thai', 'สมชายใจดีมีสุขสบายดี'],
     // 165 pt, wider than the People table's names but not a transaction's.
@@ -606,10 +609,16 @@ describe('renderDividePdf', () => {
     ['ogham space marks', `b${'\u1680'.repeat(99)}b`],
     ['narrow no-break spaces', `b${'\u202F'.repeat(99)}b`],
     ['medium mathematical spaces', `b${'\u205F'.repeat(99)}b`],
+    ['emoji joined by U+200D', `${'⏩\u200D'.repeat(49)}⏩`],
+    ['Hangul leading consonants', '\u1100'.repeat(25)],
+    ['emoji and no-break spaces', '⏩\u00A0'.repeat(50)],
+    ['emoji and U+FEFF', '⏩\uFEFF'.repeat(40)],
+    ['dashes and no-break spaces', '⸻\u00A0'.repeat(50)],
+    ['ideographs and no-break spaces', '一\u00A0'.repeat(50)],
   ])('keeps every amount on the page with a name of %s', async (_, name) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const lines = [
-      line('2026-10-03', 'expense', 3000, [share('p0', 3000, 3000)], { description: 'Power' }),
+      line('2026-10-03', 'expense', 3000, [share('p0', 3000, 3000)], { description: name }),
     ]
     const pdf = await renderDividePdf(
       buildStatementSnapshot({
@@ -649,6 +658,8 @@ describe('wrappedLines', () => {
     ['a line feed', 'a\nb', 2],
     ['a carriage return', 'a\rb', 2],
     ['a CR LF', 'a\r\nb', 2],
+    ['14 of the widest, then CR LF', `${'Ѹ'.repeat(14)}\r\nb`, 2],
+    ['14 of the widest, then CR', `${'Ѹ'.repeat(14)}\rb`, 2],
     // pdfmake starts no line after the last.
     ['a line feed at the end', 'a\n', 1],
     // Noto Emoji's characters are 12.7 pt: 13 fit, and pdfmake breaks between two 😀.
