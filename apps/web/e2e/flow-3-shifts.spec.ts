@@ -93,7 +93,9 @@ test('changes a shift, adds another, voids one and times one', async ({ page }) 
     )
     await page.getByRole('button', { name: 'Void', exact: true }).click()
     await expect(page.getByText('Void. Reason: Didn’t go', { exact: true })).toBeVisible()
-    await answered
+    // The function's own answer, so a refused void fails here, not at the calendar.
+    const execution = await (await answered).json()
+    expect(JSON.parse(execution.responseBody)).toMatchObject({ ok: true })
     // It stays on the calendar, struck through.
     const voided = await dayItems(page, nextWeek)
     await expect(voided).toHaveText(/^Shift.*· Void/)
