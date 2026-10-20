@@ -6,21 +6,21 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { ID, Query } from 'node-appwrite'
-import { closingPeriodOf } from '../period'
+import { closingPeriodOf, latestStatement } from '../period'
 import type { Services } from '../services'
 import {
   activityWrite,
   conflictAsTryAgain,
+  draftWrite,
   getRowOrNull,
   groupGuard,
   invalid,
   isFinalizing,
   latestFinal,
   parseBody,
-  teamRead,
   tryAgain,
 } from '../shared'
-import { computeSnapshot, statementTypeOf } from '../snapshot'
+import { computeSnapshot } from '../snapshot'
 
 /**
  * `statements POST /statements/reissue` (admin): a new draft for the range, to redo a period
@@ -48,27 +48,7 @@ export async function reissueStatement(
       if (await unfinishedFor(db, groupId, periodStart, periodEnd)) throw tryAgain()
       await requireFinalizable(db, groupId, periodEnd)
       await tx.write(
-        {
-          action: 'create',
-          tableId: TABLES.statements,
-          rowId: statementId,
-          data: {
-            groupId,
-            type: statementTypeOf(group),
-            periodStart,
-            periodEnd,
-            status: 'draft',
-            number: null,
-            displayNumber: null,
-            issuedOn: null,
-            dueOn: null,
-            snapshotJson: JSON.stringify(snapshot),
-            pdfFileId: null,
-            sentAt: null,
-            finalizedBy: null,
-          },
-          permissions: teamRead(groupId),
-        },
+        draftWrite(group, statementId, period, snapshot),
         activityWrite(
           groupId,
           person.$id,
@@ -110,6 +90,14 @@ async function requireFinalizable(db: Db, groupId: string, periodEnd: string): P
   }
   // The job would draft that period again when it ends, on top of this one.
   const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+  // With no cycle, new periods come only from a close: a reissue only redoes a void one. A range
+  // past the latest statement would push every later close's start past it (statements.md#4).
+  if (group?.statementCycle === 'none') {
+    const latest = await latestStatement(db, groupId)
+    if (!latest || periodEnd > latest.periodEnd) {
+      throw invalid('Only a void period can be drafted again. Close a period to draft a new one.')
+    }
+  }
   if (group?.nextCloseAt) {
     const next = await closingPeriodOf(db, { ...group, nextCloseAt: group.nextCloseAt })
     if (periodEnd >= next.start) {

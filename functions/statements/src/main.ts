@@ -7,6 +7,7 @@ import {
   route,
 } from '@ledgerly/server/http/create-handler'
 import { checkFonts } from '@ledgerly/server/pdf/fonts'
+import { closeStatement } from './routes/close'
 import { discardRoute } from './routes/discard'
 import { draftDueStatements } from './routes/draft-due'
 import { finalizeRoute } from './routes/finalize'
@@ -42,6 +43,9 @@ export function statementsRoutes(
     }),
     route('POST', '/statements/preview', async (ctx) =>
       previewStatement(services(ctx), requireUser(ctx.userId), ctx.body),
+    ),
+    route('POST', '/statements/close', async (ctx) =>
+      closeStatement(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
     route('POST', '/statements/:id/refresh', async (ctx) =>
       refreshStatement(services(ctx), requireUser(ctx.userId), ctx.params.id),

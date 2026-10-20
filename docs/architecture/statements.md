@@ -144,7 +144,7 @@ Admin only, in an `employer` or a `house` group. Other groups get `VALIDATION_FA
 
 **At period end** the job drafts the rest: its period starts the day after the early close. That can be an empty employer invoice, which the admin can discard unless `autoFinalize` finalized it, as for any period the job drafts. If the early close ended on the period's last day, the job only moves `nextCloseAt` on ([§1](#1-draft-statements-job-hourly)).
 
-**Asking again** with the same `periodEnd` returns the group's statement that ends on that day, while it's still unfinished (`draft` or `finalizing`), whoever drafted it. So a retry makes no second draft. This is read first, before any refusal, and read again after staging, as for a reissue.
+**Asking again** with the same `periodEnd` returns the group's statement that ends on that day, while it's still unfinished (`draft` or `finalizing`), whoever drafted it. So a retry makes no second draft. This is read before any refusal but the caller's role and an archived group, and read again after staging, as for a reissue.
 
 **Refusals.** The route stages a guard write to the group row, then reads the stored rows and refuses:
 - a group archived meanwhile (`ARCHIVED`), as finalize step 1 does;
@@ -154,7 +154,7 @@ Admin only, in an `employer` or a `house` group. Other groups get `VALIDATION_FA
 
 It reads the period's start again after staging, and answers `CONFLICT` (try again) if a draft or a discard that committed meanwhile moved it, so no two periods overlap and none leaves a gap. A job run or another close at the same moment fails one of the two commits, since both write the group row.
 
-**The current period so far.** `POST /statements/preview` shows any member what the statement would hold if it were closed on `periodEnd`. The default and the start are a close's, not the cycle period's, so the preview matches what an admin would draft. A statement may already cover that day (a close ended today); then the preview starts where the cycle period does, as before. Nothing is saved, nothing is refused for being early or late, and it works in an archived group too.
+**The current period so far.** `POST /statements/preview` shows any member what the statement would hold if it were closed on `periodEnd`. The default and the start are a close's, not the cycle period's, so the preview matches what an admin would draft. A statement may already cover that day (a close ended today); then the preview starts where the cycle period does (a calendar month with no cycle), as before. Nothing is saved, nothing is refused for being early or late, and it works in an archived group too.
 
 ## Snapshot
 

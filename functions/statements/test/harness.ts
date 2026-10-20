@@ -69,7 +69,7 @@ export const job = (settings: object = {}, extra: object = {}) =>
     extra,
   )
 
-const house = groupRow('house', 'house', { autoFinalize: false, defaultBillSplit: 'equal' })
+export const house = groupRow('house', 'house', { autoFinalize: false, defaultBillSplit: 'equal' })
 
 export const member = (
   $id: string,

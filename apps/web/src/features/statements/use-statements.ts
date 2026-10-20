@@ -1,6 +1,10 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Statements } from '@ledgerly/core/generated/rows'
-import type { ReissueStatementBody, VoidStatementBody } from '@ledgerly/core/schemas/statements'
+import type {
+  ReissueStatementBody,
+  StatementSnapshot,
+  VoidStatementBody,
+} from '@ledgerly/core/schemas/statements'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AppwriteException, ExecutionMethod, Query, Storage } from 'appwrite'
 import { useNavigate } from 'react-router'
@@ -78,6 +82,58 @@ export function useStatement(id: string) {
 function store(queryClient: ReturnType<typeof useQueryClient>, statement: Statements) {
   queryClient.setQueryData(queryKeys.statement(statement.$id), statement)
   void queryClient.invalidateQueries({ queryKey: queryKeys.statements(statement.groupId) })
+}
+
+/**
+ * `POST /statements/preview`: what a statement ending on `periodEnd` (default: today in the
+ * group's time zone) would hold now, starting where a close's would. Nothing is saved. Under the
+ * list's key, so whatever refreshes the list (a close, a finalize, someone else's change)
+ * refreshes it too.
+ */
+export function usePreviewStatement(groupId: string, periodEnd?: string, enabled = true) {
+  return useQuery({
+    // null for the default, so an emptied date field ('') is never the same query.
+    queryKey: [...queryKeys.statements(groupId), 'preview', periodEnd ?? null],
+    enabled: enabled && groupId !== '',
+    retry: false,
+    queryFn: () =>
+      statements<{ snapshot: StatementSnapshot }>('POST', '/statements/preview', {
+        groupId,
+        ...(periodEnd !== undefined && { periodEnd }),
+      }),
+  })
+}
+
+/** A close refused while another draft of the group is unfinished (statements.md#6). */
+export class UnfinishedDraft extends Error {
+  constructor(readonly draftId: string) {
+    super('Finalize or discard the earlier draft first.')
+  }
+}
+
+/**
+ * `POST /statements/close`: drafts the group's next statement now, up to `periodEnd`
+ * (statements.md#6). Asking again with the same `periodEnd` returns the same draft.
+ */
+export function useCloseStatement(groupId: string) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: async (periodEnd: string) => {
+      const result = await callFunction<Statements>('statements', 'POST', '/statements/close', {
+        groupId,
+        periodEnd,
+      })
+      if (result.ok) return result.data
+      const draftId = (result.error.details as { draftId?: unknown } | undefined)?.draftId
+      if (result.error.code === 'CONFLICT' && typeof draftId === 'string') {
+        throw new UnfinishedDraft(draftId)
+      }
+      throw new Error(writeErrorMessage(result.error))
+    },
+    onSuccess: (statement) => store(queryClient, statement),
+    // A close whose answer was lost may still have drafted it.
+    onError: () => queryClient.invalidateQueries({ queryKey: queryKeys.statements(groupId) }),
+  })
 }
 
 /** `POST /statements/{id}/refresh`: a draft worked out again from the ledger as it is now. */

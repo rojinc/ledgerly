@@ -5,8 +5,8 @@ import {
   type LocalDate,
 } from '@ledgerly/core/dates/local-date'
 import { type PeriodCycle, periodFor } from '@ledgerly/core/dates/periods'
-import { closeAtFor, periodEndClosedAt } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Statements } from '@ledgerly/core/generated/rows'
+import { closeAtFor, localToday, periodEndClosedAt } from '@ledgerly/core/dates/time-zone'
+import type { Groups, Statements, Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { Query } from 'node-appwrite'
@@ -63,6 +63,61 @@ export async function closingPeriodOf(
     total: false,
   })
   return closingPeriod(group, (rows[0]?.periodEnd ?? null) as LocalDate | null)
+}
+
+/**
+ * Where a statement ending on `end` starts when an admin closes it now
+ * (statements.md#6-close-a-period-now-post-statementsclose): the day after the group's latest
+ * statement, void ones included. A first statement starts where the cycle period containing
+ * `end` does; with no cycle, on the group's earliest posted transaction up to `end`, or the day
+ * it was created.
+ */
+export async function closeStart(db: Db, group: Groups, end: LocalDate): Promise<LocalDate> {
+  const latest = await latestStatement(db, group.$id)
+  if (latest) return addDays(latest.periodEnd as LocalDate, 1)
+  if (group.statementCycle !== 'none') return periodEndingOn(group, end).start
+  const { rows: first } = await db.listRows<Transactions>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.transactions,
+    queries: [
+      Query.equal('groupId', group.$id),
+      Query.equal('status', 'posted'),
+      Query.lessThanEqual('date', end),
+      Query.orderAsc('date'),
+      Query.limit(1),
+    ],
+    total: false,
+  })
+  return (
+    (first[0]?.date as LocalDate | undefined) ??
+    localToday(group.timezone, new Date(group.$createdAt))
+  )
+}
+
+/** The group's statement with the latest `periodEnd`, void ones included (`idx_group_period`). */
+export async function latestStatement(db: Db, groupId: string): Promise<Statements | undefined> {
+  const { rows } = await db.listRows<Statements>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.statements,
+    queries: [Query.equal('groupId', groupId), Query.orderDesc('periodEnd'), Query.limit(1)],
+    total: false,
+  })
+  return rows[0]
+}
+
+/**
+ * A close's default end, and the preview's: today in the group's time zone, or the job's period
+ * end while that period waits for the job.
+ */
+export function closeEnd(group: Groups, now: Date): LocalDate {
+  const today = localToday(group.timezone, now)
+  const jobEnd = jobPeriodEnd(group)
+  return jobEnd && compareDates(jobEnd, today) < 0 ? jobEnd : today
+}
+
+/** The last day of the period the job drafts next, or null when it drafts none (cycle `none`). */
+export function jobPeriodEnd(group: Groups): LocalDate | null {
+  return group.nextCloseAt ? periodEndClosedAt(group.nextCloseAt, group.timezone) : null
 }
 
 /** When the period after `periodEnd` closes, or null for a group with no cycle. */

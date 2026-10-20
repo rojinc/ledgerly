@@ -10,7 +10,14 @@ import { ID, Query } from 'node-appwrite'
 import { joinedAdmins, verifiedEmails } from '../people'
 import { closeAfter, closingPeriodOf } from '../period'
 import type { Services } from '../services'
-import { activityWrite, getRowOrNull, isAppwriteError, listAll, teamRead } from '../shared'
+import {
+  activityWrite,
+  draftSummary,
+  draftWrite,
+  getRowOrNull,
+  isAppwriteError,
+  listAll,
+} from '../shared'
 import { computeSnapshot, statementTypeOf } from '../snapshot'
 import { finalizeStatement } from './finalize'
 
@@ -92,27 +99,7 @@ async function draftFor(
       reached = await reachesEnd(db, group.$id, period.end)
       if (reached || empty) return
       await tx.write(
-        {
-          action: 'create',
-          tableId: TABLES.statements,
-          rowId: statementId,
-          data: {
-            groupId: group.$id,
-            type: statementTypeOf(group),
-            periodStart: period.start,
-            periodEnd: period.end,
-            status: 'draft',
-            number: null,
-            displayNumber: null,
-            issuedOn: null,
-            dueOn: null,
-            snapshotJson: JSON.stringify(snapshot),
-            pdfFileId: null,
-            sentAt: null,
-            finalizedBy: null,
-          },
-          permissions: teamRead(group.$id),
-        },
+        draftWrite(group, statementId, period, snapshot),
         activityWrite(group.$id, null, 'statement.drafted', draftSummary(period.end), now),
       )
     })
@@ -199,8 +186,4 @@ async function emailAdmins(
       logProblem('ready_email_failed', { statementId, error })
     }
   }
-}
-
-function draftSummary(periodEnd: string): string {
-  return `Statement for the period ending ${periodEnd} drafted`
 }
