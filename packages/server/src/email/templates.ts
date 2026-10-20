@@ -64,6 +64,27 @@ export function statementReadyEmail(input: {
 }
 
 /**
+ * To each joined admin when the statements job couldn't email an invoice it auto-finalized
+ * (statements.md#auto-send). It says what to do: send it from the app.
+ */
+export function autoSendFailedEmail(input: {
+  displayNumber: string
+  groupName: string
+  url: string
+}): EmailContent {
+  const displayNumber = oneLine(input.displayNumber)
+  const groupName = oneLine(input.groupName)
+  return message(
+    `Invoice ${displayNumber} for ${groupName} couldn't be emailed`,
+    [
+      `Invoice ${displayNumber} for ${groupName} is final, but it couldn't be emailed to the billing emails automatically.`,
+      'Check the billing emails, then send it from the app.',
+    ],
+    [{ label: 'Open the invoice', url: input.url }],
+  )
+}
+
+/**
  * To the employer's billing emails, with the invoice PDF attached. Send it with `replyTo` set
  * to the worker's email, so "reply to this email" reaches them (statements.md#3-send-and-resend).
  */

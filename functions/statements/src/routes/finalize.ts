@@ -38,6 +38,7 @@ import {
   updateStatement,
 } from '../shared'
 import { computeSnapshot, type Membership, sharesInGroup, sharesOf } from '../snapshot'
+import { autoSends, autoSendUntil } from './auto-send'
 import { sendStatement } from './send'
 
 /**
@@ -85,7 +86,7 @@ export async function finalizeStatement(
       }
       if (current.issuedOn === null) current = await lockAndIssue(services, group, current)
       if (current.pdfFileId === null) current = await renderPdf(services, current)
-      current = await markFinal(services, current, actorPersonId)
+      current = await markFinal(services, group, current, actorPersonId)
     }
     if (send && current.sentAt === null)
       current = await sendStatement(services, group, current, actorPersonId)
@@ -368,19 +369,33 @@ async function renderPdf({ db, files }: Services, statement: Statements): Promis
   return updateStatement(db, statement, { pdfFileId: statement.$id })
 }
 
-/** Step 8. */
+/**
+ * Step 8. The job's finalize of an invoice with lines in a group with `autoSend` on also opens
+ * the window in which the job emails it (statements.md#auto-send). One with no lines could ask
+ * the employer for a balance they were already invoiced for.
+ */
 async function markFinal(
   { db, now }: Services,
+  group: Groups,
   statement: Statements,
   actorPersonId: string | null,
 ): Promise<Statements> {
-  return updateStatement(db, statement, { status: 'final', finalizedBy: actorPersonId }, [
-    activityWrite(
-      statement.groupId,
-      actorPersonId,
-      'statement.finalized',
-      `${statementName(statement)} finalized`,
-      now,
-    ),
-  ])
+  const window =
+    actorPersonId === null && autoSends(group) && snapshotOf(statement).lines.length > 0
+      ? { autoSendUntil: autoSendUntil(now) }
+      : {}
+  return updateStatement(
+    db,
+    statement,
+    { status: 'final', finalizedBy: actorPersonId, ...window },
+    [
+      activityWrite(
+        statement.groupId,
+        actorPersonId,
+        'statement.finalized',
+        `${statementName(statement)} finalized`,
+        now,
+      ),
+    ],
+  )
 }
