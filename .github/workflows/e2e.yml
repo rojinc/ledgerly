@@ -62,7 +62,9 @@ jobs:
           fetch-depth: 0
 
       # A Deploy run whose commit is no longer main's latest deploys main's latest in its place, so
-      # dev runs only main's latest. That commit's own Deploy run triggers the run that tests it.
+      # dev runs only main's latest. That commit's own Deploy run usually triggers the run that
+      # tests it; if Deploy cancels that run instead, the commit is tested by the next deploy or
+      # by Run workflow.
       - name: Check this is what dev runs
         id: latest
         if: steps.secrets.outputs.ready == 'true'

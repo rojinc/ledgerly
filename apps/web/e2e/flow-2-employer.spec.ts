@@ -22,6 +22,8 @@ test.afterEach(async ({ page }) => {
 test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks', async ({
   page,
 }) => {
+  // 57 days of the calendar, on a Vite server that may be cold.
+  test.slow()
   await logIn(page, setupUser('sam'))
   const employer = `Acme ${runId()}`
 
@@ -33,14 +35,15 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   await page.getByLabel('Invoice cycle').selectOption({ label: 'Monthly' })
   await page.getByLabel('Payment terms (days)').fill('14')
   await page.getByRole('button', { name: 'Create employer', exact: true }).click()
-  // Its settings, as saved.
   await expect(page.getByRole('heading', { level: 1, name: employer })).toBeVisible()
+  // Before anything else can fail, so afterEach archives it.
+  groupId = /\/groups\/([^/]+)\/settings/.exec(page.url())?.[1]
+  expect(groupId).toBeTruthy()
+  // Its settings, as saved.
   await expect(page.getByLabel('Billing emails')).toHaveValue(testEmail('acme-billing'))
   await expect(page.getByLabel('Default hourly rate (AUD)')).toHaveValue('25.00')
   await expect(page.getByLabel('Invoice cycle')).toHaveValue('monthly')
   await expect(page.getByLabel('Payment terms (days)')).toHaveValue('14')
-  groupId = /\/groups\/([^/]+)\/settings/.exec(page.url())?.[1]
-  expect(groupId).toBeTruthy()
 
   // Step 2: every Thursday, 5 hours at the employer's $25/h, from today, skipping NSW holidays.
   // It ends with the horizon, so runs don't leave schedules in dev that go on for ever.

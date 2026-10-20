@@ -54,6 +54,8 @@ test('finds the group someone added them to by email', async ({ page }) => {
   // verified, A's placeholder is merged into it (#39) and B joins A's group.
   const notice = page.getByText(/^We found \d+ groups? you were added to\.$/)
   await signUp(page, bo, email)
+  // The dashboard renders only once bootstrap has answered, with the notice above it
+  // (route-guards.tsx's Bootstrapped), so this is bootstrap's answer: nothing claimed.
   await expect(notice).toBeHidden()
   await verify(page, bo, email)
   await expect(notice).toHaveText('We found 1 group you were added to.')
