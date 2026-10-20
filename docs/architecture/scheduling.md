@@ -8,6 +8,7 @@ A row in `schedules` ([data model](data-model.md#schedules)) with:
 
 - a **template**: the transaction to create (kind, description, amount or minutes × rate, payers, split). A bill template is `due` with no `dueOn`, since each occurrence is due on its own date, and has no billing period, since one period can't fit every occurrence, and so no `days` split ([days present](ledger.md#days-present)); recurring days-present bills are for later,
 - a **recurrence rule** (RFC 5545 `RRULE`), a start date and an optional end date,
+- an optional **pause** (`pausedFrom`): nothing is made from that date until someone resumes it ([pausing](#pausing-a-schedule)),
 - skip rules: specific dates (`exdates`) and optionally public holidays for the group's region,
 - `autoPost`: whether occurrences post themselves.
 
@@ -73,7 +74,7 @@ Query `schedules` where `nextRunAt <= now` (`idx_nextRunAt`, in pages by `$id`).
 ```
 today       = localToday(group.timezone, now)
 from        = max(startsOn, generatedThrough + 1 day)
-end         = min(endsOn, the rule's UNTIL or COUNTth date), or none
+end         = min(endsOn, the rule's UNTIL or COUNTth date, pausedFrom − 1 day), or none
 to          = min(end ?? ∞, today + horizonDays)
 for date in expandSchedule(schedule, from, to, holidays(group.region)):
     no row with id <scheduleId>_<YYYYMMDD> → create it
@@ -242,8 +243,10 @@ All on the `scheduler` function. Shapes are in [Functions API](functions-api.md#
 | Route | What it does |
 | --- | --- |
 | `POST /schedules` | Validate, create, then expand right away so the calendar fills in at once. `startsOn` is at most 31 days before local today (`VALIDATION_FAILED`, "The start date can be at most 31 days ago."): the past occurrences are made at once and wait for the user (step 2 never posts them), so a mistyped year can't make years of them. The template is checked against the ledger rules with a trial occurrence on `startsOn`, with the schedule's creator as the payer when it names none; an occurrence stores no payer, so the person who posts it pays then (the creator when step 2 posts it). A retry by the same person with the same content finishes the expansion; the same `id` otherwise is `CONFLICT` |
-| `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` set to yesterday (it stays empty for a schedule that never expanded, which starts from `startsOn` like a new one), then expand again from local today, never filling in past dates, even when reopening an ended schedule (but not while its creator has `deletedAt`: `VALIDATION_FAILED`, [functions API](functions-api.md#ledger)): changeable occurrences are updated in place, deleted when the new rule no longer has their date (before a later `startsOn`, say) or they are after its end, and created where missing. `created`, `updated` and `removed` count the ones created, updated in place and deleted. A changed `startsOn` has the same 31-day limit as on `POST`. The template's ledger rules (I-3) are checked with the trial on `startsOn`, as on `POST`; the deleted-people check uses its own trial, on the later of `startsOn` and today. The group and kind can't change (`VALIDATION_FAILED`) |
-| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended. It sets `nextRunAt` to now, and `generatedThrough` to no earlier than yesterday, so the next scheduled run deletes any it didn't get to (a timeout, say), or carries on up to a later `endsOn` than before, from today on |
+| `PATCH /schedules/{id}` | Update. Save the new rule and template, with `generatedThrough` set to yesterday (it stays empty for a schedule that never expanded, which starts from `startsOn` like a new one), then expand again from local today, never filling in past dates, even when reopening an ended schedule (but not while its creator has `deletedAt`: `VALIDATION_FAILED`, [functions API](functions-api.md#ledger)): changeable occurrences are updated in place, deleted when the new rule no longer has their date (before a later `startsOn`, say) or they are after its end, and created where missing. `created`, `updated` and `removed` count the ones created, updated in place and deleted. A changed `startsOn` has the same 31-day limit as on `POST`. The template's ledger rules (I-3) are checked with the trial on `startsOn`, as on `POST`; the deleted-people check uses its own trial, on the later of `startsOn` and today. The group and kind can't change (`VALIDATION_FAILED`). It keeps `pausedFrom`, so a paused schedule is expanded only up to its pause |
+| `POST /schedules/{id}/end` | Set `endsOn`. Delete non-overridden future occurrences after it (from the later of the day after `endsOn` and local today; a past one that wasn't posted waits for the user). It never checks the template, so a schedule can always be ended. It sets `nextRunAt` to now, and `generatedThrough` to no earlier than yesterday, so the next scheduled run deletes any it didn't get to (a timeout, say), or carries on up to a later `endsOn` than before, from today on. It keeps `pausedFrom`: whichever comes first ends the schedule |
+| `POST /schedules/{id}/pause` | Set `pausedFrom` (local today or later), then delete the non-overridden occurrences from it on, as end does after `endsOn`. Like end, it never checks the template ([pausing](#pausing-a-schedule)) |
+| `POST /schedules/{id}/resume` | Clear `pausedFrom` after the checks `PATCH` makes, on the stored template, then expand from local today. The dates missed while it was paused aren't made ([pausing](#pausing-a-schedule)) |
 | `DELETE /schedules/{id}` | Only if it has no posted occurrences; otherwise use end. Deletes all its occurrences, voided and edited ones included (last), with their items, taking their receipts off ([receiptFiles](data-model.md#receiptfiles)). One that stops partway (a timeout, or a post meanwhile) can leave some; voided and edited ones go last so they keep blocking their dates |
 | `POST /schedules/preview` | Return the next `count` dates (default 10) for an unsaved rule, from the later of `startsOn` and today in the group's timezone, for the form preview. `skipped` lists the dates left out on the way, each with `reason: 'exdate'` or `'holiday'` (`exdate` when both) |
 
@@ -252,6 +255,30 @@ Changes to occurrences themselves (edit, void, post) go through the `ledger` fun
 Creating or editing a schedule guards the group row and the member row of everyone its template names, like a ledger write ([ledger.md#concurrency](ledger.md#concurrency)). A template can't commit just after a member's removal was checked, and a removal can't commit just after the template. Every database transaction of these routes that writes occurrences or a schedule's rule guards the group row too, so none lands after an archive. Deleting occurrences stages the deletes, then checks the stored rows. An edit or an end keeps an occurrence edited, posted or voided meanwhile. A delete removes edited and voided ones anyway; one posted meanwhile stops it with `VALIDATION_FAILED`, and the schedule should be ended instead. Schedule templates can't have receipts ([functions-api.md](functions-api.md#scheduler)).
 
 Creating or editing a schedule sets its `nextRunAt` to now in the same transaction that saves it, so if the expansion stops partway (a timeout, or a race lost twice), the next scheduled run finishes it, with the occurrences from where it stopped brought in line with the new rule. Deleting occurrences also checks their items again after staging, so an item added meanwhile isn't left without its transaction.
+
+### Pausing a schedule
+
+`pausedFrom` is the first local date a pause skips ([#430](https://github.com/rojinc/ledgerly/issues/430)). Step 1 takes the day before it as the schedule's end, so nothing is made from that date on, and once everything up to it exists, `nextRunAt` is cleared: a paused schedule costs nothing hourly. It's the same for every kind (shift, bill, expense, income) in every group type. A pause doesn't move the rule: `UNTIL`, `COUNT` and an `INTERVAL`'s weeks stay where they were, and dates inside a pause count toward `COUNT`, as exdates do.
+
+- **Pause** (`POST /schedules/{id}/pause` with `{ pausedFrom }`):
+  - A date before local today is `VALIDATION_FAILED`.
+  - In one transaction with the schedule and group guards, as end does, it sets `pausedFrom`, `nextRunAt` to now, and `generatedThrough` as `endScheduleOn()` works it out, with the day before `pausedFrom` as the end.
+  - Then it deletes the occurrences from `pausedFrom` on that are still `scheduled` or `due` and not edited, and returns how many (`removed`). An edited one stays, as after an end: steps 2 and 3 don't change, so with `autoPost` it still posts, and a due bill is still reminded about.
+  - Like end, it never checks the template, so a schedule can always be paused, and it can be paused before it starts.
+  - Pausing a paused schedule moves the date: an earlier one deletes more, and a later one lets the next run make the days from today (or from the old date, if that's later) up to it, without resume's checks. That's safe: step 1 still checks each occurrence it makes, and an account deletion still ends the schedule.
+  - A `pausedFrom` after the schedule's end changes nothing it makes, and once that end has passed the app shows the schedule as ended, not paused.
+- **Resume** (`POST /schedules/{id}/resume`, no body):
+  - A schedule that isn't paused gets `created: 0`, with nothing written.
+  - Otherwise it makes `PATCH`'s checks on the stored template: the ledger rules with the trial on `startsOn`; the creator's `deletedAt`, then the people the trial on the later of `startsOn` and today names (`VALIDATION_FAILED`, [functions API](functions-api.md#ledger)); and the group and member guards.
+  - In that transaction it clears `pausedFrom`, sets `generatedThrough` to yesterday (empty stays empty) and `nextRunAt` to now. Then it expands from local today (from `startsOn` if it never expanded) and returns how many occurrences it created (`created`). Any it updates or removes on the way, as `PATCH` would, aren't counted.
+  - So it carries on from today, and the dates missed inside the pause aren't made. A missed shift or bill is added by hand.
+  - An expansion that stops partway (a timeout, or a race lost) is finished by the next scheduled run, as after `PATCH`, since the schedule is due. A resume that runs again after losing a race finds the schedule no longer paused and answers `created: 0`.
+  - A resume makes again any occurrence the pause deleted that's dated today or later. A bill reminded about before the pause can then be reminded about a second time (Resend's idempotency key only stops a resend within 24 hours). That's accepted, as when an ended schedule is reopened with `PATCH`.
+  - Nothing resumes on its own: a pause lasts until someone resumes it.
+- **The other routes and jobs:**
+  - `PATCH` keeps `pausedFrom` (no `ScheduleInput` can set it), and end keeps it too.
+  - [Deleting an account](identity-and-invites.md#each-group-they-joined) ends a paused schedule all the same, by its stored `endsOn`, not its pause, so a later resume makes nothing after that end.
+  - An expansion's schedule guard compares `pausedFrom` too, so one that races a pause or a resume runs again.
 
 ## Timer shifts
 

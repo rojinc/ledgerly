@@ -22,6 +22,7 @@ Step-by-step journeys through the product. Each step names the function route it
 - **Extra hours at a different rate:** add a second shift on the same day → `ledger POST /transactions`.
 - **Didn't go:** void the shift with a reason → `ledger POST /transactions/{id}/void`. The voided row stays, so the scheduler never re-creates it.
 - **Unplanned day:** tap **Start** on the Today screen (`ledger POST /timer/start`), then **Stop** (`ledger POST /timer/stop`).
+- **Time off** ([#430](https://github.com/rojinc/ledgerly/issues/430)): on Schedules, tap **Pause** on the shift schedule and pick the first day off (today by default) → `scheduler POST /schedules/{id}/pause`. The shifts from that day on go, apart from any already edited. The row then reads "Paused from 3 Nov". Back at work: **Resume** → `scheduler POST /schedules/{id}/resume`. Shifts carry on from today, and the days in between aren't added.
 
 ## 4. Employer expenses and payments
 
@@ -50,7 +51,7 @@ To bill before the period ends, or with no regular invoices at all, an admin use
 3. Alice pays it on 10 Oct and marks it paid → `ledger POST /transactions/{id}/post`, with payer Alice.
 4. The default split is **days present**. Cara moved in on 1 Aug, so she pays for 61 of the 92 days.
 
-**Recurring house bills and expenses** ([#403](https://github.com/rojinc/ledgerly/issues/403)): on the house's Bills page, an admin or member taps **New recurring**. They choose a bill (due on each date until someone marks it paid, or paid by autopay) or an expense (added on each date as already paid), then the amount, who pays it, and the split, with the repeat and the first date. The split is either everyone living there on each date, equally, or equally between the people ticked → `scheduler POST /schedules`, with the template's `payers` and, for ticked people, an `equal` split. A recurring expense always posts itself (`autoPost`), and starts today at the earliest, since nothing else posts its occurrences. The Bills page lists them, and their creator or an admin can **Stop** one.
+**Recurring house bills and expenses** ([#403](https://github.com/rojinc/ledgerly/issues/403)): on the house's Bills page, an admin or member taps **New recurring**. They choose a bill (due on each date until someone marks it paid, or paid by autopay) or an expense (added on each date as already paid), then the amount, who pays it, and the split, with the repeat and the first date. The split is either everyone living there on each date, equally, or equally between the people ticked → `scheduler POST /schedules`, with the template's `payers` and, for ticked people, an `equal` split. A recurring expense always posts itself (`autoPost`), and starts today at the earliest, since nothing else posts its occurrences. The Bills page lists them, and their creator or an admin can **Pause** one from today ("Pause Rent from today?"), **Resume** it, or **Stop** it ([#430](https://github.com/rojinc/ledgerly/issues/430)).
 
 A posted house expense is fixed the same way as an employer entry: its creator or an admin opens it and taps **Edit**, which shows the house expense form filled in → `ledger PATCH /transactions/{id}`. Who paid, the split and the people sharing it can all change; a new date doesn't change who shares it. One the form can't show has no Edit: void it and add it again.
 
@@ -80,3 +81,4 @@ A posted house expense is fixed the same way as an employer entry: its creator o
 1. Personal → **New recurring bill**: description "Rent", category `rent`, $400, weekly on Monday → `scheduler POST /schedules` with `kind: bill`. (There is no payee field; the landlord isn't a member of the personal group.)
 2. The scheduler creates each week's bill as `due`. A reminder email goes out 2 days before.
 3. The user taps **Mark paid** → `ledger POST /transactions/{id}/post`. If autopay is on in the schedule (`autoPost`), it is posted automatically on the due date.
+4. **Away for a month:** on Bills, **Pause** the recurring bill from today → `scheduler POST /schedules/{id}/pause`. Coming back: **Resume** → `scheduler POST /schedules/{id}/resume`. Bills carry on from today, and the weeks in between aren't added ([#430](https://github.com/rojinc/ledgerly/issues/430)).
