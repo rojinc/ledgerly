@@ -13,9 +13,11 @@ import {
   timerRunningEmail,
 } from '@ledgerly/server/email/templates'
 import { logProblem } from '@ledgerly/server/http/log'
+import { loadGroupLedger } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 import { findSchedule } from '../schedule-rows'
 import { appBase, type Services } from '../services'
+import { creatorWouldPayAfterLeaving } from './auto-post'
 
 export type ReminderCounts = { sent: number; skipped: number; failed: number }
 
@@ -132,15 +134,25 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
       if (!isAwake(group, now) || !soon) return
       // Step 2 posts the bills of schedules that auto-post, on their due date. One due today is
       // still due here only if step 2, earlier in this run, left it (its creator has moved out, a
-      // statement is being finalized, or the post failed), so it asks to mark it paid.
+      // statement is being finalized, or the post failed), and step 2 will leave one its creator
+      // would pay after leaving, so those ask to mark it paid.
       const schedule = bill.scheduleId ? await schedules(bill.scheduleId) : undefined
+      const autoPay =
+        schedule?.autoPost === true &&
+        compareDates(dueOn, local) > 0 &&
+        !(await creatorWouldPayAfterLeaving(
+          services.db,
+          bill,
+          await loadGroupLedger(services.db, group, schedule.createdBy),
+          schedule.createdBy,
+        ))
       const content = billDueSoonEmail({
         groupName: group.name,
         description: bill.description,
         amountCents: bill.totalCents,
         currency: group.currency,
         dueOn,
-        autoPay: schedule?.autoPost === true && compareDates(dueOn, local) > 0,
+        autoPay,
         url: link(bill),
       })
       // A new due date needs its own reminder, so it's in the key.

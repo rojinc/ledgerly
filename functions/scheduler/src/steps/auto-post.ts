@@ -123,7 +123,8 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
 // The creator pays an expense or bill whose input names no payers (build-shares.ts), but not
 // once they're no longer an active member of the group, or have deleted their account (before the
 // deletion reaches this group): it waits for someone to confirm it (scheduling.md#step-2-auto-post).
-async function creatorWouldPayAfterLeaving(
+// Step 3 asks the same before an email promises autopay.
+export async function creatorWouldPayAfterLeaving(
   db: Db,
   row: Transactions,
   ledger: Ledger,
