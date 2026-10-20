@@ -1,18 +1,22 @@
+/// <reference path="./linebreak.d.ts" />
 import { formatMoney } from '@ledgerly/core/money/format'
+import { fontRuns, missingGlyphs, type PdfFont } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
+import LineBreaker from 'linebreak'
 import type {
   Content,
   ContentText,
   CustomTableLayout,
   TDocumentDefinitions,
 } from 'pdfmake/interfaces'
+import { logProblem } from '../http/log'
+import { loadFonts } from './fonts'
 import {
   breakable,
   field,
   footer,
   formatDate,
   heading,
-  type Line,
   LOCALE,
   lineText,
   MUTED,
@@ -21,8 +25,15 @@ import {
   table,
 } from './layout'
 
+type FontRun = ReturnType<typeof fontRuns>[number]
+
 // Wide enough for -$1,234,567.89 on one line.
 const AMOUNT = 70
+// Unicode's mandatory breaks other than a line feed or carriage return, which a stored name or
+// description can hold (#346). No font has them, so they'd print as �, which pdfmake doesn't break
+// at, and breakable() takes them for spaces: a name of them would widen its column until the
+// amounts fall off the page. They print as line feeds instead, so pdfmake breaks there.
+const OTHER_BREAKS = /[\v\f\u0085\u2028\u2029]/g
 
 /**
  * The house divide PDF, laid out as statements.md#monthly-divide-pdf-layout-house says: who
@@ -35,6 +46,17 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
     text: formatMoney(cents, snapshot.group.currency, LOCALE),
     noWrap: true,
   })
+  // As the invoice does (invoice-pdf.ts): every text from the snapshot prints as fontRuns()
+  // splits it, each run in its own font, and a character no font has as �. A font's file is read
+  // the first time a run needs it.
+  let replaced = 0
+  const print = (text: string): FontRun[] => {
+    const shown = text.replace(OTHER_BREAKS, '\n')
+    replaced += missingGlyphs(shown).length
+    const runs = narrow(fontRuns(shown))
+    loadFonts(runs.map((run) => run.font))
+    return runs
+  }
   const names = new Map(snapshot.people.map((person) => [person.personId, breakable(person.name)]))
   // buildStatementSnapshot lists everyone in a line or a transfer in `people`.
   const nameOf = (personId: string): string => {
@@ -54,7 +76,7 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   const content: Content[] = [
     {
       columns: [
-        { text: breakable(snapshot.group.name), style: 'issuer' },
+        { text: print(breakable(snapshot.group.name)), style: 'issuer' },
         {
           width: 'auto',
           stack: [
@@ -69,7 +91,7 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
       ['*', AMOUNT, AMOUNT, AMOUNT, 90],
       ['Name', 'Opening', 'Paid', 'Share', 'Closing'],
       snapshot.people.map((person) => [
-        nameOf(person.personId),
+        { text: print(nameOf(person.personId)) },
         money(person.openingCents),
         money(person.givenCents),
         money(person.receivedCents),
@@ -84,13 +106,16 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
     ),
     heading('Suggested transfers'),
     ...(snapshot.transfers.length > 0
-      ? snapshot.transfers.map(
-          (transfer) =>
+      ? snapshot.transfers.map((transfer) => ({
+          text: print(
             `${nameOf(transfer.fromPersonId)} pays ${nameOf(transfer.toPersonId)} ${money(transfer.cents).text}`,
-        )
+          ),
+        }))
       : ['Everyone is settled up.']),
   ]
-  if (snapshot.lines.length > 0) content.push(transactions(snapshot, money, nameOf))
+  if (snapshot.lines.length > 0) content.push(transactions(snapshot, money, nameOf, print))
+  // The count only, never the text (security-and-privacy.md#personal-data).
+  if (replaced > 0) logProblem('pdf_characters_replaced', { count: replaced })
 
   const doc: TDocumentDefinitions = {
     ...PAGE,
@@ -101,26 +126,144 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   return pdfmake.createPdf(doc).getBuffer()
 }
 
-// pdfmake drops the part of a row it may not break that doesn't fit on one page, so rows are
-// kept whole only while every one surely fits: at most this many wrapped lines (about 700 pt of
-// a page), counting a line per 10 characters, which no name or description in Roboto 10 pt beats,
-// from each line break.
+// pdfmake keeps only the first page of a row it may not break, so a row taller than a page
+// loses the rest, and near a page's height the whole table can go, heading and all, without an
+// error (#300). So rows are kept whole only while every one surely fits: at most this many lines
+// of Roboto's height (13.48 pt), which with 15 people's row padding (64 pt) leaves about 25 pt of
+// the 696 pt under the table's headers.
 const MAX_ROW_LINES = 45
-const CHARS_PER_LINE = 10
-// Where pdfmake must start a new line (Unicode's mandatory breaks; CR LF counts twice, which is
-// safe). A stored
-// name or description can hold them.
-const LINE_BREAK = /[\n\v\f\r\u0085\u2028\u2029]/
+// The narrowest cell a row's text wraps in: a person's name, set 10 pt into the description's.
+const CELL_WIDTH = 171
+// The narrowest column any text prints in: the People table's names, 515.28 pt less the four
+// amount columns (300) and the cells' padding (64).
+const NAME_COLUMN = 151
+// Each font's widest character at 10 pt (Roboto's medium Ѹ, Noto Sans CJK's ⸻, and any of Noto
+// Emoji's), read from the files: no word pdfmake measures is wider than these say.
+const WIDEST: Record<PdfFont, number> = { Roboto: 11.79, NotoSansCJK: 24.59, NotoEmoji: 12.7 }
+// A line with any Noto Sans CJK is its 1.448 em tall, against 1.172 for Roboto and Noto Emoji:
+// 1.24 times, rounded up.
+const CJK_LINE = 1.25
+const LINE_END = /\r?\n$|\r$/
 
-function wrappedLines(line: Line, nameOf: (personId: string) => string): number {
-  const lines = (text: string) =>
-    text
-      .split(LINE_BREAK)
-      .reduce((sum, part) => sum + Math.max(1, Math.ceil(part.length / CHARS_PER_LINE)), 0)
-  return line.shares.reduce(
-    (sum, share) => sum + lines(nameOf(share.personId)),
-    lines(lineText(line)),
-  )
+const widthOf = (font: PdfFont, text: string) => [...text].length * WIDEST[font]
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+/** Where `linebreak` (UAX #14), which pdfmake splits words with, allows a break in `text`. */
+function breaks(text: string): { position: number; required: boolean }[] {
+  const breaker = new LineBreaker(text)
+  const found = []
+  for (let next = breaker.nextBreak(); next; next = breaker.nextBreak()) found.push(next)
+  return found
+}
+
+/**
+ * One run's words, as pdfmake's `splitWords()` makes them (pdfmake/js/TextBreaker.js): `text`
+ * without the line break that ends it, which `raw` keeps.
+ */
+function splitWords(text: string): { text: string; raw: string; lineEnd: boolean }[] {
+  if (text === '') return [{ text, raw: text, lineEnd: false }]
+  let start = 0
+  return breaks(text).map(({ position, required }) => {
+    const raw = text.slice(start, position)
+    start = position
+    const lineEnd = required || LINE_END.test(raw)
+    return { text: lineEnd ? raw.replace(LINE_END, '') : raw, raw, lineEnd }
+  })
+}
+
+type Word = { font: PdfFont; text: string; raw: string; glued: boolean; lineEnd: boolean }
+
+/**
+ * The words pdfmake lays `runs` out in, as its `TextBreaker` makes them: each run split on its
+ * own, and a run's last word glued to the next run's first when the two have no break between
+ * them. pdfmake keeps glued words on one line where they fit, and fills lines with them a
+ * character at a time where they don't.
+ */
+function pdfWords(runs: readonly FontRun[]): Word[] {
+  const words: Word[] = []
+  let last: string | undefined
+  runs.forEach(({ font, text }, index) => {
+    const split = splitWords(text)
+    const previous = words.at(-1)
+    if (last && previous && splitWords(last + split[0]?.text).length === 1) previous.glued = true
+    for (const word of split) words.push({ font, ...word, glued: false })
+    const end = split.at(-1)
+    last = index + 1 < runs.length && !end?.lineEnd ? end?.text : undefined
+  })
+  return words
+}
+
+/**
+ * `runs` with a zero-width space wherever a word, or words pdfmake glues together, would print
+ * wider than NAME_COLUMN, at their fonts' widest. pdfmake widens a column to its widest word, and
+ * never cuts a glued piece of one character, so either way a longer one runs into the amounts or
+ * pushes them off the page. breakable() can't see that: it counts the text as typed, but a Thai
+ * letter prints as one `�` or more, a space pdfmake doesn't break at (a tab, say) prints as `�`,
+ * and a run in another font can glue to the next. The space goes between grapheme clusters, so it
+ * never cuts an emoji apart, unless one cluster is wider than the column (emoji joined by U+200D,
+ * say), and in Roboto, which has it.
+ */
+function narrow(runs: readonly FontRun[]): FontRun[] {
+  const narrowed: FontRun[] = []
+  const add = (font: PdfFont, text: string) => {
+    const last = narrowed.at(-1)
+    if (last?.font === font) last.text += text
+    else if (text !== '') narrowed.push({ font, text })
+  }
+  let width = 0
+  for (const { font, raw, glued } of pdfWords(runs)) {
+    for (const { segment } of graphemes.segment(raw)) {
+      for (const piece of widthOf(font, segment) > NAME_COLUMN ? segment : [segment]) {
+        const char = widthOf(font, piece)
+        if (width + char > NAME_COLUMN) {
+          add('Roboto', '\u200B')
+          width = 0
+        }
+        add(font, piece)
+        width += char
+      }
+    }
+    if (!glued) width = 0
+  }
+  return narrowed
+}
+
+/**
+ * The most lines of Roboto's height that `runs`, as printed, can take in a cell CELL_WIDTH wide.
+ * It wraps pdfmake's own words (pdfWords()) greedily, as pdfmake does, with every character as
+ * wide as its font's widest, and glued words as one; a required break starts a new line.
+ *
+ * A word wider than the cell starts a new line, and the next word starts another. pdfmake breaks
+ * it where Unicode allows, or between characters, packing whole pieces, so any two of its lines
+ * together hold more than a cell: it takes at most 1 + 2 × width / CELL_WIDTH lines, wherever the
+ * pieces fall.
+ */
+export function wrappedLines(runs: readonly FontRun[]): number {
+  let lines = 1
+  let x = 0
+  let width = 0
+  const words = pdfWords(runs)
+  words.forEach((word, index) => {
+    width += widthOf(word.font, word.text)
+    if (word.glued) return
+    if (width <= CELL_WIDTH) {
+      if (x > 0 && x + width > CELL_WIDTH) {
+        lines++
+        x = 0
+      }
+      x += width
+    } else {
+      if (x > 0) lines++
+      lines += Math.floor((2 * width) / CELL_WIDTH)
+      x = CELL_WIDTH
+    }
+    width = 0
+    if (word.lineEnd && index + 1 < words.length) {
+      lines++
+      x = 0
+    }
+  })
+  return runs.some((run) => run.font === 'NotoSansCJK') ? lines * CJK_LINE : lines
 }
 
 // The outer table's padding, so the amounts under a line sit under the Paid and Share headers.
@@ -141,9 +284,19 @@ function transactions(
   snapshot: StatementSnapshot,
   money: (cents: number) => ContentText,
   nameOf: (personId: string) => string,
+  print: (text: string) => FontRun[],
 ): Content {
+  const rows = snapshot.lines.map((line) => ({
+    line,
+    description: print(lineText(line)),
+    names: line.shares.map((share) => print(nameOf(share.personId))),
+  }))
   // A row too tall for a page breaks across pages rather than vanish, heading and all.
-  const whole = snapshot.lines.every((line) => wrappedLines(line, nameOf) <= MAX_ROW_LINES)
+  const whole = rows.every(
+    ({ description, names }) =>
+      names.reduce((sum, name) => sum + wrappedLines(name), wrappedLines(description)) <=
+      MAX_ROW_LINES,
+  )
   const right = (cell: ContentText): ContentText => ({ ...cell, alignment: 'right' })
   const header = ['Date', 'Description', 'Paid', 'Share', 'Total'].map((text, index) => ({
     text,
@@ -161,7 +314,7 @@ function transactions(
       body: [
         [{ text: 'Transactions', style: 'heading', colSpan: 5 }, {}, {}, {}, {}],
         header,
-        ...snapshot.lines.map((line) => [
+        ...rows.map(({ line, description, names }) => [
           formatDate(line.date),
           {
             colSpan: 3,
@@ -169,9 +322,9 @@ function transactions(
             table: {
               widths: ['*', AMOUNT, AMOUNT],
               body: [
-                [{ text: lineText(line), bold: true }, '', ''],
-                ...line.shares.map((share) => [
-                  { text: nameOf(share.personId), color: MUTED, margin: [10, 0, 0, 0] },
+                [{ text: description, bold: true }, '', ''],
+                ...line.shares.map((share, index) => [
+                  { text: names[index], color: MUTED, margin: [10, 0, 0, 0] },
                   right(money(share.givenCents)),
                   right(money(share.receivedCents)),
                 ]),

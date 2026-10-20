@@ -1,10 +1,13 @@
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { parseLocalDate } from '@ledgerly/core/dates/local-date'
+import { fontRuns } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { buildStatementSnapshot, type SnapshotInput } from '@ledgerly/core/statements/snapshot'
 import { extractText, getDocumentProxy } from 'unpdf'
-import { describe, expect, it } from 'vitest'
-import { renderDividePdf } from './divide-pdf'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { renderDividePdf, wrappedLines } from './divide-pdf'
+import { useFontReader } from './fonts'
 
 type Line = StatementSnapshot['lines'][number]
 
@@ -74,6 +77,10 @@ async function pageTexts(pdf: Buffer): Promise<string[]> {
   return text.map((page) => page.replace(/\s+/g, ' '))
 }
 
+// The page's left and right margins (layout.ts's PAGE). Right-aligned text ends on the right one,
+// give or take rounding, so a check against it allows half a point.
+const PAGE_MARGIN = 40
+
 async function pdfText(pdf: Buffer): Promise<string> {
   const { text } = await extractText(await getDocumentProxy(new Uint8Array(pdf)), {
     mergePages: true,
@@ -81,18 +88,69 @@ async function pdfText(pdf: Buffer): Promise<string> {
   return text.replace(/\s+/g, ' ')
 }
 
-// Text drawn past the right edge of its page, which a reader would never see.
-async function textBeyondPage(pdf: Buffer): Promise<string[]> {
+// Text drawn past the right edge of its page, which a reader would never see, or with `margin`,
+// past the right margin.
+async function textBeyondPage(pdf: Buffer, margin = 0): Promise<string[]> {
   const doc = await getDocumentProxy(new Uint8Array(pdf))
   const beyond: string[] = []
   for (let number = 1; number <= doc.numPages; number++) {
     const page = await doc.getPage(number)
-    const right = page.view[2] as number
+    const right = (page.view[2] as number) - margin
     for (const item of (await page.getTextContent()).items) {
       if ('str' in item && item.transform[4] + item.width > right) beyond.push(item.str)
     }
   }
   return beyond
+}
+
+// Where the build finds each font file (scripts/build-functions.mjs).
+const FONT_PATHS: Record<string, string | URL> = {
+  'NotoSansCJKsc-Regular.otf': new URL('../../fonts/NotoSansCJKsc-Regular.otf', import.meta.url),
+  'NotoEmoji_400Regular.ttf': createRequire(import.meta.url).resolve(
+    '@expo-google-fonts/noto-emoji/400Regular/NotoEmoji_400Regular.ttf',
+  ),
+}
+// The font files each test reads, in order, as a new instance would.
+let reads: string[] = []
+beforeEach(() => {
+  reads = []
+  useFontReader((file) => {
+    reads.push(file)
+    return readFileSync(FONT_PATHS[file] as string | URL)
+  })
+})
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+// What logProblem wrote with console.warn, parsed.
+const logged = (warn: { mock: { calls: unknown[][] } }) =>
+  warn.mock.calls.map(([line]) => JSON.parse(String(line)))
+
+// Alice, Bob and Cara renamed; the golden divide otherwise.
+function renamed(
+  names: { alice: string; bob: string; cara: string },
+  group = '12 Smith St',
+  description = 'Electricity',
+): SnapshotInput {
+  const input = goldenInput([
+    line(
+      '2026-10-10',
+      'bill',
+      27000,
+      [share('alice', 27000, 10139), share('bob', 0, 10139), share('cara', 0, 6722)],
+      { description },
+    ),
+  ])
+  return {
+    ...input,
+    group: { ...input.group, name: group },
+    people: input.people.map((person) => ({
+      ...person,
+      name: names[person.personId as keyof typeof names] ?? person.name,
+    })),
+  }
 }
 
 describe('renderDividePdf', () => {
@@ -330,6 +388,8 @@ describe('renderDividePdf', () => {
     )
     expect(text).toContain('Transactions Date Description Paid Share Total 3 Oct 2026')
     expect(text).toMatch(/\$30\.00 .*4 Oct 2026 Milk/)
+    // Each break prints as one: none is a character no font has.
+    expect(text).not.toContain('\uFFFD')
   }
 
   it('renders 500 lines between 15 people, well under the 10 MB bucket limit', async () => {
@@ -353,9 +413,307 @@ describe('renderDividePdf', () => {
     expect(await pdfText(pdf)).toContain('Shared shopping 500')
   }, 60_000)
 
+  it('prints Chinese, Japanese, Korean and emoji in their own fonts (#300)', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const input = renamed(
+      { alice: '张三', bob: 'ヤマダ ハナコ', cara: '김민준' },
+      '12 Smith St 🏠',
+      'Power 😀',
+    )
+    const text = await pdfText(await renderDividePdf(buildStatementSnapshot(input)))
+    for (const expected of [
+      '12 Smith St 🏠',
+      '张三 $0.00 $270.00 $101.39 $168.61 is owed $168.61',
+      'ヤマダ ハナコ -$3.00 $0.00 $101.39 -$104.39 owes $104.39',
+      '김민준 $0.00 $0.00 $67.22 -$67.22 owes $67.22',
+      'ヤマダ ハナコ pays 张三 $104.39',
+      '김민준 pays Erin $3.00',
+      '10 Oct 2026 Power 😀 张三 $270.00 $101.39 ヤマダ ハナコ $0.00 $101.39 김민준 $0.00 $67.22',
+    ]) {
+      expect(text).toContain(expected)
+    }
+    // Nothing printed as �, or left out (an unknown glyph extracts as U+0000).
+    expect(text).not.toContain('\uFFFD')
+    expect(text).not.toContain('\u0000')
+    expect(warn).not.toHaveBeenCalled()
+    expect(reads).toEqual(['NotoEmoji_400Regular.ttf', 'NotoSansCJKsc-Regular.otf'])
+  })
+
+  it('reads no font file for a divide Roboto can print', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await renderDividePdf(buildStatementSnapshot(goldenInput()))
+    expect(reads).toEqual([])
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  // Thai is in no font. The log line has the count only, never the text.
+  it('prints a character no font has as \uFFFD in every text, and logs how many', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const input = renamed({ alice: 'Alice', bob: 'Bob', cara: 'ก Cara' }, 'ก House', 'ก bill')
+    const text = await pdfText(await renderDividePdf(buildStatementSnapshot(input)))
+    for (const expected of [
+      '\uFFFD House',
+      '\uFFFD Cara $0.00 $0.00 $67.22',
+      '\uFFFD Cara pays Alice $64.22',
+      '\uFFFD Cara pays Erin $3.00',
+      '10 Oct 2026 \uFFFD bill Alice $270.00 $101.39 Bob $0.00 $101.39 \uFFFD Cara $0.00 $67.22',
+    ]) {
+      expect(text).toContain(expected)
+    }
+    expect(text).not.toContain('ก')
+    expect(text).not.toContain('\u0000')
+    // The house name, the description, and Cara in the people table, two transfers and the line.
+    expect(logged(warn)).toEqual([{ fn: 'unknown', event: 'pdf_characters_replaced', count: 6 }])
+    expect(reads).toEqual([])
+  })
+
+  // A row pdfmake keeps whole but can't place on a page loses the whole table, heading and all,
+  // without an error (#300). Counting 10 characters a line, this one counted 45 of 45 lines (15
+  // names of 20 characters, and a description of 140 with breakable()'s zero-width spaces), but
+  // Noto Sans CJK's lines are about 24% taller than Roboto's. Every character is different, so
+  // each one is checked wherever the names wrap between the amounts.
+  it('prints a row of Chinese names and description whole, or across pages, never dropped', async () => {
+    const chars = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => String.fromCodePoint(from + i)).join('')
+    const names = Array.from({ length: 15 }, (_, i) => chars(0x4e00 + i * 20, 20))
+    const description = chars(0x5000, 140)
+    const input = goldenInput([
+      line(
+        '2026-10-10',
+        'bill',
+        15000,
+        names.map((_, i) => share(`p${i}`, i === 0 ? 15000 : 0, 1000)),
+        { description },
+      ),
+    ])
+    const snapshot = buildStatementSnapshot({
+      ...input,
+      people: names.map((name, i) => ({ personId: `p${i}`, name })),
+      previousClosing: [],
+    })
+    const text = (await pageTexts(await renderDividePdf(snapshot))).join(' ')
+    // From the table's heading on, every character of the row, wherever its lines wrap.
+    const heading = text.indexOf('Transactions Date Description')
+    expect(heading).toBeGreaterThanOrEqual(0)
+    const table = text.slice(heading)
+    for (const char of names.join('') + description) expect(table).toContain(char)
+  })
+
+  // A divide of one line between `names`: its text from the transactions table's heading on.
+  async function tableOf(description: string, names: string[]): Promise<string> {
+    const input = goldenInput([
+      line(
+        '2026-10-10',
+        'bill',
+        1000 * names.length,
+        names.map((_, i) => share(`p${i}`, i === 0 ? 1000 * names.length : 0, 1000)),
+        { description },
+      ),
+    ])
+    const snapshot = buildStatementSnapshot({
+      ...input,
+      people: names.map((name, i) => ({ personId: `p${i}`, name })),
+      previousClosing: [],
+    })
+    const text = (await pageTexts(await renderDividePdf(snapshot))).join(' ')
+    const heading = text.indexOf('Transactions Date Description')
+    expect(heading).toBeGreaterThanOrEqual(0)
+    return text.slice(heading)
+  }
+  const count = (text: string, char: string) => text.split(char).length - 1
+
+  // U+FB2C is 1 character as typed and 3 as printed (NFC, then a � for each part no font has):
+  // the row is counted as printed, so it breaks across pages rather than vanish.
+  it('counts a row as printed, so characters that print as several � are never dropped', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const table = await tableOf(Array(50).fill('\uFB2C'.repeat(3)).join(' '), ['A', 'B'])
+    expect(count(table, '\uFFFD')).toBe(450)
+    expect(logged(warn)).toEqual([{ fn: 'unknown', event: 'pdf_characters_replaced', count: 450 }])
+  })
+
+  // ⏩ is 1 unit, 1.27 em wide in Noto Emoji, and pdfmake can't break between two of them, so two
+  // words of 7 don't fit on one line.
+  it('never drops a row of emoji words that leave each line part empty', async () => {
+    const name = Array(12).fill('⏩'.repeat(7)).join(' ')
+    const table = await tableOf(Array(4).fill('⏩'.repeat(8)).join(' '), Array(4).fill(name))
+    expect(count(table, '⏩')).toBe(4 * 84 + 32)
+  })
+
+  // pdfmake starts a new line at each line feed: a description stored with them (#346) still
+  // counts each one as a line.
+  it('never drops a row whose description has line feeds', async () => {
+    const table = await tableOf(Array(100).fill('x').join('\n'), ['A', 'B'])
+    expect(count(table, 'x')).toBe(100)
+  })
+
+  // A carriage return starts a new line in pdfmake, as a line feed does.
+  it('never drops a row whose description has carriage returns', async () => {
+    const table = await tableOf(Array(50).fill('x').join('\r'), ['A', 'B'])
+    expect(count(table, 'x')).toBe(50)
+  })
+
+  // Each name is one word across fonts (⸻ and no-break spaces), which pdfmake cuts between
+  // characters, leaving up to a ⸻'s width empty on each line.
+  it('never drops a row of words that run across fonts', async () => {
+    const name = ['⸻'.repeat(4), '⸻'.repeat(5), '⸻'.repeat(5), '⸻'.repeat(5)].join('\u00A0')
+    const others = ['Ann', 'Bob', 'Cat', 'Dan', 'Eve', 'Fay', 'Gus']
+    const table = await tableOf('Rent', [...Array(8).fill(name), ...others])
+    expect(count(table, '⸻')).toBe(8 * 19)
+  })
+
+  // Each name prints in 3 lines, as pdfmake can't fit 😀 beside the 13 ⏩ either side.
+  it('never drops a row of words wider than the cell that break into uneven pieces', async () => {
+    const name = `😀${'⏩'.repeat(13)}😀`
+    const table = await tableOf(Array(15).fill('q').join('\n'), Array(15).fill(name))
+    expect(count(table, '⏩')).toBe(15 * 13)
+    expect(count(table, 'q')).toBe(15)
+  })
+
+  // pdfmake breaks where Unicode's line breaking allows, not at every space: `( ( ` is glued to the
+  // word after it (LB14), here in another font, so pdfmake fills its lines a character at a time
+  // (AI A's R1 and R2 on #365).
+  it('never drops a row whose spaces pdfmake glues to the next word', async () => {
+    const glued = `x ( ( ${'⏩'.repeat(13)}`
+    const lines = await tableOf('Rent', Array(4).fill(Array(5).fill(glued).join('\n')))
+    expect(count(lines, '⏩')).toBe(4 * 5 * 13)
+    const word = 'Ѹ'.repeat(13)
+    const names = [
+      ...Array(12).fill(`${word} ${word}`),
+      `${word} ${word} ${word}`,
+      ...Array(2).fill(glued),
+    ]
+    const table = await tableOf(Array(14).fill(word).join(' '), names)
+    expect(count(table, 'Ѹ')).toBe(14 * 13 + 12 * 26 + 39)
+    expect(count(table, '⏩')).toBe(2 * 13)
+  })
+
+  // 16 texts of 3 lines each, 48 in all: more than a page holds, so the row breaks across pages.
+  it('lets a row of 48 lines break across pages, with every character', async () => {
+    const text = Array(3).fill('⭐'.repeat(12)).join(' ')
+    const table = await tableOf(text, Array(15).fill(text))
+    expect(count(table, '⭐')).toBe(16 * 36)
+  })
+
+  // A Thai letter prints as one `�` or more, and a tab, an ogham space mark, a narrow no-break space
+  // or a medium mathematical space as one each: none is where pdfmake breaks, though breakable()
+  // takes the spaces for spaces. Emoji joined by U+200D, or Hangul's leading consonants, are one
+  // grapheme cluster; and pdfmake glues a word in one font to a no-break space or U+FEFF in the next, but
+  // never cuts a piece of one character. The divide's own zero-width spaces keep each word, glued or
+  // not, narrower than its column, the People table's names (151 pt) included, so no amount is
+  // pushed into the margin or printed over.
+  it.each([
+    ['Thai', 'สมชายใจดีมีสุขสบายดี'],
+    // 165 pt, wider than the People table's names but not a transaction's.
+    ['14 wide letters', 'Ѹ'.repeat(14)],
+    ['tabs', `b${'\t'.repeat(99)}b`],
+    ['ogham space marks', `b${'\u1680'.repeat(99)}b`],
+    ['narrow no-break spaces', `b${'\u202F'.repeat(99)}b`],
+    ['medium mathematical spaces', `b${'\u205F'.repeat(99)}b`],
+    ['emoji joined by U+200D', `${'⏩\u200D'.repeat(49)}⏩`],
+    ['Hangul leading consonants', '\u1100'.repeat(25)],
+    ['emoji and no-break spaces', '⏩\u00A0'.repeat(50)],
+    ['emoji and U+FEFF', '⏩\uFEFF'.repeat(40)],
+    ['dashes and no-break spaces', '⸻\u00A0'.repeat(50)],
+    ['ideographs and no-break spaces', '一\u00A0'.repeat(50)],
+  ])('keeps every amount on the page with a name of %s', async (_, name) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const lines = [
+      line('2026-10-03', 'expense', 3000, [share('p0', 3000, 3000)], { description: name }),
+    ]
+    const pdf = await renderDividePdf(
+      buildStatementSnapshot({
+        ...goldenInput(lines),
+        people: [{ personId: 'p0', name }],
+        previousClosing: [],
+      }),
+    )
+    const text = await pdfText(pdf)
+    expect(text).toContain('Name Opening Paid Share Closing')
+    expect(text).toContain('Transactions Date Description Paid Share Total')
+    // Paid and Share in each table, and the line's total.
+    expect(text.match(/\$30\.00/g)).toHaveLength(5)
+    expect(text).toContain('settled')
+    expect(await textBeyondPage(pdf, PAGE_MARGIN - 0.5)).toEqual([])
+  })
+
   it('refuses an invoice snapshot', async () => {
     const snapshot = buildStatementSnapshot(goldenInput())
     const employer = { ...snapshot, group: { ...snapshot.group, type: 'employer' as const } }
     await expect(renderDividePdf(employer)).rejects.toThrow('needs a house snapshot')
+  })
+})
+
+describe('wrappedLines', () => {
+  const lines = (text: string) => wrappedLines(fontRuns(text))
+
+  it.each([
+    ['nothing', '', 1],
+    ['a word', 'Electricity', 1],
+    // Roboto's widest is 11.79 pt, in a 171 pt cell.
+    ['14 of the widest', 'W'.repeat(14), 1],
+    // 176.9 pt is wider than the cell: at most 1 + 2 × 176.9 / 171 lines.
+    ['15 of the widest', 'W'.repeat(15), 3],
+    // Each word and its space is 94.3 pt, so two don't fit.
+    ['three words that fit one to a line', 'abcdefg abcdefg abcdefg', 3],
+    ['a line feed', 'a\nb', 2],
+    ['a carriage return', 'a\rb', 2],
+    ['a CR LF', 'a\r\nb', 2],
+    ['14 of the widest, then CR LF', `${'Ѹ'.repeat(14)}\r\nb`, 2],
+    ['14 of the widest, then CR', `${'Ѹ'.repeat(14)}\rb`, 2],
+    // pdfmake starts no line after the last.
+    ['a line feed at the end', 'a\n', 1],
+    // Noto Emoji's characters are 12.7 pt: 13 fit, and pdfmake breaks between two 😀.
+    ['13 emoji', '😀'.repeat(13), 1],
+    ['14 emoji', '😀'.repeat(14), 2],
+    // A zero-width space ends a word.
+    ['two words joined by a zero-width space', `${'Ѹ'.repeat(13)}\u200B${'Ѹ'.repeat(13)}`, 2],
+    // pdfmake glues `( ( ` to the word after it (UAX #14's LB14), even in another font: one word
+    // of 212 pt.
+    ['spaces glued to the next word', `x ( ( ${'⏩'.repeat(13)}`, 4],
+    // As printed: ร้าน is 4 �.
+    ['Thai', 'ร้าน', 1],
+    // A line with Noto Sans CJK is 1.25 of Roboto's.
+    ['Chinese', '张三', 1.25],
+    ['Chinese with Latin', '张三 Pty Ltd', 1.25],
+  ])('counts %s', (_, text, expected) => {
+    expect(lines(text)).toBe(expected)
+  })
+
+  it('counts each Noto Sans CJK character as wide as its widest, ⸻', () => {
+    // 7 of 24.59 pt fill 172 pt, more than the cell; pdfmake breaks between two ideographs.
+    expect(lines('一'.repeat(6))).toBe(1.25)
+    expect(lines('一'.repeat(7))).toBe(2 * 1.25)
+  })
+
+  // pdfmake breaks where Unicode allows, so short, almost a cell, short takes 3 lines, though it
+  // would fit 2 cut anywhere.
+  it.each([
+    ['emoji', `😀${'⏩'.repeat(13)}😀`, 3],
+    ['Roboto, with hyphens', `Ѹ-${'Ѹ'.repeat(13)}-Ѹ`, 3],
+    ['Noto Sans CJK', `一${'⸻'.repeat(5)}⸺一`, 3 * 1.25],
+  ])('counts whole pieces, in %s', (_, text, expected) => {
+    expect(lines(text)).toBe(expected)
+  })
+
+  it.each([
+    // A word of 15: 176.9 pt.
+    ['Roboto, hyphenated', `Ѹ-${'Ѹ'.repeat(14)}-Ѹ`, 5],
+    // One word across fonts: pdfmake can't break around a no-break space.
+    [
+      '⸻ and no-break spaces',
+      ['⸻'.repeat(4), '⸻'.repeat(5), '⸻'.repeat(5), '⸻'.repeat(5)].join('\u00A0'),
+      6 * 1.25,
+    ],
+  ])(
+    'counts a word wider than the cell, in %s, as 1 + 2 × its width over the cell',
+    (_, text, expected) => {
+      expect(lines(text)).toBe(expected)
+    },
+  )
+
+  it('starts a word wider than the cell on a new line, and the next word on another', () => {
+    const word = '⏩'.repeat(14)
+    expect(lines(word)).toBe(3)
+    expect(lines(`Hi ${word} there`)).toBe(5)
   })
 })

@@ -8,6 +8,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
+import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import {
@@ -248,8 +249,10 @@ export async function hasShares(db: Db, groupId: string, personId: string): Prom
  * Refuses, with CONFLICT and `merging`, while a merge into the person is open in the group
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): a P merged into them
  * (`idx_mergedInto`) lists the group in `mergeGroupIds`, has no member row here any more while
- * theirs is joined (step 2 gave P's place to them), and is still `named` here, which a leave or a
- * removal would count as someone else's. Per group, so a merge stuck elsewhere doesn't hold this one.
+ * theirs is joined (step 2 gave P's place to them; a row they left on their own doesn't count, as
+ * step 3 leaves P's rows on P there, from before any deletion of theirs), and is still `named` here,
+ * which a leave or a removal would count as someone else's. Per group, so a merge stuck elsewhere
+ * doesn't hold this one.
  *
  * Inside the transaction (`tx`), call it after staging the member row and before reading the
  * balance or shares: when such a P exists it stages a guard write on the group's row first, which
@@ -267,11 +270,19 @@ export async function requireNoOpenMerge(
   const listing = merged.filter((placeholder) => placeholder.mergeGroupIds?.includes(groupId))
   if (listing.length === 0) return
   // Step 2 always leaves their row joined: a placeholder row of theirs isn't P's place (D-016).
+  // Where they left on their own, step 3 leaves P's rows on P, so the group isn't open (#349).
+  // Account deletion's keep writes their member.left too, but a merge into them stopped where it
+  // was, so only a leave of their own from before the deletion counts: a kept row still holds
+  // P's place, and P's shares need it (I-3, #370).
   const own = await findFirst<Members>(db, TABLES.members, [
     Query.equal('groupId', groupId),
     Query.equal('personId', personId),
   ])
   if (!own || own.status === 'placeholder') return
+  if (own.status === 'left') {
+    const { deletedAt } = (await getRowOrNull<Persons>(db, TABLES.persons, personId)) ?? {}
+    if (await leftOnTheirOwn(db, groupId, personId, own.$createdAt, deletedAt)) return
+  }
   await tx?.write({
     action: 'update',
     tableId: TABLES.groups,

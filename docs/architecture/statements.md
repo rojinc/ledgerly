@@ -176,4 +176,6 @@ type StatementSnapshot = {
 3. **Suggested transfers** to settle up ("Cara pays Alice $45.20").
 4. **Transactions** by date, with each person's share.
 
+**Fonts (#300):** the same as the invoice's. Every text from the snapshot (the house name, people's names, transfers and line descriptions) prints as `fontRuns()` splits it, a character no font has prints as `�`, and the render logs only how many (`pdf_characters_replaced`). Unicode's line breaks other than a line feed or carriage return print as line feeds, since no font has them. A word that would print wider than the People table's Name column (151 pt, at its fonts' widest) gets a zero-width space, so pdfmake can break it there and no column pushes the amounts off the page. A Latin divide reads no font file.
+
 It's never called an invoice and has no GST. The file is named `divide-<periodEnd>.pdf`. The snapshot stays `version: 1`, unchanged: its schema is a strict object, so a new field would make today's readers refuse every divide.

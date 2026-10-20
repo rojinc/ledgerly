@@ -667,6 +667,47 @@ describe('openings', () => {
     expect(openings(draft)).toEqual({ alice: 0, bob: -300, cara: 0, erin: 300 })
   })
 
+  // #354 (a'): rule 2 counts a merged person's opening as the person they were merged into even
+  // where that person left on their own afterwards, since step 3 moved the locked shares to them.
+  it('opens a merged person on the one they were merged into, who has since left on their own', async () => {
+    // September: Erin paid $3.00 for lee-old, a placeholder later merged into Lee. Step 3 moved
+    // the locked shares to Lee; in October Lee paid Erin back, then left on their own.
+    const september = tx(
+      'sep1',
+      '2026-09-12',
+      300,
+      [
+        ['erin', 300, 0],
+        ['lee', 0, 300],
+      ],
+      { statementId: 'st-sep' },
+    )
+    const repaid = tx(
+      'oct2',
+      '2026-10-03',
+      300,
+      [
+        ['lee', 300, 0],
+        ['erin', 0, 300],
+      ],
+      { kind: 'payment', description: 'Paid back' },
+    )
+    const services = house([
+      september,
+      repaid,
+      { statements: [septemberFinal({ 'lee-old': -300, erin: 300 }), octoberDraft()] },
+    ])
+    await commitNow(services.db, [
+      op('persons', 'lee-old', { displayName: 'Lee', mergedInto: 'lee' }, 'create'),
+    ])
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    expect(JSON.parse(final.snapshotJson).people).toMatchObject([
+      { personId: 'erin', openingCents: 300, closingCents: 0 },
+      { personId: 'lee', openingCents: -300, closingCents: 0 },
+    ])
+  })
+
   it('voids only the latest final divide', async () => {
     const services = house([
       september(),

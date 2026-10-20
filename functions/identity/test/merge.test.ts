@@ -369,10 +369,10 @@ describe('moveMembers (step 2)', () => {
     for (const groupId of ['g1', 'g2', 'g3']) {
       expect(services.teams.members(groupId)?.map((member) => member.userId)).toEqual(['u1'])
     }
+    // U had joined g3 already, so only g1 and g2 get a member.joined row (#349).
     expect(joinedRows(services)).toEqual([
       ['g1', 'pU', 'pU', 'joined', NOW.toISOString()],
       ['g2', 'pU', 'pU', 'joined', NOW.toISOString()],
-      ['g3', 'pU', 'pU', 'joined', NOW.toISOString()],
     ])
     // Nothing points at P any more: a second run is a no-op.
     expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
@@ -381,6 +381,26 @@ describe('moveMembers (step 2)', () => {
       putOff: [],
       done: true,
     })
+  })
+
+  // AI D's N1 on #362: the early return for a U already joined comes after U's person guard, so
+  // a deletion that starts while step 2 stages still rolls it back, joined U or not.
+  it('rolls back where U is already joined, when U’s deletion starts as the rows are staged', async () => {
+    const services = setUp({
+      persons: [U, P],
+      members: [placeholderRow('m1', 'g1', 'pP', CREATED), ownRow('m2', 'g1')],
+    })
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"rowId":"m2"'),
+      () => updateRow(services.db, 'persons', 'pU', { deletedAt: '2026-10-18T00:00:00.000Z' }),
+    )
+    await expect(moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).rejects.toThrow()
+    expect(members(services)).toEqual([
+      ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],
+      ['m2', 'g1', 'pU', 'active', '2026-10-01'],
+    ])
+    expect(joinedRows(services)).toEqual([])
   })
 
   it('keeps a group U left on their own: P keeps its row there, and U stays out of the team', async () => {

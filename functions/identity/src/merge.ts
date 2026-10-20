@@ -321,6 +321,8 @@ async function moveMember(
       if (!sameMember(storedTheirs, theirs) || (own && !sameMember(storedOwn, own))) {
         throw new Raced()
       }
+      // Only where U's row wasn't joined yet: a claim may have just joined U's own row (#349).
+      if (own && own.status !== 'placeholder') return
       await tx.write({
         action: 'create',
         tableId: TABLES.activity,
