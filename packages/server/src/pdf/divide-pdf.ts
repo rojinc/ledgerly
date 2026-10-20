@@ -137,7 +137,8 @@ const CJK_LINE = 1.25
  * The most lines of Roboto's height that `runs`, as printed, can take in a cell CELL_WIDTH wide.
  * It wraps words greedily, as pdfmake does, with every character as wide as its font's widest:
  * a word ends after a space or a zero-width space, and a line feed or carriage return starts a new
- * line. pdfmake may also break inside a word, which only fills its lines fuller.
+ * line. pdfmake may also break inside a word, which only fills its lines fuller, or keep a space
+ * with the word after it (`ѸѸ !ѸѸ`), which costs less than the 11.79 pt the space counts.
  *
  * A word wider than the cell starts a new line, and the next word starts another. pdfmake breaks it
  * where Unicode allows (or between characters, for a word that runs across fonts), packing whole
