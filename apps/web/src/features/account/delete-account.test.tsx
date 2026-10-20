@@ -25,6 +25,7 @@ vi.mock('../groups/use-group-name', () => ({
 }))
 
 const call = vi.mocked(callFunction)
+const HOUR = 3_600_000
 const deleteSession = vi.mocked(account.deleteSession)
 
 const flat = { $id: 'g1', name: 'Flat 2/14', type: 'house' } as Groups
@@ -346,8 +347,10 @@ describe('DeleteAccountPage', () => {
   })
 
   it('says when the password changed too recently, and when to try again', async () => {
+    // An hour ago by the real clock, so the 24 hours are still running whenever this runs.
+    const changedAt = Date.now() - HOUR
     vi.mocked(useCurrentUser).mockReturnValue({
-      data: { $id: 'u1', passwordUpdate: '2026-10-19T08:00:00.000Z' },
+      data: { $id: 'u1', passwordUpdate: new Date(changedAt).toISOString() },
       isPending: false,
     } as never)
     call.mockResolvedValue(refused('FORBIDDEN', 'Too soon', { reason: 'recent_password_change' }))
@@ -357,7 +360,7 @@ describe('DeleteAccountPage', () => {
     const at = new Intl.DateTimeFormat(undefined, {
       dateStyle: 'medium',
       timeStyle: 'short',
-    }).format(Date.parse('2026-10-20T08:00:00.000Z'))
+    }).format(changedAt + 24 * HOUR)
     expect((await screen.findByRole('alert')).textContent).toBe(
       `A sign-in detail (your password, email or phone) changed in the last 24 hours. For your safety, you can delete your account from ${at}.`,
     )
