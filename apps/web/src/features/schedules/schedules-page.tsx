@@ -268,7 +268,17 @@ function ScheduleRow({
                 Pause
               </Button>
             )}
-            <Button ref={endButton} variant="outline" size="sm" onClick={() => setOpen('end')}>
+            <Button
+              ref={endButton}
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                // A resume on its way finishes first, so what it says isn't lost.
+                if (resume.isPending) return
+                setNote('')
+                setOpen('end')
+              }}
+            >
               End
             </Button>
           </div>
@@ -291,8 +301,9 @@ function ScheduleRow({
             close()
             pauseButton.current?.focus()
           }}
-          onPaused={() => {
+          onPaused={(stored) => {
             close()
+            setNote(stored.pausedFrom ? `Paused from ${formatDate(stored.pausedFrom)}.` : '')
             setFocusNext('resume')
           }}
         />
@@ -331,7 +342,7 @@ function PauseSchedule({
   schedule: Schedules
   today: string
   onCancel: () => void
-  onPaused: () => void
+  onPaused: (stored: Schedules) => void
 }) {
   const pause = usePauseSchedule(schedule)
   const [pausedFrom, setPausedFrom] = useState(today)
@@ -353,7 +364,9 @@ function PauseSchedule({
               ? `Pick today, ${formatDate(today)}, or a later date`
               : undefined
         setError(problem)
-        if (!problem) pause.mutate({ pausedFrom }, { onSuccess: onPaused })
+        if (!problem) {
+          pause.mutate({ pausedFrom }, { onSuccess: ({ schedule }) => onPaused(schedule) })
+        }
       }}
     >
       <TextField

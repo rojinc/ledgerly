@@ -484,6 +484,26 @@ describe('BillsPage: recurring', () => {
     expect(screen.getByText(/Paused from/)).toBeTruthy()
   })
 
+  it('keeps a paused bill’s last due date, and finishes a resume before Stop can ask (#430)', async () => {
+    mockLists([
+      schedule('s1', { pausedFrom: '2026-11-02' }),
+      schedule('s2', { description: 'Gym', endsOn: '2026-12-28', pausedFrom: '2026-11-02' }),
+    ])
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/bills')
+    const region = within(await screen.findByRole('region', { name: 'Recurring' }))
+    const items = await region.findAllByRole('listitem')
+    expect(items[1]?.textContent).toMatch(
+      /· Paused from (2 Nov|Nov 2,) 2026 · Last due (28 Dec|Dec 28,) 2026Resume$/,
+    )
+    fireEvent.click(region.getByRole('button', { name: 'Resume Rent' }))
+    await waitFor(() =>
+      expect(region.getByRole('button', { name: 'Resume Rent' }).textContent).toBe('Resuming…'),
+    )
+    fireEvent.click(region.getByRole('button', { name: 'Stop Rent' }))
+    expect(screen.queryByRole('group')).toBeNull()
+  })
+
   it('links to New recurring bill', async () => {
     renderAt('/bills')
     expect(

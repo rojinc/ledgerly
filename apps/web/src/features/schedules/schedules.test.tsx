@@ -658,6 +658,9 @@ describe('SchedulesPage: pause and resume (#430)', () => {
       }),
     )
     expect(await screen.findByText(/· Paused from Mon, (19 Oct|Oct 19),? 2026$/)).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toMatch(
+      /^Paused from Mon, (19 Oct|Oct 19),? 2026\.$/,
+    )
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Resume' })),
     )
@@ -718,6 +721,8 @@ describe('SchedulesPage: pause and resume (#430)', () => {
     fireEvent.click(within(row).getByRole('button', { name: 'Pause' }))
     fireEvent.click(within(row).getByRole('button', { name: 'Pause schedule' }))
     expect((await within(row).findByRole('alert')).textContent).toBe('Only an admin can.')
+    // The form stays, to try again or cancel.
+    expect(within(row).getByLabelText('Pause from')).toBeTruthy()
     const other = screen.getByText('Saturdays').closest('li') as HTMLElement
     fireEvent.click(within(other).getByRole('button', { name: 'Resume' }))
     expect((await within(other).findByRole('alert')).textContent).toBe('Only an admin can.')
@@ -740,9 +745,32 @@ describe('SchedulesPage: pause and resume (#430)', () => {
       cleanup()
     }
     mockGroup(acme)
-    mockSchedules([{ ...paused, endsOn: '2026-10-18' }])
+    mockSchedules([
+      { ...running, endsOn: '2026-10-18' },
+      { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays', endsOn: '2026-10-18' },
+    ])
     renderAt('/schedules?groupId=g1')
-    expect(await screen.findByText(/· Ended$/)).toBeTruthy()
+    expect(await screen.findAllByText(/· Ended$/)).toHaveLength(2)
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull()
+  })
+
+  it('lets a member pause and resume a schedule they set up', async () => {
+    mockGroup(acme, 'member')
+    mockSchedules([running, { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays' }])
+    renderAt('/schedules?groupId=g1')
+    expect(await screen.findByRole('button', { name: 'Pause' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy()
+  })
+
+  it('lets End wait for a resume on its way, so what the resume says isn’t lost', async () => {
+    mockGroup(acme)
+    mockSchedules([paused])
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }))
+    await screen.findByRole('button', { name: 'Resuming…' })
+    fireEvent.click(screen.getByRole('button', { name: 'End' }))
+    expect(screen.queryByLabelText('Last date')).toBeNull()
   })
 })

@@ -362,13 +362,8 @@ function RecurringBill({
     // An expense always posts itself (#403): only a bill's autopay is a choice.
     schedule.autoPost && !expense ? 'Autopay' : undefined,
     notStarted ? `Starts ${formatDate(schedule.startsOn)}` : undefined,
-    ended
-      ? 'Ended'
-      : pausedFrom
-        ? `Paused from ${formatDate(pausedFrom)}`
-        : last
-          ? `Last due ${formatDate(last)}`
-          : undefined,
+    !ended && pausedFrom ? `Paused from ${formatDate(pausedFrom)}` : undefined,
+    ended ? 'Ended' : last ? `Last due ${formatDate(last)}` : undefined,
   ].filter(Boolean)
   const pending = stop.isPending || pause.isPending
   const question =
@@ -384,6 +379,8 @@ function RecurringBill({
           ? `Remove ${schedule.description}? It hasn’t started yet, so its bills are removed, except any you’ve already paid.`
           : `Stop ${schedule.description} from today? No more bills are made after today. Bills already made stay, so you can still pay or skip them.`
   const ask = (question: 'stop' | 'pause') => {
+    // A resume on its way finishes first, so what it says isn't lost.
+    if (resume.isPending) return
     resume.reset()
     // The buttons go as the question opens: focus moves to its safe answer, Cancel.
     flushSync(() => setAsking(question))

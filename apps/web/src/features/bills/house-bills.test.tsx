@@ -526,6 +526,60 @@ describe('HouseBillsPage: recurring (#403)', () => {
     })
     expect(document.activeElement?.textContent).toBe('Bills · Flat')
   })
+
+  it('offers no Pause, Resume or Stop to a viewer, to a member on someone else’s, or in an archived house (#430)', async () => {
+    const rows = [
+      recurringRow('s1'),
+      recurringRow('s3', { description: 'Water', pausedFrom: '2026-10-01', createdBy: 'bob' }),
+    ]
+    mockHouse(HOUSE, 'member', { recurring: rows })
+    renderAt('/bills?groupId=house1')
+    expect(await items()).toEqual([
+      expect.stringMatching(/^InternetEvery Monday · A?\$80\.00PauseStop$/),
+      expect.stringMatching(/^WaterEvery Monday · A?\$80\.00 · Paused from (1 Oct|Oct 1,) 2026$/),
+    ])
+    for (const [house, role] of [
+      [HOUSE, 'viewer'],
+      [{ ...HOUSE, archivedAt: '2026-10-01T00:00:00.000Z' }, 'admin'],
+    ] as const) {
+      cleanup()
+      mockHouse(house as Groups, role, { recurring: rows })
+      renderAt('/bills?groupId=house1')
+      expect(await items()).toHaveLength(2)
+      expect(screen.queryByRole('button', { name: /^(Stop|Pause|Resume)/ })).toBeNull()
+    }
+  })
+
+  it('lets an admin pause and resume anyone’s recurring expense, in an expense’s words (#430)', async () => {
+    mockHouse(HOUSE, 'admin', { recurring: ROWS })
+    call.mockImplementation(async (_fn, _method, path) => {
+      const pausedFrom = path === '/schedules/s2/pause' ? '2026-10-05' : null
+      const stored = { ...ROWS[1], pausedFrom } as Schedules
+      mockHouse(HOUSE, 'admin', { recurring: [ROWS[0] as Schedules, stored] })
+      return { ok: true, data: { schedule: stored, removed: 0, created: 1 } } as Result<unknown>
+    })
+    renderAt('/bills?groupId=house1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause Cleaner' }))
+    expect(
+      screen.getByText(
+        'Pause Cleaner from today? Nothing more is added until you resume it. What was added already stays.',
+      ),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Pause it' }))
+    expect(
+      await screen.findByText('Paused Cleaner from today. Resume it to carry on.'),
+    ).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('scheduler', 'POST', '/schedules/s2/pause', {
+      pausedFrom: '2026-10-05',
+    })
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume Cleaner' }))
+    expect(
+      await screen.findByText(
+        'Resumed Cleaner. It’s added again from today; nothing is added for the days in between.',
+      ),
+    ).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('scheduler', 'POST', '/schedules/s2/resume', undefined)
+  })
 })
 
 describe('BillPage in a house', () => {
