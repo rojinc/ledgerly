@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   autoSendFailedEmail,
   billDueSoonEmail,
+  type ChangedTransaction,
   divideEmail,
   type EmailContent,
   emailChangedEmail,
@@ -15,6 +16,7 @@ import {
   statementReadyEmail,
   summaryEmail,
   timerRunningEmail,
+  transactionChangesEmail,
 } from './templates'
 
 const day = (text: string): LocalDate => parseLocalDate(text)
@@ -918,5 +920,101 @@ describe('reminderEmail', () => {
     expect(family).toContain(String.fromCodePoint(0x200d))
     const [override, pop] = [0x202e, 0x202c].map((code) => String.fromCodePoint(code))
     expect(reminder(`${override}Sam ${family}${pop}`).text).toContain(`Sam ${family} sent you`)
+  })
+})
+
+describe('transactionChangesEmail', () => {
+  const groceries: ChangedTransaction = {
+    groupName: 'Flat 4',
+    description: 'Groceries',
+    changedBy: ['Bob'],
+    currency: 'AUD',
+    totalCents: { before: 9000, after: 12000 },
+    date: { before: day('2026-10-20'), after: day('2026-10-20') },
+    netCents: { before: 4500, after: 6000 },
+    voided: false,
+    url: 'https://app.example/groups/house/transactions/t1',
+  }
+  const changes = (...list: ChangedTransaction[]) =>
+    transactionChangesEmail({ changes: list, profileUrl: 'https://app.example/profile' })
+
+  it('has a fixed subject, shows what changed, and links to it and to the setting', () => {
+    const content = changes(groceries)
+    expectWellFormed(content)
+    expect(content.subject).toBe('A transaction you’re in was changed')
+    expect(content.text).toContain('Someone changed a transaction you’re in.')
+    expect(content.text).toContain('“Groceries” in Flat 4, changed by Bob:')
+    expect(content.text).toContain('- Total: $90.00 → $120.00')
+    // What didn't change is shown once.
+    expect(content.text).toContain('- Date: 20 October 2026\n')
+    expect(content.text).toContain('- Your part: you’re owed $45.00 → you’re owed $60.00')
+    expect(content.text).toContain(
+      'Open “Groceries”: https://app.example/groups/house/transactions/t1',
+    )
+    expect(content.text).toContain('You can turn these emails off in your profile.')
+    expect(content.text).toContain('Change your email settings: https://app.example/profile')
+    expect(content.html.match(/<a /g)).toHaveLength(2)
+  })
+
+  it('says what they owe, a moved date, and a void', () => {
+    const owing = changes({
+      ...groceries,
+      changedBy: ['Alice', 'Cara', 'Dan'],
+      totalCents: { before: 9000, after: 9000 },
+      date: { before: day('2026-10-20'), after: day('2026-10-21') },
+      netCents: { before: -4500, after: 0 },
+    })
+    expect(owing.text).toContain('changed by Alice, Cara and Dan:')
+    expect(owing.text).toContain('- Total: $90.00\n')
+    expect(owing.text).toContain('- Date: 20 October 2026 → 21 October 2026')
+    expect(owing.text).toContain('- Your part: you owe $45.00 → nothing owed either way')
+    const voided = changes({ ...groceries, changedBy: ['Alice', 'Cara'], voided: true })
+    expect(voided.text).toContain(
+      '“Groceries” in Flat 4, changed by Alice and Cara; it’s now voided:',
+    )
+    expect(voided.text).toContain('- Your part: you’re owed $45.00, and nothing now it’s voided')
+    const atZero = changes({ ...groceries, voided: true, netCents: { before: 0, after: 0 } })
+    expect(atZero.text).toContain('- Your part: nothing owed either way\n')
+    expect(atZero.text).not.toContain('now it’s voided')
+  })
+
+  it('says someone changed it when it isn’t given who', () => {
+    const content = changes({ ...groceries, changedBy: [] })
+    expect(content.text).toContain('“Groceries” in Flat 4, changed by someone:')
+  })
+
+  it('writes a part past the amount cap', () => {
+    const big = changes({ ...groceries, netCents: { before: 0, after: 20_000_000_000 } })
+    expect(big.text).toContain('nothing owed either way → you’re owed $200,000,000.00')
+  })
+
+  it('lists 10 transactions and counts the rest', () => {
+    const list = Array.from({ length: 12 }, (_, index) => ({
+      ...groceries,
+      description: `Shop ${index + 1}`,
+    }))
+    const content = changes(...list)
+    expect(content.text).toContain('Someone changed 12 transactions you’re in.')
+    expect(content.text).toContain('“Shop 10”')
+    expect(content.text).not.toContain('“Shop 11”')
+    expect(content.text).toContain('And 2 more. Open Ledgerly to see them.')
+    expect(content.html.match(/<a /g)).toHaveLength(11)
+    expect(changes(...list.slice(0, 10)).text).not.toContain('more.')
+  })
+
+  it('escapes and folds what others typed, cutting names and the group name at 40', () => {
+    const content = changes({
+      ...groceries,
+      groupName: `<i>${'g'.repeat(45)}`,
+      description: 'Rent\n\n<b>Pay now</b>',
+      changedBy: [`${'b'.repeat(41)}`],
+    })
+    expect(content.subject).toBe('A transaction you’re in was changed')
+    expect(content.html).toContain('&lt;b&gt;Pay now&lt;/b&gt;')
+    expect(content.html).not.toContain('<b>Pay')
+    expect(content.text).toContain(`“Rent <b>Pay now</b>” in <i>${'g'.repeat(36)}…, changed by`)
+    expect(content.text).toContain(`Open “Rent <b>Pay now</b>”: ${groceries.url}`)
+    expect(content.html).toContain('>Open “Rent &lt;b&gt;Pay now&lt;/b&gt;”</a>')
+    expect(content.text).toContain(`changed by ${'b'.repeat(39)}…:`)
   })
 })

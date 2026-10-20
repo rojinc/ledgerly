@@ -179,7 +179,7 @@ async function housesToHandOver(db: Db, personId: string, adminRows: Members[]):
 
 // Step 2, the point of no return: `deletedAt` and "Former member", with a fresh `rev` (a guard
 // write, ledger.md#concurrency). A deletion that got there first keeps its `deletedAt`.
-async function markDeleted({ db, now }: Services, person: Persons): Promise<Deleting> {
+export async function markDeleted({ db, now }: Services, person: Persons): Promise<Deleting> {
   const deletedAt = now.toISOString()
   try {
     await withTransaction(db, async (tx) => {
