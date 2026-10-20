@@ -43,6 +43,7 @@ export type LogEvent =
   | 'merge_run_failed'
   | 'merge_walk_cut_off'
   | 'merge_run'
+  | 'invite_cleanup_failed'
   | 'account_finish_failed'
 
 /**
