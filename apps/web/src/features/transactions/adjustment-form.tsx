@@ -209,7 +209,11 @@ export function AdjustmentForm({
       <TextField
         id="reason"
         label="Reason"
-        hint={`Shown on the next ${statement}. For example “Shift on 3 Oct was an hour short”.`}
+        hint={`Shown on the next ${statement}. For example “${
+          group.type === 'house'
+            ? 'September power was split wrong'
+            : 'Shift on 3 Oct was an hour short'
+        }”.`}
         error={errors.reason}
         {...form.register('reason')}
       />
