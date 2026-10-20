@@ -25,7 +25,7 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   await page.getByLabel('Default hourly rate (AUD)').fill('25')
   await page.getByLabel('Invoice cycle').selectOption({ label: 'Monthly' })
   await page.getByLabel('Payment terms (days)').fill('14')
-  await page.getByRole('button', { name: 'Create employer' }).click()
+  await page.getByRole('button', { name: 'Create employer', exact: true }).click()
   // Its settings, as saved.
   await expect(page.getByRole('heading', { level: 1, name: employer })).toBeVisible()
   await expect(page.getByLabel('Billing emails')).toHaveValue(testEmail('acme-billing'))
@@ -46,7 +46,7 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   await page.getByLabel('On a date').check()
   await page.getByLabel('Last date').fill(addDays(today, HORIZON_DAYS))
   await page.getByLabel('Skip public holidays (AU-NSW)').check()
-  await page.getByRole('button', { name: 'Create schedule' }).click()
+  await page.getByRole('button', { name: 'Create schedule', exact: true }).click()
   await expect(page.getByText(/^Every Thursday/)).toBeVisible()
 
   // Step 3: the calendar shows a dashed shift on each of those Thursdays, and on no other day.

@@ -58,8 +58,8 @@ jobs:
           # Every branch, so this commit can be checked against main's latest.
           fetch-depth: 0
 
-      # Deploy skips, and still succeeds, when main already has a newer commit: only main's latest
-      # is what dev runs, so only that one is tested. A newer commit's own run tests that.
+      # A Deploy run whose commit is no longer main's latest deploys main's latest in its place, so
+      # dev runs only main's latest. That commit's own Deploy run triggers the run that tests it.
       - name: Check this is what dev runs
         id: latest
         if: steps.secrets.outputs.ready == 'true'
