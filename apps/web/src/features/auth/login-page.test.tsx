@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { account } from '../../lib/appwrite'
@@ -41,6 +41,18 @@ function logIn() {
   fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'sam@example.com' } })
   fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'new secret 1' } })
   fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
+}
+
+/** A busy submit keeps focus, and pressing it or submitting again sends nothing more. */
+async function pressWhileBusy(button: HTMLElement) {
+  expect(button.getAttribute('aria-disabled')).toBe('true')
+  button.focus()
+  expect(document.activeElement).toBe(button)
+  fireEvent.click(button)
+  fireEvent.submit(button.closest('form') as HTMLFormElement)
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0))
+  })
 }
 
 describe('LoginPage', () => {
@@ -116,5 +128,34 @@ describe('LoginPage', () => {
     expect(await screen.findByText('Home page')).toBeTruthy()
     expect(others).toHaveBeenCalledTimes(2)
     expect(signIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps Log in focusable while logging in, and logs in once', async () => {
+    signIn.mockReturnValue(new Promise(() => {}) as never)
+    renderAt('/login')
+    logIn()
+    await pressWhileBusy(await screen.findByRole('button', { name: 'Logging in…' }))
+    expect(signIn).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps the email code buttons focusable while they wait, and sends each once', async () => {
+    let sent!: (token: unknown) => void
+    vi.mocked(account.createEmailToken).mockReturnValue(
+      new Promise((resolve) => {
+        sent = resolve
+      }) as never,
+    )
+    vi.mocked(account.createSession).mockReturnValue(new Promise(() => {}) as never)
+    renderAt('/login')
+    fireEvent.click(screen.getByRole('button', { name: 'Email code' }))
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'sam@example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Email me a code' }))
+    await pressWhileBusy(await screen.findByRole('button', { name: 'Sending…' }))
+    expect(account.createEmailToken).toHaveBeenCalledTimes(1)
+    await act(async () => sent({ userId: 'u1' }))
+    fireEvent.change(await screen.findByLabelText('Code'), { target: { value: '123456' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
+    await pressWhileBusy(await screen.findByRole('button', { name: 'Checking…' }))
+    expect(account.createSession).toHaveBeenCalledTimes(1)
   })
 })

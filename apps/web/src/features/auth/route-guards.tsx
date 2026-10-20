@@ -30,7 +30,12 @@ function UserGate({
     return (
       <main className="mx-auto flex max-w-sm flex-col gap-4 px-4 py-10">
         <Alert variant="destructive">{failure}</Alert>
-        <Button onClick={() => query.refetch()} disabled={query.isFetching}>
+        <Button
+          aria-disabled={query.isFetching}
+          onClick={() => {
+            if (!query.isFetching) void query.refetch()
+          }}
+        >
           Try again
         </Button>
       </main>

@@ -33,8 +33,10 @@ function Banner({ email }: { email: string }) {
             variant="link"
             size="sm"
             className="h-auto px-0"
-            disabled={resend.isPending}
-            onClick={() => resend.mutate()}
+            aria-disabled={resend.isPending}
+            onClick={() => {
+              if (!resend.isPending) resend.mutate()
+            }}
           >
             Send it again
           </Button>

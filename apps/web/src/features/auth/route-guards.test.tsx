@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { AppwriteException } from 'appwrite'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -65,6 +65,26 @@ describe('route guards', () => {
     renderAt('/secret')
     fireEvent.click(await screen.findByRole('button', { name: 'Try again' }))
     expect(await screen.findByText('Secret page')).toBeTruthy()
+  })
+
+  it('keeps Try again focusable while it tries, and tries once', async () => {
+    getUser.mockRejectedValueOnce(new AppwriteException('No session', 401))
+    const { queryClient } = renderAt('/login')
+    expect(await screen.findByText('Login page')).toBeTruthy()
+    // A signed-out user's failed check: Try again stays up while it tries again.
+    getUser.mockRejectedValueOnce(new TypeError('Failed to fetch'))
+    await queryClient.invalidateQueries({ queryKey: ['currentUser'] })
+    const retry = await screen.findByRole('button', { name: 'Try again' })
+    getUser.mockReturnValue(new Promise(() => {}) as never)
+    fireEvent.click(retry)
+    await waitFor(() => expect(retry.getAttribute('aria-disabled')).toBe('true'))
+    retry.focus()
+    expect(document.activeElement).toBe(retry)
+    fireEvent.click(retry)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(getUser).toHaveBeenCalledTimes(3)
   })
 
   it('bootstraps a signed-in user once, with the browser time zone, before the page', async () => {

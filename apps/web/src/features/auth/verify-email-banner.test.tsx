@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { account } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
@@ -60,5 +60,30 @@ describe('VerifyEmailBanner', () => {
       </QueryClientProvider>,
     )
     expect(container.innerHTML).toBe('')
+  })
+
+  it('keeps Send it again focusable while sending, and sends once', async () => {
+    get.mockResolvedValue(user('sam@example.com'))
+    verify.mockReturnValue(new Promise(() => {}) as never)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    await queryClient.prefetchQuery({
+      queryKey: queryKeys.currentUser,
+      queryFn: () => account.get(),
+    })
+    render(
+      <QueryClientProvider client={queryClient}>
+        <VerifyEmailBanner />
+      </QueryClientProvider>,
+    )
+    const button = screen.getByRole('button', { name: 'Send it again' })
+    fireEvent.click(button)
+    await waitFor(() => expect(button.getAttribute('aria-disabled')).toBe('true'))
+    button.focus()
+    expect(document.activeElement).toBe(button)
+    fireEvent.click(button)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(verify).toHaveBeenCalledTimes(1)
   })
 })
