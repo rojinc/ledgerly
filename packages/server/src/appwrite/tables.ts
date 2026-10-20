@@ -13,6 +13,7 @@ export const TABLES = {
   balances: 'balances',
   receiptFiles: 'receiptFiles',
   checkpoints: 'checkpoints',
+  changeNotices: 'changeNotices',
   schedules: 'schedules',
   statements: 'statements',
   activity: 'activity',

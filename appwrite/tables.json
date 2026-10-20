@@ -999,6 +999,64 @@
     "indexes": []
   },
   {
+    "$id": "changeNotices",
+    "$permissions": [],
+    "databaseId": "main",
+    "name": "changeNotices",
+    "enabled": true,
+    "rowSecurity": true,
+    "columns": [
+      {
+        "key": "userId",
+        "type": "varchar",
+        "size": 36,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "kind",
+        "type": "string",
+        "format": "enum",
+        "elements": ["email", "phone"],
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "identityId",
+        "type": "varchar",
+        "size": 36,
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "idempotencyKey",
+        "type": "varchar",
+        "size": 128,
+        "required": true,
+        "array": false,
+        "default": null
+      },
+      {
+        "key": "attempts",
+        "type": "integer",
+        "required": false,
+        "array": false,
+        "default": 0
+      }
+    ],
+    "indexes": [
+      {
+        "key": "uniq_idempotencyKey",
+        "type": "unique",
+        "columns": ["idempotencyKey"],
+        "orders": ["ASC"]
+      }
+    ]
+  },
+  {
     "$id": "schedules",
     "$permissions": [],
     "databaseId": "main",

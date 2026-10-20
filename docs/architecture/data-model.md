@@ -35,6 +35,7 @@ persons ──┬── identities                       (server only)
                       reminders                 (server only)
                       balances      (1:1 with a group, server only)
                       checkpoints               (server only)
+                      changeNotices             (server only)
 ```
 
 ## persons
@@ -287,6 +288,21 @@ How far a background job has got, for a job that must not lose its place from on
 - `transaction-changes`: the end of the last hour [step 3b](scheduling.md#step-3b-transaction-change-emails) finished. Step 3b makes it at the start of the current hour when it's missing, so no backlog is ever sent, and only ever moves it forward.
 
 Permissions: none (server only).
+
+## changeNotices
+
+An email or phone change notice that hasn't gone out yet ([#345](https://github.com/rojinc/ledgerly/issues/345), [change notice](identity-and-invites.md#email-and-phone-change-notice), steps 6 and 8). The event run writes one row per email before it sends, deletes each once it's sent, and identity's hourly run tries the rest for up to 23 hours. It holds no address or number: the email is built again from the user and the identity at each try.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `userId` | varchar(36) | The account |
+| `kind` | enum(email, phone) | Which notice |
+| `identityId` | varchar(36)? | An email notice's old address, as its `identities` row ID. Empty for a phone notice, which goes to the account's verified email |
+| `idempotencyKey` | varchar(128) | The key the event run used, which every retry reuses, since the user's `$updatedAt` it was made from may change |
+| `attempts` | integer | default 0. Failed retries so far |
+
+Indexes: `uniq_idempotencyKey (idempotencyKey)` (unique), so a replayed event makes one row. The hourly run lists rows by `$createdAt`, oldest first.
+Permissions: none (server only). Rows go when sent, when the user or the address is gone, or after 23 hours, so an account deletion needs to clear nothing here.
 
 ## schedules
 
