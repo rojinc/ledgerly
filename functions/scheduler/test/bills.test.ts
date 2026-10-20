@@ -397,6 +397,25 @@ describe('step 3: bill due soon', () => {
     expect(sent(services)[0]?.text).not.toContain('Autopay')
   })
 
+  it('asks to mark paid an autopay bill due today that step 2 left while a statement is finalizing', async () => {
+    const services = seeded(MORNING, [
+      {
+        $id: 'stmt1',
+        groupId: 'elm',
+        periodStart: '2026-10-01',
+        periodEnd: '2026-10-31',
+        status: 'finalizing',
+      },
+    ])
+    // Sam's rent, due today: Sam pays it as an active member, so only the finalize holds it.
+    await create(services, rent(19, true))
+    const result = await runCron(services)
+    expect(result.posted).toEqual({ posted: 0, skipped: 1, failed: 0 })
+    expect(result.reminders.sent).toBe(1)
+    expect(sent(services)[0]?.text).toContain('mark it paid')
+    expect(sent(services)[0]?.text).not.toContain('Autopay')
+  })
+
   it('asks to mark paid an autopay bill its creator would pay after moving out', async () => {
     const services = seeded(MORNING)
     // Alex adds the rent due in 2 days with no payers, so Alex would pay it, then moves out:
