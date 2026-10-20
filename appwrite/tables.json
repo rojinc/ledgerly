@@ -76,6 +76,13 @@
         "default": null
       },
       {
+        "key": "mergeResumeAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
+      },
+      {
         "key": "addressMisses",
         "type": "integer",
         "required": false,
