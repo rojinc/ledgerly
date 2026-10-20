@@ -951,6 +951,7 @@ describe('transactionChangesEmail', () => {
     expect(content.text).toContain(
       'Open “Groceries”: https://app.example/groups/house/transactions/t1',
     )
+    expect(content.text).toContain('You can turn these emails off in your profile.')
     expect(content.text).toContain('Change your email settings: https://app.example/profile')
     expect(content.html.match(/<a /g)).toHaveLength(2)
   })
