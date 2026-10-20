@@ -6,6 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
 import { useProfile } from '../profile/use-profile'
+import { useMembers } from '../transactions/use-transactions'
 import { ArchiveGroup } from './archive-group'
 import { centsToText, toEmployerValues } from './employer-form'
 import { EmployerSettingsPage } from './employer-settings-page'
@@ -19,11 +20,24 @@ vi.mock('../auth/use-bootstrap', () => ({
 }))
 vi.mock('../profile/use-profile', () => ({ useProfile: vi.fn() }))
 vi.mock('./use-groups', () => ({ useGroup: vi.fn(), useMyMember: vi.fn() }))
+// Delete group, beside Unarchive, reads the members (#429).
+vi.mock('../transactions/use-transactions', () => ({ useMembers: vi.fn() }))
 
 const call = vi.mocked(callFunction)
 const groupHook = vi.mocked(useGroup)
 const memberHook = vi.mocked(useMyMember)
 const profileHook = vi.mocked(useProfile)
+const membersHook = vi.mocked(useMembers)
+
+/** The group's member rows: the worker (p1) and the employer, `employerStatus`. */
+function mockMembers(employerStatus: Members['status'] = 'placeholder') {
+  membersHook.mockReturnValue({
+    data: [
+      { personId: 'p1', role: 'admin', status: 'active' },
+      { personId: 'p2', role: 'viewer', status: employerStatus },
+    ] as Members[],
+  } as ReturnType<typeof useMembers>)
+}
 
 function mockProfile(currency: string, timezone = 'Australia/Sydney', region = 'AU-NSW') {
   profileHook.mockReturnValue({
@@ -136,6 +150,7 @@ const created = { ok: true as const, data: { group: { ...employer, $id: 'g9' }, 
 beforeEach(() => {
   mockGroup(undefined)
   mockProfile('AUD')
+  mockMembers()
 })
 
 afterEach(() => {
@@ -835,6 +850,47 @@ describe('archiving a group (#37)', () => {
     fireEvent.click(busy)
     expect(screen.getByRole('alertdialog')).toBeTruthy()
     expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  describe('and deleting it (#429)', () => {
+    const archived = { ...employer, archivedAt: '2026-10-01T00:00:00.000Z' }
+    const deleteLink = () => screen.queryByRole('link', { name: 'Delete group' })
+
+    it('links Delete group beside Unarchive, for an admin, while nobody else has joined', () => {
+      mockGroup(archived)
+      renderAt('/groups/g1/settings')
+      expect(screen.getByRole('button', { name: 'Unarchive group' })).toBeTruthy()
+      expect(deleteLink()?.getAttribute('href')).toBe('/groups/g1/delete')
+      cleanup()
+      // Someone who left may have moved out, still in the team: the delete's refusal says.
+      mockMembers('left')
+      renderAt('/groups/g1/settings')
+      expect(deleteLink()).toBeTruthy()
+    })
+
+    it('isn’t offered once the other side has joined, before the members are read, or to anyone else', () => {
+      // Joined, so in the team: the delete would be refused.
+      mockMembers('active')
+      mockGroup(archived)
+      renderAt('/groups/g1/settings')
+      expect(screen.getByRole('button', { name: 'Unarchive group' })).toBeTruthy()
+      expect(deleteLink()).toBeNull()
+      cleanup()
+      membersHook.mockReturnValue({ data: undefined } as ReturnType<typeof useMembers>)
+      renderAt('/groups/g1/settings')
+      expect(deleteLink()).toBeNull()
+      cleanup()
+      mockMembers()
+      for (const role of ['member', 'viewer'] as const) {
+        mockGroup(archived, role)
+        renderAt('/groups/g1/settings')
+        expect(deleteLink()).toBeNull()
+        cleanup()
+      }
+      mockGroup(employer)
+      renderAt('/groups/g1/settings')
+      expect(deleteLink()).toBeNull()
+    })
   })
 
   describe('and unarchiving it (#428)', () => {

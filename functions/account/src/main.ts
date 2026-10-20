@@ -6,6 +6,7 @@ import {
   route,
 } from '@ledgerly/server/http/create-handler'
 import { deleteAccount } from './routes/delete-account'
+import { deleteGroup } from './routes/delete-group'
 import { hourlyJob } from './routes/hourly-job'
 import { JOB_BUDGET_MS, ROUTE_BUDGET_MS, type Services, servicesFromRequest } from './services'
 
@@ -25,6 +26,15 @@ export function accountRoutes(
         services(ctx, ROUTE_BUDGET_MS),
         requireUser(ctx.userId),
         ctx.sessionId,
+        ctx.body,
+      ),
+    ),
+    route('POST', '/groups/:id/delete', async (ctx) =>
+      deleteGroup(
+        services(ctx, ROUTE_BUDGET_MS),
+        requireUser(ctx.userId),
+        ctx.sessionId,
+        ctx.params.id,
         ctx.body,
       ),
     ),

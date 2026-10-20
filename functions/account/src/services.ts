@@ -3,8 +3,8 @@ import type { TeamsApi } from '@ledgerly/server/appwrite/teams'
 import type { RouteContext } from '@ledgerly/server/http/create-handler'
 import { type Models, Storage, Teams, Users } from 'node-appwrite'
 
-// `POST /delete` stops starting new work after this, inside the 30 s synchronous limit; the
-// hourly job deletes the rest (functions-api.md#account).
+// `POST /delete` and `POST /groups/{id}/delete` stop starting new work after this, inside the
+// 30 s synchronous limit; the hourly job deletes the rest (functions-api.md#account).
 export const ROUTE_BUDGET_MS = 20_000
 // The hourly job stops taking new work after this, well inside the function's 900 s timeout
 // (environments-and-deploys.md); the next run picks up the rest.

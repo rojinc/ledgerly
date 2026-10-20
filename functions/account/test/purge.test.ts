@@ -1,4 +1,3 @@
-import type { Members } from '@ledgerly/core/generated/rows'
 import type { DeleteAccountResult } from '@ledgerly/core/schemas/identity'
 import { TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
@@ -6,6 +5,7 @@ import { FORMER_MEMBER } from '@ledgerly/server/identity/resolve-person'
 import { describe, expect, it, vi } from 'vitest'
 import { purge } from '../src/purge'
 import {
+  beforeCommitOf,
   beforeStaging,
   call,
   crashOnCall,
@@ -317,27 +317,6 @@ function stagedByTransaction(services: Fakes): Map<string, string[]> {
   return staged
 }
 
-// Runs `change` just before the commit of the first transaction whose writes include `text`.
-function beforeCommitOf(services: Fakes, text: string, change: () => Promise<unknown>) {
-  const stage = services.db.createOperations.bind(services.db)
-  const commit = services.db.updateTransaction.bind(services.db)
-  let target: string | undefined
-  let done = false
-  vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
-    if (target === undefined && JSON.stringify(params.operations).includes(text)) {
-      target = params.transactionId
-    }
-    return stage(params)
-  })
-  vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
-    if (!done && params.commit && params.transactionId === target) {
-      done = true
-      await change()
-    }
-    return commit(params)
-  })
-}
-
 function deleteRow(services: Fakes, tableId: TableId, rowId: string) {
   return withTransaction(services.db, (tx) => tx.write({ action: 'delete', tableId, rowId }))
 }
@@ -528,8 +507,7 @@ describe('POST /delete: purging a group nobody else is in', () => {
       services.db,
       (operations) => operations.includes('"rowId":"h3-p1"'),
       async () => {
-        const own = rowOf(services, 'members', 'h3-p2') as unknown as Members
-        alex = await purge(services, own).catch((error: unknown) => error)
+        alex = await purge(services, 'h3', 'p2').catch((error: unknown) => error)
       },
     )
     // Alex's purge deleted the group row first, so Sam's last transaction waits for a rerun.
@@ -713,8 +691,7 @@ describe('POST /delete: purging a group nobody else is in', () => {
       // Alex purges h1, where Lee is a placeholder too, as Sam's purge deletes Lee's row in h2.
       let alex: unknown
       const alexPurges = async () => {
-        const own = rowOf(services, 'members', 'h1-p2') as unknown as Members
-        alex = await purge(services, own).catch((error: unknown) => error)
+        alex = await purge(services, 'h1', 'p2').catch((error: unknown) => error)
       }
       if (when === 'staging') {
         beforeStaging(
