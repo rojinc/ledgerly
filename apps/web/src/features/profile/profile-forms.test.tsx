@@ -3,6 +3,7 @@ import { updateProfileBodySchema } from '@ledgerly/core/schemas/identity'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BusinessForm } from './business-form'
+import { EmailSettingsForm } from './email-settings-form'
 import { HoursCapForm } from './hours-cap-form'
 import { ProfileForm } from './profile-form'
 
@@ -281,6 +282,52 @@ describe('HoursCapForm (#53)', () => {
     save()
     expect(await screen.findByText('Saved.')).toBeTruthy()
     type('Hours a week', '41')
+    expect(screen.queryByText('Saved.')).toBeNull()
+  })
+})
+
+describe('EmailSettingsForm (#431)', () => {
+  it('ticks every email when none is turned off, and saves the ones unticked', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(<EmailSettingsForm profile={{ ...profile, emailOptOuts: null }} onSave={onSave} />)
+    for (const name of ['Bill due soon', 'Shift to confirm', 'Statement ready']) {
+      expect(
+        (screen.getByRole('checkbox', { name: new RegExp(name) }) as HTMLInputElement).checked,
+      ).toBe(true)
+    }
+    fireEvent.click(screen.getByRole('checkbox', { name: /Statement ready/ }))
+    fireEvent.click(screen.getByRole('checkbox', { name: /Bill due soon/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save email settings' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    // In the contract's order, whatever order they were unticked in.
+    const body = { emailOptOuts: ['billDue', 'statementReady'] }
+    expect(onSave).toHaveBeenCalledWith(body)
+    expect(updateProfileBodySchema.safeParse(body).success).toBe(true)
+    expect((await screen.findByRole('status')).textContent).toBe('Saved.')
+  })
+
+  it('starts from the saved settings, and ticking one again turns it back on', async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined)
+    render(
+      <EmailSettingsForm
+        profile={{ ...profile, emailOptOuts: ['shiftToConfirm'] }}
+        onSave={onSave}
+      />,
+    )
+    const shift = screen.getByRole('checkbox', { name: /Shift to confirm/ }) as HTMLInputElement
+    expect(shift.checked).toBe(false)
+    expect(shift.getAttribute('aria-describedby')).toBe('shiftToConfirm-hint')
+    fireEvent.click(shift)
+    fireEvent.click(screen.getByRole('button', { name: 'Save email settings' }))
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({ emailOptOuts: [] }))
+  })
+
+  it('says drafts still appear under Statements, and shows the function error', async () => {
+    const onSave = vi.fn().mockRejectedValue(new Error('Please log in again.'))
+    render(<EmailSettingsForm profile={profile} onSave={onSave} />)
+    expect(screen.getByText(/Drafts still appear under Statements/)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Save email settings' }))
+    expect(await screen.findByText('Please log in again.')).toBeTruthy()
     expect(screen.queryByText('Saved.')).toBeNull()
   })
 })

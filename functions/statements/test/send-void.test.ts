@@ -6,6 +6,7 @@ import {
   afterLatestFinalRead,
   archiveJob,
   beforeStaging,
+  commitNow,
   expectHiddenFromDan,
   failure,
   fakes,
@@ -84,6 +85,19 @@ describe('POST /statements/{id}/send', () => {
     await ok(services, 'POST', '/statements/st1/send')
     expect(services.sent).toHaveLength(1)
     expect(services.sent[0]).toMatchObject({ to: ['accounts@acme.example'], replyTo: undefined })
+  })
+
+  it('sends the worker’s copy even when they turned every email off on Profile', async () => {
+    const services = fakes(rowsOf({ statements: [statement('st1')] }))
+    await commitNow(services.db, [
+      op('profiles', 'u-sam', { emailOptOuts: ['billDue', 'shiftToConfirm', 'statementReady'] }),
+    ])
+    await finalize(services, 'st1')
+    await ok(services, 'POST', '/statements/st1/send')
+    expect(services.sent.map((email) => email.to)).toEqual([
+      ['billing@acme.example'],
+      'sam@example.com',
+    ])
   })
 
   it('keeps sentAt empty when the email fails', async () => {
