@@ -51,6 +51,7 @@ export type LogEvent =
   | 'account_finish_failed'
   | 'e2e_user_not_deleted'
   | 'receipt_cleanup_behind'
+  | 'receipt_cleanup_tied'
   | 'receipt_cleanup_failed'
   | 'receipt_row_listed'
   | 'transaction_changes_failed'
@@ -83,6 +84,7 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_stopped: 'warn',
   merge_walk_cut_off: 'warn',
   receipt_cleanup_behind: 'warn',
+  receipt_cleanup_tied: 'warn',
   transaction_changes_skipped: 'warn',
 }
 
