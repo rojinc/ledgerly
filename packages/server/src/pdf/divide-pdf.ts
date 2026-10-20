@@ -133,8 +133,10 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
 // the 696 pt under the table's headers.
 const MAX_ROW_LINES = 45
 // The narrowest cell a row's text wraps in: a person's name, set 10 pt into the description's.
-// Every other text the divide prints has a wider one.
 const CELL_WIDTH = 171
+// The narrowest column any text prints in: the People table's names, 515.28 pt less the four
+// amount columns (300) and the cells' padding (64).
+const NAME_COLUMN = 151
 // Each font's widest character at 10 pt (Roboto's medium Ѹ, Noto Sans CJK's ⸻, and any of Noto
 // Emoji's), read from the files: no word pdfmake measures is wider than these say.
 const WIDEST: Record<PdfFont, number> = { Roboto: 11.79, NotoSansCJK: 24.59, NotoEmoji: 12.7 }
@@ -189,7 +191,7 @@ function pdfWords(runs: readonly FontRun[]): Word[] {
 }
 
 /**
- * `runs` with a zero-width space wherever a word would print wider than CELL_WIDTH, at its fonts'
+ * `runs` with a zero-width space wherever a word would print wider than NAME_COLUMN, at its fonts'
  * widest. pdfmake widens a column to its widest word, so a longer one pushes the amounts off the
  * page. breakable() can't see that: it counts the text as typed, but a Thai letter prints as one
  * `�` or more, and a space pdfmake doesn't break at (a tab, say) prints as `�`. The space goes
@@ -207,14 +209,14 @@ function narrow(runs: readonly FontRun[]): FontRun[] {
     for (const { position } of breaks(text)) {
       const word = text.slice(start, position)
       start = position
-      if (widthOf(font, word) <= CELL_WIDTH) {
+      if (widthOf(font, word) <= NAME_COLUMN) {
         add(font, word)
         continue
       }
       let width = 0
       for (const { segment } of graphemes.segment(word)) {
         const char = widthOf(font, segment)
-        if (width > 0 && width + char > CELL_WIDTH) {
+        if (width > 0 && width + char > NAME_COLUMN) {
           add('Roboto', '\u200B')
           width = 0
         }

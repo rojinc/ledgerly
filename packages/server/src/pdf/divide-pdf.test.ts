@@ -77,6 +77,10 @@ async function pageTexts(pdf: Buffer): Promise<string[]> {
   return text.map((page) => page.replace(/\s+/g, ' '))
 }
 
+// The page's left and right margins (layout.ts's PAGE). Right-aligned text ends on the right one,
+// give or take rounding, so a check against it allows half a point.
+const PAGE_MARGIN = 40
+
 async function pdfText(pdf: Buffer): Promise<string> {
   const { text } = await extractText(await getDocumentProxy(new Uint8Array(pdf)), {
     mergePages: true,
@@ -84,13 +88,14 @@ async function pdfText(pdf: Buffer): Promise<string> {
   return text.replace(/\s+/g, ' ')
 }
 
-// Text drawn past the right edge of its page, which a reader would never see.
-async function textBeyondPage(pdf: Buffer): Promise<string[]> {
+// Text drawn past the right edge of its page, which a reader would never see, or with `margin`,
+// past the right margin.
+async function textBeyondPage(pdf: Buffer, margin = 0): Promise<string[]> {
   const doc = await getDocumentProxy(new Uint8Array(pdf))
   const beyond: string[] = []
   for (let number = 1; number <= doc.numPages; number++) {
     const page = await doc.getPage(number)
-    const right = page.view[2] as number
+    const right = (page.view[2] as number) - margin
     for (const item of (await page.getTextContent()).items) {
       if ('str' in item && item.transform[4] + item.width > right) beyond.push(item.str)
     }
@@ -592,9 +597,11 @@ describe('renderDividePdf', () => {
   // A Thai letter prints as one `�` or more, and a tab, an ogham space mark, a narrow no-break space
   // or a medium mathematical space as one each: none is where pdfmake breaks, though breakable()
   // takes the spaces for spaces. The divide's own zero-width spaces keep each word narrower than
-  // its column, so no amount is pushed off the page.
+  // its column, the People table's names (151 pt) included, so no amount is pushed into the margin.
   it.each([
     ['Thai', 'สมชายใจดีมีสุขสบายดี'],
+    // 165 pt, wider than the People table's names but not a transaction's.
+    ['14 wide letters', 'Ѹ'.repeat(14)],
     ['tabs', `b${'\t'.repeat(99)}b`],
     ['ogham space marks', `b${'\u1680'.repeat(99)}b`],
     ['narrow no-break spaces', `b${'\u202F'.repeat(99)}b`],
@@ -617,7 +624,7 @@ describe('renderDividePdf', () => {
     // Paid and Share in each table, and the line's total.
     expect(text.match(/\$30\.00/g)).toHaveLength(5)
     expect(text).toContain('settled')
-    expect(await textBeyondPage(pdf)).toEqual([])
+    expect(await textBeyondPage(pdf, PAGE_MARGIN - 0.5)).toEqual([])
   })
 
   it('refuses an invoice snapshot', async () => {
