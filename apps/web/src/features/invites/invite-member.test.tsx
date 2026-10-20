@@ -83,7 +83,7 @@ describe('InviteForm (#399)', () => {
     expect(field().getAttribute('autocomplete')).toBe('off')
     expect(
       document.getElementById(field().getAttribute('aria-describedby') ?? '')?.textContent,
-    ).toBe('Use an address you added them with.')
+    ).toBe('Use an address they were added with.')
   })
 
   it('sends the typed address once, and hands on the answer', async () => {

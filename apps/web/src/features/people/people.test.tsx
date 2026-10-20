@@ -911,3 +911,292 @@ describe('PairPage: send a reminder (#266)', () => {
     expect(document.activeElement).toBe(button())
   })
 })
+
+describe('PairPage: settings (#403)', () => {
+  const settings = () => screen.queryByRole('region', { name: 'Settings' })
+
+  function refused(code: string, message: string): Result<unknown> {
+    return { ok: false, error: { code, message } } as Result<unknown>
+  }
+
+  it('lets the creator rename them, and the group with them, then shows the new name', async () => {
+    mockGroup(0)
+    mockRows()
+    call.mockImplementation((async (_fn: string, _method: string, path: string) => {
+      if (path === '/groups/g1') return ok({ ...pair, name: 'Samantha' })
+      mockRows(
+        [],
+        members().map((one) => (one.$id === 'm2' ? { ...one, displayName: 'Samantha' } : one)),
+      )
+      return ok({ ...members()[1], displayName: 'Samantha' })
+    }) as never)
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change their name' }))
+    expect(document.activeElement).toBe(input('Their name'))
+    expect(input('Their name').value).toBe('Sam')
+    // One form at a time.
+    expect(screen.queryByRole('button', { name: 'Invite by email' })).toBeNull()
+    type('Their name', 'Samantha')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByRole('heading', { level: 1, name: 'Samantha' })).toBeTruthy()
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
+    expect(call.mock.calls.map((one) => one.slice(0, 4))).toEqual([
+      ['groups', 'PATCH', '/groups/g1/members/m2', { displayName: 'Samantha' }],
+      // The group's own name is the creator's label for Sam, which invite emails use.
+      ['groups', 'PATCH', '/groups/g1', { name: 'Samantha' }],
+    ])
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole('button', { name: 'Change their name' }),
+      ),
+    )
+  })
+
+  it('lets the other person rename the creator, leaving the group’s name, the creator’s label', async () => {
+    mockPersonId = 'p2'
+    mockGroup(0)
+    mockRows([], members('active'))
+    call.mockResolvedValue(ok({ ...members()[0], displayName: 'Alexandra' }))
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change their name' }))
+    expect(input('Their name').value).toBe('Alex')
+    type('Their name', 'Alexandra')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByLabelText('Their name')).toBeNull())
+    expect(call.mock.calls.map((one) => one.slice(0, 4))).toEqual([
+      ['groups', 'PATCH', '/groups/g1/members/m1', { displayName: 'Alexandra' }],
+    ])
+  })
+
+  it('sends only the group’s rename again after it alone failed', async () => {
+    mockGroup(0)
+    mockRows()
+    call.mockImplementation((async (_fn: string, _method: string, path: string) => {
+      if (path === '/groups/g1') return refused('CONFLICT', 'Someone else changed this. Try again.')
+      mockRows(
+        [],
+        members().map((one) => (one.$id === 'm2' ? { ...one, displayName: 'Samantha' } : one)),
+      )
+      return ok({ ...members()[1], displayName: 'Samantha' })
+    }) as never)
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change their name' }))
+    type('Their name', 'Samantha')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Someone else changed this. Try again.',
+    )
+    await screen.findByRole('heading', { level: 1, name: 'Samantha' })
+    call.mockClear()
+    call.mockResolvedValue(ok({ ...pair, name: 'Samantha' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByLabelText('Their name')).toBeNull())
+    expect(call.mock.calls.map((one) => one.slice(0, 4))).toEqual([
+      ['groups', 'PATCH', '/groups/g1', { name: 'Samantha' }],
+    ])
+  })
+
+  it('sends nothing when the name is unchanged, or empty', async () => {
+    mockGroup(0)
+    mockRows()
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change their name' }))
+    type('Their name', '')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() =>
+      expect(document.getElementById(`${input('Their name').id}-error`)?.textContent).toBe(
+        'Required',
+      ),
+    )
+    // Trimmed, it's the name they have.
+    type('Their name', 'Sam ')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByLabelText('Their name')).toBeNull())
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('keeps the form with the refusal, and Cancel waits for a save under way', async () => {
+    mockGroup(0)
+    mockRows()
+    let answer: (result: Result<unknown>) => void = () => {}
+    call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change their name' }))
+    type('Their name', 'Samantha')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Saving…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.getByLabelText('Their name')).toBeTruthy()
+    answer(refused('FORBIDDEN', 'Your role in this group can’t do this.'))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Your role in this group can’t do this.',
+    )
+    expect(call).toHaveBeenCalledOnce()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByLabelText('Their name')).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Change their name' }))
+  })
+
+  it('invites them by email while they haven’t joined', async () => {
+    mockGroup(0)
+    mockRows()
+    const SENT = { sentAt: NOW.toISOString(), expiresAt: '2026-11-01T22:00:00.000Z' }
+    call.mockResolvedValue(ok(SENT))
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Invite by email' }))
+    expect(screen.getByRole('form', { name: 'Invite Sam by email' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Change their name' })).toBeNull()
+    type('Their email address', 'sam@example.com')
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }))
+    const news = `Invite sent. It expires on ${new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(SENT.expiresAt))}.`
+    expect(await screen.findByText(news)).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('identity', 'POST', '/invites', {
+      groupId: 'g1',
+      memberId: 'm2',
+      email: 'sam@example.com',
+    })
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Invite by email' }))
+    // A new invite: the last one's news goes.
+    fireEvent.click(screen.getByRole('button', { name: 'Invite by email' }))
+    expect(screen.queryByText(news)).toBeNull()
+  })
+
+  it('offers no invite once they’ve joined', async () => {
+    mockGroup(0)
+    mockRows([], members('active'))
+    renderAt('/people/g1')
+    expect(await screen.findByRole('button', { name: 'Change their name' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Invite by email' })).toBeNull()
+  })
+
+  it('focuses the heading when a refusal shows the pair was archived meanwhile', async () => {
+    mockGroup(0)
+    mockRows()
+    call.mockImplementation((async () => {
+      // The other person archived it: the refusal's reload brings the pair as it is now (rows
+      // changed since, so the page reads the mocked group again).
+      mockGroup(0, { archivedAt: '2026-10-18T21:00:00.000Z' })
+      mockRows(
+        [],
+        members().map((one) => ({ ...one, $updatedAt: '2026-10-18T21:00:00.000Z' })),
+      )
+      return refused('ARCHIVED', 'This group is archived, so it can no longer be changed.')
+    }) as never)
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Change their name' }))
+    type('Their name', 'Samantha')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(settings()).toBeNull())
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+  })
+
+  it('leaves focus alone when the page opens with Settings', async () => {
+    mockGroup(0)
+    mockRows()
+    renderAt('/people/g1')
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeTruthy()
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('leaves focus alone when Settings appear as the role loads', async () => {
+    // As in the app: the caller's role arrives after the page's first render.
+    mockGroup(0)
+    vi.mocked(useMyMember).mockReturnValue({ data: undefined, isError: false } as never)
+    mockRows()
+    const { queryClient } = renderAt('/people/g1')
+    await screen.findByText('Loading…')
+    vi.mocked(useMyMember).mockReturnValue({ data: { role: 'admin' }, isError: false } as never)
+    // A refetch with changed rows re-renders the page, which reads the role again.
+    mockRows(
+      [],
+      members().map((one) => ({ ...one, $updatedAt: '2026-10-18T21:00:00.000Z' })),
+    )
+    await queryClient.invalidateQueries({ queryKey: queryKeys.members('g1') })
+    expect(await screen.findByRole('region', { name: 'Settings' })).toBeTruthy()
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('sends focus to Change their name when Sam joined while the invite was open', async () => {
+    mockGroup(0)
+    mockRows()
+    const { queryClient } = renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Invite by email' }))
+    mockRows([], members('active'))
+    await queryClient.invalidateQueries({ queryKey: queryKeys.members('g1') })
+    await waitFor(() => expect(screen.queryByText('Not joined yet')).toBeNull())
+    // The form stays for them to finish with.
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('button', { name: 'Invite by email' })).toBeNull()
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Change their name' }))
+  })
+
+  it('names the pair by Sam in the archive dialog, and by Alex for Sam', async () => {
+    const { showModal, close } = HTMLDialogElement.prototype
+    HTMLDialogElement.prototype.showModal = function () {
+      this.setAttribute('open', '')
+    }
+    HTMLDialogElement.prototype.close = function () {
+      this.removeAttribute('open')
+    }
+    try {
+      // The group's own name is Alex's label for Sam: Sam mustn't be asked to archive "Sam".
+      mockPersonId = 'p2'
+      mockGroup(0)
+      mockRows([], members('active'))
+      renderAt('/people/g1')
+      const region = await screen.findByRole('region', { name: 'Archive group' })
+      fireEvent.click(within(region).getByRole('button', { name: 'Archive group' }))
+      const dialog = screen.getByRole('alertdialog')
+      expect(within(dialog).getByText('Archive Alex?')).toBeTruthy()
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    } finally {
+      Object.assign(HTMLDialogElement.prototype, { showModal, close })
+    }
+  })
+
+  it('archives the pair, then focuses the heading', async () => {
+    const { showModal, close } = HTMLDialogElement.prototype
+    // jsdom has no modal dialogs (employer-form.test.tsx has the full stand-in).
+    HTMLDialogElement.prototype.showModal = function () {
+      this.setAttribute('open', '')
+    }
+    HTMLDialogElement.prototype.close = function () {
+      this.removeAttribute('open')
+    }
+    try {
+      mockGroup(0)
+      mockRows()
+      call.mockResolvedValue(ok({ ...pair, archivedAt: '2026-10-18T22:00:00.000Z' }))
+      renderAt('/people/g1')
+      const region = await screen.findByRole('region', { name: 'Archive group' })
+      fireEvent.click(within(region).getByRole('button', { name: 'Archive group' }))
+      expect(within(screen.getByRole('alertdialog')).getByText('Archive Sam?')).toBeTruthy()
+      fireEvent.click(
+        within(screen.getByRole('alertdialog')).getByRole('button', { name: 'Archive group' }),
+      )
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 })),
+      )
+      expect(call).toHaveBeenCalledWith('groups', 'POST', '/groups/g1/archive')
+    } finally {
+      Object.assign(HTMLDialogElement.prototype, { showModal, close })
+    }
+  })
+
+  it.each([
+    ['to a viewer', () => mockGroup(0, {}, 'viewer')],
+    ['to a member', () => mockGroup(0, {}, 'member')],
+    ['in an archived pair', () => mockGroup(0, { archivedAt: '2026-10-01T00:00:00.000Z' })],
+  ])('isn’t offered %s', async (_case, setUp) => {
+    setUp()
+    mockRows()
+    renderAt('/people/g1')
+    await screen.findByText('History')
+    expect(settings()).toBeNull()
+    expect(screen.queryByRole('region', { name: 'Archive group' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Invite by email' })).toBeNull()
+  })
+})

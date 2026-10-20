@@ -22,9 +22,18 @@ export function writeErrorMessage(error: Err['error']): string {
 
 /**
  * `groups POST /groups/{id}/archive` behind a confirmation: admins only, never a personal group
- * (functions-api.md#groups). Archiving is permanent in v1.
+ * (functions-api.md#groups). Archiving is permanent in v1. `name` is the group as the page shows
+ * it: a pair by its other person, not by its creator's label (#145).
  */
-export function ArchiveGroup({ group, onArchived }: { group: Groups; onArchived: () => void }) {
+export function ArchiveGroup({
+  group,
+  name = group.name,
+  onArchived,
+}: {
+  group: Groups
+  name?: string
+  onArchived: () => void
+}) {
   const userId = useCurrentUser().data?.$id ?? ''
   const queryClient = useQueryClient()
   const [open, setOpen] = useState(false)
@@ -70,7 +79,7 @@ export function ArchiveGroup({ group, onArchived }: { group: Groups; onArchived:
       </Button>
       {open && (
         <ConfirmArchive
-          name={group.name}
+          name={name}
           pending={archive.isPending}
           error={archive.error?.message}
           onConfirm={() => archive.mutate()}

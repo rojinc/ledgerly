@@ -73,6 +73,7 @@ A posted house expense is fixed the same way as an employer entry: its creator o
 2. Record "Lent $50" → `ledger POST /transactions` with `kind: loan`. To fix it later, open it and tap **Edit** → `ledger PATCH /transactions/{id}`. A loan can switch between lent and borrowed, and a repayment can change who paid back.
 3. Months later Sam signs up with that number and verifies it. `identity POST /claim` links Sam's account to the placeholder. Sam sees the pair group and the $50.
 4. If Sam already had an account when added, the pair group shows in Sam's app as pending, and Sam joins it there. Until Sam joins, the lender can't tell which case it is.
+5. Under **Settings** on the pair's page, either person (both are admins) can **Change their name** → `groups PATCH /groups/{id}/members/{memberId}` with `{ displayName }`. The app shows a pair by the other person's name, so this is how it's renamed; for the lender, who made it, the group's own `name` (their label for Sam, which emails such as invites use) changes with it → `groups PATCH /groups/{id}` with `{ name }`. Until Sam joins, **Invite by email** sends Sam a link at an email address Sam was added with → `identity POST /invites` (here Sam was added by mobile only, so an invite waits for SMS, #40). **Archive group** makes it read-only → `groups POST /groups/{id}/archive`.
 
 ## 10. Personal rent with a reminder
 

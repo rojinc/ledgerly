@@ -130,7 +130,7 @@ export function InviteForm({
         type="email"
         autoComplete="off"
         label="Their email address"
-        hint="Use an address you added them with."
+        hint="Use an address they were added with."
         error={errors.email}
         {...form.register('email')}
       />
