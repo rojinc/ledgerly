@@ -298,6 +298,108 @@ describe('POST /claim', () => {
     expect(statusOf(services, 'm1')).toBe('active')
   })
 
+  // #429: a group delete's step 2 sets `deletingAt`, its point of no return, before the team goes.
+  describe('a group being deleted', () => {
+    const deleting = (services: Fakes, groupId: string) =>
+      updateRow(services.db, 'groups', groupId, {
+        deletingAt: NOW.toISOString(),
+        deletingBy: 'pAdmin',
+      })
+    const groupRow = (services: Fakes, groupId: string) =>
+      services.db.rows('groups').find((row) => row.$id === groupId)
+
+    it('is skipped as for a team that’s gone, writing nothing there, and the others join', async () => {
+      const services = claimFixture([
+        placeholderRow('m1', 'g1', 'pSam', BEFORE),
+        // Listed first, so the claim must go on past it.
+        placeholderRow('m2', 'g2', 'pSam', '2026-09-01T00:00:00.000Z'),
+      ])
+      await deleting(services, 'g2')
+      const before = groupRow(services, 'g2')
+      expect(await claimed(services)).toEqual(['g1'])
+      expect(statusOf(services, 'm2')).toBe('placeholder')
+      // Step 1's team add is taken back.
+      expect(teamUsers(services, 'g2')).toEqual(['uAdmin'])
+      expect(services.db.rows('activity').map((row) => row.groupId)).toEqual(['g1'])
+      expect(groupRow(services, 'g2')).toEqual(before)
+    })
+
+    it('is skipped when the delete passes its point of no return after the team add', async () => {
+      const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+      let team: string[] | undefined
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"tableId":"groups"'),
+        async () => {
+          team = teamUsers(services, 'g1')
+          await deleting(services, 'g1')
+        },
+      )
+      expect(await claimed(services)).toEqual([])
+      expect(team).toEqual(['uAdmin', 'u1'])
+      expect(statusOf(services, 'm1')).toBe('placeholder')
+      expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+      expect(services.db.rows('activity')).toEqual([])
+    })
+
+    it('counts a group row gone by the check as being deleted: a purge deletes it last', async () => {
+      const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+      const stage = services.db.createOperations.bind(services.db)
+      let done = false
+      vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+        const staged = await stage(params)
+        // Just after the join staged its guard.
+        if (!done && JSON.stringify(params.operations).includes('"tableId":"groups"')) {
+          done = true
+          await withTransaction(services.db, (tx) =>
+            tx.write({ action: 'delete', tableId: 'groups', rowId: 'g1' }),
+          )
+        }
+        return staged
+      })
+      expect(await claimed(services)).toEqual([])
+      expect(statusOf(services, 'm1')).toBe('placeholder')
+      expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    })
+
+    it('fails its commit when the delete lands after the check, and a retry skips it', async () => {
+      const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+      beforeCommit(services.db, () => deleting(services, 'g1'))
+      expect(await failure(services, 'POST', '/claim')).toEqual({
+        status: 409,
+        code: 'CONFLICT',
+        message: TRY_AGAIN,
+      })
+      expect(statusOf(services, 'm1')).toBe('placeholder')
+      expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+      expect(services.db.rows('activity')).toEqual([])
+      expect(await claimed(services)).toEqual([])
+      expect(statusOf(services, 'm1')).toBe('placeholder')
+      expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
+    })
+
+    it('fails the commit of a delete staged before the join, since the join writes the group’s rev', async () => {
+      const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+      let linked: string[] | undefined
+      await expect(
+        withTransaction(services.db, async (tx) => {
+          // A delete's step 2, staged and checked, while the join runs and commits.
+          await tx.write({
+            action: 'update',
+            tableId: 'groups',
+            rowId: 'g1',
+            data: { deletingAt: NOW.toISOString(), deletingBy: 'pAdmin', rev: 'rDelete' },
+          })
+          linked = await claimed(services)
+        }),
+      ).rejects.toMatchObject({ code: 409 })
+      expect(linked).toEqual(['g1'])
+      expect(statusOf(services, 'm1')).toBe('active')
+      expect(groupRow(services, 'g1')?.rev).not.toBe('r0')
+      expect(groupRow(services, 'g1')?.deletingAt ?? null).toBeNull()
+    })
+  })
+
   it('still fails the claim for any other team error', async () => {
     const services = claimFixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
     vi.spyOn(services.teams, 'createMembership').mockRejectedValue(
@@ -372,7 +474,8 @@ describe('POST /claim', () => {
       placeholderRow(`m${index}`, `g${index}`, 'pSam', BEFORE),
     )
     const teams = Object.fromEntries(rows.map((row) => [row.groupId, []]))
-    const services = fakes({ persons: [SAM], members: rows }, { teams })
+    const groups = rows.map((row) => ({ $id: row.groupId, type: 'house', name: 'Flat', rev: 'r0' }))
+    const services = fakes({ persons: [SAM], groups, members: rows }, { teams })
     const linked = await claimed(services)
     expect(linked).toHaveLength(101)
     expect(new Set(linked).size).toBe(101)

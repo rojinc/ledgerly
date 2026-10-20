@@ -36,6 +36,8 @@ function addedBeforeSignUp(typed: ReturnType<typeof identity>[] = []) {
     {
       persons: [placeholder('pSam')],
       identities: [identity('iSam', 'email:sam@example.com', 'pSam'), ...typed],
+      // Their rows, for the guard a join writes on each group.
+      groups: ['g1', 'g2'].map((id) => ({ $id: id, type: 'house', name: 'Flat', rev: 'r0' })),
       members: [
         placeholderRow('m1', 'g1', 'pSam', BEFORE),
         placeholderRow('m2', 'g2', 'pSam', AFTER),
@@ -497,6 +499,7 @@ describe('POST /bootstrap for a deleted account', () => {
     async (_, setUp) => {
       const services = setUp()
       const persons = services.db.rows('persons')
+      const groups = services.db.rows('groups')
       beforeStaging(
         services.db,
         (operations) => operations.includes('"profiles"'),
@@ -507,7 +510,7 @@ describe('POST /bootstrap for a deleted account', () => {
       expect(await failure(services, 'POST', '/bootstrap', BODY)).toMatchObject(deleted)
       expect(services.db.rows('persons')).toEqual(persons)
       expect(services.db.rows('profiles')).toEqual([])
-      expect(services.db.rows('groups')).toEqual([])
+      expect(services.db.rows('groups')).toEqual(groups)
       expect(services.db.rows('members').filter((row) => row.status !== 'placeholder')).toEqual([])
     },
   )

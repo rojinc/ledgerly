@@ -11,6 +11,7 @@ import {
   type Fakes,
   failure,
   fakes,
+  NOW,
   ok,
   placeholderRow,
   TRY_AGAIN,
@@ -301,6 +302,25 @@ describe('POST /groups/{id}/join', () => {
     })
     expect(memberRow(services, 'm6')?.status).toBe('placeholder')
     expect(services.db.rows('activity')).toEqual([])
+  })
+
+  it('is NOT_A_MEMBER for a group being deleted, as for a team that’s gone, writing nothing (#429)', async () => {
+    // A group delete's step 2 set `deletingAt`, its point of no return, before the team goes.
+    const services = fixture([placeholderRow('m1', 'g1', 'pSam', BEFORE)])
+    await updateRow(services.db, 'groups', 'g1', {
+      archivedAt: BEFORE,
+      deletingAt: NOW.toISOString(),
+      deletingBy: 'pZed',
+    })
+    const tables = ['groups', 'members', 'activity']
+    const before = tables.map((table) => services.db.rows(table))
+    expect(await failure(services, 'POST', '/groups/g1/join')).toMatchObject({
+      status: 403,
+      code: 'NOT_A_MEMBER',
+    })
+    expect(tables.map((table) => services.db.rows(table))).toEqual(before)
+    // Step 1's team add is taken back.
+    expect(teamUsers(services, 'g1')).toEqual(['uAdmin'])
   })
 
   it('is safe to send twice', async () => {

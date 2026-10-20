@@ -802,6 +802,65 @@ describe('moveMembers (step 2)', () => {
     })
   })
 
+  // #429: a group delete's step 2 sets `deletingAt`, its point of no return, before the team goes.
+  describe('a group being deleted, as for a team that’s gone', () => {
+    const deleting = { deletingAt: NOW.toISOString(), deletingBy: 'pAdmin' }
+
+    it('is put off, with U out of its team and nothing written there, while the other groups go on', async () => {
+      const services = setUp({
+        persons: [U, P],
+        groups: GROUP_ROWS.map((row) => (row.$id === 'g1' ? { ...row, ...deleting } : row)),
+        members: [
+          placeholderRow('m1', 'g1', 'pP', CREATED),
+          placeholderRow('m2', 'g2', 'pP', CREATED),
+        ],
+      })
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
+        kept: new Set(),
+        joined: ['g2'],
+        putOff: ['g1'],
+        done: false,
+      })
+      expect(members(services)).toEqual([
+        ['m1', 'g1', 'pP', 'placeholder', '2026-09-01'],
+        ['m2', 'g2', 'pU', 'active', '2026-09-01'],
+      ])
+      expect(services.teams.members('g1')).toEqual([])
+      expect(joinedRows(services).map(([groupId]) => groupId)).toEqual(['g2'])
+      // Rolled back, the guard with the rest.
+      expect(services.db.rows('groups').find((row) => row.$id === 'g1')?.rev).toBe('r0')
+      expect(warn.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+        { fn: 'unknown', event: 'merge_put_off_team_gone', personId: 'pP', groupId: 'g1' },
+      ])
+    })
+
+    it('is put off when the delete passes its point of no return after the team add', async () => {
+      const services = setUp({
+        persons: [U, P],
+        members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
+      })
+      let team: unknown[] | undefined
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"groups"'),
+        async () => {
+          team = services.teams.members('g1')?.map((member) => member.userId)
+          await updateRow(services.db, 'groups', 'g1', deleting)
+        },
+      )
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      expect(await moveMembers(services, 'u1', 'pP', 'pU', ['g1'], FAR, ready)).toMatchObject({
+        putOff: ['g1'],
+        done: false,
+      })
+      expect(team).toEqual(['u1'])
+      expect(members(services)).toEqual([['m1', 'g1', 'pP', 'placeholder', '2026-09-01']])
+      expect(services.teams.members('g1')).toEqual([])
+      expect(joinedRows(services)).toEqual([])
+    })
+  })
+
   describe('a group with a statement being finalized waits whole', () => {
     const FINALIZING = {
       $id: 'st1',
