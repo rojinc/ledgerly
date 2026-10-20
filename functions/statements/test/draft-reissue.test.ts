@@ -423,6 +423,50 @@ describe('reissue guards', () => {
     expect(services.db.rows('statements')).toHaveLength(1)
   })
 
+  // An early close's draft and a void range around it, inside October (#420).
+  const firstHalf = { periodStart: '2026-10-01', periodEnd: '2026-10-15' }
+  const secondHalf = { periodStart: '2026-10-16', periodEnd: '2026-10-31' }
+
+  it.each([
+    [
+      'all of it',
+      { periodStart: '2026-10-01', periodEnd: '2026-10-25' },
+      { periodStart: '2026-10-10', periodEnd: '2026-10-20' },
+    ],
+    ['only its first day', { periodStart: '2026-10-10', periodEnd: '2026-10-16' }, secondHalf],
+    ['only its last day', { periodStart: '2026-10-15', periodEnd: '2026-10-20' }, firstHalf],
+  ])('refuses a range that overlaps another draft, %s (#420)', async (_case, range, drafted) => {
+    const services = fakes({ ...octoberDrafted, statements: [statement('st-draft', drafted)] })
+    const response = await failure(services, 'POST', '/statements/reissue', {
+      groupId: 'job',
+      ...range,
+    })
+    expect(response.code).toBe('VALIDATION_FAILED')
+    expect(response.message).toBe(
+      'Another draft of this group covers some of these days. Finalize or discard it first.',
+    )
+    expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it.each([
+    ['ends the day before a draft starts', firstHalf, secondHalf],
+    ['starts the day after a draft ends', secondHalf, firstHalf],
+  ])('redoes a void range that %s (#420)', async (_case, range, drafted) => {
+    const services = fakes({
+      ...octoberDrafted,
+      statements: [
+        statement('st-void', { ...range, status: 'void' }),
+        statement('st-draft', drafted),
+      ],
+    })
+    const draft = await ok<Statements>(services, 'POST', '/statements/reissue', {
+      groupId: 'job',
+      ...range,
+    })
+    expect(draft).toMatchObject({ ...range, status: 'draft' })
+    expect(services.db.rows('statements')).toHaveLength(3)
+  })
+
   it('refuses a period the job hasn’t drafted yet', async () => {
     // November, on 2 November: the job would draft it again on 1 December.
     const services = fakes(octoberDrafted)
