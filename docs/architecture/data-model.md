@@ -123,7 +123,7 @@ Row ID = Appwrite Team ID ([D-004](decisions.md)).
 | `region` | varchar(16) | For public holidays |
 | `statementCycle` | enum(none, weekly, fortnightly, monthly) | default `none` (employer default `monthly`) |
 | `cycleAnchor` | varchar(10)? | First day of the first period, for weekly and fortnightly cycles |
-| `nextCloseAt` | datetime? | When the current period's statement is due to be drafted ([statements](statements.md#periods)). Set by `groups` on create and whenever `statementCycle`, `cycleAnchor` or `timezone` changes; moved forward by `statements`. |
+| `nextCloseAt` | datetime? | When the current period's statement is due to be drafted ([statements](statements.md#periods)). Set by `groups` on create and whenever `statementCycle`, `cycleAnchor` or `timezone` changes (one already due, its period ended in the group's time zone before the change or its close passed, stays for the same period, and a time zone change alone keeps the stored close's period, both re-expressed in the new time zone); moved forward by `statements`. |
 | `nextCheckAt` | datetime? | When the group's [nightly check](scheduling.md#step-6-nightly-check) is next due. Written only by `scheduler`. Empty means due now, so a group's first check is also the backfill of its `balances` row. |
 | `settingsJson` | text | `GroupSettings` (below) |
 | `archivedAt` | datetime? | Archived groups are read-only |
@@ -192,7 +192,7 @@ Indexes:
 | `idx_schedule_date` | scheduleId, date | schedule edits |
 | `idx_statementId` | statementId | statement detail, void |
 | `idx_status_date` | status, date | scheduler auto-post |
-| `idx_status_dueOn` | status, dueOn | bill reminders |
+| `idx_status_dueOn` | status, dueOn | bill autopay and reminders |
 
 Permissions: `read("team:<groupId>")`.
 
