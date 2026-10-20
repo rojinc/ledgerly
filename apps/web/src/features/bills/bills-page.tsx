@@ -2,7 +2,7 @@ import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import { formatMoney } from '@ledgerly/core/money/format'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, type RefObject, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
@@ -48,19 +48,26 @@ export function BillsPage() {
   return groupId ? <HouseBillsPage groupId={groupId} /> : <PersonalBillsPage />
 }
 
-function PersonalBillsPage() {
-  const personal = usePersonalGroup()
-  // A stopped bill's panel goes: focus lands here, and the status line reads out what happened.
-  const heading = useRef<HTMLHeadingElement>(null)
-  const [done, setDone] = useState('')
-  // Back from saving a recurring bill: its form, and the button that sent it, are gone.
+/** Back from saving a recurring bill: its form, and the button that sent it, are gone. */
+function useFocusAfterSave(heading: RefObject<HTMLHeadingElement | null>) {
   const location = useLocation()
   const navigate = useNavigate()
   useEffect(() => {
     if (!(location.state as { saved?: boolean } | null)?.saved) return
     heading.current?.focus()
-    navigate(location.pathname, { replace: true, state: null })
-  }, [location.state, location.pathname, navigate])
+    navigate(`${location.pathname}${location.search}`, { replace: true, state: null })
+  }, [location.state, location.pathname, location.search, navigate, heading])
+}
+
+const OUTLINE_LINK =
+  'inline-flex h-10 items-center rounded-md border border-input px-4 text-sm font-medium outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring'
+
+function PersonalBillsPage() {
+  const personal = usePersonalGroup()
+  // A stopped bill's panel goes: focus lands here, and the status line reads out what happened.
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [done, setDone] = useState('')
+  useFocusAfterSave(heading)
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -71,10 +78,7 @@ function PersonalBillsPage() {
           <Link to="/bills/new" className={BUTTON_LINK}>
             New bill
           </Link>
-          <Link
-            to="/bills/recurring/new"
-            className="inline-flex h-10 items-center rounded-md border border-input px-4 text-sm font-medium outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
-          >
+          <Link to="/bills/recurring/new" className={OUTLINE_LINK}>
             New recurring bill
           </Link>
         </div>
@@ -88,6 +92,7 @@ function PersonalBillsPage() {
           <BillLists group={personal.group} />
           <RecurringBills
             group={personal.group}
+            canStop={() => true}
             onStopped={(message) => {
               setDone(message)
               heading.current?.focus()
@@ -116,6 +121,7 @@ export function useHouse(groupId: string) {
   return {
     house: group.isError ? null : group.data ? house : undefined,
     personId,
+    admin: me.data?.role === 'admin',
     // permissions.md: admins and members add bills; nobody adds to an archived house.
     canAdd:
       Boolean(house && !house.archivedAt) &&
@@ -126,21 +132,44 @@ export function useHouse(groupId: string) {
 }
 
 function HouseBillsPage({ groupId }: { groupId: string }) {
-  const { house, canAdd } = useHouse(groupId)
+  const { house, personId, admin, canAdd } = useHouse(groupId)
+  const heading = useRef<HTMLHeadingElement>(null)
+  const [done, setDone] = useState('')
+  useFocusAfterSave(heading)
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-semibold break-words">
+        <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold break-words outline-none">
           {house ? `Bills · ${house.name}` : 'Bills'}
         </h1>
         {canAdd && (
-          <Link to={`/bills/new?groupId=${groupId}`} className={BUTTON_LINK}>
-            New bill
-          </Link>
+          <div className="flex flex-wrap gap-2">
+            <Link to={`/bills/new?groupId=${groupId}`} className={BUTTON_LINK}>
+              New bill
+            </Link>
+            <Link to={`/bills/recurring/new?groupId=${groupId}`} className={OUTLINE_LINK}>
+              New recurring
+            </Link>
+          </div>
         )}
       </div>
+      {/* Mounted from the start, so a change is read out. */}
+      <p role="status" className="text-sm empty:hidden">
+        {done}
+      </p>
       {house ? (
-        <BillLists group={house} />
+        <>
+          <BillLists group={house} />
+          <RecurringBills
+            group={house}
+            // The scheduler lets its creator or an admin end it (functions-api.md#scheduler).
+            canStop={(schedule) => canAdd && (admin || schedule.createdBy === personId)}
+            onStopped={(message) => {
+              setDone(message)
+              heading.current?.focus()
+            }}
+          />
+        </>
       ) : house === null ? (
         <Message alert>We couldn’t find that house.</Message>
       ) : (
@@ -207,12 +236,17 @@ function BillLists({ group }: { group: Groups }) {
   )
 }
 
-/** The personal group's recurring bills (#75), told what was stopped. */
+/**
+ * A group's recurring bills (#75), and a house's recurring expenses (#403), told what was stopped.
+ * `canStop`: whether the caller may stop this one.
+ */
 function RecurringBills({
   group,
+  canStop,
   onStopped,
 }: {
   group: Groups
+  canStop: (schedule: Schedules) => boolean
   onStopped: (message: string) => void
 }) {
   const today = localToday(group.timezone, new Date())
@@ -234,6 +268,7 @@ function RecurringBills({
                 schedule={schedule}
                 today={today}
                 money={money}
+                canStop={canStop(schedule)}
                 onStopped={onStopped}
               />
             ))}
@@ -292,11 +327,13 @@ function RecurringBill({
   schedule,
   today,
   money,
+  canStop,
   onStopped,
 }: {
   schedule: Schedules
   today: LocalDate
   money: (cents: number) => string
+  canStop: boolean
   onStopped: (message: string) => void
 }) {
   const stop = useStopRecurringBill(schedule)
@@ -311,10 +348,13 @@ function RecurringBill({
     schedule.endsOn && lastDue(schedule) === schedule.endsOn ? schedule.endsOn : undefined
   // Not started: Stop removes it, except a first bill already paid early, which ends it there.
   const notStarted = today < schedule.startsOn
+  const expense = schedule.kind === 'expense'
   const details = [
+    expense ? 'Expense' : undefined,
     repeat ? describeRepeat(repeat, formatDate) : undefined,
     cents === undefined ? undefined : money(cents),
-    schedule.autoPost ? 'Autopay' : undefined,
+    // An expense always posts itself (#403): only a bill's autopay is a choice.
+    schedule.autoPost && !expense ? 'Autopay' : undefined,
     notStarted ? `Starts ${formatDate(schedule.startsOn)}` : undefined,
     ended ? 'Ended' : last ? `Last due ${formatDate(last)}` : undefined,
   ].filter(Boolean)
@@ -326,7 +366,7 @@ function RecurringBill({
           <span className="block text-sm text-muted-foreground">{details.join(' · ')}</span>
         </span>
         {/* Stopping sets its end date, so one already set has nothing to stop. */}
-        {!ended && !schedule.endsOn && !confirming && (
+        {canStop && !ended && !schedule.endsOn && !confirming && (
           <Button
             ref={stopButton}
             variant="outline"
@@ -348,9 +388,13 @@ function RecurringBill({
           className="m-0 flex min-w-0 flex-col gap-2 rounded-md border border-border p-3"
         >
           <p id={`stop-${schedule.$id}`} className="text-sm">
-            {notStarted
-              ? `Remove ${schedule.description}? It hasn’t started yet, so its bills are removed, except any you’ve already paid.`
-              : `Stop ${schedule.description} from today? No more bills are made after today. Bills already made stay, so you can still pay or skip them.`}
+            {expense
+              ? notStarted
+                ? `Remove ${schedule.description}? It hasn’t started yet, so nothing has been added.`
+                : `Stop ${schedule.description} from today? Nothing more is added after today. What was added already stays.`
+              : notStarted
+                ? `Remove ${schedule.description}? It hasn’t started yet, so its bills are removed, except any you’ve already paid.`
+                : `Stop ${schedule.description} from today? No more bills are made after today. Bills already made stay, so you can still pay or skip them.`}
           </p>
           {stop.isError && <Message alert>{stop.error.message}</Message>}
           <div className="flex flex-wrap gap-2">
@@ -364,7 +408,7 @@ function RecurringBill({
                     setConfirming(false)
                     onStopped(
                       stopped
-                        ? `Stopped ${schedule.description}. Bills already made stay.`
+                        ? `Stopped ${schedule.description}. ${expense ? 'What was added already stays.' : 'Bills already made stay.'}`
                         : `Removed ${schedule.description}.`,
                     )
                   },

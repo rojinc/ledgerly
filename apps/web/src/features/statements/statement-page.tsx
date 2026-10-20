@@ -1,4 +1,4 @@
-import { localToday } from '@ledgerly/core/dates/time-zone'
+import { localToday, periodEndClosedAt } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
@@ -21,6 +21,7 @@ import {
   useDiscardStatement,
   useFinalizeStatement,
   useRefreshStatement,
+  useReissueStatement,
   useSendStatement,
   useStatement,
   useStatements,
@@ -62,6 +63,44 @@ function unprintable({ issuer, recipient, lines }: StatementSnapshot): boolean {
     ...(recipient?.emails ?? []),
     ...lines.map(lineText),
   ].some((text) => text !== undefined && missingGlyphs(text).length > 0)
+}
+
+/**
+ * Whether `POST /statements/reissue` takes this void statement's own range (statements.md#4), so
+ * it's offered only where it can work. A draft of exactly that range is returned rather than
+ * refused (asking again returns it), so a reissue whose answer was lost can be asked again.
+ */
+function reissuable(row: Statements, all: Statements[], group: Groups): boolean {
+  const sameRange = (other: Statements) =>
+    other.periodStart === row.periodStart && other.periodEnd === row.periodEnd
+  if (row.status !== 'void') return false
+  // Once per range: a void of it that was redone and voided again since asks the same.
+  if (
+    all.some(
+      (other) => other.status === 'void' && sameRange(other) && other.$createdAt > row.$createdAt,
+    )
+  ) {
+    return false
+  }
+  if (
+    all.some(
+      (other) => (other.status === 'draft' || other.status === 'finalizing') && sameRange(other),
+    )
+  ) {
+    return true
+  }
+  // The refusals: nothing finalizing; ending after the latest final statement; no statement that
+  // isn't void ending on the same day; and ending before the period the job drafts next, which
+  // starts after every statement that ends before the job's period does (statements.md#periods).
+  return (
+    all.every(
+      (other) =>
+        other.status !== 'finalizing' &&
+        (other.status !== 'final' || other.periodEnd < row.periodEnd) &&
+        (other.status === 'void' || other.periodEnd !== row.periodEnd),
+    ) &&
+    (!group.nextCloseAt || row.periodEnd < periodEndClosedAt(group.nextCloseAt, group.timezone))
+  )
 }
 
 /** An invoice by its number; a divide, which never has one, by its period (#166). */
@@ -143,6 +182,11 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
   const latestFinal = all.data
     ?.filter((statement) => statement.status === 'final')
     .sort((a, b) => (a.periodEnd < b.periodEnd ? 1 : -1))[0]
+  const reissue =
+    open &&
+    all.data !== undefined &&
+    group.data !== undefined &&
+    reissuable(row, all.data, group.data)
   // statements.md#5: discarding the group's latest draft rolls its period into the next one.
   const latest = all.data?.every(
     (statement) => statement.$id === row.$id || statement.periodEnd < row.periodEnd,
@@ -208,7 +252,9 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
           group={group.data}
           admin={open && row.status === 'final'}
           latest={latestFinal?.$id === row.$id}
+          reissue={reissue}
           onFinish={finish}
+          onRefused={refuse}
         />
       )}
       {snapshot ? (
@@ -407,13 +453,17 @@ function FinalActions({
   group,
   admin,
   latest,
+  reissue,
   onFinish,
+  onRefused,
 }: {
   statement: Statements
   group: Groups
   admin: boolean
   latest: boolean
+  reissue: boolean
   onFinish: (message: string) => void
+  onRefused: (message: string) => void
 }) {
   const send = useSendStatement(statement)
   const divide = statement.type === 'divide'
@@ -460,6 +510,12 @@ function FinalActions({
             Void…
           </Button>
         )}
+        {/* Void… is on a final statement and Reissue… on a void one, so they share the swap. */}
+        {reissue && !swap.opened && (
+          <Button ref={swap.trigger} variant="outline" onClick={swap.open}>
+            Reissue…
+          </Button>
+        )}
       </div>
       {/* A final statement never changes: a mistake on it is fixed on the next one (#400). */}
       {admin && (
@@ -483,6 +539,15 @@ function FinalActions({
           heading={swap.heading}
           onCancel={swap.close}
           onFinish={onFinish}
+        />
+      )}
+      {reissue && swap.opened && (
+        <ReissueStatement
+          statement={statement}
+          heading={swap.heading}
+          onCancel={swap.close}
+          onFinish={onFinish}
+          onRefused={onRefused}
         />
       )}
     </div>
@@ -554,6 +619,66 @@ function VoidStatement({
         </Button>
       </div>
     </form>
+  )
+}
+
+/**
+ * Drafts a void statement's period again, after confirming (statements.md#4), then opens the
+ * draft. A refusal is said on the page: the list is read again, which can take this panel away.
+ */
+function ReissueStatement({
+  statement,
+  heading,
+  onCancel,
+  onFinish,
+  onRefused,
+}: {
+  statement: Statements
+  heading: RefObject<HTMLHeadingElement | null>
+  onCancel: () => void
+  onFinish: (message: string) => void
+  onRefused: (message: string) => void
+}) {
+  const reissue = useReissueStatement(statement)
+  const divide = statement.type === 'divide'
+  const name = statement.displayNumber ?? 'this divide'
+  const period = periodText(statement)
+  return (
+    <section
+      aria-labelledby="reissue-heading"
+      className="flex flex-col gap-3 rounded-md border border-border p-4"
+    >
+      <h2 id="reissue-heading" ref={heading} tabIndex={-1} className="font-medium outline-none">
+        Reissue {name}?
+      </h2>
+      <p className="text-sm">
+        {divide
+          ? `This makes a new draft divide for ${period} from the transactions as they are now, for you to review and finalize.`
+          : `This makes a new draft invoice for ${period} from the transactions as they are now, for you to review and finalize. Once finalized, it gets a new number; ${name} keeps its own.`}
+      </p>
+      <div className="flex flex-wrap gap-3">
+        <Button
+          aria-disabled={reissue.isPending}
+          onClick={() => {
+            if (reissue.isPending) return
+            reissue.mutate(undefined, {
+              onSuccess: () =>
+                onFinish(`Drafted again for ${period}. Review it, then finalize it.`),
+              onError: (error) => onRefused(error.message),
+            })
+          }}
+        >
+          {reissue.isPending ? 'Reissuing…' : divide ? 'Reissue divide' : 'Reissue invoice'}
+        </Button>
+        <Button
+          variant="ghost"
+          aria-disabled={reissue.isPending}
+          onClick={() => !reissue.isPending && onCancel()}
+        >
+          Cancel
+        </Button>
+      </div>
+    </section>
   )
 }
 

@@ -5,7 +5,7 @@ import type { scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
 import type { z } from 'zod'
 import { type Repeat, toRrule, type Weekday } from '../schedules/rrule'
 
-/** The recurring bill form's fields, as typed (#75). */
+/** The recurring bill form's fields, as typed (#75); a house's (#403) adds the last four. */
 export type RecurringValues = {
   description: string
   category: Category | ''
@@ -20,6 +20,13 @@ export type RecurringValues = {
   /** The last date one can be due, or empty for no end. */
   until: string
   autopay: boolean
+  /** A house's: a bill, due on each date, or an expense, added on each date. */
+  kind: 'bill' | 'expense'
+  /** A house's: who pays each one. */
+  paidBy: string
+  /** A house's: split equally between everyone living there on each date, or those ticked. */
+  split: 'everyone' | 'ticked'
+  splitBetween: string[]
 }
 
 function cents(text: string, currency: string): number {
@@ -47,25 +54,36 @@ export function toRepeat(values: RecurringValues): Repeat {
  * `scheduler POST /schedules` for a recurring bill: each occurrence is a due bill on its date
  * (scheduling.md), paid automatically on that date with autopay. Bills aren't moved for public
  * holidays.
+ *
+ * In a house (#403) it names who pays, and the people ticked, if any: with none, each occurrence
+ * is split equally between everyone living there on its date (ledger.md#default-split). A
+ * recurring expense posts itself on each date, as nothing else posts a `scheduled` one.
  */
 export function toRecurringInput(
   values: RecurringValues,
   ids: { id: string; groupId: string },
   currency: string,
+  house = false,
 ): z.input<typeof scheduleInputSchema> {
+  const totalCents = cents(values.amount, currency)
+  const expense = house && values.kind === 'expense'
   return {
     ...ids,
-    kind: 'bill',
+    kind: expense ? 'expense' : 'bill',
     description: values.description.trim(),
     template: {
-      totalCents: cents(values.amount, currency),
+      totalCents,
       ...(values.category ? { category: values.category } : {}),
-      bill: { status: 'due' },
+      ...(expense ? {} : { bill: { status: 'due' as const } }),
+      ...(house ? { payers: [{ personId: values.paidBy, cents: totalCents }] } : {}),
+      ...(house && values.split === 'ticked'
+        ? { split: { mode: 'equal' as const, personIds: [...new Set(values.splitBetween)].sort() } }
+        : {}),
     },
     rrule: toRrule(toRepeat(values)),
     startsOn: values.startsOn,
     skipPublicHolidays: false,
-    autoPost: values.autopay,
+    autoPost: expense || values.autopay,
   }
 }
 

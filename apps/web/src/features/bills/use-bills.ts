@@ -98,7 +98,8 @@ export function useRecurringBills(groupId: string) {
           tableId: 'schedules',
           queries: [
             Query.equal('groupId', groupId),
-            Query.equal('kind', 'bill'),
+            // A house's recurring expenses too (#403).
+            Query.equal('kind', ['bill', 'expense']),
             Query.orderAsc('startsOn'),
             Query.orderAsc('$id'),
             Query.limit(PAGE),

@@ -750,7 +750,7 @@ describe('StatementPage: a final invoice', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Void…' }))
   })
 
-  it('keeps the PDF of a void invoice, with no other actions', async () => {
+  it('keeps the PDF of a void invoice, with no Send or Void', async () => {
     store(statement('s1', { ...FINAL, status: 'void' }))
     renderAt('/groups/g1/statements/s1')
     expect(await screen.findByRole('button', { name: 'Download PDF' })).toBeTruthy()
@@ -1272,6 +1272,338 @@ describe('StatementPage: discard a draft (#166)', () => {
     await waitFor(() =>
       expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/s1/discard'),
     )
+  })
+})
+
+describe('StatementPage: reissue a void statement (#401)', () => {
+  const VOID = { ...FINAL, status: 'void' } as const
+  // September stays final; October (s1, INV-0007) was voided, so it's redone.
+  const september = statement('s0', {
+    ...FINAL,
+    number: 6,
+    displayNumber: 'INV-0006',
+    periodStart: '2026-09-01',
+    periodEnd: '2026-09-30',
+  })
+  const draft = statement('s2')
+  const oct = `${formatDate('2026-10-01')} – ${formatDate('2026-10-31')}`
+
+  /** Reissue answers `reissue`; a refresh answers with the stored draft. */
+  function answer(reissue: () => Result<unknown>) {
+    call.mockImplementation(async (_fn, _method, path) =>
+      path === '/statements/reissue'
+        ? reissue()
+        : ok(stored.find((row) => path === `/statements/${row.$id}/refresh`)),
+    )
+  }
+
+  /** The function made `row`: it's stored, and returned. */
+  function made(row: Statements) {
+    return () => {
+      store(...stored, row)
+      return ok(row)
+    }
+  }
+
+  /** Waits for the statement and the group's list, so a missing button is really missing. */
+  async function settled() {
+    await screen.findByRole('article')
+    await waitFor(() => expect(listRows).toHaveBeenCalled())
+    await act(async () => {})
+  }
+
+  it('offers Reissue… on a void invoice to an admin, not to a member or viewer, nor when archived', async () => {
+    store(statement('s1', VOID), september)
+    renderAt('/groups/g1/statements/s1')
+    expect(await screen.findByRole('button', { name: 'Reissue…' })).toBeTruthy()
+    cleanup()
+    for (const [role, extra] of [
+      ['member', {}],
+      ['viewer', {}],
+      ['admin', { archivedAt: '2026-11-05T00:00:00.000Z' }],
+    ] as const) {
+      mockGroup(role, extra)
+      renderAt('/groups/g1/statements/s1')
+      await settled()
+      expect(screen.queryByRole('button', { name: 'Reissue…' })).toBeNull()
+      cleanup()
+    }
+  })
+
+  it.each([
+    {
+      // Even beside a draft of its period, which a void's reissue would open.
+      on: 'a final invoice (it has Void… instead)',
+      rows: () => [statement('s2'), statement('s1', FINAL), september],
+      id: 's1',
+    },
+    {
+      on: 'a draft, even the reissued one',
+      rows: () => [statement('s2'), statement('s1', VOID), september],
+      id: 's2',
+    },
+    {
+      on: 'an older void, ending before the latest final (statements.md#4)',
+      rows: () => [
+        statement('s1', FINAL),
+        statement('s0', {
+          ...VOID,
+          number: 6,
+          displayNumber: 'INV-0006',
+          periodStart: '2026-09-01',
+          periodEnd: '2026-09-30',
+        }),
+      ],
+      id: 's0',
+    },
+    {
+      on: 'a void when another statement that isn’t void ends on the same day',
+      rows: () => [
+        statement('s2', { periodStart: '2026-10-15', periodEnd: '2026-10-31' }),
+        statement('s1', VOID),
+        september,
+      ],
+      id: 's1',
+    },
+    {
+      on: 'a void while a statement of the group is being finalized',
+      rows: () => [
+        statement('s2', {
+          status: 'finalizing',
+          periodStart: '2026-11-01',
+          periodEnd: '2026-11-30',
+        }),
+        statement('s1', VOID),
+        september,
+      ],
+      id: 's1',
+    },
+    {
+      on: 'a void that reaches the period the job drafts next (it ends 31 October)',
+      rows: () => [statement('s1', VOID), september],
+      id: 's1',
+      // 06:00 on 1 November in Sydney.
+      group: { nextCloseAt: '2026-10-31T19:00:00.000Z' },
+    },
+    {
+      on: 'the older of two voids of one period: the later one offers it',
+      rows: () => [
+        statement('s3', {
+          ...VOID,
+          number: 8,
+          displayNumber: 'INV-0008',
+          $createdAt: '2026-11-10T00:00:00.000Z',
+        }),
+        statement('s1', { ...VOID, $createdAt: '2026-11-01T00:00:00.000Z' }),
+        september,
+      ],
+      id: 's1',
+    },
+  ])('offers no Reissue… on $on', async ({ rows, id, group = {} }) => {
+    mockGroup('admin', group)
+    store(...rows())
+    answer(made(draft))
+    renderAt(`/groups/g1/statements/${id}`)
+    await settled()
+    expect(screen.queryByRole('button', { name: 'Reissue…' })).toBeNull()
+  })
+
+  it('offers it on the latest void, ending before the period the job drafts next', async () => {
+    // 06:00 on 1 December in Sydney: November is drafted next.
+    mockGroup('admin', { nextCloseAt: '2026-11-30T19:00:00.000Z' })
+    store(
+      statement('s3', { ...VOID, number: 8, displayNumber: 'INV-0008', $createdAt: '2026-11-10' }),
+      statement('s1', { ...VOID, $createdAt: '2026-11-01' }),
+      september,
+    )
+    renderAt('/groups/g1/statements/s3')
+    expect(await screen.findByRole('button', { name: 'Reissue…' })).toBeTruthy()
+  })
+
+  it('sends exactly { groupId, periodStart, periodEnd } of the void invoice, after confirming', async () => {
+    store(statement('s1', VOID), september)
+    answer(made(draft))
+    renderAt('/groups/g1/statements/s1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Reissue…' }))
+    expect(document.activeElement).toBe(
+      screen.getByRole('heading', { level: 2, name: 'Reissue INV-0007?' }),
+    )
+    expect(
+      screen.getByText(
+        `This makes a new draft invoice for ${oct} from the transactions as they are now, for you to review and finalize. Once finalized, it gets a new number; INV-0007 keeps its own.`,
+      ),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Reissue…' }))
+    expect(call).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Reissue…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reissue invoice' }))
+    await waitFor(() => expect(call).toHaveBeenCalled())
+    expect(call.mock.calls[0]).toStrictEqual([
+      'statements',
+      'POST',
+      '/statements/reissue',
+      { groupId: 'g1', periodStart: '2026-10-01', periodEnd: '2026-10-31' },
+    ])
+  })
+
+  it('opens the returned draft, says so and reads the list again; Finalize… is there as on any draft', async () => {
+    store(statement('s1', VOID), september)
+    answer(made(draft))
+    const { router, queryClient } = renderAt('/groups/g1/statements/s1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Reissue…' }))
+    const lists = listRows.mock.calls.length
+    fireEvent.click(screen.getByRole('button', { name: 'Reissue invoice' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements/s2'))
+    // The router shows the new page in a transition, after the note.
+    const heading = await screen.findByRole('heading', { level: 1, name: 'Draft invoice' })
+    // Said in the status region that was already there, with focus on the page's heading.
+    const note = screen.getByText(`Drafted again for ${oct}. Review it, then finalize it.`)
+    expect(note.getAttribute('role')).toBe('status')
+    expect(document.activeElement).toBe(heading)
+    expect(queryClient.getQueryData(['statement', 's2'])).toEqual(draft)
+    await waitFor(() => expect(listRows.mock.calls.length).toBeGreaterThan(lists))
+    expect(await screen.findByRole('button', { name: 'Finalize…' })).toBeTruthy()
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('statements', 'POST', '/statements/s2/refresh', undefined),
+    )
+    // Back goes to the void invoice.
+    await act(() => router.navigate(-1))
+    expect(router.state.location.pathname).toBe('/groups/g1/statements/s1')
+  })
+
+  it('opens the draft already made for that period: asking again returns it', async () => {
+    store(statement('s1', VOID), draft, september)
+    answer(() => ok(draft))
+    const { router } = renderAt('/groups/g1/statements/s1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Reissue…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reissue invoice' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements/s2'))
+    expect(call.mock.calls.filter(([, , path]) => path === '/statements/reissue')).toHaveLength(1)
+  })
+
+  it.each([
+    [
+      'VALIDATION_FAILED',
+      'This period is already final. Void the latest statement first to redo it.',
+      'This period is already final. Void the latest statement first to redo it.',
+    ],
+    [
+      'VALIDATION_FAILED',
+      'Another statement of this group already ends on this day.',
+      'Another statement of this group already ends on this day.',
+    ],
+    [
+      'VALIDATION_FAILED',
+      'This period hasn’t been drafted yet. It is drafted once it ends.',
+      'This period hasn’t been drafted yet. It is drafted once it ends.',
+    ],
+    [
+      'CONFLICT',
+      'A statement of this group is being finalized. Try again soon.',
+      'A statement of this group is being finalized. Try again soon.',
+    ],
+    [
+      'CONFLICT',
+      'Something else changed this at the same time. Try again.',
+      'Something else changed this at the same time. Try again.',
+    ],
+    [
+      'FORBIDDEN',
+      "Your role in this group can't do this.",
+      "Your role in this group can't do this.",
+    ],
+    [
+      'ARCHIVED',
+      'This group is archived, so it can no longer be changed.',
+      'This group has been archived, so it can’t be changed any more. Reload the page to see it as it is now.',
+    ],
+    [
+      'INTERNAL',
+      'Something went wrong on our side. Try again.',
+      'Something went wrong on our side. Try again.',
+    ],
+  ] as const)(
+    'shows %s (“%s”) on the page, stays and reads the list again',
+    async (code, message, shown) => {
+      store(statement('s1', VOID), september)
+      answer(() => ({ ok: false, error: { code, message } }))
+      const { router } = renderAt('/groups/g1/statements/s1')
+      fireEvent.click(await screen.findByRole('button', { name: 'Reissue…' }))
+      const lists = listRows.mock.calls.length
+      fireEvent.click(screen.getByRole('button', { name: 'Reissue invoice' }))
+      expect((await screen.findByRole('alert')).textContent).toBe(shown)
+      expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+      expect(router.state.location.pathname).toBe('/groups/g1/statements/s1')
+      await waitFor(() => expect(listRows.mock.calls.length).toBeGreaterThan(lists))
+    },
+  )
+
+  it('keeps the refusal on the page when the list read again takes the panel away', async () => {
+    store(statement('s1', VOID), september)
+    answer(() => {
+      // Another admin redid October and finalized it first.
+      store(
+        statement('s1', VOID),
+        statement('s3', { ...FINAL, number: 8, displayNumber: 'INV-0008' }),
+        september,
+      )
+      return {
+        ok: false,
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'This period is already final. Void the latest statement first to redo it.',
+        },
+      }
+    })
+    renderAt('/groups/g1/statements/s1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Reissue…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reissue invoice' }))
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Reissue INV-0007?' })).toBeNull(),
+    )
+    expect(screen.queryByRole('button', { name: 'Reissue…' })).toBeNull()
+    expect(screen.getByRole('alert').textContent).toBe(
+      'This period is already final. Void the latest statement first to redo it.',
+    )
+  })
+
+  it('says when the server can’t be reached, and asking again opens the draft', async () => {
+    const actual = await vi.importActual<typeof import('../../lib/api')>('../../lib/api')
+    call.mockImplementation(actual.callFunction)
+    createExecution
+      .mockRejectedValueOnce(new Error('Failed to fetch'))
+      .mockResolvedValue({ responseBody: JSON.stringify({ ok: true, data: draft }) } as never)
+    store(statement('s1', VOID), september)
+    const { router } = renderAt('/groups/g1/statements/s1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Reissue…' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Reissue invoice' }))
+    expect((await screen.findByRole('alert')).textContent).toBe(
+      'Could not reach the server. Check your connection and try again.',
+    )
+    expect(router.state.location.pathname).toBe('/groups/g1/statements/s1')
+    fireEvent.click(screen.getByRole('button', { name: 'Reissue invoice' }))
+    await waitFor(() => expect(router.state.location.pathname).toBe('/groups/g1/statements/s2'))
+    // The refusal went with the retry that worked.
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('reissues a void divide in its own words', async () => {
+    mockGroup('admin', { type: 'house', name: 'The flat' })
+    store(divide('d1', { ...FINAL_DIVIDE, status: 'void' }))
+    answer(made(divide('d2')))
+    renderAt('/groups/g1/statements/d1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Reissue…' }))
+    expect(screen.getByRole('heading', { level: 2, name: 'Reissue this divide?' })).toBeTruthy()
+    expect(
+      screen.getByText(
+        `This makes a new draft divide for ${oct} from the transactions as they are now, for you to review and finalize.`,
+      ),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Reissue divide' }))
+    expect(
+      await screen.findByText(`Drafted again for ${oct}. Review it, then finalize it.`),
+    ).toBeTruthy()
   })
 })
 

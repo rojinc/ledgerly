@@ -146,9 +146,7 @@ describe('NewRecurringBillPage', () => {
     const autopay = screen.getByLabelText(/Autopay/)
     expect(
       document.getElementById(autopay.getAttribute('aria-describedby') ?? '')?.textContent,
-    ).toBe(
-      'Until automatic payment is available, these bills still show as due and you mark them paid yourself.',
-    )
+    ).toBe('Without autopay, each bill shows as due until you mark it paid.')
     fireEvent.click(autopay)
     fireEvent.click(screen.getByRole('button', { name: 'Add recurring bill' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
@@ -225,7 +223,7 @@ describe('NewRecurringBillPage', () => {
 })
 
 describe('BillsPage: recurring', () => {
-  it('lists the recurring bills in words, on schedules.idx_groupId with kind = bill', async () => {
+  it('lists the recurring bills in words, on schedules.idx_groupId with kind bill or expense', async () => {
     mockLists([
       schedule('s1', { autoPost: true }),
       schedule('s2', {
@@ -253,7 +251,7 @@ describe('BillsPage: recurring', () => {
       .find((call) => call.tableId === 'schedules')
     expect(params?.queries).toEqual([
       Query.equal('groupId', 'g1'),
-      Query.equal('kind', 'bill'),
+      Query.equal('kind', ['bill', 'expense']),
       Query.orderAsc('startsOn'),
       Query.orderAsc('$id'),
       Query.limit(100),
