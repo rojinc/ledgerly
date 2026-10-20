@@ -14,6 +14,7 @@ import { DashboardPage } from './features/dashboard/dashboard-page'
 import { ExportPage } from './features/export/export-page'
 import { groupRoutes } from './features/groups/routes'
 import { houseRoutes } from './features/house/routes'
+import { InvitePage } from './features/invites/invite-page'
 import { peopleRoutes } from './features/people/routes'
 import { ProfilePage } from './features/profile/profile-page'
 import { scheduleRoutes } from './features/schedules/routes'
@@ -31,6 +32,7 @@ export const routes: RouteObject[] = [
     ],
   },
   { path: 'verify-email', element: <VerifyEmailPage /> },
+  { path: 'invite', element: <InvitePage /> },
   // Guards itself: it stays up to say the account was deleted once there's no user.
   { path: 'account/delete', element: <DeleteAccountPage /> },
   // No guard: someone signed in may open the emailed link.
