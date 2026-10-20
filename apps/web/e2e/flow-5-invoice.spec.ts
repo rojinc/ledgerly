@@ -30,21 +30,31 @@ function statusOf(page: Page, id: string): Promise<string> {
   )
 }
 
-// The employer this test adds, archived after it even when it fails, and its invoice.
+// The employer this test adds, archived after it even when it fails, its invoice, and when
+// Finalize was clicked.
 let groupId: string | undefined
 let statementId: string | undefined
+let finalizedAt: number | undefined
 test.afterEach(async ({ page }, testInfo) => {
   if (!groupId) return
-  // Archiving is refused while the invoice is finalizing: a finalize that outlasts the flow's
-  // minute is waited out first, with time of its own (#406).
-  if (statementId) {
-    const id = statementId
-    testInfo.setTimeout(testInfo.timeout + FINALIZE_MS)
-    await expect
-      .poll(() => statusOf(page, id), { timeout: FINALIZE_MS, intervals: [2_000] })
-      .not.toBe('finalizing')
+  try {
+    // Archiving is refused while the invoice is finalizing: a finalize that outlasts the flow's
+    // minute is waited out first, with time of its own (#406). A read that fails counts as still
+    // finalizing, so it's read again. The wait is never 0, which `expect.poll` reads as no limit.
+    const left = finalizedAt ? FINALIZE_MS - (Date.now() - finalizedAt) : 0
+    if (statementId && left > 0) {
+      const id = statementId
+      if (testInfo.timeout > 0) testInfo.setTimeout(testInfo.timeout + left)
+      await expect
+        .poll(() => statusOf(page, id).catch(() => 'finalizing'), {
+          timeout: left,
+          intervals: [2_000],
+        })
+        .not.toBe('finalizing')
+    }
+  } finally {
+    await archiveEmployer(page, groupId)
   }
-  await archiveEmployer(page, groupId)
 })
 
 // Skipped until the flows have a project of their own (#386): each run would leave a final
@@ -111,6 +121,7 @@ test.skip('invoices last month: the draft, finalize and send, its number and PDF
   await test.step('finalizes and sends it', async () => {
     await page.getByRole('button', { name: 'Finalize…', exact: true }).click()
     await expect(page.getByText(`Sending emails it to ${billing}.`, { exact: true })).toBeVisible()
+    finalizedAt = Date.now()
     await page.getByRole('button', { name: 'Finalize and send', exact: true }).click()
     // Finalize is an async execution, which the app polls until it ends: a minute at most.
     await expect(page.getByText(/^Final · Sent /)).toBeVisible({ timeout: 60_000 })

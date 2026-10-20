@@ -35,7 +35,11 @@ const UNAVAILABLE = 'Balance not available right now.'
 async function expectBalance(page: Page, balance: Locator, text: string): Promise<void> {
   const either = [text, UNAVAILABLE].map((words) => words.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
   await expect(balance).toHaveText(new RegExp(`^(${either.join('|')})$`))
-  if ((await balance.textContent()) === UNAVAILABLE) await page.reload()
+  if ((await balance.textContent()) === UNAVAILABLE) {
+    // In the report, so a reload that keeps happening is seen.
+    test.info().annotations.push({ type: 'reloaded', description: UNAVAILABLE })
+    await page.reload()
+  }
   await expect(balance).toHaveText(text)
 }
 
