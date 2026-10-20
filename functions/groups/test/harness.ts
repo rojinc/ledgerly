@@ -234,7 +234,7 @@ export function beforeStaging(db: FakeDb, nth: number, change: () => Promise<unk
 /** Commits one new row outside the request under test. */
 export function createRow(
   db: Db,
-  tableId: 'shares' | 'transactions' | 'groups' | 'items' | 'schedules',
+  tableId: 'shares' | 'transactions' | 'groups' | 'items' | 'schedules' | 'invites',
   row: Row,
 ) {
   const { $id, ...data } = row

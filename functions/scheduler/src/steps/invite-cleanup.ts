@@ -12,7 +12,7 @@ export type InviteCounts = { deleted: number; skipped: number; failed: number }
 // An invite's row is kept this long after it was accepted or expired: its link is dead by then,
 // and the rate limits look back 7 days at most (identity-and-invites.md#invites).
 const KEPT_FOR_MS = 30 * 24 * 60 * 60 * 1000
-// The step's own share of the run, so step 6 gets the rest.
+// The step's own share of the run, so steps 5c and 6 get the rest.
 const STEP_BUDGET_MS = 60_000
 
 /**

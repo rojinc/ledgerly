@@ -197,6 +197,23 @@ describe('POST /bootstrap', () => {
     expect(teams.members('g2')?.map((membership) => membership.userId)).toEqual(['uAdmin'])
   })
 
+  it("clears an adopted placeholder's orphanedAt, which a removal of its last row set (#342)", async () => {
+    // Removed from every group 18 days ago; step 5c hasn't run on it yet.
+    const services = fakes({
+      persons: [{ ...placeholder('pSam'), orphanedAt: '2026-10-01T00:00:00.000Z' }],
+      identities: [identity('iSam', 'email:sam@example.com', 'pSam')],
+    })
+    expect((await ok<BootstrapResult>(services, 'POST', '/bootstrap', BODY)).personId).toBe('pSam')
+    expect(services.db.rows('persons')).toEqual([
+      expect.objectContaining({
+        $id: 'pSam',
+        userId: 'u1',
+        orphanedAt: null,
+        rev: expect.stringMatching(/^[a-z0-9]{20}$/),
+      }),
+    ])
+  })
+
   describe('only the keys the user verified stay theirs (#252)', () => {
     // Whoever added Sam typed a phone too, one Sam hasn't verified.
     const typedPhone = () => identity('iTyped', 'phone:+61400000000', 'pSam')

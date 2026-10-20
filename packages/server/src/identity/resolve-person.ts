@@ -1,12 +1,64 @@
-import type { Identities, IdentitiesType, Persons } from '@ledgerly/core/generated/rows'
+import type { Identities, IdentitiesType, Members, Persons } from '@ledgerly/core/generated/rows'
 import { identityKey, normalizePhone } from '@ledgerly/core/identity/normalize'
-import { ID, Query } from 'node-appwrite'
+import { AppwriteException, ID, Query } from 'node-appwrite'
 import type { Db } from '../appwrite/client'
 import { DATABASE_ID, TABLES } from '../appwrite/tables'
 import type { Write } from '../appwrite/transaction'
 import { randomId } from './random-id'
 
 export type PersonInput = { displayName: string; email?: string; phone?: string }
+
+/**
+ * What a deleted account's person, its member rows in the groups that keep them, and a placeholder
+ * step 5c has cleared are called (identity-and-invites.md#deleting-an-account-m4,
+ * scheduling.md#step-5c-placeholder-clean-up).
+ */
+export const FORMER_MEMBER = 'Former member'
+
+/** No account, not being merged, not a deleted account: a person a new user may adopt. */
+export function isPlaceholder(person: Persons): boolean {
+  return !person.userId && !person.mergedInto && !person.deletedAt
+}
+
+/**
+ * Whether the person, as stored, is a placeholder (isPlaceholder) that no member row names but
+ * `exceptMemberId`, the row being deleted: a removal's or a purge's, which then sets
+ * `orphanedAt`, and step 5c's, which passes none (permissions.md#leaving-a-group,
+ * scheduling.md#step-5c-placeholder-clean-up). A person that's gone is none.
+ */
+export async function isLonePlaceholder(
+  db: Db,
+  personId: string,
+  exceptMemberId?: string,
+): Promise<boolean> {
+  const person = await findPerson(db, personId)
+  // idx_person_status. A person has one row per group (uniq_group_person): two are enough to
+  // see one besides `exceptMemberId`. Read for every person, so a removal makes the same calls,
+  // and takes as long, whether or not a placeholder row's person has an account.
+  const { rows } = await db.listRows<Members>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.members,
+    queries: [Query.equal('personId', personId), Query.limit(2)],
+    total: false,
+  })
+  return (
+    person !== undefined && isPlaceholder(person) && rows.every((row) => row.$id === exceptMemberId)
+  )
+}
+
+/** The person as stored, or undefined when there's none. */
+export async function findPerson(db: Db, personId: string): Promise<Persons | undefined> {
+  try {
+    return await db.getRow<Persons>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.persons,
+      rowId: personId,
+    })
+  } catch (error) {
+    if (error instanceof AppwriteException && error.code === 404) return undefined
+    throw error
+  }
+}
 
 /** The person to use, and the rows to stage for a new placeholder (none for a known person). */
 export type ResolvedPerson = { personId: string; writes: Write[] }

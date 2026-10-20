@@ -10,8 +10,10 @@ import { everyPersonId, type TransactionTemplate } from '@ledgerly/core/schemas/
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { addToTeam, isInTeam, removeFromTeam, type TeamsApi } from '@ledgerly/server/appwrite/teams'
-import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Tx, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
+import { randomId } from '@ledgerly/server/identity/random-id'
+import { isLonePlaceholder } from '@ledgerly/server/identity/resolve-person'
 import { type Models, Query } from 'node-appwrite'
 import type { Services } from '../services'
 import {
@@ -38,7 +40,9 @@ const TWO_MEMBERS = 'Employer and pair groups always keep both members. Archive 
  * `groups DELETE /groups/{id}/members/{memberId}`: removes someone completely, only while they
  * have no shares in the group, aren't named in an unposted transaction or a schedule's template,
  * and didn't create a schedule that names no payers (permissions.md#leaving-a-group), team
- * membership first.
+ * membership first. Only the row goes: the person, its identities and the invites to the row
+ * stay, and a placeholder's last row anywhere sets its `orphanedAt`, so scheduler step 5c deletes
+ * its identities and name 30 days later.
  */
 export async function deleteMember(
   { db, teams, now }: Services,
@@ -88,6 +92,7 @@ export async function deleteMember(
         const current = await getRowOrNull<Members>(db, TABLES.members, memberId)
         if (current?.status !== member.status || current.role !== member.role) throw tryAgain()
         if (joinedAdmin) await keepAnotherAdmin(db, tx, groupId, memberId, NEEDS_ADMIN)
+        await writePerson(db, tx, current, now)
         await tx.write(
           activityWrite(groupId, caller.$id, 'member.removed', 'was removed', now, {
             subjectPersonId: current.personId,
@@ -142,6 +147,24 @@ async function isNamed(db: Db, groupId: string, personId: string): Promise<boole
       items.some((item) => names({ split: JSON.parse(item.splitJson) })),
     )
   })
+}
+
+/**
+ * Stages the person's write (permissions.md#leaving-a-group): a fresh `rev`, and `orphanedAt` now
+ * when the row is a lone placeholder's last. Then that is checked again, on the stored rows: of
+ * two removals of a placeholder's last two rows at once, one fails its commit and its retry sets
+ * `orphanedAt`, and a placeholder re-added, merged or claimed meanwhile isn't marked. An invite to
+ * the row that read it before this commit guards the person too, so one of the two fails.
+ */
+async function writePerson(db: Db, tx: Tx, member: Members, now: Date): Promise<void> {
+  const alone = await isLonePlaceholder(db, member.personId, member.$id)
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: member.personId,
+    data: { rev: randomId(), ...(alone ? { orphanedAt: now.toISOString() } : {}) },
+  })
+  if ((await isLonePlaceholder(db, member.personId, member.$id)) !== alone) throw tryAgain()
 }
 
 /** Reads the matching rows in pages of 100 (scaling.md); true as soon as `test` is true for one. */

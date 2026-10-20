@@ -95,11 +95,6 @@ export async function typedKeyDeletes(
     .map((identity) => ({ action: 'delete', tableId: TABLES.identities, rowId: identity.$id }))
 }
 
-/** No account, not being merged, not a deleted account: a person a new user may adopt. */
-export function isPlaceholder(person: Persons): boolean {
-  return !person.userId && !person.mergedInto && !person.deletedAt
-}
-
 async function findFirst<R extends Models.Row>(
   db: Db,
   tableId: TableId,

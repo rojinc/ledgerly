@@ -1,3 +1,4 @@
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
 import {
   beforeCommit,
@@ -27,10 +28,14 @@ function house(
     transactions?: Row[]
     items?: Row[]
     schedules?: Row[]
+    identities?: Row[]
+    invites?: Row[]
   } = {},
 ) {
   return fakes(
     {
+      identities: extra.identities ?? [],
+      invites: extra.invites ?? [],
       transactions: extra.transactions ?? [],
       items: extra.items ?? [],
       schedules: extra.schedules ?? [],
@@ -499,5 +504,270 @@ describe('DELETE /groups/{id}/members/{memberId}', () => {
     })
     expect(memberIds(services)).toContain('m2')
     expect(teamUsers(services)).toEqual(['u1', 'u2'])
+  })
+})
+
+// #342: only the row goes. A placeholder's last row anywhere sets its orphanedAt, so scheduler
+// step 5c deletes its identities and name 30 days later (permissions.md#leaving-a-group).
+describe('DELETE /groups/{id}/members/{memberId}: what goes with the row', () => {
+  const identity = ($id: string, personId: string) => ({
+    $id,
+    key: `email:${$id}@example.com`,
+    type: 'email',
+    personId,
+    verified: false,
+  })
+  const invite = ($id: string, memberId: string, groupId = 'g1') => ({
+    $id,
+    groupId,
+    memberId,
+    identityKey: `email:${memberId}@example.com`,
+    tokenHash: `hash-${$id}`,
+    channel: 'email',
+    invitedBy: 'p1',
+    sentAt: NOW.toISOString(),
+    expiresAt: NOW.toISOString(),
+    acceptedAt: null,
+  })
+
+  /** house(), with pX's and p9's emails, an invite to m3 and one to m2, and `invites`. */
+  function withDetails(members: ReturnType<typeof member>[] = [], invites: Row[] = []) {
+    return house({
+      members,
+      identities: [identity('iX', 'pX'), identity('i9', 'p9')],
+      invites: [invite('v3', 'm3'), invite('v2', 'm2'), ...invites],
+    })
+  }
+  const ids = (services: Fakes, tableId: string) => services.db.rows(tableId).map((row) => row.$id)
+  const personOf = (services: Fakes, id: string) =>
+    services.db.rows('persons').find((row) => row.$id === id)
+  const orphanedAt = (services: Fakes, id: string) => personOf(services, id)?.orphanedAt ?? null
+  // randomId(): a fresh value each time, so each guard write is a real change.
+  const REV = /^[a-z0-9]{20}$/
+
+  it("keeps a lone placeholder's person, identities and invites, and sets its orphanedAt", async () => {
+    const services = withDetails()
+    await remove(services, 'm3')
+    expect(memberIds(services)).toEqual(['m1', 'm2', 'm9'])
+    expect(ids(services, 'persons')).toEqual(['p1', 'p2', 'p9', 'pX'])
+    expect(personOf(services, 'pX')).toMatchObject({
+      displayName: 'Placeholder',
+      orphanedAt: NOW.toISOString(),
+      rev: expect.stringMatching(REV),
+    })
+    expect(ids(services, 'identities')).toEqual(['iX', 'i9'])
+    expect(ids(services, 'invites')).toEqual(['v3', 'v2'])
+    // The activity row still names the person; the app shows "A former member".
+    expect(services.db.rows('activity')).toMatchObject([{ subjectPersonId: 'pX' }])
+  })
+
+  it('gives a placeholder with another row, and a registered person, a fresh rev but no orphanedAt', async () => {
+    const services = withDetails(
+      [
+        member('m8', 'g2', 'pX', 'member', 'placeholder'),
+        member('m4', 'g1', 'p9', 'member', 'placeholder'),
+      ],
+      [invite('v8', 'm8', 'g2'), invite('v4', 'm4')],
+    )
+    await remove(services, 'm3')
+    // m4 is a placeholder row, but p9 has an account.
+    await remove(services, 'm4')
+    await remove(services, 'm2')
+    const revs = ['pX', 'p9', 'p2'].map((id) => personOf(services, id)?.rev)
+    for (const rev of revs) expect(rev).toMatch(REV)
+    expect(new Set(revs).size).toBe(3)
+    for (const id of ['pX', 'p9', 'p2']) expect(orphanedAt(services, id)).toBeNull()
+    expect(ids(services, 'identities')).toEqual(['iX', 'i9'])
+    expect(ids(services, 'invites')).toEqual(['v3', 'v2', 'v8', 'v4'])
+  })
+
+  // The database calls a request makes, in order: each read's table, each staging's size, each
+  // commit or rollback.
+  function callsOf(services: Fakes): string[] {
+    const db = services.db
+    const log: string[] = []
+    const getRow = db.getRow.bind(db)
+    vi.spyOn(db, 'getRow').mockImplementation((params) => {
+      log.push(`getRow ${params.tableId}`)
+      return getRow(params)
+    })
+    const listRows = db.listRows.bind(db)
+    vi.spyOn(db, 'listRows').mockImplementation((params) => {
+      log.push(`listRows ${params.tableId}`)
+      return listRows(params)
+    })
+    const createOperations = db.createOperations.bind(db)
+    vi.spyOn(db, 'createOperations').mockImplementation((params) => {
+      log.push(`createOperations ${params.operations?.length}`)
+      return createOperations(params)
+    })
+    const updateTransaction = db.updateTransaction.bind(db)
+    vi.spyOn(db, 'updateTransaction').mockImplementation((params) => {
+      log.push(`updateTransaction ${params.commit ? 'commit' : 'rollback'}`)
+      return updateTransaction(params)
+    })
+    return log
+  }
+
+  it("makes the same database calls whether or not a placeholder row's person has an account", async () => {
+    // m3: pX, a placeholder with no account and no other row, so it gets orphanedAt.
+    const unregistered = withDetails()
+    const unregisteredCalls = callsOf(unregistered)
+    await remove(unregistered, 'm3')
+    expect(orphanedAt(unregistered, 'pX')).toBe(NOW.toISOString())
+    // m4: a placeholder row in g1 whose person, p9, has an account (and its row in g2).
+    const registered = withDetails([member('m4', 'g1', 'p9', 'member', 'placeholder')])
+    const registeredCalls = callsOf(registered)
+    await remove(registered, 'm4')
+    expect(orphanedAt(registered, 'p9')).toBeNull()
+    expect(registeredCalls).toEqual(unregisteredCalls)
+    expect(unregisteredCalls.length).toBeGreaterThan(0)
+  })
+
+  it('writes a fresh rev each time, and orphanedAt with the last row', async () => {
+    const services = withDetails([
+      member('m8', 'g2', 'pX', 'member', 'placeholder'),
+      member('m10', 'g2', 'p1', 'admin', 'active'),
+    ])
+    services.teams.members('g2')?.push({ userId: 'u1' } as never)
+    await ok(services, 'DELETE', '/groups/g2/members/m8', undefined, 'u1')
+    const first = personOf(services, 'pX')?.rev
+    expect(orphanedAt(services, 'pX')).toBeNull()
+    await remove(services, 'm3')
+    expect(personOf(services, 'pX')?.rev).toMatch(REV)
+    expect(personOf(services, 'pX')?.rev).not.toBe(first)
+    expect(orphanedAt(services, 'pX')).toBe(NOW.toISOString())
+  })
+
+  it.each([
+    ['a merged placeholder', { mergedInto: 'p2' }],
+    ['a deleted account', { deletedAt: NOW.toISOString() }],
+  ])('keeps %s as it is, with a fresh rev and no orphanedAt', async (_, change) => {
+    const services = withDetails()
+    await updateRow(services.db, 'persons', 'pX', change)
+    await remove(services, 'm3')
+    expect(personOf(services, 'pX')).toMatchObject({ ...change, rev: expect.stringMatching(REV) })
+    expect(orphanedAt(services, 'pX')).toBeNull()
+    expect(ids(services, 'identities')).toEqual(['iX', 'i9'])
+  })
+
+  it('fails when an invite to the row commits after the person’s guard, and its retry goes on', async () => {
+    const services = withDetails()
+    // What POST /invites commits: a guard on the person, and the invite.
+    beforeCommit(services.db, async () => {
+      await updateRow(services.db, 'persons', 'pX', { rev: 'invite' })
+      await createRow(services.db, 'invites', invite('v4', 'm3'))
+    })
+    expect(await removeFails(services, 'm3')).toMatchObject({ status: 409, code: 'CONFLICT' })
+    expect(memberIds(services)).toContain('m3')
+    expect(orphanedAt(services, 'pX')).toBeNull()
+    await remove(services, 'm3')
+    expect(orphanedAt(services, 'pX')).toBe(NOW.toISOString())
+    expect(ids(services, 'invites')).toEqual(['v3', 'v2', 'v4'])
+  })
+
+  /** Runs `change` once, just before the request stages its write on a `persons` row. */
+  function beforePersonStaged(services: Fakes, change: () => Promise<unknown>) {
+    const stage = services.db.createOperations.bind(services.db)
+    let fired = false
+    vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+      if (!fired && JSON.stringify(params).includes('"persons"')) {
+        fired = true
+        await change()
+      }
+      return stage(params)
+    })
+  }
+
+  it('keeps an invite to the row committed before it guarded the person, and goes on', async () => {
+    const services = withDetails()
+    beforePersonStaged(services, async () => {
+      await updateRow(services.db, 'persons', 'pX', { rev: 'invite' })
+      await createRow(services.db, 'invites', invite('v4', 'm3'))
+    })
+    await remove(services, 'm3')
+    expect(memberIds(services)).not.toContain('m3')
+    expect(orphanedAt(services, 'pX')).toBe(NOW.toISOString())
+    expect(ids(services, 'invites')).toEqual(['v3', 'v2', 'v4'])
+  })
+
+  it('asks to try again when the placeholder gets another row before it is marked', async () => {
+    // An add in another group commits after the first look found pX alone.
+    const services = withDetails()
+    beforePersonStaged(services, () =>
+      withTransaction(services.db, (tx) =>
+        tx.write({
+          action: 'create',
+          tableId: 'members',
+          rowId: 'm8',
+          data: {
+            groupId: 'g2',
+            personId: 'pX',
+            displayName: 'Placeholder',
+            role: 'member',
+            status: 'placeholder',
+            joinedOn: '2026-10-01',
+            leftOn: null,
+          },
+        }),
+      ),
+    )
+    expect(await removeFails(services, 'm3')).toMatchObject({ status: 409, code: 'CONFLICT' })
+    vi.restoreAllMocks()
+    await remove(services, 'm3')
+    expect(orphanedAt(services, 'pX')).toBeNull()
+    expect(personOf(services, 'pX')?.rev).toMatch(REV)
+  })
+
+  // Two admins remove pX's last two rows at once, m3 here and m8 in g2.
+  function twoRows() {
+    const services = withDetails([
+      member('m8', 'g2', 'pX', 'member', 'placeholder'),
+      member('m10', 'g2', 'p1', 'admin', 'active'),
+    ])
+    services.teams.members('g2')?.push({ userId: 'u1' } as never)
+    const other = () => ok(services, 'DELETE', '/groups/g2/members/m8', undefined, 'u1')
+    return { services, other }
+  }
+
+  it('fails one of two removals of its last two rows when the other commits first, and its retry sets orphanedAt', async () => {
+    const { services, other } = twoRows()
+    beforeCommit(services.db, other)
+    expect(await removeFails(services, 'm3')).toMatchObject({ status: 409, code: 'CONFLICT' })
+    expect(memberIds(services)).not.toContain('m8')
+    expect(memberIds(services)).toContain('m3')
+    // The other saw m3, so it didn't mark pX.
+    expect(orphanedAt(services, 'pX')).toBeNull()
+    vi.restoreAllMocks()
+    await remove(services, 'm3')
+    expect(orphanedAt(services, 'pX')).toBe(NOW.toISOString())
+    expect(ids(services, 'identities')).toEqual(['iX', 'i9'])
+  })
+
+  it('asks to try again when the other commits after it read the rows, and its retry sets orphanedAt', async () => {
+    const { services, other } = twoRows()
+    // Before it stages its write on the person, which comes after the member row's delete.
+    beforePersonStaged(services, other)
+    expect(await removeFails(services, 'm3')).toMatchObject({ status: 409, code: 'CONFLICT' })
+    expect(memberIds(services)).toContain('m3')
+    expect(orphanedAt(services, 'pX')).toBeNull()
+    vi.restoreAllMocks()
+    await remove(services, 'm3')
+    expect(orphanedAt(services, 'pX')).toBe(NOW.toISOString())
+  })
+
+  it('leaves every row as it was when the commit fails', async () => {
+    const services = withDetails()
+    const before = personOf(services, 'pX')
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      if (params.commit) throw new Error('crash')
+      return { $id: params.transactionId } as never
+    })
+    expect(await removeFails(services, 'm3')).toMatchObject({ code: 'INTERNAL' })
+    vi.restoreAllMocks()
+    expect(memberIds(services)).toContain('m3')
+    expect(personOf(services, 'pX')).toEqual(before)
+    expect(ids(services, 'identities')).toEqual(['iX', 'i9'])
+    expect(ids(services, 'invites')).toEqual(['v3', 'v2'])
   })
 })
