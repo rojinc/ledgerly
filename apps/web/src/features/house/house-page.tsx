@@ -6,7 +6,12 @@ import { Link, Navigate, useNavigate, useParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
-import { ARCHIVED_NOTICE, ArchiveGroup } from '../groups/archive-group'
+import {
+  ARCHIVED_NOTICE,
+  ArchiveGroup,
+  UNARCHIVED_NEWS,
+  UnarchiveGroup,
+} from '../groups/archive-group'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { InviteForm, inviteSentText } from '../invites/invite-member'
 import type { InviteSent } from '../invites/use-send-invite'
@@ -100,6 +105,7 @@ function House({
   // a refused write that reloads it), and the house can be archived. The forms and buttons that
   // go with the old role are gone, with any refusal they showed: say so, and focus the heading.
   const [newRole, setNewRole] = useState<Members['role']>()
+  const [unarchived, setUnarchived] = useState(false)
   const lastRole = useRef(role)
   useEffect(() => {
     if (lastRole.current === role) return
@@ -111,9 +117,22 @@ function House({
   return (
     <>
       {archived && <Message>{ARCHIVED_NOTICE}</Message>}
+      {/* `role` is unset while it's archived: the stored role says who may unarchive. */}
+      {archived && me?.role === 'admin' && (
+        <UnarchiveGroup
+          group={group}
+          onUnarchived={() => {
+            setUnarchived(true)
+            focusHeading()
+          }}
+        />
+      )}
       {/* Mounted from the start, so the announcement is read out when it changes. */}
       <p role="status" className="text-sm text-muted-foreground empty:hidden">
         {newRole && `Your role here is now ${ROLE_LABEL[newRole]}.`}
+      </p>
+      <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        {unarchived && !archived ? UNARCHIVED_NEWS : ''}
       </p>
       {/* #180. `role` is unset in an archived house. */}
       {(role === 'admin' || role === 'member') && (

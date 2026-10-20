@@ -14,7 +14,7 @@ import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
-import { ARCHIVED_NOTICE } from '../groups/archive-group'
+import { ARCHIVED_NOTICE, UNARCHIVED_NEWS, UnarchiveGroup } from '../groups/archive-group'
 import { centsToText } from '../groups/employer-form'
 import { useBalances, useGroup, useMyMember } from '../groups/use-groups'
 import { KIND_LABEL, STATUS_LABEL } from '../transactions/history-page'
@@ -115,8 +115,10 @@ export function PairPage() {
   // Until the viewer's person is known, either member could be the other one.
   const them = me ? members.data?.find((row) => row.personId !== me) : undefined
   const heading = useRef<HTMLHeadingElement>(null)
+  const [unarchived, setUnarchived] = useState(false)
   // #403: both people are admins of a pair, so either can manage it until it's archived.
-  const manages = member.data?.role === 'admin' && !group.data?.archivedAt
+  const isAdmin = member.data?.role === 'admin'
+  const manages = isAdmin && !group.data?.archivedAt
   // Settings go when the pair is archived or the role changes meanwhile, with any open form and
   // its refusal: focus, if it went with them, goes to the heading.
   const managed = useRef(manages)
@@ -149,7 +151,12 @@ export function PairPage() {
           name={them.displayName}
           // D-016: a placeholder may or may not have an account; this says only that they haven't joined.
           joined={them.status !== 'placeholder'}
-          mayAdd={member.data?.role === 'admin' || member.data?.role === 'member'}
+          mayAdd={isAdmin || member.data?.role === 'member'}
+          isAdmin={isAdmin}
+          onUnarchived={() => {
+            setUnarchived(true)
+            heading.current?.focus()
+          }}
         />
         {manages && (
           <PairSettings
@@ -171,6 +178,12 @@ export function PairPage() {
       >
         {them?.displayName ?? group.data?.name ?? 'Lend & borrow'}
       </h1>
+      {/* Mounted with the group, so the news is read out. */}
+      {group.data && (
+        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+          {unarchived && !group.data.archivedAt ? UNARCHIVED_NEWS : ''}
+        </p>
+      )}
       {content}
     </div>
   )
@@ -182,12 +195,17 @@ function PairDetails({
   name,
   joined,
   mayAdd,
+  isAdmin,
+  onUnarchived,
 }: {
   group: Groups
   people: PairPeople
   name: string
   joined: boolean
   mayAdd: boolean
+  /** Either person, while they're an admin: they may unarchive it (permissions.md#roles). */
+  isAdmin: boolean
+  onUnarchived: () => void
 }) {
   const balances = useBalances(group.$id)
   const net = balances.data?.people.find((person) => person.personId === people.me)?.netCents
@@ -220,7 +238,10 @@ function PairDetails({
         <ReminderSection key={group.$id} group={group} personId={people.me} name={name} />
       )}
       {group.archivedAt ? (
-        <Message>{ARCHIVED_NOTICE}</Message>
+        <>
+          <Message>{ARCHIVED_NOTICE}</Message>
+          {isAdmin && <UnarchiveGroup group={group} name={name} onUnarchived={onUnarchived} />}
+        </>
       ) : (
         mayAdd &&
         balances.data && <EntryForm group={group} people={people} name={name} net={net ?? 0} />

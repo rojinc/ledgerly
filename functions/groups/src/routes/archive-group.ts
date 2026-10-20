@@ -17,9 +17,10 @@ import {
 } from '../shared'
 
 /**
- * `groups POST /groups/{id}/archive`: admin only, permanent in v1. Archiving an archived group
- * returns it unchanged, so a retry is safe. Refused while a timer is running or a statement is
- * being finalized in the group. Returns the group as stored.
+ * `groups POST /groups/{id}/archive`: admin only. The group stays read-only until an admin
+ * unarchives it (unarchive-group.ts). Archiving an archived group returns it unchanged, so a
+ * retry is safe. Refused while a timer is running or a statement is being finalized in the
+ * group. Returns the group as stored.
  */
 export async function archiveGroup(
   { db, teams, now }: Services,

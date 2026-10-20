@@ -10,6 +10,7 @@ import { archiveGroup } from './routes/archive-group'
 import { createGroup } from './routes/create-group'
 import { deleteMember } from './routes/delete-member'
 import { leaveGroup } from './routes/leave-group'
+import { unarchiveGroup } from './routes/unarchive-group'
 import { updateGroup } from './routes/update-group'
 import { updateMember } from './routes/update-member'
 import { type Services, servicesFromRequest } from './services'
@@ -31,6 +32,9 @@ export function groupsRoutes(
     ),
     route('POST', '/groups/:id/archive', async (ctx) =>
       archiveGroup(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
+    ),
+    route('POST', '/groups/:id/unarchive', async (ctx) =>
+      unarchiveGroup(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
     ),
     route('POST', '/groups/:id/members', async (ctx) =>
       addMember(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),

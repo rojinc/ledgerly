@@ -97,12 +97,13 @@ async function leaveGroup(
       await keep(services, person, member, group)
     }
     // Then, in this order, on every run once the keep is done (each is safe to repeat): the
-    // schedules, the archive (ending a schedule in an archived group is refused), and leaving
-    // the team last, so a crash before it leaves the group to be finished, never with its
-    // schedules still running.
-    if (!group.archivedAt) {
-      if (!(await endSchedules(services, person, group))) return false
-      if (!(await hasJoinedAdmin(db, group.$id))) await archive(services, person.$id, group)
+    // schedules, the archive, and leaving the team last, so a crash before it leaves the group to
+    // be finished, never with its schedules still running. The schedules end in an archived group
+    // too (endScheduleOn() doesn't refuse one, only the route does): otherwise an unarchive (#428)
+    // would find occurrences made before the deletion still naming them, and post them.
+    if (!(await endSchedules(services, person, group))) return false
+    if (!group.archivedAt && !(await hasJoinedAdmin(db, group.$id))) {
+      await archive(services, person.$id, group)
     }
     await removeFromTeam(teams, group.$id, userId)
     return true

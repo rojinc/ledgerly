@@ -20,7 +20,7 @@ import { centsToText } from '../groups/employer-form'
 import { useGroups, useMyMember } from '../groups/use-groups'
 import { parseHours } from '../shifts/shift-values'
 import { WEEKDAY_LABEL, WEEKDAYS } from './rrule'
-import { fromSchedule, type ScheduleValues, toScheduleInput } from './schedule-values'
+import { fromSchedule, keptOf, type ScheduleValues, toScheduleInput } from './schedule-values'
 import { formatDate } from './schedules-page'
 import { usePreview, useSaveSchedule, useSchedule } from './use-schedules'
 
@@ -271,14 +271,7 @@ function ScheduleForm({
 }) {
   const navigate = useNavigate()
   const save = useSaveSchedule(schedule === undefined)
-  // What the stored schedule has that this form doesn't show, kept as it was.
-  const kept = schedule
-    ? {
-        ...(schedule.endsOn ? { endsOn: schedule.endsOn } : {}),
-        ...(schedule.exdates?.length ? { exdates: schedule.exdates } : {}),
-        horizonDays: schedule.horizonDays,
-      }
-    : {}
+  const kept = schedule ? keptOf(schedule) : {}
   const toInput = (values: ScheduleValues) =>
     toScheduleInput(values, { id, groupId: group.$id }, group.currency, kept)
   const [today] = useState(() => localToday(group.timezone, new Date()))

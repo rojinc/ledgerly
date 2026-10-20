@@ -1,5 +1,8 @@
+import { compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Schedules } from '@ledgerly/core/generated/rows'
+import { scheduleEnd } from '@ledgerly/core/recurrence/schedule-end'
+import type { ScheduleInput } from '@ledgerly/core/schemas/scheduler'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router'
@@ -10,7 +13,14 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useGroups, useMyMember } from '../groups/use-groups'
 import { describeRepeat, fromRrule } from './rrule'
-import { useEndSchedule, usePauseSchedule, useResumeSchedule, useSchedules } from './use-schedules'
+import { storedInput } from './schedule-values'
+import {
+  useEndSchedule,
+  usePauseSchedule,
+  useResumeSchedule,
+  useSaveSchedule,
+  useSchedules,
+} from './use-schedules'
 
 /**
  * A local date as `Thu 22 Oct 2026`. Built from its parts in UTC, so the browser's time zone
@@ -145,20 +155,27 @@ function GroupSchedules({ group }: { group: Groups }) {
         <p className="text-muted-foreground">No schedules yet.</p>
       ) : (
         <ul className="divide-y divide-border rounded-md border border-border">
-          {schedules.data.map((schedule) => (
-            <ScheduleRow
-              key={schedule.$id}
-              schedule={schedule}
-              today={today}
-              // An admin, or a member who set it up (never a viewer, permissions.md#roles);
-              // nothing changes in an archived group.
-              mayChange={
-                !group.archivedAt &&
-                (isAdmin || (role === 'member' && schedule.createdBy === personId))
-              }
-              onEnded={() => heading.current?.focus()}
-            />
-          ))}
+          {schedules.data.map((schedule) => {
+            // An admin, or a member who set it up (never a viewer, permissions.md#roles);
+            // nothing changes in an archived group.
+            const mayChange =
+              !group.archivedAt &&
+              (isAdmin || (role === 'member' && schedule.createdBy === personId))
+            return (
+              <ScheduleRow
+                key={schedule.$id}
+                schedule={schedule}
+                today={today}
+                mayChange={mayChange}
+                restart={
+                  mayChange && stoppedByArchive(schedule, today)
+                    ? storedInput(schedule, group.currency)
+                    : undefined
+                }
+                onEnded={() => heading.current?.focus()}
+              />
+            )
+          })}
         </ul>
       )}
     </section>
@@ -178,15 +195,33 @@ export function hasEnded(schedule: Pick<Schedules, 'endsOn' | 'rrule'>, today: s
   )
 }
 
+/**
+ * Whether an archive stopped the schedule (scheduling.md#step-1-expand-due-schedules): it has no
+ * `nextRunAt`, isn't paused (a paused one gets Resume, never Restart) and wasn't made up to its
+ * end. It never ends, or its end (core's `scheduleEnd`) is `today` or later and
+ * `generatedThrough` is before it. Step 1 clears `nextRunAt` once everything up to the end
+ * exists, up to `horizonDays` before the end comes; an archive leaves `generatedThrough` as it was.
+ */
+function stoppedByArchive(schedule: Schedules, today: LocalDate): boolean {
+  if (schedule.nextRunAt || schedule.pausedFrom) return false
+  const end = scheduleEnd(schedule)
+  if (end === null) return true
+  const made = schedule.generatedThrough as LocalDate | null
+  return compareDates(end, today) >= 0 && (made === null || compareDates(made, end) < 0)
+}
+
 function ScheduleRow({
   schedule,
   today,
   mayChange,
+  restart,
   onEnded,
 }: {
   schedule: Schedules
   today: string
   mayChange: boolean
+  /** Restart's body: the stored input, unchanged, which expands it again from today. */
+  restart: ScheduleInput | undefined
   onEnded: () => void
 }) {
   const repeat = fromRrule(schedule.rrule)
@@ -194,6 +229,7 @@ function ScheduleRow({
   const { pausedFrom } = schedule
   const [open, setOpen] = useState<'end' | 'pause'>()
   const resume = useResumeSchedule(schedule)
+  const save = useSaveSchedule(false)
   const [note, setNote] = useState('')
   const endButton = useRef<HTMLButtonElement>(null)
   const pauseButton = useRef<HTMLButtonElement>(null)
@@ -232,58 +268,94 @@ function ScheduleRow({
             {ended ? ' · Ended' : pausedFrom ? ` · Paused from ${formatDate(pausedFrom)}` : ''}
           </p>
         </div>
-        {mayChange && !ended && !open && (
+        {!open && (restart || (mayChange && !ended)) && (
           <div className="flex flex-wrap gap-2">
-            {pausedFrom ? (
+            {restart && (
+              // aria-disabled, not disabled: a disabled button loses focus.
               <Button
-                ref={resumeButton}
                 variant="outline"
                 size="sm"
-                aria-disabled={resume.isPending}
+                aria-disabled={save.isPending}
                 onClick={() => {
-                  if (resume.isPending) return
+                  if (save.isPending) return
                   setNote('')
-                  resume.mutate(undefined, {
+                  save.mutate(restart, {
+                    // Its Restart goes once it runs again, and Pause comes: focus goes there.
                     onSuccess: () => {
                       setNote(
-                        'Resumed. Shifts carry on from today; the days in between aren’t added.',
+                        'Restarted. Shifts carry on from today; the days it was stopped aren’t added.',
                       )
                       setFocusNext('pause')
                     },
                   })
                 }}
               >
-                {resume.isPending ? 'Resuming…' : 'Resume'}
-              </Button>
-            ) : (
-              <Button
-                ref={pauseButton}
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setNote('')
-                  setOpen('pause')
-                }}
-              >
-                Pause
+                {save.isPending ? 'Restarting…' : 'Restart'}
               </Button>
             )}
-            <Button
-              ref={endButton}
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                // A resume on its way finishes first, so what it says isn't lost.
-                if (resume.isPending) return
-                setNote('')
-                setOpen('end')
-              }}
-            >
-              End
-            </Button>
+            {mayChange && !ended && (
+              <>
+                {pausedFrom ? (
+                  <Button
+                    ref={resumeButton}
+                    variant="outline"
+                    size="sm"
+                    aria-disabled={resume.isPending}
+                    onClick={() => {
+                      if (resume.isPending) return
+                      setNote('')
+                      resume.mutate(undefined, {
+                        onSuccess: () => {
+                          setNote(
+                            'Resumed. Shifts carry on from today; the days in between aren’t added.',
+                          )
+                          setFocusNext('pause')
+                        },
+                      })
+                    }}
+                  >
+                    {resume.isPending ? 'Resuming…' : 'Resume'}
+                  </Button>
+                ) : (
+                  // One an archive stopped restarts first: a pause would also start it again (up
+                  // to the day before the pause), without Restart's checks.
+                  !restart && (
+                    <Button
+                      ref={pauseButton}
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        setNote('')
+                        setOpen('pause')
+                      }}
+                    >
+                      Pause
+                    </Button>
+                  )
+                )}
+                <Button
+                  ref={endButton}
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    // A resume on its way finishes first, so what it says isn't lost.
+                    if (resume.isPending) return
+                    setNote('')
+                    setOpen('end')
+                  }}
+                >
+                  End
+                </Button>
+              </>
+            )}
           </div>
         )}
       </div>
+      {save.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {save.error.message}
+        </p>
+      )}
       {resume.isError && !open && (
         <p role="alert" className="text-sm text-destructive">
           {resume.error.message}

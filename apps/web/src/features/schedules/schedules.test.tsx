@@ -51,6 +51,9 @@ const thursdays = {
   exdates: ['2026-11-05'],
   skipPublicHolidays: true,
   autoPost: false,
+  horizonDays: 56,
+  // Running: the scheduler looks at it again tomorrow.
+  nextRunAt: '2026-10-19T19:00:00.000Z',
   createdBy: 'pw',
 } as Schedules
 
@@ -619,6 +622,242 @@ describe('#137 review', () => {
         'Only an admin, or the member who set it up, can change this schedule.',
       ),
     ).toBeTruthy()
+  })
+})
+
+// #428: a schedule an archive stopped stays stopped until Restart (scheduling.md, step 1).
+describe('Restart', () => {
+  // 11:00 on Monday 19 Oct 2026 in Sydney.
+  const NOW = new Date('2026-10-19T00:00:00.000Z')
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  // Archived on 14 Oct, before it was made up to its end.
+  const stopped = {
+    ...thursdays,
+    startsOn: '2026-09-03',
+    nextRunAt: null,
+    generatedThrough: '2026-10-14',
+  }
+  const row = async (name: string) => (await screen.findByText(name)).closest('li') as HTMLElement
+  // Schedule IDs are 20 characters (scheduleInputSchema).
+  const id = (n: number) => `schedule${n}`.padEnd(20, '0')
+
+  it('sends the stopped schedule’s stored input unchanged, then says so and refreshes the list', async () => {
+    mockGroup(acme)
+    mockSchedules([stopped])
+    // Running again: the list then reads it as stored.
+    const running = { ...stopped, nextRunAt: '2026-10-19T19:00:00.000Z' }
+    call.mockImplementation(async () => {
+      mockSchedules([running])
+      return { ok: true, data: { schedule: running, created: 4, updated: 0, removed: 0 } }
+    })
+    const { queryClient } = renderAt('/schedules?groupId=g1')
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    const restart = await screen.findByRole('button', { name: 'Restart' })
+    // Stopped: Restart and End, no Pause, which would start it again without Restart's checks.
+    expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+    fireEvent.click(restart)
+    await waitFor(() => expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(1))
+    const [fn, method, , input] = callsTo(`/schedules/${thursdays.$id}`)[0] ?? []
+    expect([fn, method]).toEqual(['scheduler', 'PATCH'])
+    expect(input).toStrictEqual({
+      id: thursdays.$id,
+      groupId: 'g1',
+      kind: 'shift',
+      description: 'Thursday shift',
+      template: { shift: { minutes: 300, rateCents: 2500 } },
+      rrule: 'FREQ=WEEKLY;BYDAY=TH',
+      startsOn: '2026-09-03',
+      exdates: ['2026-11-05'],
+      horizonDays: 56,
+      skipPublicHolidays: true,
+      autoPost: false,
+    })
+    expect(
+      await screen.findByText(
+        'Restarted. Shifts carry on from today; the days it was stopped aren’t added.',
+      ),
+    ).toBeTruthy()
+    // Its Restart goes, and Pause (#430) takes its place.
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause' })),
+    )
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['schedules', 'g1'] })
+  })
+
+  it('keeps an end date and a rule’s end it doesn’t show', async () => {
+    mockGroup(acme)
+    mockSchedules([{ ...stopped, endsOn: '2026-12-31', rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=20' }])
+    mockScheduler()
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart' }))
+    await waitFor(() => expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(1))
+    expect(callsTo(`/schedules/${thursdays.$id}`)[0]?.[3]).toMatchObject({
+      rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=20',
+      endsOn: '2026-12-31',
+    })
+  })
+
+  it('is offered on a stopped schedule not made up to its end, never on a running or finished one', async () => {
+    mockGroup(acme)
+    mockSchedules([
+      { ...thursdays, $id: id(1), description: 'Running' },
+      { ...stopped, $id: id(2), description: 'Never ends' },
+      { ...stopped, $id: id(3), description: 'Ends today', endsOn: '2026-10-19' },
+      { ...stopped, $id: id(4), description: 'Ended yesterday', endsOn: '2026-10-18' },
+      {
+        ...stopped,
+        $id: id(5),
+        description: 'Until next week',
+        rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029',
+      },
+      {
+        ...stopped,
+        $id: id(6),
+        description: 'Until last week',
+        rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261015',
+      },
+      // 3 Sep to 1 Oct.
+      { ...stopped, $id: id(7), description: 'Five shifts', rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=5' },
+      // 3 Sep to 22 Oct.
+      {
+        ...stopped,
+        $id: id(8),
+        description: 'Eight shifts',
+        rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=8',
+      },
+      {
+        ...stopped,
+        $id: id(9),
+        description: 'Eight shifts, all made',
+        rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=8',
+        generatedThrough: '2026-10-22',
+      },
+      // Running: step 1 cleared nextRunAt once it was made up to its end, 24 days ahead.
+      {
+        ...stopped,
+        $id: id(10),
+        description: 'Made up to its end',
+        endsOn: '2026-11-12',
+        generatedThrough: '2026-11-12',
+      },
+      // Its end moved earlier after it was made further.
+      {
+        ...stopped,
+        $id: id(11),
+        description: 'Made past its end',
+        endsOn: '2026-11-12',
+        generatedThrough: '2026-12-01',
+      },
+      {
+        ...stopped,
+        $id: id(12),
+        description: 'A day short',
+        endsOn: '2026-11-12',
+        generatedThrough: '2026-11-11',
+      },
+      {
+        ...stopped,
+        $id: id(13),
+        description: 'Never made',
+        endsOn: '2026-11-12',
+        generatedThrough: null,
+      },
+      // Paused from a day still ahead: Resume (#430), never Restart.
+      { ...stopped, $id: id(14), description: 'Paused', pausedFrom: '2026-11-02' },
+    ])
+    renderAt('/schedules?groupId=g1')
+    const offered: string[] = []
+    for (const name of [
+      'Running',
+      'Never ends',
+      'Ends today',
+      'Ended yesterday',
+      'Until next week',
+      'Until last week',
+      'Five shifts',
+      'Eight shifts',
+      'Eight shifts, all made',
+      'Made up to its end',
+      'Made past its end',
+      'A day short',
+      'Never made',
+      'Paused',
+    ]) {
+      if (within(await row(name)).queryByRole('button', { name: 'Restart' })) offered.push(name)
+    }
+    expect(offered).toEqual([
+      'Never ends',
+      'Ends today',
+      'Until next week',
+      'Eight shifts',
+      'A day short',
+      'Never made',
+    ])
+  })
+
+  it('is offered to an admin, or a member on a schedule they set up, never in an archived group', async () => {
+    const offered = async () => {
+      await screen.findByText('Thursday shift')
+      return screen.queryByRole('button', { name: 'Restart' }) !== null
+    }
+    mockSchedules([stopped])
+    mockGroup(acme, 'member')
+    renderAt('/schedules?groupId=g1')
+    expect(await offered()).toBe(true)
+    cleanup()
+    mockSchedules([{ ...stopped, createdBy: 'pe' }])
+    mockGroup(acme, 'member')
+    renderAt('/schedules?groupId=g1')
+    expect(await offered()).toBe(false)
+    cleanup()
+    mockSchedules([{ ...stopped, createdBy: 'pe' }])
+    mockGroup(acme, 'admin')
+    renderAt('/schedules?groupId=g1')
+    expect(await offered()).toBe(true)
+    cleanup()
+    mockSchedules([stopped])
+    mockGroup(acme, 'viewer')
+    renderAt('/schedules?groupId=g1')
+    expect(await offered()).toBe(false)
+    cleanup()
+    mockSchedules([stopped])
+    mockGroup({ ...acme, archivedAt: '2026-10-01T00:00:00.000Z' })
+    renderAt('/schedules?groupId=g1')
+    expect(await offered()).toBe(false)
+  })
+
+  it('isn’t offered on a schedule its edit form can’t show, as it can’t be saved from here', async () => {
+    mockGroup(acme)
+    mockSchedules([{ ...stopped, rrule: 'FREQ=DAILY' }])
+    renderAt('/schedules?groupId=g1')
+    await screen.findByText('Thursday shift')
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+  })
+
+  it('shows the scheduler’s refusal next to it, and sends once while it waits', async () => {
+    mockGroup(acme)
+    mockSchedules([stopped])
+    let answer: (result: Result<unknown>) => void = () => {}
+    call.mockReturnValue(new Promise((resolve) => (answer = resolve)))
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Restart' }))
+    const busy = await screen.findByRole('button', { name: 'Restarting…' })
+    expect(busy.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(busy)
+    answer({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', message: 'Someone it names has left.' },
+    })
+    expect((await screen.findByRole('alert')).textContent).toBe('Someone it names has left.')
+    expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(1)
+    expect(screen.queryByText(/^Restarted\./)).toBeNull()
   })
 })
 
