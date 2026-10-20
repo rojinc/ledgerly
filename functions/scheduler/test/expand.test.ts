@@ -84,6 +84,25 @@ describe('step 1: expand due schedules', () => {
     expect(dates(services)).toHaveLength(8)
   })
 
+  it('goes by the group’s own date where UTC is already on the next day', async () => {
+    // 20:00 on Sunday 18 October in Los Angeles, already Monday 19 October in UTC.
+    const services = fakes(
+      {
+        persons: [person('pSam', 'u1'), person('pAcme', null)],
+        groups: [group('la', 'pSam', { timezone: 'America/Los_Angeles' })],
+        members: [member('la', 'pSam'), member('la', 'pAcme', { status: 'placeholder' })],
+        schedules: [schedule({ groupId: 'la', nextRunAt: '2026-10-18T07:05:00.000Z' })],
+      },
+      { accounts: {}, now: new Date('2026-10-19T03:00:00.000Z') },
+    )
+    expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 8, failed: 0 })
+    // 56 days from Sunday 18 October, and next due at 00:05 on Monday there (PDT, UTC−7).
+    expect(scheduleRow(services)).toMatchObject({
+      generatedThrough: '2026-12-13',
+      nextRunAt: '2026-10-19T07:05:00.000Z',
+    })
+  })
+
   it('carries on from where it got to on the next day', async () => {
     const services = seeded(
       { generatedThrough: '2026-12-14' },
