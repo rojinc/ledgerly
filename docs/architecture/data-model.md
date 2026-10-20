@@ -298,7 +298,7 @@ Permissions: none (server only).
 | `autoPost` | boolean | Shifts: post after the day ends. Bills: post on the due date (autopay). |
 | `horizonDays` | integer | default 56 |
 | `generatedThrough` | varchar(10)? | Last local date already expanded |
-| `nextRunAt` | datetime? | When the scheduler should next look at it. Empty = finished, or stopped while its group was archived ([step 1](scheduling.md#step-1-expand-due-schedules) tells them apart). |
+| `nextRunAt` | datetime? | When the scheduler should next look at it. Empty = finished, or stopped while its group was archived ([step 1](scheduling.md#step-1-expand-due-schedules) says how to tell them apart, by `generatedThrough`). |
 | `createdBy` | varchar(36) | personId |
 
 Indexes: `idx_nextRunAt (nextRunAt)`, `idx_groupId (groupId)`.
