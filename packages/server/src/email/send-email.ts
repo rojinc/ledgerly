@@ -20,9 +20,9 @@ export type Email = {
 
 /**
  * Every way a send fails. `type` is `missing_config`, `timeout`, `network`, `invalid_api_key` or
- * Resend's error name; `status` is Resend's HTTP status, when it answered, and `retryAfterMs` its `retry-after`
- * header, when it sent one (a 429). The message never holds addresses, subjects or bodies, so it
- * is safe to log.
+ * Resend's error name; `status` is Resend's HTTP status, when it answered, and `retryAfterMs` its
+ * `retry-after` header, when it sent one (a 429). The message never holds addresses, subjects or
+ * bodies, so it is safe to log.
  */
 export class EmailError extends Error {
   override name = 'EmailError'

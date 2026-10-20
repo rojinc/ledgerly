@@ -356,7 +356,7 @@ describe('the statements job, with autoSend on', () => {
         : new EmailError('Resend answered 403 validation_error', 'validation_error', 403)
     })
     await runJob(services)
-    // The first invoice's employer email and one notice: not the other admin's, or the next invoice.
+    // The first invoice's employer email and one notice: not the other admin's or the next invoice.
     const first = tried[0]?.split('/')[1]
     expect(tried).toHaveLength(2)
     expect(tried[0]).toBe(`invoice/${first}/first/employer`)

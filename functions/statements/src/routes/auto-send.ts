@@ -50,7 +50,7 @@ export async function sendDueInvoices(services: Services, outOfTime: () => boole
   }
 }
 
-// False when Resend's rate limit, or a send that every send would meet (#469), ends the step.
+// False when Resend's rate limit, or a failure every send would meet (#469), ends the step.
 async function sendOne(services: Services, statementId: string): Promise<boolean> {
   const { db, now } = services
   // As they are now: a void, an admin's Send or a settings change may have come first.
