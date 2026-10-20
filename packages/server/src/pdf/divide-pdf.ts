@@ -145,7 +145,9 @@ const WIDEST: Record<PdfFont, number> = { Roboto: 11.79, NotoSansCJK: 24.59, Not
 const CJK_LINE = 1.25
 const LINE_END = /\r?\n$|\r$/
 
-const widthOf = (font: PdfFont, text: string) => [...text].length * WIDEST[font]
+// A line break takes no width: it ends the line.
+const widthOf = (font: PdfFont, text: string) =>
+  [...text.replace(/[\r\n]/g, '')].length * WIDEST[font]
 const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
 
 /** Where `linebreak` (UAX #14), which pdfmake splits words with, allows a break in `text`. */
