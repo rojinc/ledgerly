@@ -94,6 +94,7 @@ To redo a period, call `POST /statements/reissue` with `{ groupId, periodStart, 
 A draft that could never be finalized would block every later statement of the group, so after staging the group row reissue refuses:
 - a range that doesn't end after the latest final statement (`VALIDATION_FAILED`), since its opening would come from before that statement;
 - a range that ends on the same day as another statement that isn't void (`VALIDATION_FAILED`);
+- a range that overlaps another draft of the group, other than one of exactly that range, which is returned (`VALIDATION_FAILED`): rule 5 would still finalize the two in order, so no amount would be wrong, but both would cover the same days ([#420](https://github.com/rojinc/ledgerly/issues/420));
 - a range that reaches the period the job drafts next (`VALIDATION_FAILED`), which the job would draft again;
 - in a group with no cycle, a range that ends after the group's latest statement, void ones included, or any range if it has none (`VALIDATION_FAILED`): there, new periods come only from a [close](#6-close-a-period-now-post-statementsclose), so a reissue only redoes a void one;
 - any range while a statement of the group is `finalizing` (`CONFLICT`).
