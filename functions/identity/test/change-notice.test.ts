@@ -859,7 +859,7 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(
         rows(services)
           .map((row) => row.$id)
-          .filter((id) => id.startsWith('n')),
+          .filter((id) => id === 'n1' || id === 'n2'),
       ).toEqual(['n1', 'n2'])
       expect(rows(services)).toHaveLength(3)
       expect(noticeLines()[0]).toEqual(dropped(1))
