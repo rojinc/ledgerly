@@ -40,9 +40,10 @@ function liveWindow(person: Counted | null, now: Date): string | null {
  * Counting first (#274, and #378's adds with an email and a phone): counts one address check on
  * the sender's `persons` row before the address is looked at, in one transaction: a guard write
  * (a fresh `rev`), the row read again as committed, then `addressMisses + 1` in a live window, or
- * a new window at 1 from now. At the limit, `tooMany` instead, and nothing is written. A 409 runs it once more, then CONFLICT, still
- * before any address is looked at. The row gets a count and a time only: no address, target or
- * route. Returns the start of the window the count was taken in, for `takeBack`.
+ * a new window at 1 from now. At the limit, `tooMany` instead, and nothing is written. A 409
+ * runs it once more, then CONFLICT, still before any address is looked at. The row gets a count
+ * and a time only: no address, target or route. Returns the start of the window the count was
+ * taken in, for `takeBack`.
  */
 export async function countCheck(
   db: Db,
@@ -69,11 +70,12 @@ export async function countCheck(
 
 /**
  * Taking the count back: the write that gives the check of a new invite or reminder that's sent,
- * or of an add whose email and phone both found one existing person (#378), its 1 back, for the transaction that commits it, which guards the sender's row and read it as
- * stored after that: `addressMisses − 1`, never below 0, `addressMissesFrom` unchanged. None once
- * another check has started a new window since `window`, the one the count was taken in, so it
- * can't cancel a check counted there. A reminder retry never takes its count back
- * (identity-and-invites.md#reminders, step 3).
+ * or of an add whose email and phone both found one existing person (#378), its 1 back, for the
+ * transaction that commits it, which guards the sender's row and read it as stored after that:
+ * `addressMisses − 1`, never below 0, `addressMissesFrom` unchanged. None once another check has
+ * started a new window since `window`, the one the count was taken in, so it can't cancel a check
+ * counted there. A reminder retry never takes its count back (identity-and-invites.md#reminders,
+ * step 3).
  */
 export function takeBack(senderId: string, stored: Counted | null, window: string): Write[] {
   // As instants: Appwrite may give back a datetime in another form than the one written.

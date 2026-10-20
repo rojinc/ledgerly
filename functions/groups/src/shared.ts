@@ -101,8 +101,8 @@ export async function countTwoKeys(
 
 /**
  * Step 3: in the add's transaction, the count back, only when both keys found the same existing
- * person. Then the add told the caller nothing about either key. A guard on the caller's row
- * first, then the row as stored, so a count that commits after it fails this commit.
+ * person, as an invite's comes back only for a right address. A guard on the caller's row first,
+ * then the row as stored, so a count that commits after it fails this commit.
  */
 export async function takeBackTwoKeys(
   tx: Tx,
