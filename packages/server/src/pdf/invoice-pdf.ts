@@ -24,10 +24,11 @@ import {
 // The narrowest column a line's description prints in: Work and charges' Description, 515.28 pt
 // less its other four columns (230) and the cells' padding (64). The other tables' are wider.
 const DESCRIPTION_COLUMN = 221
-// The issuer's column, beside the INVOICE block at its widest: a 16-character prefix's number and
-// the longest period. The block is as wide as it needs, so a wider word here would push it, or
-// the amounts' column, off the page (#360). The number itself is never broken: it's the payment
-// reference.
+// The issuer's column, beside the INVOICE block at its widest: 515.28 pt less the block's labels
+// (43.7) and a number of 16 Ѹ, Roboto's widest letter, as the prefix and 5 digits (217.0) is 254.6.
+// No period is as wide as that number. The block is as wide as it needs, so a wider word here
+// would push it, or the amounts' column, off the page (#360). The number itself is never broken:
+// it's the payment reference.
 const ISSUER_COLUMN = 250
 
 /**

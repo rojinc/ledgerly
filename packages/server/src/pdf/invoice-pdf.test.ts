@@ -332,8 +332,9 @@ describe('renderInvoicePdf', () => {
     const snapshot = buildStatementSnapshot(
       goldenInput({ ...fullBusiness, businessName: wide, address: wide }),
     )
-    // The longest prefix's number, in Roboto's widest capital: never broken, as it's the reference.
-    const displayNumber = `${'W'.repeat(16)}-0010`
+    // The widest number in Roboto, a 16-character prefix of its widest letter and 5 digits, which
+    // sets the issuer's column. It's never broken, as it's the reference.
+    const displayNumber = `${'Ѹ'.repeat(16)}10000`
     const pdf = await renderInvoicePdf(snapshot, { ...details, displayNumber })
     expect(await textBeyondMargin(pdf)).toEqual([])
     const text = await pdfText(pdf)
@@ -341,6 +342,24 @@ describe('renderInvoicePdf', () => {
       `INVOICE Number ${displayNumber} Issued 1 Nov 2026 Due 15 Nov 2026 Period 1 Oct 2026 – 31 Oct 2026`,
     )
     expect(text).toContain(`with ${displayNumber} as the reference`)
+  })
+
+  // #360: narrowed to the column's own width, not less, so a word that fits it isn't broken.
+  it('moves a word that fits the Description column to a line of its own, whole', async () => {
+    const word = 'Ѹ'.repeat(18)
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      lines: [
+        line(
+          '2026-10-02',
+          'expense',
+          4000,
+          [share('worker', 4000, 0), share('employer', 0, 4000)],
+          { description: `${'x'.repeat(10)} ${word}` },
+        ),
+      ],
+    })
+    expect(await pdfText(await renderInvoicePdf(snapshot, details))).toContain(` ${word} `)
   })
 
   // #360: the ones that fit on main still do, and a hard wrap never cuts an emoji in half (#300).
