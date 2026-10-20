@@ -241,7 +241,7 @@ Deleting an account ([#50](https://github.com/rojinc/ledgerly/issues/50)), and a
 | `POST /delete` | `{ confirm: 'DELETE' }` | `{ deletedAt, finished }` | the user, signed in within the last 10 minutes |
 | `POST /groups/{id}/delete` | `{ confirm: 'DELETE' }` | `{ finished }` | admin of an archived group with nobody else in its team, signed in within the last 10 minutes |
 
-Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), then group deletes (groups with `deletingAt` set), skipping any started in the last minute ([finishing purges](identity-and-invites.md#finishing-purges)). A person calling `POST /` gets `FORBIDDEN`.
+Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), then group deletes (groups with `deletingAt` set), then deletes the end-to-end flows' accounts (Appwrite users labelled `e2e` whose email is a run's test address), skipping any started or labelled in the last minute ([finishing purges](identity-and-invites.md#finishing-purges)). A person calling `POST /` gets `FORBIDDEN`.
 
 **`POST /delete`** deletes the caller's account ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). It is synchronous and works for up to 20 seconds; `finished: false` means the hourly job deletes the rest. Refusals change nothing, and are checked in this order:
 
