@@ -10,7 +10,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { type Ledger, loadGroupLedger, plan } from '@ledgerly/server/ledger/transactions'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RunResult } from '../src/routes/run'
-import { call, type Fakes, fakes, group, member, person } from './harness'
+import { call, type Fakes, fakes, group, member, NOW, person } from './harness'
 
 // Random edits, ends, cron runs on later days, manual edits, timeouts and runs that run out of
 // time against one schedule, a shift in Sydney or a bill in Los Angeles, with scheduling.md's
@@ -462,10 +462,14 @@ describe('reconcile, under random edits, ends, runs and timeouts', () => {
     vi.restoreAllMocks()
   })
 
-  it.each(Array.from({ length: SEEDS }, (_, index) => index + 1))('seed %i', async (seed) => {
+  const seeds = Array.from({ length: SEEDS }, (_, index) => index + 1)
+  // A seed takes about a second alone, and up to 8 s with every suite running at once.
+  it.each(seeds)('seed %i', { timeout: 30_000 }, async (seed) => {
     const random = generator(seed)
-    const services = seeded()
+    // Before the rows are seeded, so their $createdAt is the test's clock too.
     vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+    const services = seeded()
     setNow(services, services.now)
     // Every other seed has a bill instead of a shift.
     const kind = seed % 2 === 0 ? 'bill' : 'shift'
