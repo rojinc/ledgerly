@@ -224,6 +224,8 @@ type StatementSnapshot = {
 
 **Characters no font has:** Thai, Hebrew, Arabic and other scripts, and emoji that Noto Emoji lacks. pdfmake would leave those out without a trace, so each prints as `�` (`missingGlyphs()` and `printable()` mean "no font of the PDF has it"). The text is composed (Unicode NFC) first: Roboto has the accented letters but few combining marks, so decomposed text, as macOS paste and some Vietnamese input methods give it, would otherwise lose its accents. A letter Roboto has only as base and mark, such as `ṣ` or `ὰ`, prints from those parts. The render logs only how many characters print as `�` (`pdf_characters_replaced`), never the text, and the draft page warns before finalize when the snapshot has any.
 
+**Long words ([#360](https://github.com/rojinc/ledgerly/issues/360)):** pdfmake widens a column to its widest word, so a word, or words it glues together, that would print wider than its column, at its fonts' widest, gets a zero-width space where pdfmake can break it. A line's description is narrowed to the narrowest Description column (221 pt), and the issuer's lines to the width left beside the INVOICE block (250 pt, with the business name at 14 pt). So no column pushes the amounts, or the INVOICE block, off the page. The invoice number is never broken, since it's the payment reference.
+
 **GST:** v1 does not calculate GST and must not label the PDF a "tax invoice". GST support needs its own design and tax advice before it's built.
 
 ## Monthly divide PDF layout (house)

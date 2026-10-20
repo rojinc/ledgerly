@@ -115,18 +115,21 @@ async function pdfText(pdf: Buffer): Promise<string> {
 }
 
 // Text drawn past the right edge of its page, which a reader would never see.
-async function textBeyondPage(pdf: Buffer): Promise<string[]> {
+async function textBeyondPage(pdf: Buffer, margin = 0): Promise<string[]> {
   const doc = await getDocumentProxy(new Uint8Array(pdf))
   const beyond: string[] = []
   for (let number = 1; number <= doc.numPages; number++) {
     const page = await doc.getPage(number)
-    const right = page.view[2] as number
+    const right = (page.view[2] as number) - margin
     for (const item of (await page.getTextContent()).items) {
       if ('str' in item && item.transform[4] + item.width > right) beyond.push(item.str)
     }
   }
   return beyond
 }
+
+// Past the page's right margin: a column pdfmake widened (#360). A hair's leeway for rounding.
+const textBeyondMargin = (pdf: Buffer) => textBeyondPage(pdf, 40 - 0.5)
 
 // Where the build finds each font file (scripts/build-functions.mjs).
 const FONT_PATHS: Record<string, string | URL> = {
@@ -289,6 +292,150 @@ describe('renderInvoicePdf', () => {
     const pdf = await renderInvoicePdf(snapshot, details)
     expect(await textBeyondPage(pdf)).toEqual([])
     expect(await pdfText(pdf)).toContain('Total work and charges $165.00')
+  })
+
+  // #360: a word pdfmake can't break widens its column, so it's measured at its fonts' widest,
+  // not counted by graphemes.
+  it.each([
+    ['Thai, which prints as �', 'ค่าไฟฟ้าเดือนตุลาคม'.repeat(3)],
+    ['tabs, stored before oneLine() folded them', `b${'\t'.repeat(99)}b`],
+    ['U+202F, which prints as �', `b${'\u202F'.repeat(99)}b`],
+    ['a run of ⸻', '⸻'.repeat(20)],
+    ['em dashes, which pdfmake glues across a space', Array(20).fill('——').join(' ')],
+  ])(
+    'keeps every amount on the page for a description of %s (#360)',
+    async (_case, description) => {
+      vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const snapshot = buildStatementSnapshot({
+        ...goldenInput(),
+        lines: [
+          shift('2026-10-01', 12500),
+          line(
+            '2026-10-02',
+            'expense',
+            4000,
+            [share('worker', 4000, 0), share('employer', 0, 4000)],
+            {
+              description,
+            },
+          ),
+        ],
+      })
+      const pdf = await renderInvoicePdf(snapshot, details)
+      expect(await textBeyondMargin(pdf)).toEqual([])
+      expect(await pdfText(pdf)).toContain('$40.00 Total work and charges $165.00')
+    },
+  )
+
+  it('keeps INVOICE on the page beside a business name pdfmake can’t break (#360)', async () => {
+    const wide = '⸻'.repeat(20)
+    const snapshot = buildStatementSnapshot(
+      goldenInput({ ...fullBusiness, businessName: wide, address: wide }),
+    )
+    // The widest number in Roboto, a 16-character prefix of its widest letter and 5 digits, which
+    // sets the issuer's column. It's never broken, as it's the reference.
+    const displayNumber = `${'Ѹ'.repeat(16)}10000`
+    const pdf = await renderInvoicePdf(snapshot, { ...details, displayNumber })
+    expect(await textBeyondMargin(pdf)).toEqual([])
+    const text = await pdfText(pdf)
+    expect(text).toContain(
+      `INVOICE Number ${displayNumber} Issued 1 Nov 2026 Due 15 Nov 2026 Period 1 Oct 2026 – 31 Oct 2026`,
+    )
+    expect(text).toContain(`with ${displayNumber} as the reference`)
+  })
+
+  // #360: narrowed to the column's own width, not less, so a word that fits it isn't broken.
+  // #360: the payments and records tables narrow their descriptions too (AI D's should-fix).
+  it.each([
+    [
+      'a payment received',
+      line(
+        '2026-10-20',
+        'payment',
+        50000,
+        [share('employer', 50000, 0), share('worker', 0, 50000)],
+        {
+          description: '⸻'.repeat(20),
+        },
+      ),
+      'Total payments and deductions -$500.00',
+    ],
+    [
+      'a purchase for the records',
+      line('2026-10-12', 'expense', 12000, [share('employer', 12000, 12000)], {
+        description: '⸻'.repeat(20),
+      }),
+      '$120.00',
+    ],
+  ])('keeps every amount on the page for %s with a long word', async (_case, row, amount) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      lines: [shift('2026-10-01', 12500), row],
+    })
+    const pdf = await renderInvoicePdf(snapshot, details)
+    expect(await textBeyondMargin(pdf)).toEqual([])
+    expect(await pdfText(pdf)).toContain(amount)
+  })
+
+  // The header's other lines are at 10 pt, so a word that fits the issuer column there moves
+  // whole to a line of its own, beside the widest number.
+  it('moves a word that fits the issuer column at 10 pt to a line of its own, whole', async () => {
+    const word = 'Ѹ'.repeat(20)
+    const snapshot = buildStatementSnapshot(
+      goldenInput({ ...fullBusiness, address: `${'x'.repeat(10)} ${word}` }),
+    )
+    const displayNumber = `${'Ѹ'.repeat(16)}10000`
+    const pdf = await renderInvoicePdf(snapshot, { ...details, displayNumber })
+    expect(await pdfText(pdf)).toContain(` ${word} `)
+  })
+
+  it('moves a word that fits the Description column to a line of its own, whole', async () => {
+    const word = 'Ѹ'.repeat(18)
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput(),
+      lines: [
+        line(
+          '2026-10-02',
+          'expense',
+          4000,
+          [share('worker', 4000, 0), share('employer', 0, 4000)],
+          { description: `${'x'.repeat(10)} ${word}` },
+        ),
+      ],
+    })
+    expect(await pdfText(await renderInvoicePdf(snapshot, details))).toContain(` ${word} `)
+  })
+
+  // #360: the ones that fit on main still do, and a hard wrap never cuts an emoji in half (#300).
+  // The header's column is the narrower, and its name prints at 14 pt.
+  it.each([
+    ['a description of ー', { description: 'ー'.repeat(20) }],
+    ['a description of 14 Ѹ and an emoji', { description: `${'Ѹ'.repeat(14)} 😀` }],
+    ['a Latin description', { description: 'x'.repeat(200) }],
+    ['a business name of 14 Ѹ and an emoji', { businessName: `${'Ѹ'.repeat(14)} 😀` }],
+  ])('keeps %s on the page, with nothing left out (#360)', async (_case, text) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput({ ...fullBusiness, ...('businessName' in text ? text : {}) }),
+      lines: [
+        shift('2026-10-01', 12500),
+        line(
+          '2026-10-02',
+          'expense',
+          4000,
+          [share('worker', 4000, 0), share('employer', 0, 4000)],
+          'description' in text ? text : {},
+        ),
+      ],
+    })
+    const pdf = await renderInvoicePdf(snapshot, details)
+    expect(await textBeyondMargin(pdf)).toEqual([])
+    const printed = await pdfText(pdf)
+    expect(printed).toContain('$40.00 Total work and charges $165.00')
+    expect(printed).toContain('INVOICE Number INV-0010')
+    // An unknown glyph, or half of an emoji, extracts as U+0000.
+    expect(printed).not.toContain('\u0000')
   })
 
   // breakable() puts a zero-width space every 20 characters; between the halves of an emoji or

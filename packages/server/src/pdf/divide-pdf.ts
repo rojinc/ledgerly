@@ -1,8 +1,6 @@
-/// <reference path="./linebreak.d.ts" />
 import { formatMoney } from '@ledgerly/core/money/format'
-import { fontRuns, missingGlyphs, type PdfFont } from '@ledgerly/core/pdf/pdf-glyphs'
+import { fontRuns, missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
-import LineBreaker from 'linebreak'
 import type {
   Content,
   ContentText,
@@ -13,6 +11,7 @@ import { logProblem } from '../http/log'
 import { loadFonts } from './fonts'
 import {
   breakable,
+  type FontRun,
   field,
   footer,
   formatDate,
@@ -20,12 +19,13 @@ import {
   LOCALE,
   lineText,
   MUTED,
+  narrow,
   PAGE,
   pdfmake,
+  pdfWords,
   table,
+  widthOf,
 } from './layout'
-
-type FontRun = ReturnType<typeof fontRuns>[number]
 
 // Wide enough for -$1,234,567.89 on one line.
 const AMOUNT = 70
@@ -53,7 +53,7 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   const print = (text: string): FontRun[] => {
     const shown = text.replace(OTHER_BREAKS, '\n')
     replaced += missingGlyphs(shown).length
-    const runs = narrow(fontRuns(shown))
+    const runs = narrow(fontRuns(shown), NAME_COLUMN)
     loadFonts(runs.map((run) => run.font))
     return runs
   }
@@ -137,98 +137,9 @@ const CELL_WIDTH = 171
 // The narrowest column any text prints in: the People table's names, 515.28 pt less the four
 // amount columns (300) and the cells' padding (64).
 const NAME_COLUMN = 151
-// Each font's widest character at 10 pt (Roboto's medium Ѹ, Noto Sans CJK's ⸻, and any of Noto
-// Emoji's), read from the files: no word pdfmake measures is wider than these say.
-const WIDEST: Record<PdfFont, number> = { Roboto: 11.79, NotoSansCJK: 24.59, NotoEmoji: 12.7 }
 // A line with any Noto Sans CJK is its 1.448 em tall, against 1.172 for Roboto and Noto Emoji:
 // 1.24 times, rounded up.
 const CJK_LINE = 1.25
-const LINE_END = /\r?\n$|\r$/
-
-// A line break takes no width: it ends the line.
-const widthOf = (font: PdfFont, text: string) =>
-  [...text.replace(/[\r\n]/g, '')].length * WIDEST[font]
-const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
-
-/** Where `linebreak` (UAX #14), which pdfmake splits words with, allows a break in `text`. */
-function breaks(text: string): { position: number; required: boolean }[] {
-  const breaker = new LineBreaker(text)
-  const found = []
-  for (let next = breaker.nextBreak(); next; next = breaker.nextBreak()) found.push(next)
-  return found
-}
-
-/**
- * One run's words, as pdfmake's `splitWords()` makes them (pdfmake/js/TextBreaker.js): `text`
- * without the line break that ends it, which `raw` keeps.
- */
-function splitWords(text: string): { text: string; raw: string; lineEnd: boolean }[] {
-  if (text === '') return [{ text, raw: text, lineEnd: false }]
-  let start = 0
-  return breaks(text).map(({ position, required }) => {
-    const raw = text.slice(start, position)
-    start = position
-    const lineEnd = required || LINE_END.test(raw)
-    return { text: lineEnd ? raw.replace(LINE_END, '') : raw, raw, lineEnd }
-  })
-}
-
-type Word = { font: PdfFont; text: string; raw: string; glued: boolean; lineEnd: boolean }
-
-/**
- * The words pdfmake lays `runs` out in, as its `TextBreaker` makes them: each run split on its
- * own, and a run's last word glued to the next run's first when the two have no break between
- * them. pdfmake keeps glued words on one line where they fit, and fills lines with them a
- * character at a time where they don't.
- */
-function pdfWords(runs: readonly FontRun[]): Word[] {
-  const words: Word[] = []
-  let last: string | undefined
-  runs.forEach(({ font, text }, index) => {
-    const split = splitWords(text)
-    const previous = words.at(-1)
-    if (last && previous && splitWords(last + split[0]?.text).length === 1) previous.glued = true
-    for (const word of split) words.push({ font, ...word, glued: false })
-    const end = split.at(-1)
-    last = index + 1 < runs.length && !end?.lineEnd ? end?.text : undefined
-  })
-  return words
-}
-
-/**
- * `runs` with a zero-width space wherever a word, or words pdfmake glues together, would print
- * wider than NAME_COLUMN, at their fonts' widest. pdfmake widens a column to its widest word, and
- * never cuts a glued piece of one character, so either way a longer one runs into the amounts or
- * pushes them off the page. breakable() can't see that: it counts the text as typed, but a Thai
- * letter prints as one `�` or more, a space pdfmake doesn't break at (a tab, say) prints as `�`,
- * and a run in another font can glue to the next. The space goes between grapheme clusters, so it
- * never cuts an emoji apart, unless one cluster is wider than the column (emoji joined by U+200D,
- * say), and in Roboto, which has it.
- */
-function narrow(runs: readonly FontRun[]): FontRun[] {
-  const narrowed: FontRun[] = []
-  const add = (font: PdfFont, text: string) => {
-    const last = narrowed.at(-1)
-    if (last?.font === font) last.text += text
-    else if (text !== '') narrowed.push({ font, text })
-  }
-  let width = 0
-  for (const { font, raw, glued } of pdfWords(runs)) {
-    for (const { segment } of graphemes.segment(raw)) {
-      for (const piece of widthOf(font, segment) > NAME_COLUMN ? segment : [segment]) {
-        const char = widthOf(font, piece)
-        if (width + char > NAME_COLUMN) {
-          add('Roboto', '\u200B')
-          width = 0
-        }
-        add(font, piece)
-        width += char
-      }
-    }
-    if (!glued) width = 0
-  }
-  return narrowed
-}
 
 /**
  * The most lines of Roboto's height that `runs`, as printed, can take in a cell CELL_WIDTH wide.
