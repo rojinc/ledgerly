@@ -31,6 +31,27 @@ M0 Foundation ──► M1 Ledger core + Employer (MVP) ──► M2 Personal + 
 | M5 | Mobile app spike signed off. |
 
 
+## Status on 20 October 2026
+
+The build for M0 to M4 is merged, and so is M5's spike. What's left is the owner's, or waits for the next deploy. The live list is the [v1 launch checklist (#299)](https://github.com/rojinc/ledgerly/issues/299). This table lists only the issues still open in each milestone.
+
+| Milestone | Build | Still open |
+| --- | --- | --- |
+| M0 | ✅ merged | The owner's setup: the domain, Resend and backups ([#3](https://github.com/rojinc/ledgerly/issues/3)), and GitBook ([#4](https://github.com/rojinc/ledgerly/issues/4)). |
+| M1 | ✅ merged | None. |
+| M2 | ✅ merged | The owner's dev key for the end-to-end tests ([#78](https://github.com/rojinc/ledgerly/issues/78)): flows 1–5 are written, but none has run against dev yet. Flow 5 is skipped until the flows have a project of their own ([#386](https://github.com/rojinc/ledgerly/issues/386)). |
+| M3 | ✅ merged | SMS invites ([#40](https://github.com/rojinc/ledgerly/issues/40), [#176](https://github.com/rojinc/ledgerly/issues/176)), cut from v1. They wait on the owner's SMS provider ([#175](https://github.com/rojinc/ledgerly/issues/175)). |
+| M4 | ✅ merged | Account deletion's dev check ([#50](https://github.com/rojinc/ledgerly/issues/50)), the legal review ([#54](https://github.com/rojinc/ledgerly/issues/54), owner), and error tracking with Sentry ([#51](https://github.com/rojinc/ledgerly/issues/51) part 2, cut from v1). |
+| M5 | ✅ the spike's report ([#284](https://github.com/rojinc/ledgerly/pull/284)) | None. The mobile app itself isn't planned yet. |
+
+**M4's exit criteria:**
+- **The nightly invariant check is clean for 2 weeks:** built ([#49](https://github.com/rojinc/ledgerly/issues/49)). The 2 weeks start when it first runs on dev, at the next deploy.
+- **Account deletion and export work:** built ([#50](https://github.com/rojinc/ledgerly/issues/50)). The lead checks the session ID on dev at the next deploy.
+- **The legal review is done:** the pack is ready for the lawyer ([#54](https://github.com/rojinc/ledgerly/issues/54), owner).
+- **Billing is decided:** ✅ free at launch, with one paid plan later (D-019, [#318](https://github.com/rojinc/ledgerly/pull/318)).
+
+**The launch date isn't set.** The owner sets it. It can't come before the nightly check's 2 clean weeks, which start at the next deploy, and deploys wait for Actions minutes. It also waits for the legal review.
+
 ## M0 Foundation
 
 Monorepo, CI, Appwrite schema as code, function and web skeletons, deploys.
