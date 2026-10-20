@@ -841,6 +841,15 @@ describe('Restart', () => {
     expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
   })
 
+  // AI A's N2 on #441: the server would refuse it, so it gets no Restart.
+  it('isn’t offered on a stored schedule the schema refuses', async () => {
+    mockGroup(acme)
+    mockSchedules([{ ...stopped, horizonDays: 121 }])
+    renderAt('/schedules?groupId=g1')
+    await screen.findByText('Thursday shift')
+    expect(screen.queryByRole('button', { name: 'Restart' })).toBeNull()
+  })
+
   it('shows the scheduler’s refusal next to it, and sends once while it waits', async () => {
     mockGroup(acme)
     mockSchedules([stopped])

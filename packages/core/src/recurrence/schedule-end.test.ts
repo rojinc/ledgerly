@@ -11,6 +11,8 @@ describe('scheduleEnd', () => {
     [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2', endsOn: '2026-12-31' }, '2026-10-08'],
     [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2', endsOn: '2026-10-02' }, '2026-10-02'],
     [{ rrule: 'FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=2', endsOn: null }, '2026-11-30'],
+    // A count that runs past a year: the 24th first-of-the-month (AI A's N1 on #441).
+    [{ rrule: 'FREQ=MONTHLY;BYMONTHDAY=1;COUNT=24', endsOn: null }, '2028-09-01'],
     // Every other week from the week of 1 October: 13 and 27 October.
     [{ rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=TU;COUNT=2', endsOn: null }, '2026-10-27'],
     // A count of dates that never come (30 February) ends where it starts.
