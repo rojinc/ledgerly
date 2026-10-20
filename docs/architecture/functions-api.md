@@ -292,7 +292,7 @@ Details: [Scheduling](scheduling.md).
 
 ## statements
 
-Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). Each run drafts the periods that are due, then emails the invoices it auto-finalized in groups with `autoSend` on ([auto-send](statements.md#auto-send)). HTTP routes:
+Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). Each run drafts the periods that are due, then emails the invoices with lines it auto-finalized in groups with `autoSend` on ([auto-send](statements.md#auto-send)). HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
