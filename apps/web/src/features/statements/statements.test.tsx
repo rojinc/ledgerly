@@ -779,6 +779,39 @@ describe('StatementPage: a final invoice', () => {
     expect(screen.queryByRole('button', { name: /^Send/ })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Void…' })).toBeNull()
   })
+
+  it('links admins from any final invoice to an adjustment in its group, but not from a void one or for a member (#400)', async () => {
+    const LINK = { name: 'Correct with an adjustment' }
+    store(
+      statement('s1', FINAL),
+      statement('s0', {
+        ...FINAL,
+        displayNumber: 'INV-0006',
+        periodStart: '2026-09-01',
+        periodEnd: '2026-09-30',
+      }),
+      statement('s2', {
+        ...FINAL,
+        status: 'void',
+        displayNumber: 'INV-0008',
+        periodStart: '2026-11-01',
+        periodEnd: '2026-11-30',
+      }),
+    )
+    renderAt('/groups/g1/statements/s0')
+    expect((await screen.findByRole('link', LINK)).getAttribute('href')).toBe(
+      '/transactions/new?groupId=g1&kind=adjustment',
+    )
+    cleanup()
+    renderAt('/groups/g1/statements/s2')
+    await screen.findByRole('button', { name: 'Download PDF' })
+    expect(screen.queryByRole('link', LINK)).toBeNull()
+    cleanup()
+    mockGroup('member')
+    renderAt('/groups/g1/statements/s1')
+    await screen.findByRole('button', { name: 'Download PDF' })
+    expect(screen.queryByRole('link', LINK)).toBeNull()
+  })
 })
 
 // A house of three, Alice (pa), Bob (pb) and Cara (pc), divides October (#166).

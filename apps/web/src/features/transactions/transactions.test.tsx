@@ -6,6 +6,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
+import { queryKeys } from '../../lib/query-keys'
 import { useBalances, useGroup, useGroups, useMyMember } from '../groups/use-groups'
 import { transactionRoutes } from './routes'
 
@@ -1059,6 +1060,191 @@ describe('NewTransactionPage, itemised receipt (#42)', () => {
   })
 })
 
+describe('NewTransactionPage, adjustment (#400)', () => {
+  const ADJUST = '/transactions/new?groupId=g1&kind=adjustment'
+  const select = (label: string) => screen.getByLabelText(label) as HTMLSelectElement
+
+  it('sends who is owed more and who owes more as balancing shares, and refreshes the balances', async () => {
+    mockGroups(acme)
+    mockRows()
+    call.mockResolvedValue(ok({ transaction: row('a1', { kind: 'adjustment' }), shares: [] }))
+    const { router, queryClient } = renderAt(ADJUST)
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    expect(screen.getByRole('heading', { level: 1, name: 'Add adjustment' })).toBeTruthy()
+    // The worker is owed more by the employer, until changed.
+    expect(((await screen.findByLabelText('Who is owed more')) as HTMLSelectElement).value).toBe(
+      'pw',
+    )
+    expect(select('Who owes more').value).toBe('pe')
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '12.50' } })
+    fireEvent.change(screen.getByLabelText('Reason'), {
+      target: { value: ' Shift on 3 Oct was an hour short ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.slice(0, 3)).toEqual(['ledger', 'POST', '/transactions'])
+    expect(call.mock.calls[0]?.[3]).toEqual({
+      id: expect.any(String),
+      groupId: 'g1',
+      kind: 'adjustment',
+      date: '2026-10-18',
+      description: 'Shift on 3 Oct was an hour short',
+      totalCents: 1250,
+      adjustment: {
+        // Sorted by personId, as buildShares() stores them.
+        shares: [
+          { personId: 'pe', givenCents: 0, receivedCents: 1250 },
+          { personId: 'pw', givenCents: 1250, receivedCents: 0 },
+        ],
+        reason: 'Shift on 3 Oct was an hour short',
+      },
+    })
+    await waitFor(() => expect(router.state.location.pathname).toBe('/transactions/a1'))
+    // The group's balances and history are read again. The next statement, a draft, is worked
+    // out again when it's opened (statements.md core rule 1).
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.balances('g1') })
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['history', 'g1'] })
+  })
+
+  it('offers everyone in a house, and refuses one person on both sides, no amount and no reason', async () => {
+    mockPersonId = 'alice'
+    vi.setSystemTime(HOUSE_NOW)
+    mockGroups(house, 'member')
+    mockRows([], [], HOUSEMATES)
+    renderAt('/transactions/new?groupId=house1&kind=adjustment')
+    const owed = (await screen.findByLabelText('Who is owed more')) as HTMLSelectElement
+    // Dan, who moved out, too: balances with him can still be put right.
+    expect([...owed.options].map((option) => option.textContent)).toEqual([
+      'Alice',
+      'Bob',
+      'Cara',
+      'Dan',
+    ])
+    expect(owed.value).toBe('alice')
+    expect(select('Who owes more').value).toBe('bob')
+    fireEvent.change(select('Who owes more'), { target: { value: 'alice' } })
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '0' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('Pick someone other than who is owed more')).toBeTruthy()
+    expect(screen.getByText('Enter an amount above 0')).toBeTruthy()
+    expect(screen.getByText('Required')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+    call.mockResolvedValue(
+      ok({ transaction: row('a2', { groupId: 'house1', kind: 'adjustment' }), shares: [] }),
+    )
+    fireEvent.change(select('Who is owed more'), { target: { value: 'cara' } })
+    fireEvent.change(select('Who owes more'), { target: { value: 'dan' } })
+    fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '30' } })
+    fireEvent.change(screen.getByLabelText('Reason'), {
+      target: { value: 'September power, split wrong' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      groupId: 'house1',
+      // Local today in Sydney.
+      date: '2026-10-19',
+      totalCents: 3000,
+      adjustment: {
+        shares: [
+          { personId: 'cara', givenCents: 3000, receivedCents: 0 },
+          { personId: 'dan', givenCents: 0, receivedCents: 3000 },
+        ],
+      },
+    })
+  })
+
+  it('refuses an amount that isn’t one, and a reason over 200 characters', async () => {
+    mockGroups(acme)
+    mockRows()
+    renderAt(ADJUST)
+    fireEvent.change(await screen.findByLabelText('Amount (AUD)'), { target: { value: '4.005' } })
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'x'.repeat(201) } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect(await screen.findByText('Enter an amount like 40.50')).toBeTruthy()
+    expect(screen.getByText('At most 200 characters')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+  })
+
+  it('shows the ledger’s refusal, keeps the ID for the retry, and warns of a duplicate on CONFLICT', async () => {
+    mockGroups(acme)
+    mockRows()
+    call.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED', message: 'Adjustment shares must balance' },
+    })
+    call.mockResolvedValueOnce({
+      ok: false,
+      error: { code: 'CONFLICT', message: 'A different transaction already has this ID.' },
+    })
+    renderAt(ADJUST)
+    fireEvent.change(await screen.findByLabelText('Amount (AUD)'), { target: { value: '40' } })
+    fireEvent.change(screen.getByLabelText('Reason'), { target: { value: 'Wrong rate' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    expect((await screen.findByRole('alert')).textContent).toBe('Adjustment shares must balance')
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toBe(
+        'This may already have been saved from your last try. Check History before adding it again.',
+      ),
+    )
+    const [first, second] = call.mock.calls.map((args) => (args[3] as { id: string }).id)
+    expect(second).toBe(first)
+  })
+
+  it('links between the expense form and the adjustment form', async () => {
+    mockGroups(acme)
+    mockRows()
+    const { router } = renderAt('/transactions/new?groupId=g1')
+    fireEvent.click(
+      await screen.findByRole('link', { name: 'Correct a final invoice with an adjustment' }),
+    )
+    expect(await screen.findByLabelText('Who is owed more')).toBeTruthy()
+    expect(router.state.location.search).toBe('?groupId=g1&kind=adjustment')
+    fireEvent.click(screen.getByRole('link', { name: 'Add an expense or payment instead' }))
+    expect(await screen.findByText('I paid for them (reimbursable)')).toBeTruthy()
+    cleanup()
+    mockPersonId = 'alice'
+    mockGroups(house, 'member')
+    mockRows([], [], HOUSEMATES)
+    renderAt('/transactions/new?groupId=house1')
+    expect(
+      await screen.findByRole('link', { name: 'Correct a final divide with an adjustment' }),
+    ).toBeTruthy()
+  })
+
+  it('has no form for a viewer, a non-owner in an employer group, an archived group or a house of one', async () => {
+    const none = async (text: string) => {
+      expect(await screen.findByText(text)).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Add' })).toBeNull()
+      expect(screen.queryByRole('link', { name: /instead$/ })).toBeNull()
+      cleanup()
+    }
+    mockGroups(acme, 'viewer')
+    mockRows()
+    renderAt(ADJUST)
+    await none('You can see this group’s history but no longer add to it.')
+    mockGroups({ ...acme, ownerPersonId: 'pe' })
+    renderAt(ADJUST)
+    await none('Only the person this group pays adds expenses and payments here.')
+    mockGroups({ ...acme, archivedAt: '2026-10-01T00:00:00.000Z' })
+    renderAt(ADJUST)
+    await none('This group is archived. You can see its history but not change it.')
+    mockPersonId = 'alice'
+    mockGroups(house, 'admin')
+    mockRows([], [], [housemate('alice', 'Alice', '2026-01-01')])
+    renderAt('/transactions/new?groupId=house1&kind=adjustment')
+    expect(
+      await screen.findByText(
+        'An adjustment is between two people, and you’re the only one in this group.',
+      ),
+    ).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull()
+    // An expense can still be added there.
+    expect(screen.getByRole('link', { name: 'Add an expense instead' })).toBeTruthy()
+  })
+})
+
 describe('HistoryPage', () => {
   it.each([
     [71500, /^Acme owes you .*715\.00$/],
@@ -1459,6 +1645,22 @@ describe('TransactionPage', () => {
     renderAt('/transactions/t1')
     expect(await screen.findByText(/^Sam: received .*500\.00$/)).toBeTruthy()
     expect(screen.getByText(/^Acme: paid .*500\.00$/)).toBeTruthy()
+  })
+
+  it('words an adjustment’s shares as the change to each balance (#400)', async () => {
+    mockGroups(acme)
+    mockRows(
+      [],
+      [
+        { $id: 's1', personId: 'pe', givenCents: 0, receivedCents: 1250 },
+        { $id: 's2', personId: 'pw', givenCents: 1250, receivedCents: 0 },
+      ],
+    )
+    getRow.mockResolvedValue(row('t1', { kind: 'adjustment', totalCents: 1250 }) as never)
+    renderAt('/transactions/t1')
+    expect(await screen.findByRole('heading', { name: 'Whose balance it changes' })).toBeTruthy()
+    expect(screen.getByText(/^Sam: is owed .*12\.50 more$/)).toBeTruthy()
+    expect(screen.getByText(/^Acme: owes .*12\.50 more$/)).toBeTruthy()
   })
 
   it('puts the row back, with the error and the reason, when voiding fails', async () => {
