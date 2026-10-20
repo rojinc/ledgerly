@@ -20,7 +20,7 @@ Keeping authority in one place (`members.role`) means there is one source of tru
 | Table | Row permissions | Set by |
 | --- | --- | --- |
 | `persons` (registered) | `read("user:<userId>")` | `identity`; `account` removes it on deletion |
-| `persons` (placeholder), `identities`, `invites`, `reminders`, `balances`, `receiptFiles`, `checkpoints` | none | n/a |
+| `persons` (placeholder), `identities`, `invites`, `reminders`, `balances`, `receiptFiles`, `checkpoints`, `changeNotices` | none | n/a |
 | `profiles` | `read("user:<userId>")` | `identity`; `account` deletes the row |
 | `groups`, `members`, `transactions`, `shares`, `items`, `schedules`, `statements`, `activity` | `read("team:<groupId>")` | the writing function |
 

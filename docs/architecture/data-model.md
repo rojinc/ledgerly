@@ -35,6 +35,7 @@ persons ──┬── identities                       (server only)
                       reminders                 (server only)
                       balances      (1:1 with a group, server only)
                       checkpoints               (server only)
+                      changeNotices             (server only)
 ```
 
 ## persons
@@ -55,7 +56,7 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `addressMissesFrom` | datetime? | When that window started: the first counted check after the last window ended. `null` until a first one. Written only by `identity`, with `addressMisses`. Each new window overwrites both columns, and they stay on a deleted person's anonymised row: a count and a time only, which account deletion doesn't need to clear (the lead on #274). |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). Set first, as the point of no return; a person with `deletedAt` and `userId` both set has a deletion still to finish. |
 | `orphanedAt` | datetime? | When a [removal](permissions.md#leaving-a-group), or a [purge](identity-and-invites.md#purging-a-group), took this placeholder's last member row. 30 days later, [scheduler step 5c](scheduling.md#step-5c-placeholder-clean-up) deletes its identities and the invites sent to them, and replaces its `displayName` with "Former member", if it's still a placeholder that no member row names, and either way clears this. An adoption clears it too, since it makes the row readable to its user ([claim](identity-and-invites.md#claim-linking-records-to-a-new-account)). A person re-added or merged since can keep a stale value until step 5c. Written only by `groups` (the removal), `account` (the purge), `identity` (the adoption) and `scheduler` (step 5c), each with a fresh `rev`, and by the one-off `scripts/backfill-orphaned-at.mjs`, which sets it on every placeholder that has none and that no member row names, as removals left them before this column existed. The lead runs it once in each environment, from `main`, after #342's functions are deployed there and a minute has passed (so no old removal is still running), with a one-off key (`rows.read`, `rows.write`) deleted afterwards. A later run marks again only the placeholders step 5c has cleared, which have nothing more to clear. |
-| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits and the address-miss count, for adds that find the person, for a merge's writes on the person it merges into, for a purge deleting a placeholder's member rows, for a member removal ([permissions](permissions.md#leaving-a-group)), for step 5c's clean-up, and for a merged placeholder's resume mark: a join writes it with `mergeResumeAt`, so merge step 4's clear and the hourly skip-clear see a newer mark ([#358](https://github.com/rojinc/ledgerly/issues/358)). |
+| `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits and the address-miss count, for adds that find the person, for a merge's writes on the person it merges into, for a purge deleting a placeholder's member rows, for a member removal ([permissions](permissions.md#leaving-a-group)), for step 5c's clean-up, for a merged placeholder's resume mark: a join writes it with `mergeResumeAt`, so merge step 4's clear and the hourly skip-clear see a newer mark ([#358](https://github.com/rojinc/ledgerly/issues/358)), and for a change notice's cap of 3 pending rows ([change notice](identity-and-invites.md#email-and-phone-change-notice), step 6). |
 
 Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`, `idx_deletedAt (deletedAt)` (the hourly job finds deletions to finish), `idx_orphanedAt (orphanedAt)` (step 5c finds placeholders to clear).
 Permissions: placeholders have none (server only). A registered person's row gets `read("user:<userId>")`.
@@ -287,6 +288,27 @@ How far a background job has got, for a job that must not lose its place from on
 - `transaction-changes`: the end of the last hour [step 3b](scheduling.md#step-3b-transaction-change-emails) finished. Step 3b makes it at the start of the current hour when it's missing, so no backlog is ever sent, and only ever moves it forward.
 
 Permissions: none (server only).
+
+## changeNotices
+
+An email or phone change notice that hasn't gone out yet ([#345](https://github.com/rojinc/ledgerly/issues/345), [change notice](identity-and-invites.md#email-and-phone-change-notice), steps 6 and 8). The event run writes one row per email before it sends, at most 3 per user, and deletes each once it's sent. Identity's hourly run tries the rest, and never sends one more than 23 hours after its key was made. A row holds no address or number: the email is built again from the user and the identity at each try.
+
+| Column | Type | Notes |
+| --- | --- | --- |
+| `userId` | varchar(36) | The account |
+| `kind` | enum(email, phone) | Which notice |
+| `identityId` | varchar(36) | The address it goes to, as its `identities` row ID: an email notice's old address, or the verified email a phone notice was first meant for. A retry sends there even if the account's email has changed since ([#462](https://github.com/rojinc/ledgerly/pull/462)) |
+| `idempotencyKey` | varchar(128) | The key the event run used, which every retry reuses, since the user's `$updatedAt` it was made from may change |
+| `attempts` | integer | default 0. Failed retries so far |
+
+Indexes: `uniq_idempotencyKey (idempotencyKey)` (unique), so a replayed event makes one row; `idx_userId (userId)`, for the cap of 3 rows per user ([change notice](identity-and-invites.md#email-and-phone-change-notice), step 6). The hourly run lists rows by `$createdAt`, oldest first.
+Permissions: none (server only). A row goes when:
+- it's sent, or Resend has seen its key;
+- Resend refuses it for good (`validation_error`);
+- the user or their person is gone, or its identity is gone, moved or no longer verified (`gone`);
+- or at the first hourly run that reaches it 23 hours after its key was made, normally the first (`expired`). None is sent after that.
+
+So an account deletion needs to clear nothing here.
 
 ## schedules
 

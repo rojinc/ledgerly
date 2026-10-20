@@ -210,11 +210,11 @@ Archiving clears `nextCloseAt`, so no more statements are drafted, until an admi
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
-| `POST /` | the Appwrite user, as the event sends it; none for a scheduled run | `{}`; a scheduled run returns `{ unfinished, finished, skipped, cutOff }` | only `identity`'s own runs, below; a signed-in call gets `FORBIDDEN` |
+| `POST /` | the Appwrite user, as the event sends it; none for a scheduled run | `{}`; a scheduled run returns `{ unfinished, finished, skipped, cutOff, notices }` | only `identity`'s own runs, below; a signed-in call gets `FORBIDDEN` |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
 **`POST /` is one route for two kinds of run**, and it dispatches on the kind:
-- a [scheduled run](permissions.md#function-side-checks) (`ctx.scheduled`), every 60 minutes (`interval: 60`), carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)) and returns `{ unfinished, finished, skipped, cutOff }`;
+- a [scheduled run](permissions.md#function-side-checks) (`ctx.scheduled`), every 60 minutes (`interval: 60`), carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)), then retries change notices that didn't go out ([change notice](identity-and-invites.md#email-and-phone-change-notice), step 8: `notices: { retried, failed, dropped }`), and returns `{ unfinished, finished, skipped, cutOff, notices }`;
 - an [event run](permissions.md#function-side-checks) (`ctx.event`) of `users.*.update.password` or `users.*.recovery.*.update` sends the [password notice](identity-and-invites.md#password-notice), and one of `users.*.update.email` or `users.*.update.phone` the [email and phone change notice](identity-and-invites.md#email-and-phone-change-notice).
 
 A person calling `POST /` gets `FORBIDDEN`, and any other call without a JWT `UNAUTHENTICATED`.

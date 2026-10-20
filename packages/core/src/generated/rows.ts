@@ -82,6 +82,13 @@ export const TransactionsStatus = {
 
 export type TransactionsStatus = (typeof TransactionsStatus)[keyof typeof TransactionsStatus];
 
+export const ChangeNoticesKind = {
+    EMAIL: "email",
+    PHONE: "phone"
+} as const;
+
+export type ChangeNoticesKind = (typeof ChangeNoticesKind)[keyof typeof ChangeNoticesKind];
+
 export const SchedulesKind = {
     SHIFT: "shift",
     BILL: "bill",
@@ -244,6 +251,14 @@ export type ReceiptFiles = Models.Row & {
 
 export type Checkpoints = Models.Row & {
     through: string;
+}
+
+export type ChangeNotices = Models.Row & {
+    userId: string;
+    kind: ChangeNoticesKind;
+    identityId: string;
+    idempotencyKey: string;
+    attempts: number;
 }
 
 export type Schedules = Models.Row & {
