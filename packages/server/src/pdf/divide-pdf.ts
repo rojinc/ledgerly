@@ -135,11 +135,14 @@ const CJK_LINE = 1.25
 
 /**
  * The most lines of Roboto's height that `runs`, as printed, can take in a cell CELL_WIDTH wide.
- * It wraps greedily, as pdfmake does, with every character as wide as its font's widest, breaking
- * only after a space or a zero-width space, and at a line feed or carriage return. Where pdfmake
- * finds more places to break, it never needs more lines. A word wider than the cell is placed a
- * character at a time from a new line: pdfmake widens the column for a word in one font, but cuts
- * one that runs across fonts (⸻, a no-break space, ⸻) between characters, as many as fit a line.
+ * It wraps words greedily, as pdfmake does, with every character as wide as its font's widest:
+ * a word ends after a space or a zero-width space, and a line feed or carriage return starts a new
+ * line. pdfmake may also break inside a word, which only fills its lines fuller.
+ *
+ * A word wider than the cell starts a new line, and the next word starts another. pdfmake breaks it
+ * where Unicode allows (or between characters, for a word that runs across fonts), packing whole
+ * pieces, so any two of its lines together hold more than a cell: it takes at most
+ * 1 + 2 × width / CELL_WIDTH lines, wherever the pieces fall.
  */
 export function wrappedLines(runs: readonly FontRun[]): number {
   let lines = 1
@@ -157,8 +160,8 @@ export function wrappedLines(runs: readonly FontRun[]): number {
     if (width <= CELL_WIDTH) fit(width)
     else {
       if (x > 0) lines++
-      x = 0
-      for (const char of word) fit(char)
+      lines += Math.floor((2 * width) / CELL_WIDTH)
+      x = CELL_WIDTH
     }
     word = []
   }

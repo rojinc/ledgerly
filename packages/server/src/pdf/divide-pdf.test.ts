@@ -489,6 +489,14 @@ describe('renderDividePdf', () => {
     expect(count(table, '⸻')).toBe(8 * 19)
   })
 
+  // Each name prints in 3 lines, as pdfmake can't fit 😀 beside the 13 ⏩ either side.
+  it('never drops a row of words wider than the cell that break into uneven pieces', async () => {
+    const name = `😀${'⏩'.repeat(13)}😀`
+    const table = await tableOf(Array(15).fill('q').join('\n'), Array(15).fill(name))
+    expect(count(table, '⏩')).toBe(15 * 13)
+    expect(count(table, 'q')).toBe(15)
+  })
+
   it('refuses an invoice snapshot', async () => {
     const snapshot = buildStatementSnapshot(goldenInput())
     const employer = { ...snapshot, group: { ...snapshot.group, type: 'employer' as const } }
@@ -504,14 +512,15 @@ describe('wrappedLines', () => {
     ['a word', 'Electricity', 1],
     // Roboto's widest is 11.79 pt, in a 171 pt cell.
     ['14 of the widest', 'W'.repeat(14), 1],
-    ['15 of the widest, wrapped', 'W'.repeat(15), 2],
+    // 176.9 pt is wider than the cell: at most 1 + 2 × 176.9 / 171 lines.
+    ['15 of the widest', 'W'.repeat(15), 3],
     // Each word and its space is 94.3 pt, so two don't fit.
     ['three words that fit one to a line', 'abcdefg abcdefg abcdefg', 3],
     ['a line feed', 'a\nb', 2],
     ['a carriage return', 'a\rb', 2],
     // Noto Emoji's characters are 12.7 pt: 13 fit.
     ['13 emoji', '😀'.repeat(13), 1],
-    ['14 emoji', '😀'.repeat(14), 2],
+    ['14 emoji', '😀'.repeat(14), 3],
     // As printed: ร้าน is 4 �.
     ['Thai', 'ร้าน', 1],
     // A line with Noto Sans CJK is 1.25 of Roboto's.
@@ -524,14 +533,31 @@ describe('wrappedLines', () => {
   it('counts each Noto Sans CJK character as wide as its widest, ⸻', () => {
     // 7 of 24.59 pt fill 172 pt, more than the cell.
     expect(lines('一'.repeat(6))).toBe(1.25)
-    expect(lines('一'.repeat(7))).toBe(2.5)
+    expect(lines('一'.repeat(7))).toBe(3 * 1.25)
   })
 
-  // pdfmake can't break around a no-break space, so this is one word across fonts, which it cuts
-  // between characters, 6, 6, 6 and 1 ⸻ a line: a new line, then a character at a time.
-  it('counts a word wider than the cell a character at a time', () => {
-    const word = ['⸻'.repeat(4), '⸻'.repeat(5), '⸻'.repeat(5), '⸻'.repeat(5)].join('\u00A0')
-    expect(lines(word)).toBe(4 * 1.25)
-    expect(lines(`Hi ${word}`)).toBe(5 * 1.25)
+  // pdfmake breaks a word wider than the cell into whole pieces, where Unicode allows, so short,
+  // almost a cell, short takes 3 lines, though it would fit 2 cut anywhere.
+  it.each([
+    ['emoji', `😀${'⏩'.repeat(13)}😀`, 3],
+    ['Roboto, with hyphens', `Ѹ-${'Ѹ'.repeat(14)}-Ѹ`, 3],
+    ['Noto Sans CJK', `一${'⸻'.repeat(6)}⸺一`, 3 * 1.25],
+    // One word across fonts: pdfmake can't break around a no-break space.
+    [
+      '⸻ and no-break spaces',
+      ['⸻'.repeat(4), '⸻'.repeat(5), '⸻'.repeat(5), '⸻'.repeat(5)].join('\u00A0'),
+      6 * 1.25,
+    ],
+  ])(
+    'counts a word wider than the cell, in %s, as 1 + 2 × its width over the cell',
+    (_, word, expected) => {
+      expect(lines(word)).toBe(expected)
+    },
+  )
+
+  it('starts a word wider than the cell on a new line, and the next word on another', () => {
+    const word = '⏩'.repeat(14)
+    expect(lines(word)).toBe(3)
+    expect(lines(`Hi ${word} there`)).toBe(5)
   })
 })
