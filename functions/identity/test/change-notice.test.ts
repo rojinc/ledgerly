@@ -1,8 +1,9 @@
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { type Email, EmailError } from '@ledgerly/server/email/send-email'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { AccountUser } from '../src/services'
-import { account, call, type Fakes, fakes, NOW } from './harness'
+import { AFTER, account, call, type Fakes, fakes, NOW } from './harness'
 
 const SAM = {
   $id: 'p1',
@@ -585,5 +586,392 @@ describe('sending (step 6)', () => {
     ])
     expect(Date.now() - T0).toBe(14_000)
     expect(lines()).toEqual([sentLine, sentLine, failed('EmailError timeout'), budget(1)])
+  })
+})
+
+describe('keeping a notice that didn’t go out, and trying it again hourly (#345)', () => {
+  const T0 = NOW.getTime()
+  const HOUR = 60 * 60 * 1000
+  const A = identity('iA', 'email:a@example.com', { verifiedAt: at(5) })
+  const B = identity('iB', 'email:b@example.com', { verifiedAt: at(4) })
+  const C = identity('iC', 'email:c@example.com', { verifiedAt: at(3) })
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'] })
+    vi.setSystemTime(NOW)
+  })
+
+  async function settled<T>(pending: Promise<T>): Promise<T> {
+    await vi.runAllTimersAsync()
+    return pending
+  }
+  const event = (services: Fakes, notice: 'email' | 'phone' = 'email') =>
+    settled(fire(services, notice))
+
+  // identity's hourly run, `after` ms after NOW, on its clock and the services'.
+  async function hourly(services: Fakes, after = HOUR) {
+    vi.setSystemTime(T0 + after)
+    services.now = new Date(T0 + after)
+    const result = await settled(
+      call(services, 'POST', '/', undefined, null, { 'x-appwrite-trigger': 'schedule' }),
+    )
+    logged.push(...result.logs)
+    return result
+  }
+  const counted = (result: { body: unknown }) =>
+    (result.body as { data: { notices: unknown } }).data.notices
+
+  // Each send's address, key, start (ms after NOW) and timeout, answered by `answer` (by call).
+  function answered(services: Fakes, answer: (call: number) => unknown = () => undefined) {
+    const calls: Array<{ to: string; key: string; at: number; timeoutMs: number }> = []
+    services.sendEmail = vi.fn(async (email: Email, options?: { timeoutMs?: number }) => {
+      calls.push({
+        to: String(email.to),
+        key: email.idempotencyKey ?? '',
+        at: Date.now() - T0,
+        timeoutMs: options?.timeoutMs ?? Number.NaN,
+      })
+      const error = answer(calls.length - 1)
+      if (error) throw error
+      return { id: `email-${calls.length}` }
+    })
+    return calls
+  }
+  const failure = (type: string, status?: number) =>
+    new EmailError(`Resend answered ${status} ${type}`, type, status)
+  const rows = (services: Fakes) => services.db.rows('changeNotices')
+  const noticeLines = () => lines().filter((line) => line.event === 'change_notice')
+  const retryLine = (identityType: 'email' | 'phone', outcome: string, attempts: number) =>
+    logLine(identityType, outcome, { counts: { attempts } })
+
+  // A row the event run left, as Appwrite stores it.
+  const pending = (id: string, extra: object = {}) => ({
+    $id: id,
+    $createdAt: NOW.toISOString(),
+    userId: 'u1',
+    kind: 'email',
+    identityId: 'iA',
+    idempotencyKey: `email-change-notice-key-${id}`,
+    attempts: 0,
+    ...extra,
+  })
+  const withRows = (notices: Row[], identities: Row[] = [A, B, C], overrides = CHANGED_EMAIL) =>
+    fakes({ persons: [SAM], identities, changeNotices: notices }, { account: account(overrides) })
+
+  describe('the event run (step 6)', () => {
+    it('keeps a notice whose two tries got a 429, and the hourly run sends it with the same key', async () => {
+      const services = seeded([A])
+      const calls = answered(services, (call) =>
+        call < 2 ? failure('rate_limit_exceeded', 429) : undefined,
+      )
+      expect((await event(services)).status).toBe(500)
+      const key = calls[0]?.key
+      // The user, the notice, the old address's row and the key: no address, number or text.
+      expect(rows(services)).toEqual([
+        expect.objectContaining({
+          userId: 'u1',
+          kind: 'email',
+          identityId: 'iA',
+          idempotencyKey: key,
+          attempts: 0,
+        }),
+      ])
+      const columns = Object.keys(rows(services)[0] ?? {}).filter((name) => !name.startsWith('$'))
+      expect(columns.sort()).toEqual(['attempts', 'idempotencyKey', 'identityId', 'kind', 'userId'])
+      const result = await hourly(services)
+      expect(counted(result)).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(calls.map(({ to, key }) => [to, key])).toEqual([
+        ['a@example.com', key],
+        ['a@example.com', key],
+        ['a@example.com', key],
+      ])
+      expect(rows(services)).toEqual([])
+      expect(noticeLines().at(-1)).toEqual(retryLine('email', 'retried', 0))
+    })
+
+    it('keeps a timed-out send, and counts the retry’s seen key as sent, so nothing goes twice', async () => {
+      const services = seeded([A])
+      const calls = answered(services, (call) =>
+        call === 0 ? failure('timeout') : failure('invalid_idempotent_request', 409),
+      )
+      await event(services)
+      expect(rows(services)).toHaveLength(1)
+      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(calls.map(({ key }) => key)).toEqual([calls[0]?.key, calls[0]?.key])
+      expect(rows(services)).toEqual([])
+    })
+
+    it('keeps a row for each address the 12 s left unsent', async () => {
+      const old = Array.from({ length: 30 }, (_, index) =>
+        identity(`i${String(index).padStart(2, '0')}`, `email:old${index}@example.com`),
+      )
+      const services = seeded(old)
+      answered(services)
+      expect((await event(services)).status).toBe(500)
+      // Newest first, then by $id: the last 5 by $id were left.
+      expect(rows(services).map((row) => row.identityId)).toEqual([
+        'i25',
+        'i26',
+        'i27',
+        'i28',
+        'i29',
+      ])
+    })
+
+    it('deletes the row of an email Resend refused, and keeps one that failed otherwise', async () => {
+      const services = seeded([A, B])
+      answered(services, (call) =>
+        call === 0 ? failure('validation_error', 422) : new TypeError(),
+      )
+      expect((await event(services)).status).toBe(500)
+      expect(rows(services)).toEqual([expect.objectContaining({ identityId: 'iB' })])
+    })
+
+    it('keeps a phone notice’s row, with no identity', async () => {
+      const services = seeded([], { phone: '+61412345678' })
+      answered(services, () => failure('timeout'))
+      expect((await event(services, 'phone')).status).toBe(500)
+      expect(rows(services)).toEqual([
+        expect.objectContaining({ kind: 'phone', identityId: null, attempts: 0 }),
+      ])
+    })
+
+    it('makes one row for a replayed event, and keeps it as it is', async () => {
+      const services = seeded([A])
+      answered(services, () => failure('timeout'))
+      await event(services)
+      await hourly(services)
+      const [kept] = rows(services)
+      expect(kept).toMatchObject({ attempts: 1 })
+      await event(services)
+      expect(rows(services)).toEqual([kept])
+      expect(noticeLines().filter((line) => line.cause === 'queue')).toEqual([])
+    })
+
+    it('sends anyway when the rows can’t be written, and says so', async () => {
+      const services = seeded([A])
+      answered(services)
+      vi.spyOn(services.db, 'createTransaction').mockRejectedValueOnce(
+        new AppwriteException('Server Error', 500, 'general_unknown'),
+      )
+      expect((await event(services)).body).toEqual({ ok: true, data: {} })
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      expect(rows(services)).toEqual([])
+      expect(lines()).toEqual([
+        logLine('email', 'failed', { cause: 'queue' }),
+        logLine('email', 'sent'),
+      ])
+      expect(levels()).toEqual(['error', 'log'])
+    })
+  })
+
+  describe('the hourly run (step 8)', () => {
+    it('sends each row oldest first, 500 ms apart, with the email built again', async () => {
+      const services = withRows(
+        [
+          pending('n2', { $createdAt: '2026-10-18T19:00:00.000Z', identityId: 'iB' }),
+          pending('n1', { $createdAt: '2026-10-18T18:00:00.000Z' }),
+          pending('n3', {
+            $createdAt: '2026-10-18T19:30:00.000Z',
+            kind: 'phone',
+            identityId: null,
+          }),
+        ],
+        [A, B, C],
+        // The new email, verified since.
+        { ...CHANGED_EMAIL, emailVerification: true },
+      )
+      services.account.$updatedAt = '2026-10-18T20:30:00.000+00:00'
+      const calls = answered(services)
+      expect(counted(await hourly(services))).toEqual({ retried: 3, failed: 0, dropped: 0 })
+      expect(calls.map(({ to, key, at }) => [to, key, at - HOUR])).toEqual([
+        ['a@example.com', 'email-change-notice-key-n1', 0],
+        ['b@example.com', 'email-change-notice-key-n2', 500],
+        // The phone notice goes to the account's verified email now.
+        ['Jo.New@Example.com', 'email-change-notice-key-n3', 1000],
+      ])
+      const [email] = sent(services)
+      expect(email?.subject).toBe('Your Ledgerly email address was changed')
+      // The account's email as it is now, masked, though `$updatedAt` moved on.
+      expect(email?.text).toContain('was changed to J***@Example.com.')
+      expect(rows(services)).toEqual([])
+      expect(noticeLines()).toEqual([
+        retryLine('email', 'retried', 0),
+        retryLine('email', 'retried', 0),
+        retryLine('phone', 'retried', 0),
+      ])
+    })
+
+    it.each([
+      [23 * HOUR - 1, { retried: 1, failed: 0, dropped: 0 }, 'retried', 1],
+      [23 * HOUR, { retried: 0, failed: 0, dropped: 1 }, 'expired', 0],
+    ])('tries a row %i ms old, and drops it at 23 hours', async (age, counts, outcome, sends) => {
+      const services = withRows([pending('n1')])
+      answered(services)
+      expect(counted(await hourly(services, age))).toEqual(counts)
+      expect(services.sendEmail).toHaveBeenCalledTimes(sends)
+      expect(rows(services)).toEqual([])
+      expect(noticeLines()).toEqual([retryLine('email', outcome, 0)])
+      expect(levels().at(-1)).toBe(outcome === 'expired' ? 'warn' : 'log')
+    })
+
+    const gone = new AppwriteException('User not found', 404, 'user_not_found')
+    it.each([
+      [
+        'the user is gone',
+        'email',
+        'gone',
+        (services: Fakes) => {
+          services.users = { get: async () => Promise.reject(gone) }
+        },
+      ],
+      [
+        'the person is being deleted',
+        'email',
+        'gone',
+        (services: Fakes) =>
+          withTransaction(services.db, (tx) =>
+            tx.write({
+              action: 'update',
+              tableId: 'persons',
+              rowId: 'p1',
+              data: { deletedAt: AFTER },
+            }),
+          ),
+      ],
+      [
+        'the address is gone',
+        'email',
+        'gone',
+        (services: Fakes) =>
+          withTransaction(services.db, (tx) =>
+            tx.write({ action: 'delete', tableId: 'identities', rowId: 'iA' }),
+          ),
+      ],
+      [
+        'the address is on another person',
+        'email',
+        'gone',
+        (services: Fakes) =>
+          withTransaction(services.db, (tx) =>
+            tx.write({
+              action: 'update',
+              tableId: 'identities',
+              rowId: 'iA',
+              data: { personId: 'p2' },
+            }),
+          ),
+      ],
+      [
+        'the address is no longer verified',
+        'email',
+        'gone',
+        (services: Fakes) =>
+          withTransaction(services.db, (tx) =>
+            tx.write({
+              action: 'update',
+              tableId: 'identities',
+              rowId: 'iA',
+              data: { verified: false },
+            }),
+          ),
+      ],
+      ['the account’s email is unverified', 'phone', 'unverified', () => undefined],
+    ] as const)('drops a row when %s, sending nothing', async (_case, kind, outcome, change) => {
+      const services = withRows(
+        [pending('n1', kind === 'phone' ? { kind, identityId: null } : {})],
+        [A],
+        kind === 'phone' ? { emailVerification: false } : {},
+      )
+      await change(services)
+      answered(services)
+      expect(counted(await hourly(services))).toEqual({ retried: 0, failed: 0, dropped: 1 })
+      expect(services.sendEmail).not.toHaveBeenCalled()
+      expect(rows(services)).toEqual([])
+      expect(noticeLines()).toEqual([retryLine(kind, outcome, 0)])
+    })
+
+    it('adds 1 to a failed row’s attempts, and a 429 ends the retries for the run', async () => {
+      const services = withRows([
+        pending('n1', { $createdAt: '2026-10-18T18:00:00.000Z', attempts: 2 }),
+        pending('n2', { $createdAt: '2026-10-18T19:00:00.000Z' }),
+        pending('n3', { $createdAt: '2026-10-18T19:30:00.000Z' }),
+      ])
+      const calls = answered(services, (call) =>
+        call === 0 ? failure('timeout') : failure('rate_limit_exceeded', 429),
+      )
+      expect(counted(await hourly(services))).toEqual({ retried: 0, failed: 2, dropped: 0 })
+      expect(calls).toHaveLength(2)
+      expect(rows(services).map(({ $id, attempts }) => [$id, attempts])).toEqual([
+        ['n1', 3],
+        ['n2', 0],
+        ['n3', 0],
+      ])
+      expect(noticeLines()).toEqual(
+        [retryLine('email', 'failed', 3), retryLine('email', 'failed', 0)].map((line, index) => ({
+          ...line,
+          cause: index === 0 ? 'EmailError timeout' : 'EmailError rate_limit_exceeded 429',
+        })),
+      )
+    })
+
+    it('deletes a row Resend refuses, and counts it failed', async () => {
+      const services = withRows([pending('n1')])
+      answered(services, () => failure('validation_error', 422))
+      expect(counted(await hourly(services))).toEqual({ retried: 0, failed: 1, dropped: 0 })
+      expect(rows(services)).toEqual([])
+    })
+
+    it('counts a failed read against its row, and goes on to the next', async () => {
+      const services = withRows([
+        pending('n1', { $createdAt: '2026-10-18T18:00:00.000Z' }),
+        pending('n2', { $createdAt: '2026-10-18T19:00:00.000Z', identityId: 'iB' }),
+      ])
+      const get = services.users.get
+      let reads = 0
+      services.users = {
+        get: (params) =>
+          ++reads === 1 ? Promise.reject(new AppwriteException('Server Error', 500)) : get(params),
+      }
+      answered(services)
+      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 1, dropped: 0 })
+      expect(rows(services)).toEqual([expect.objectContaining({ $id: 'n1', attempts: 1 })])
+    })
+
+    it('starts no retry after 12 s of the run, counting the merges’ time', async () => {
+      const services = withRows([
+        pending('n1', { $createdAt: '2026-10-18T18:00:00.000Z' }),
+        pending('n2', { $createdAt: '2026-10-18T19:00:00.000Z', identityId: 'iB' }),
+      ])
+      // The merges' walk, the run's first read of persons, takes 11.8 s.
+      const list = services.db.listRows.bind(services.db)
+      let walked = false
+      vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+        if (params.tableId === 'persons' && !walked) {
+          walked = true
+          await new Promise((resolve) => setTimeout(resolve, 11_800))
+        }
+        return list(params)
+      })
+      const calls = answered(services)
+      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(calls.map(({ at, timeoutMs }) => [at - HOUR, timeoutMs])).toEqual([[11_800, 2_200]])
+      expect(rows(services).map(({ $id }) => $id)).toEqual(['n2'])
+    })
+
+    it('answers with the merges’ counts when the rows can’t be listed', async () => {
+      const services = withRows([pending('n1')])
+      const list = services.db.listRows.bind(services.db)
+      vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+        if (params.tableId === 'changeNotices') throw new AppwriteException('Server Error', 500)
+        return list(params)
+      })
+      const result = await hourly(services)
+      expect(result.body).toMatchObject({ ok: true, data: { unfinished: 0 } })
+      expect(counted(result)).toEqual({ retried: 0, failed: 0, dropped: 0 })
+      expect(noticeLines()).toEqual([
+        { event: 'change_notice', outcome: 'failed', cause: 'AppwriteException 500' },
+      ])
+    })
   })
 })

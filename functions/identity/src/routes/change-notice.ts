@@ -295,7 +295,13 @@ async function queue(
     if (rows.has(email.idempotencyKey)) continue
     const rowId = randomId()
     created.set(email.idempotencyKey, rowId)
-    const data = { userId, kind: notice, identityId, idempotencyKey: email.idempotencyKey }
+    const data = {
+      userId,
+      kind: notice,
+      identityId,
+      idempotencyKey: email.idempotencyKey,
+      attempts: 0,
+    }
     writes.push({ action: 'create', tableId: TABLES.changeNotices, rowId, data })
   }
   if (writes.length > 0) await withTransaction(db, (tx) => tx.write(...writes))
