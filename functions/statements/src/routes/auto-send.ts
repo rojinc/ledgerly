@@ -1,7 +1,7 @@
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
-import { EmailError, refusedForGood } from '@ledgerly/server/email/send-email'
+import { EmailError, refusedForGood, sendingBlocked } from '@ledgerly/server/email/send-email'
 import { autoSendFailedEmail } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
@@ -79,6 +79,9 @@ async function sendOne(services: Services, statementId: string): Promise<boolean
     const current = await getRowOrNull<Statements>(db, TABLES.statements, statementId)
     if (current?.status !== 'final' || current.sentAt !== null) return true
     logProblem('auto_send_failed', { statementId, error })
+    // Resend refuses every send for now (our key or domain, #469): the notice to the admins would
+    // fail the same way, and the rest wait for the next run.
+    if (sendingBlocked(error)) return false
     if (isPermanent(error)) {
       // No later run tries.
       await updateStatement(db, current, { autoSendUntil: now.toISOString() }).catch(

@@ -287,16 +287,38 @@ describe('the statements job, with autoSend on', () => {
   })
 
   it.each([401, 403])(
-    'keeps the window open on a validation_error with %i, a fault in our key or domain (#469)',
+    'stops at a validation_error with %i, our key or domain: one line, every window kept (#469)',
     async (status) => {
-      const services = octoberDue()
-      failing(services, (email) =>
-        isInvoice(email)
-          ? new EmailError(`Resend answered ${status} validation_error`, 'validation_error', status)
-          : undefined,
-      )
+      const services = fakes({
+        ...rowsOf(shift('s1', '2026-09-02', 60), shift('s2', '2026-10-02', 60), {
+          statements: [
+            statement('st-sep', { periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
+            statement('st-oct'),
+          ],
+        }),
+        groups: [job(AUTO, { nextCloseAt: NOVEMBER_CLOSE })],
+      })
+      for (const id of ['st-sep', 'st-oct']) {
+        await ok(services, 'POST', `/statements/${id}/finalize`, { send: false })
+        await commitNow(services.db, [op('statements', id, { autoSendUntil: WINDOW_END })])
+      }
+      const tried: string[] = []
+      failing(services, (email) => {
+        tried.push(email.idempotencyKey ?? '')
+        return new EmailError(
+          `Resend answered ${status} validation_error`,
+          'validation_error',
+          status,
+        )
+      })
       await runJob(services)
-      expect(invoices(services)[0]).toMatchObject({ sentAt: null, autoSendUntil: WINDOW_END })
+      // The first invoice's employer email only: no notice to the admins, which would fail too.
+      expect(tried).toEqual([`invoice/${tried[0]?.split('/')[1]}/first/employer`])
+      expect(logged().map((line) => line.event)).toEqual(['auto_send_failed'])
+      expect(invoices(services).map((row) => [row.sentAt, row.autoSendUntil])).toEqual([
+        [null, WINDOW_END],
+        [null, WINDOW_END],
+      ])
     },
   )
 

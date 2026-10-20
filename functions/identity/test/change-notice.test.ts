@@ -899,17 +899,20 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(rows(services)).toEqual([expect.objectContaining({ identityId: 'iB' })])
     })
 
-    it('keeps the row of an email refused with 401 or 403, a fault in our key or domain (#469)', async () => {
-      const services = seeded([A, B])
-      answered(services, (call) =>
-        call === 0 ? failure('validation_error', 403) : failure('validation_error', 401),
-      )
-      expect((await event(services)).status).toBe(500)
-      expect(rows(services)).toEqual([
-        expect.objectContaining({ identityId: 'iA' }),
-        expect.objectContaining({ identityId: 'iB' }),
-      ])
-    })
+    it.each([401, 403])(
+      'stops at a validation_error with %i, our key or domain: one line, every row kept (#469)',
+      async (status) => {
+        const services = seeded([A, B])
+        const calls = answered(services, () => failure('validation_error', status))
+        expect((await event(services)).status).toBe(500)
+        expect(calls).toHaveLength(1)
+        expect(noticeLines().filter((line) => line.outcome === 'failed')).toHaveLength(1)
+        expect(rows(services)).toEqual([
+          expect.objectContaining({ identityId: 'iA' }),
+          expect.objectContaining({ identityId: 'iB' }),
+        ])
+      },
+    )
 
     it('lists the rows after its guard, so a run that commits in between makes it list again', async () => {
       const services = seeded([A, B])
@@ -1229,6 +1232,26 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       })
       expect(calls.map(({ to }) => to)).toEqual(['a@example.com'])
       expect(sent(services)[0]?.subject).toBe('Your Ledgerly phone number was changed')
+    })
+
+    it('stops the retries at a validation_error with 403, our domain: one line, no row changed (#469)', async () => {
+      const services = withRows([
+        pending('n1', { $createdAt: '2026-10-18T18:00:00.000Z' }),
+        pending('n2', { $createdAt: '2026-10-18T19:00:00.000Z' }),
+      ])
+      const calls = answered(services, () => failure('validation_error', 403))
+      expect(counted(await hourly(services))).toEqual({
+        retried: 0,
+        failed: 1,
+        expired: 0,
+        gone: 0,
+      })
+      expect(calls).toHaveLength(1)
+      expect(noticeLines()).toHaveLength(1)
+      expect(rows(services).map(({ $id, attempts }) => [$id, attempts])).toEqual([
+        ['n1', 0],
+        ['n2', 0],
+      ])
     })
 
     it('adds 1 to a failed row’s attempts, and a 429 ends the retries for the run', async () => {

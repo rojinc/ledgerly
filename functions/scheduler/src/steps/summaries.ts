@@ -8,6 +8,7 @@ import { allRows, pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { isInTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { sendingBlocked } from '@ledgerly/server/email/send-email'
 import { type EmailContent, summaryEmail } from '@ledgerly/server/email/templates'
 import { logProblem } from '@ledgerly/server/http/log'
 import { AppwriteException, Query } from 'node-appwrite'
@@ -39,6 +40,8 @@ export async function sendSummaries(services: Services): Promise<SummaryCounts> 
       // The next run tries it again: nextSummaryAt hasn't moved.
       logProblem('summary_failed', { profileId: profile.$id, error })
       counts.failed += 1
+      // Resend refuses every send for now (our key or domain, #469): logged once, the rest wait.
+      if (sendingBlocked(error)) break
     }
   }
   return counts

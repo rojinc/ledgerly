@@ -52,6 +52,15 @@ export function refusedForGood(error: unknown): boolean {
 }
 
 /**
+ * Whether Resend refuses every send for now (#469): a 401 or 403 is our API key, our account or
+ * our sending domain, so the rest of a run's emails would fail the same way. A step stops at the
+ * first one, logs it once and changes nothing, so the next run tries again with the same keys.
+ */
+export function sendingBlocked(error: unknown): boolean {
+  return error instanceof EmailError && (error.status === 401 || error.status === 403)
+}
+
+/**
  * Sends one email through Resend's HTTP API (D-011), from `EMAIL_FROM`. Logs nothing.
  * Returns Resend's email ID, which is safe to log. `timeoutMs` shortens the 10 s timeout, for a
  * run with less time left; it never lengthens it.

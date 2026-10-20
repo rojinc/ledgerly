@@ -431,15 +431,20 @@ describe('step 3: shift to confirm', () => {
   })
 
   it.each([401, 403])(
-    'tries again after a validation_error with %i, a fault in our key or domain (#469)',
+    'stops at a validation_error with %i, our key or domain: one line, nothing marked (#469)',
     async (status) => {
-      const services = seeded([transaction('t1')])
-      services.sendEmail.mockRejectedValueOnce(
+      const services = seeded([transaction('t1'), transaction('t2', { date: '2026-10-17' })])
+      services.sendEmail.mockRejectedValue(
         new EmailError(`Resend answered ${status}`, 'validation_error', status),
       )
-      expect((await runCron(services)).reminders.failed).toBe(1)
-      expect(remindedAt(services, 't1')).toBeNull()
-      expect((await runCron(services)).reminders.sent).toBe(1)
+      expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 1 })
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      const lines = logged.mock.calls.map(([line]) => JSON.parse(String(line)))
+      expect(lines.filter(({ event }) => event === 'reminder_failed')).toHaveLength(1)
+      expect([remindedAt(services, 't1'), remindedAt(services, 't2')]).toEqual([null, null])
+      // Once it's fixed, the next run sends both.
+      services.sendEmail.mockReset()
+      expect((await runCron(services)).reminders.sent).toBe(2)
     },
   )
 

@@ -5,7 +5,12 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { type Email, EmailError, refusedForGood } from '@ledgerly/server/email/send-email'
+import {
+  type Email,
+  EmailError,
+  refusedForGood,
+  sendingBlocked,
+} from '@ledgerly/server/email/send-email'
 import { emailChangedEmail, phoneChangedEmail } from '@ledgerly/server/email/templates'
 import { type ChangeNoticeOutcome, logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
@@ -117,6 +122,9 @@ export async function changeNotice(
     const settled = line.outcome === 'sent' || ('error' in line && refused(line.error))
     if (settled) await forget(services.db, rows.get(email.idempotencyKey))
     allSent &&= line.outcome === 'sent'
+    // Resend refuses every send for now (our key or domain, #469): logged once, and the rest
+    // keep their rows for the hourly run.
+    if ('error' in line && sendingBlocked(line.error)) break
   }
   // Appwrite doesn't run an event again, so the run fails with a trace in the log.
   if (!allSent) throw new Error('Not every change notice was sent')
@@ -194,7 +202,12 @@ export async function retryNotices(services: Services, started: number): Promise
       error = thrown
     }
     counts.failed += 1
-    if (error instanceof EmailError && error.type === 'rate_limit_exceeded') {
+    // Resend's shared limit, or every send refused for now (our key or domain, #469): logged
+    // once, with no row changed, and the rest wait for the next run.
+    if (
+      (error instanceof EmailError && error.type === 'rate_limit_exceeded') ||
+      sendingBlocked(error)
+    ) {
       log({ outcome: 'failed', error })
       break
     }
