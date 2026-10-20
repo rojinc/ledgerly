@@ -10,7 +10,6 @@ import type {
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
-import { scheduleEnd } from '../src/occurrences'
 import type { RunResult } from '../src/routes/run'
 import {
   beforeCommit,
@@ -1079,37 +1078,6 @@ describe('rules with their own end', () => {
     await create(services, { ...thursdays, rrule })
     expect(occurrences(services).at(-1)?.date).toBe(last)
     expect(scheduleRow(services)).toMatchObject({ generatedThrough: last, nextRunAt: null })
-  })
-
-  it.each([
-    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: null }, null],
-    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: '2026-11-05' }, '2026-11-05'],
-    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029', endsOn: null }, '2026-10-29'],
-    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261029', endsOn: '2026-10-20' }, '2026-10-20'],
-    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2', endsOn: '2026-12-31' }, '2026-10-08'],
-    [{ rrule: 'FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=2', endsOn: null }, '2026-11-30'],
-    // Every other week from the week of 1 October: 13 and 27 October.
-    [{ rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=TU;COUNT=2', endsOn: null }, '2026-10-27'],
-    // A pause ends it the day before, unless something else ends it first.
-    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: null, pausedFrom: '2026-11-01' }, '2026-10-31'],
-    [
-      { rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: '2026-10-20', pausedFrom: '2026-11-01' },
-      '2026-10-20',
-    ],
-    [
-      { rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: '2026-12-31', pausedFrom: '2026-11-01' },
-      '2026-10-31',
-    ],
-    [
-      { rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2', endsOn: null, pausedFrom: '2026-11-01' },
-      '2026-10-08',
-    ],
-    [
-      { rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261231', endsOn: null, pausedFrom: '2026-10-08' },
-      '2026-10-07',
-    ],
-  ])('scheduleEnd(%o) is %s', (rule, end) => {
-    expect(scheduleEnd({ pausedFrom: null, ...rule, startsOn: '2026-10-01' })).toBe(end)
   })
 })
 

@@ -1200,3 +1200,87 @@ describe('PairPage: settings (#403)', () => {
     expect(screen.queryByRole('button', { name: 'Invite by email' })).toBeNull()
   })
 })
+
+describe('PairPage: unarchive (#428)', () => {
+  // jsdom has no modal dialogs (employer-form.test.tsx has the full stand-in).
+  const { showModal, close } = HTMLDialogElement.prototype
+  beforeEach(() => {
+    HTMLDialogElement.prototype.showModal = function () {
+      this.setAttribute('open', '')
+    }
+    HTMLDialogElement.prototype.close = function () {
+      this.removeAttribute('open')
+    }
+  })
+  afterEach(() => {
+    // An open dialog closes as it unmounts: before the stand-ins go.
+    cleanup()
+    Object.assign(HTMLDialogElement.prototype, { showModal, close })
+  })
+
+  const ARCHIVED = { archivedAt: '2026-10-01T00:00:00.000Z' }
+
+  it('is offered next to the archived notice, to an admin only', async () => {
+    mockGroup(0, ARCHIVED)
+    mockRows()
+    renderAt('/people/g1')
+    const notice = await screen.findByText(/This group is archived/)
+    expect(notice.nextElementSibling?.textContent).toBe('Unarchive group')
+    cleanup()
+    for (const role of ['member', 'viewer'] as const) {
+      mockGroup(0, ARCHIVED, role)
+      mockRows()
+      renderAt('/people/g1')
+      await screen.findByText(/This group is archived/)
+      expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+      cleanup()
+    }
+    // Not in a pair that isn't archived.
+    mockGroup(0)
+    mockRows()
+    renderAt('/people/g1')
+    await screen.findByRole('region', { name: 'Settings' })
+    expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+  })
+
+  it('names the pair by the other person, unarchives it, says so and focuses the heading', async () => {
+    mockGroup(0, ARCHIVED)
+    mockRows()
+    call.mockImplementation((async () => {
+      // The page reads the group as it is now: writable.
+      mockGroup(0)
+      return ok(pair)
+    }) as never)
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Unarchive group' }))
+    const dialog = screen.getByRole('alertdialog', { name: 'Unarchive Sam?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unarchive group' }))
+    expect(
+      await screen.findByText('This group is unarchived, so it can be changed again.'),
+    ).toBeTruthy()
+    expect(call).toHaveBeenCalledWith('groups', 'POST', '/groups/g1/unarchive')
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    expect(screen.getByRole('button', { name: 'Add' })).toBeTruthy()
+    expect(screen.getByRole('region', { name: 'Settings' })).toBeTruthy()
+    expect(document.activeElement).toBe(screen.getByRole('heading', { level: 1 }))
+    // Still said once the pair reads as unarchived.
+    expect(screen.getByText('This group is unarchived, so it can be changed again.')).toBeTruthy()
+  })
+
+  it('shows the function’s refusal in the dialog', async () => {
+    mockGroup(0, ARCHIVED)
+    mockRows()
+    call.mockResolvedValue({
+      ok: false,
+      error: { code: 'FORBIDDEN', message: 'Your role in this group can’t do this.' },
+    })
+    renderAt('/people/g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Unarchive group' }))
+    const dialog = screen.getByRole('alertdialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unarchive group' }))
+    expect((await within(dialog).findByRole('alert')).textContent).toBe(
+      'Your role in this group can’t do this.',
+    )
+    expect(screen.getByText(/This group is archived/)).toBeTruthy()
+  })
+})

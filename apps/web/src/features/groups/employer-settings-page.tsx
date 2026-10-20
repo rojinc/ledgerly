@@ -1,13 +1,19 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema, type UpdateGroupBody } from '@ledgerly/core/schemas/groups'
 import { useQueryClient } from '@tanstack/react-query'
-import { type ReactNode, useEffect, useRef } from 'react'
+import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
-import { ARCHIVED_NOTICE, ArchiveGroup, writeErrorMessage } from './archive-group'
+import {
+  ARCHIVED_NOTICE,
+  ArchiveGroup,
+  UNARCHIVED_NEWS,
+  UnarchiveGroup,
+  writeErrorMessage,
+} from './archive-group'
 import { EmployerForm, type EmployerValues, toEmployerValues } from './employer-form'
 import { useGroup, useMyMember } from './use-groups'
 
@@ -46,6 +52,7 @@ export function EmployerSettingsPage() {
   const member = useMyMember(groupId, personId)
   const queryClient = useQueryClient()
   const heading = useRef<HTMLHeadingElement>(null)
+  const [unarchived, setUnarchived] = useState(false)
   // When the page stops being the admin's (the group turns archived in another tab, the caller is
   // made a member, or a refused save reloads either), the form or dialog that had focus is gone:
   // focus goes to the heading. Only a change while the page is open counts, not how it loaded.
@@ -87,7 +94,20 @@ export function EmployerSettingsPage() {
   } else if (group.data.type !== 'employer') {
     content = <Message>Only employer groups have settings here.</Message>
   } else if (group.data.archivedAt) {
-    content = <Message>{ARCHIVED_NOTICE}</Message>
+    content = (
+      <>
+        <Message>{ARCHIVED_NOTICE}</Message>
+        {member.data?.role === 'admin' && (
+          <UnarchiveGroup
+            group={group.data}
+            onUnarchived={() => {
+              setUnarchived(true)
+              heading.current?.focus()
+            }}
+          />
+        )}
+      </>
+    )
   } else if (!values) {
     content = (
       <Message alert>
@@ -116,6 +136,12 @@ export function EmployerSettingsPage() {
       <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold break-words outline-none">
         {group.data?.name ?? 'Employer settings'}
       </h1>
+      {/* Mounted with the group, so the news is read out. */}
+      {group.data && (
+        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+          {unarchived && !group.data.archivedAt ? UNARCHIVED_NEWS : ''}
+        </p>
+      )}
       {content}
     </div>
   )

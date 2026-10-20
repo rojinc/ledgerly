@@ -1,5 +1,8 @@
+import { compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Schedules } from '@ledgerly/core/generated/rows'
+import { scheduleEnd } from '@ledgerly/core/recurrence/schedule-end'
+import type { ScheduleInput } from '@ledgerly/core/schemas/scheduler'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router'
@@ -10,7 +13,8 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
 import { useGroups, useMyMember } from '../groups/use-groups'
 import { describeRepeat, fromRrule } from './rrule'
-import { useEndSchedule, useSchedules } from './use-schedules'
+import { storedInput } from './schedule-values'
+import { useEndSchedule, useSaveSchedule, useSchedules } from './use-schedules'
 
 /**
  * A local date as `Thu 22 Oct 2026`. Built from its parts in UTC, so the browser's time zone
@@ -112,8 +116,9 @@ function GroupSchedules({ group }: { group: Groups }) {
   const role = member.data?.role
   const isAdmin = role === 'admin'
   const today = localToday(group.timezone, new Date())
-  // Focus lands here when a row's End goes away with its form.
+  // Focus lands here when a row's End goes away with its form, or its Restart once it's done.
   const heading = useRef<HTMLHeadingElement>(null)
+  const [restarted, setRestarted] = useState<string>()
 
   if (!schedules.data) {
     return schedules.isError ? (
@@ -138,24 +143,39 @@ function GroupSchedules({ group }: { group: Groups }) {
         )}
       </div>
       {group.archivedAt && <Message>{ARCHIVED_NOTICE}</Message>}
+      {/* Mounted with the list, so the news is read out. */}
+      <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        {restarted ? `${restarted} is running again, from today.` : ''}
+      </p>
       {schedules.data.length === 0 ? (
         <p className="text-muted-foreground">No schedules yet.</p>
       ) : (
         <ul className="divide-y divide-border rounded-md border border-border">
-          {schedules.data.map((schedule) => (
-            <ScheduleRow
-              key={schedule.$id}
-              schedule={schedule}
-              today={today}
-              // An admin, or a member who set it up (never a viewer, permissions.md#roles);
-              // nothing changes in an archived group.
-              mayChange={
-                !group.archivedAt &&
-                (isAdmin || (role === 'member' && schedule.createdBy === personId))
-              }
-              onEnded={() => heading.current?.focus()}
-            />
-          ))}
+          {schedules.data.map((schedule) => {
+            // An admin, or a member who set it up (never a viewer, permissions.md#roles);
+            // nothing changes in an archived group.
+            const mayChange =
+              !group.archivedAt &&
+              (isAdmin || (role === 'member' && schedule.createdBy === personId))
+            return (
+              <ScheduleRow
+                key={schedule.$id}
+                schedule={schedule}
+                today={today}
+                mayChange={mayChange}
+                restart={
+                  mayChange && stoppedByArchive(schedule, today)
+                    ? storedInput(schedule, group.currency)
+                    : undefined
+                }
+                onEnded={() => heading.current?.focus()}
+                onRestarted={() => {
+                  setRestarted(schedule.description)
+                  heading.current?.focus()
+                }}
+              />
+            )
+          })}
         </ul>
       )}
     </section>
@@ -175,21 +195,42 @@ export function hasEnded(schedule: Pick<Schedules, 'endsOn' | 'rrule'>, today: s
   )
 }
 
+/**
+ * Whether an archive stopped the schedule (scheduling.md#step-1-expand-due-schedules): it has no
+ * `nextRunAt`, isn't paused (a paused one gets Resume, never Restart) and wasn't made up to its
+ * end. It never ends, or its end (core's `scheduleEnd`) is `today` or later and
+ * `generatedThrough` is before it. Step 1 clears `nextRunAt` once everything up to the end
+ * exists, up to `horizonDays` before the end comes; an archive leaves `generatedThrough` as it was.
+ */
+function stoppedByArchive(schedule: Schedules, today: LocalDate): boolean {
+  if (schedule.nextRunAt || schedule.pausedFrom) return false
+  const end = scheduleEnd(schedule)
+  if (end === null) return true
+  const made = schedule.generatedThrough as LocalDate | null
+  return compareDates(end, today) >= 0 && (made === null || compareDates(made, end) < 0)
+}
+
 function ScheduleRow({
   schedule,
   today,
   mayChange,
+  restart,
   onEnded,
+  onRestarted,
 }: {
   schedule: Schedules
   today: string
   mayChange: boolean
+  /** Restart's body: the stored input, unchanged, which expands it again from today. */
+  restart: ScheduleInput | undefined
   onEnded: () => void
+  onRestarted: () => void
 }) {
   const repeat = fromRrule(schedule.rrule)
   const ended = hasEnded(schedule, today)
   const [ending, setEnding] = useState(false)
   const trigger = useRef<HTMLButtonElement>(null)
+  const save = useSaveSchedule(false)
   return (
     <li className="flex flex-col gap-2 px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -213,12 +254,33 @@ function ScheduleRow({
             {ended ? ' · Ended' : ''}
           </p>
         </div>
-        {mayChange && !ended && !ending && (
-          <Button ref={trigger} variant="outline" size="sm" onClick={() => setEnding(true)}>
-            End
-          </Button>
+        {!ending && (restart || (mayChange && !ended)) && (
+          <div className="flex flex-wrap gap-2">
+            {restart && (
+              // aria-disabled, not disabled: a disabled button loses focus.
+              <Button
+                variant="outline"
+                size="sm"
+                aria-disabled={save.isPending}
+                // Its Restart goes once it runs again: focus goes to the list's heading.
+                onClick={() => !save.isPending && save.mutate(restart, { onSuccess: onRestarted })}
+              >
+                {save.isPending ? 'Restarting…' : 'Restart'}
+              </Button>
+            )}
+            {mayChange && !ended && (
+              <Button ref={trigger} variant="outline" size="sm" onClick={() => setEnding(true)}>
+                End
+              </Button>
+            )}
+          </div>
         )}
       </div>
+      {save.isError && (
+        <p role="alert" className="text-sm text-destructive">
+          {save.error.message}
+        </p>
+      )}
       {ending && (
         <EndSchedule
           schedule={schedule}

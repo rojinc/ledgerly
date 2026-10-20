@@ -555,19 +555,14 @@ describe('POST /delete: each group they joined', () => {
       generatedThrough: '2026-10-10',
       nextRunAt: null,
     })
-    const archived = schedule('sArchived', 'e1', 'p1', ['p1'])
-    await insert(services, 'schedules', [named, other, ended, archived])
+    await insert(services, 'schedules', [named, other, ended])
     await insert(services, 'transactions', [
       occurrence(named, '2026-10-26'),
       occurrence(other, '2026-10-26'),
-      occurrence(archived, '2026-10-26'),
     ])
     // Edited, so the schedule leaves it alone.
     await setRow(services, 'transactions', 'sGroceries_20261026', { overridden: true })
-    // Ending a schedule in an archived group is refused; it never runs again anyway.
-    await setRow(services, 'groups', 'e1', { archivedAt: ARCHIVED_AT })
     const otherBefore = rowOf(services, 'schedules', 'sOther')
-    const archivedBefore = rowOf(services, 'schedules', 'sArchived')
     const endedBefore = rowOf(services, 'schedules', 'sEnded')
     expect((await remove(services)).finished).toBe(true)
 
@@ -580,15 +575,44 @@ describe('POST /delete: each group they joined', () => {
     // Already ended and made up to its end: left as it is.
     expect(rowOf(services, 'schedules', 'sEnded')).toEqual(endedBefore)
     expect(rowOf(services, 'schedules', 'sOther')).toEqual(otherBefore)
-    expect(rowOf(services, 'schedules', 'sArchived')).toEqual(archivedBefore)
     // Only the ones after today that can still change go.
     expect(services.db.rows('transactions').map((row) => row.$id)).toEqual([
       'sGroceries_20261012',
       'sGroceries_20261019',
       'sGroceries_20261026',
       'sOther_20261026',
-      'sArchived_20261026',
     ])
+  })
+
+  // #428: an unarchive must find no occurrence made before the deletion still naming them.
+  it('ends them in an archived group too, without archiving it again', async () => {
+    const services = kept()
+    const archived = schedule('sArchived', 'e1', 'p1', ['p1'])
+    await insert(services, 'schedules', [archived])
+    await insert(services, 'transactions', [
+      occurrence(archived, '2026-10-19'),
+      occurrence(archived, '2026-10-26'),
+    ])
+    await setRow(services, 'groups', 'e1', { archivedAt: ARCHIVED_AT })
+    expect((await remove(services)).finished).toBe(true)
+
+    expect(rowOf(services, 'schedules', 'sArchived')).toMatchObject({
+      endsOn: TODAY,
+      generatedThrough: TODAY,
+      nextRunAt: DELETED_AT,
+    })
+    expect(
+      services.db
+        .rows('transactions')
+        .filter((row) => row.scheduleId === 'sArchived')
+        .map((row) => row.$id),
+    ).toEqual(['sArchived_20261019'])
+    expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: ARCHIVED_AT })
+    expect(
+      services.db
+        .rows('activity')
+        .filter((row) => row.groupId === 'e1' && row.action === 'group.archived'),
+    ).toEqual([])
   })
 
   it('ends every schedule made before the deletion in a kept pair or employer group (#320)', async () => {

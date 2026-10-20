@@ -4,6 +4,7 @@ import { localTimeToUtc, localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Items, Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import { expandSchedule, occurrenceId } from '@ledgerly/core/recurrence/expand-schedule'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
+import { scheduleEnd } from '@ledgerly/core/recurrence/schedule-end'
 import type { TransactionInput, TransactionTemplate } from '@ledgerly/core/schemas/ledger'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
@@ -215,35 +216,6 @@ export async function generateOccurrences(
     }
   }
   return result
-}
-
-/**
- * The last date the schedule can fall on: the earliest of its `endsOn`, the day before its
- * `pausedFrom`, and its rule's own end (`UNTIL`, or the `COUNT`th date, counted before exdates,
- * holidays and a pause as RFC 5545 does). Null when it never ends.
- */
-export function scheduleEnd(
-  schedule: Pick<Schedules, 'rrule' | 'startsOn' | 'endsOn' | 'pausedFrom'>,
-): LocalDate | null {
-  const parts = new Map(
-    schedule.rrule.split(';').map((part) => part.split('=') as [string, string]),
-  )
-  const until = parts.get('UNTIL')
-  const startsOn = schedule.startsOn as LocalDate
-  const ruleEnd = until
-    ? (`${until.slice(0, 4)}-${until.slice(4, 6)}-${until.slice(6, 8)}` as LocalDate)
-    : parts.has('COUNT')
-      ? (expandSchedule(
-          { rrule: schedule.rrule, startsOn, skipPublicHolidays: false },
-          startsOn,
-          // COUNT is at most 500, monthly at the sparsest: under 42 years.
-          addDays(startsOn, 366 * 45),
-          () => false,
-        ).at(-1) ?? startsOn)
-      : null
-  const paused = schedule.pausedFrom ? addDays(schedule.pausedFrom as LocalDate, -1) : null
-  const ends = [schedule.endsOn as LocalDate | null, paused, ruleEnd]
-  return ends.filter((date) => date !== null).sort(compareDates)[0] ?? null
 }
 
 // Still `scheduled` or `due`, and not edited: the schedule may change or delete it.
