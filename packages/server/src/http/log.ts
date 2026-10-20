@@ -47,6 +47,7 @@ export type LogEvent =
   | 'invite_cleanup_failed'
   | 'account_finish_failed'
   | 'receipt_cleanup_behind'
+  | 'receipt_cleanup_failed'
   | 'receipt_row_listed'
 
 /**

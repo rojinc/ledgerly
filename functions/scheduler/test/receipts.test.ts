@@ -1,13 +1,20 @@
 import type { ReceiptFiles } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppwriteException, Query, type Storage } from 'node-appwrite'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, type MockInstance, vi } from 'vitest'
 import { cleanUpReceipts, receiptsBucket } from '../src/steps/receipts'
 import { type Fakes, fakes, NOW } from './harness'
 
 // Step 5 (scheduling.md#step-5-receipt-clean-up).
 
+let errors: MockInstance<typeof console.error>
+beforeEach(() => {
+  errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+})
 afterEach(() => vi.restoreAllMocks())
+
+const logged = (spy: MockInstance<typeof console.error>) =>
+  spy.mock.calls.map(([line]) => JSON.parse(String(line)))
 
 const MINUTE = 60_000
 const ago = (minutes: number) => new Date(NOW.getTime() - minutes * MINUTE).toISOString()
@@ -599,6 +606,73 @@ describe('step 5: limits and failures', () => {
     expect(services.files.stored.has('r1')).toBe(true)
   })
 
+  it('keeps the file when marking it fails, counts it, and goes on to the next row', async () => {
+    const services = step5({
+      receiptFiles: ['r1', 'r2'].map((fileId) => row(fileId, { detachedAt: ago(hours(30)) })),
+    })
+    for (const fileId of ['r1', 'r2']) services.files.upload(fileId, ago(hours(200)))
+    const { db } = services
+    const stage = db.createOperations.bind(db)
+    const update = db.updateTransaction.bind(db)
+    const marksR1 = new Set<string>()
+    vi.spyOn(db, 'createOperations').mockImplementation(async (params) => {
+      const r1 = (params.operations ?? []).some(
+        (operation) => 'rowId' in operation && operation.rowId === 'r1',
+      )
+      if (r1) marksR1.add(params.transactionId)
+      return stage(params)
+    })
+    vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
+      if (params.commit && marksR1.has(params.transactionId)) throw serverError()
+      return update(params)
+    })
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 1 })
+    expect(services.files.stored.has('r1')).toBe(true)
+    expect(services.files.stored.has('r2')).toBe(false)
+    expect(receiptFiles(services).r1).toMatchObject({ deletingAt: null })
+  })
+
+  it('counts a row delete that fails, and carries on', async () => {
+    const services = step5({
+      receiptFiles: ['r1', 'r2'].map((fileId) =>
+        row(fileId, { detachedAt: ago(hours(30)), deletingAt: ago(hours(2)) }),
+      ),
+    })
+    const stage = services.db.createOperations.bind(services.db)
+    vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+      const r1 = (params.operations ?? []).some(
+        (operation) =>
+          'action' in operation &&
+          operation.action === 'delete' &&
+          'rowId' in operation &&
+          operation.rowId === 'r1',
+      )
+      if (r1) throw serverError()
+      return stage(params)
+    })
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 0, skipped: 2, failed: 1 })
+    expect(Object.keys(receiptFiles(services))).toEqual(['r1'])
+  })
+
+  it('logs one error line for a run with failures, with the counts and the first error', async () => {
+    const services = step5({ receiptFiles: [row('r1', { detachedAt: ago(hours(30)) })] })
+    services.files.upload('f1', ago(hours(30)))
+    services.files.upload('r1', ago(hours(200)))
+    // files.write revoked, say: every delete fails.
+    vi.spyOn(services.files, 'deleteFile')
+      .mockRejectedValueOnce(new AppwriteException('Unauthorized', 401, 'user_unauthorized'))
+      .mockRejectedValueOnce(serverError())
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 0, skipped: 0, failed: 2 })
+    expect(logged(errors)).toEqual([
+      {
+        fn: 'unknown',
+        event: 'receipt_cleanup_failed',
+        counts: { deleted: 0, skipped: 0, failed: 2 },
+        cause: 'AppwriteException 401 user_unauthorized',
+      },
+    ])
+  })
+
   it('counts a Storage failure, even a 409, and carries on', async () => {
     const services = step5({ receiptFiles: [row('r1', { detachedAt: ago(hours(30)) })] })
     services.files.upload('f1', ago(hours(30)))
@@ -611,6 +685,7 @@ describe('step 5: limits and failures', () => {
     expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 1 })
     // Its row stays, so pass 2 tries again on a later run.
     expect(receiptFiles(services).f1).toMatchObject({ deletingAt: NOW.toISOString() })
+    expect(logged(errors).map(({ event }) => event)).toEqual(['receipt_cleanup_failed'])
   })
 
   it('logs nothing when it gets through everything', async () => {

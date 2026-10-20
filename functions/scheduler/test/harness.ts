@@ -7,7 +7,7 @@ import { AppwriteException } from 'node-appwrite'
 import { vi } from 'vitest'
 import { schedulerRoutes } from '../src/main'
 import type { AccountUser, Services } from '../src/services'
-import type { BucketFile, ReceiptsBucket } from '../src/steps/receipts'
+import { type BucketFile, PAGE, type ReceiptsBucket } from '../src/steps/receipts'
 
 // 07:00 on Monday 19 October in Sydney, still Sunday 18 October in UTC.
 export const NOW = new Date('2026-10-18T20:00:00.000Z')
@@ -75,7 +75,7 @@ export class FakeBucket implements ReceiptsBucket {
       .filter(({ $createdAt }) => $createdAt > page.from && $createdAt <= page.to)
       .filter((file) => cursor === undefined || key(file) > `${cursor}|${page.after}`)
       .sort((a, b) => (key(a) < key(b) ? -1 : 1))
-      .slice(0, 100)
+      .slice(0, PAGE)
   }
 
   async deleteFile(fileId: string): Promise<boolean> {

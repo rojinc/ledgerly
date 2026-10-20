@@ -13,7 +13,7 @@ const RECEIPTS_BUCKET = 'receipts'
 // data-model.md#checkpoints: made by scripts/backfill-receipt-files.mjs, then moved on by pass 1.
 const CHECKPOINT = 'receipt-clean-up'
 
-const PAGE = 100
+export const PAGE = 100
 const MS_PER_MINUTE = 60_000
 const MS_PER_HOUR = 3_600_000
 // Uploads older than this that no transaction lists are deleted.
@@ -76,6 +76,8 @@ export function receiptsBucket(storage: Storage): ReceiptsBucket {
 type Run = {
   services: Services
   counts: CleanUpCounts
+  /** Counts a failure, left for the next run. */
+  fail: (error: unknown) => void
   claimed: Set<string>
   /** True once the pass is out of time. */
   done: () => boolean
@@ -94,14 +96,24 @@ export async function cleanUpReceipts(services: Services): Promise<CleanUpCounts
   const started = performance.now()
   const within = (minutes: number) => () =>
     services.outOfTime() || performance.now() - started >= minutes * MS_PER_MINUTE
+  let firstError: unknown
+  const fail = (error: unknown) => {
+    counts.failed += 1
+    if (counts.failed === 1) firstError = error
+  }
   const claimed = new Set<string>()
   const finished = [
-    await neverAttached({ services, counts, claimed, done: within(PASS_1_MINUTES) }, through),
-    await takenOff({ services, counts, claimed, done: within(STEP_MINUTES) }),
+    await neverAttached({ services, counts, fail, claimed, done: within(PASS_1_MINUTES) }, through),
+    await takenOff({ services, counts, fail, claimed, done: within(STEP_MINUTES) }),
   ]
   if (finished.includes(false)) {
     // The next run carries on.
     logProblem('receipt_cleanup_behind', { counts })
+  }
+  if (counts.failed > 0) {
+    // Nobody sees a scheduled run's result, so this is how a step that fails every run (a revoked
+    // scope, say) shows.
+    logProblem('receipt_cleanup_failed', { counts, error: firstError })
   }
   return counts
 }
@@ -135,9 +147,9 @@ async function neverAttached(run: Run, from: number): Promise<boolean> {
     try {
       page = await files.listFiles({ ...window, after })
       rows = await rowsOf(db, page)
-    } catch {
+    } catch (error) {
       // The cursor file was deleted meanwhile, say: the next run carries on.
-      run.counts.failed += 1
+      run.fail(error)
       leave(last)
       stopped = true
       break
@@ -154,8 +166,8 @@ async function neverAttached(run: Run, from: number): Promise<boolean> {
       let made: boolean
       try {
         made = await claim(db, now, file)
-      } catch {
-        run.counts.failed += 1
+      } catch (error) {
+        run.fail(error)
         leave(file)
         continue
       }
@@ -176,9 +188,9 @@ async function neverAttached(run: Run, from: number): Promise<boolean> {
   if (next > from) {
     try {
       await moveCheckpoint(db, next)
-    } catch {
+    } catch (error) {
       // It stays where it was, so the next run looks at these files again.
-      run.counts.failed += 1
+      run.fail(error)
     }
   }
   return !stopped
@@ -205,9 +217,9 @@ async function takenOff(run: Run): Promise<boolean> {
         ],
         total: false,
       }))
-    } catch {
+    } catch (error) {
       // The next run carries on.
-      run.counts.failed += 1
+      run.fail(error)
       return false
     }
     for (const row of rows) {
@@ -218,8 +230,8 @@ async function takenOff(run: Run): Promise<boolean> {
         let marked: boolean
         try {
           marked = await markDeleting(db, now, row)
-        } catch {
-          run.counts.failed += 1
+        } catch (error) {
+          run.fail(error)
           continue
         }
         if (!marked) {
@@ -232,8 +244,8 @@ async function takenOff(run: Run): Promise<boolean> {
       if (row.deletingAt && Date.parse(row.deletingAt) <= rowsBy) {
         try {
           await deleteRow(db, row.$id)
-        } catch {
-          run.counts.failed += 1
+        } catch (error) {
+          run.fail(error)
         }
       }
     }
@@ -283,7 +295,7 @@ async function moveCheckpoint(db: Db, through: number): Promise<void> {
  * writer, never a file to delete. True when the file is gone now, or was already.
  */
 async function deleteUnlisted(
-  { services, counts }: Run,
+  { services, counts, fail }: Run,
   row: Pick<ReceiptFiles, '$id' | 'transactionIds'>,
 ): Promise<boolean> {
   if ((row.transactionIds ?? []).length > 0) {
@@ -294,8 +306,8 @@ async function deleteUnlisted(
   try {
     counts[(await services.files.deleteFile(row.$id)) ? 'deleted' : 'skipped'] += 1
     return true
-  } catch {
-    counts.failed += 1
+  } catch (error) {
+    fail(error)
     return false
   }
 }
@@ -382,6 +394,8 @@ async function rowGoneIsAttached<T>(read: () => Promise<T>): Promise<T> {
   try {
     return await read()
   } catch (error) {
+    // Staging an update of a missing row is already a 409, so this is a row deleted between the
+    // staging and this read.
     if (error instanceof AppwriteException && error.type === 'row_not_found') throw new Attached()
     throw error
   }
