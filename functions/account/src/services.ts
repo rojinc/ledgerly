@@ -13,7 +13,7 @@ export const JOB_BUDGET_MS = 12 * 60_000
 /** The parts of an Appwrite account that deletion reads. */
 export type AccountUser = Pick<
   Models.User,
-  '$id' | '$updatedAt' | 'labels' | 'passwordUpdate' | 'status'
+  '$id' | '$updatedAt' | 'email' | 'labels' | 'passwordUpdate' | 'status'
 >
 
 /** The parts of Users that account uses; the real `Users` satisfies it. */
@@ -26,7 +26,7 @@ export interface UsersApi {
   updateStatus(params: { userId: string; status: boolean }): Promise<unknown>
   deleteSessions(params: { userId: string }): Promise<unknown>
   delete(params: { userId: string }): Promise<unknown>
-  /** Only for the hourly job, which lists the users labelled `deleted`. */
+  /** Only for the hourly job, which lists the users labelled `deleted` or `e2e`. */
   list(params: { queries: string[]; total: boolean }): Promise<{ users: AccountUser[] }>
 }
 
