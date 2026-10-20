@@ -1000,6 +1000,31 @@ describe('POST /claim, merging a placeholder', () => {
     ])
   })
 
+  // AI E's item 3 on #362: Claim step 3's joins come before the merges, so a join that throws
+  // stops the claim with Sammy's rows unmoved, and the next claim does it all.
+  it('stops before the merges when a join throws, and the next claim carries on', async () => {
+    const services = house({
+      groups: [group('g3')],
+      members: [placeholderRow('m9', 'g3', 'pSam', BEFORE)],
+    })
+    const add = services.teams.createMembership.bind(services.teams)
+    const failing = vi
+      .spyOn(services.teams, 'createMembership')
+      .mockImplementation(async (params) => {
+        if (params.teamId === 'g3') {
+          throw new AppwriteException('User not found', 404, 'user_not_found')
+        }
+        return (await add(params)) as never
+      })
+    expect((await claim(services)).status).toBe(500)
+    const personOf = (id: string) => services.db.rows('members').find((row) => row.$id === id)
+    expect(personOf('m1')?.personId).toBe('pP')
+    failing.mockRestore()
+    expect((await claim(services)).status).toBe(200)
+    expect(personOf('m1')?.personId).toBe('pSam')
+    expect(personOf('m9')?.status).toBe('active')
+  })
+
   // #349 (a): Claim step 3 joins Sam's own placeholder row before the merge carries on.
   it('joins Sam’s own placeholder row first, so the merge renames Sammy there too', async () => {
     const services = await sammyInG3({
