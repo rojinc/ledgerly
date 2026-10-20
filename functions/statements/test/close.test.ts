@@ -142,6 +142,14 @@ describe('POST /statements/close', () => {
     expect(final.displayNumber).toBe('INV-0001')
   })
 
+  it('starts a group with no cycle on its earliest entry, not its latest', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-25', 60), shift('s2', '2026-10-14', 60)),
+      groups: [noCycle()],
+    })
+    expect(await close(services)).toMatchObject({ periodStart: '2026-10-14' })
+  })
+
   it('starts a group with no cycle and no entries on the day it was created', async () => {
     const draft = await close(fakes({ groups: [noCycle()] }))
     // Created at 07:00 on 10 October in Sydney.
@@ -170,6 +178,13 @@ describe('POST /statements/close', () => {
     const again = await close(services, { periodEnd: '2026-11-02' })
     expect(again.$id).toBe(first.$id)
     expect(services.db.rows('statements')).toHaveLength(2)
+  })
+
+  it('gives a retry the same statement while it’s being finalized', async () => {
+    const services = midNovember()
+    const first = await close(services)
+    await commitNow(services.db, [op('statements', first.$id, { status: 'finalizing' })])
+    expect((await close(services, { periodEnd: '2026-11-02' })).$id).toBe(first.$id)
   })
 
   it('gives back the job’s draft for the same end', async () => {
@@ -243,6 +258,21 @@ describe('close refusals', () => {
     })
     expect(response.code).toBe('VALIDATION_FAILED')
     expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it('tries again when the cycle changed just before the close is staged', async () => {
+    // No statement yet: the start comes from the cycle, read again from the stored group.
+    const services = fakes({ ...rowsOf(shift('s1', '2026-10-20', 60)), groups: [noCycle()] })
+    beforeStaging(services.db, [op('groups', 'job', { statementCycle: 'monthly' })])
+    const { body } = await call(services, 'POST', '/statements/close', { groupId: 'job' })
+    expect(body).toEqual({
+      ok: false,
+      error: {
+        code: 'CONFLICT',
+        message: 'Something else changed this at the same time. Try again.',
+      },
+    })
+    expect(services.db.rows('statements')).toEqual([])
   })
 
   it('refuses when the group is archived just before the close is staged', async () => {
@@ -382,6 +412,14 @@ describe('POST /statements/preview, the current period so far', () => {
     })
     const { snapshot } = await preview(services, { groupId: 'house' }, 'u-bob')
     expect(snapshot.period).toEqual({ start: '2026-10-26', end: '2026-11-02' })
+  })
+
+  it('previews one day: the day after a close that ended yesterday', async () => {
+    const services = midNovember({
+      statements: [statement('st-1', { periodStart: '2026-11-01', periodEnd: '2026-11-01' })],
+    })
+    const { snapshot } = await preview(services, { groupId: 'job' })
+    expect(snapshot.period).toEqual({ start: '2026-11-02', end: '2026-11-02' })
   })
 
   it('falls back to the cycle period on a day a statement already covers', async () => {

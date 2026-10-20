@@ -219,9 +219,37 @@ function CurrentPeriod({ groupId }: { groupId: string }) {
   )
 }
 
+/**
+ * The days a close can end on (statements.md#6): from the day after the latest statement, void
+ * ones included, to today, or the end of the period the job drafts next if that's earlier (in the
+ * hours after a period ends, before the job has drafted it).
+ */
+function closeRange(group: Groups, statements: Statements[]): { first?: string; latest: string } {
+  const today = localToday(group.timezone, new Date())
+  const due = group.nextCloseAt && periodEndClosedAt(group.nextCloseAt, group.timezone)
+  const ends = statements.map((row) => row.periodEnd as LocalDate)
+  return {
+    first:
+      ends.length > 0
+        ? addDays(
+            ends.reduce((a, b) => (a > b ? a : b)),
+            1,
+          )
+        : undefined,
+    latest: due && due < today ? due : today,
+  }
+}
+
 /** An admin drafts the next statement now, up to a day they pick (statements.md#6). */
 function ClosePeriod({ group, statements }: { group: Groups; statements: Statements[] }) {
   const swap = useSwap()
+  const { first, latest } = closeRange(group, statements)
+  // A close ended today, or reached the period the job hasn't moved past yet: no day is left.
+  if (first && first > latest) {
+    return (
+      <p className="text-sm text-muted-foreground">Nothing to close until {formatDate(first)}.</p>
+    )
+  }
   if (!swap.opened) {
     return (
       <Button ref={swap.trigger} variant="outline" className="self-start" onClick={swap.open}>
@@ -230,41 +258,35 @@ function ClosePeriod({ group, statements }: { group: Groups; statements: Stateme
     )
   }
   return (
-    <CloseForm group={group} statements={statements} heading={swap.heading} onCancel={swap.close} />
+    <CloseForm
+      group={group}
+      first={first}
+      latest={latest}
+      heading={swap.heading}
+      onCancel={swap.close}
+    />
   )
 }
 
 function CloseForm({
   group,
-  statements,
+  first,
+  latest,
   heading,
   onCancel,
 }: {
   group: Groups
-  statements: Statements[]
+  first?: string
+  latest: string
   heading: RefObject<HTMLHeadingElement | null>
   onCancel: () => void
 }) {
   const close = useCloseStatement(group.$id)
   const navigate = useNavigate()
-  // statements.md#6: up to today, or the end of the period the job drafts next if that's earlier
-  // (in the hours after a period ends, before the job has drafted it).
-  const [latest] = useState(() => {
-    const today = localToday(group.timezone, new Date())
-    const due = group.nextCloseAt && periodEndClosedAt(group.nextCloseAt, group.timezone)
-    return due && due < today ? due : today
-  })
-  // The next statement starts the day after the latest one, void ones included.
-  const ends = statements.map((row) => row.periodEnd as LocalDate)
-  const first =
-    ends.length > 0
-      ? addDays(
-          ends.reduce((a, b) => (a > b ? a : b)),
-          1,
-        )
-      : undefined
   const [periodEnd, setPeriodEnd] = useState<string>(latest)
   const [error, setError] = useState('')
+  // An error by the field isn't read out on its own: focus takes the reader there.
+  const field = useRef<HTMLInputElement>(null)
   // Set when the day picked is before that start.
   const tooEarly = first && isLocalDate(periodEnd) && periodEnd < first ? first : undefined
   const valid = isLocalDate(periodEnd) && periodEnd <= latest && !tooEarly
@@ -299,7 +321,10 @@ function CloseForm({
                 ? ''
                 : `Pick ${formatDate(latest)} or earlier`
         setError(problem)
-        if (problem) return
+        if (problem) {
+          field.current?.focus()
+          return
+        }
         close.mutate(periodEnd, {
           onSuccess: (statement) => navigate(`/groups/${group.$id}/statements/${statement.$id}`),
         })
@@ -313,6 +338,7 @@ function CloseForm({
         pick. You review and finalize it as usual.
       </p>
       <TextField
+        ref={field}
         id="closePeriodEnd"
         type="date"
         label="Last day"

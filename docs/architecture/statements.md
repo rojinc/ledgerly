@@ -144,7 +144,7 @@ Admin only, in an `employer` or a `house` group. Other groups get `VALIDATION_FA
 
 **At period end** the job drafts the rest: its period starts the day after the early close. That can be an empty employer invoice, which the admin can discard unless `autoFinalize` finalized it, as for any period the job drafts. If the early close ended on the period's last day, the job only moves `nextCloseAt` on ([§1](#1-draft-statements-job-hourly)).
 
-**Asking again** with the same `periodEnd` returns the group's statement that ends on that day, while it's still unfinished (`draft` or `finalizing`), whoever drafted it. So a retry makes no second draft. This is read first, before any refusal, and read again after staging, as for a reissue.
+**Asking again** with the same `periodEnd` returns the group's statement that ends on that day, while it's still unfinished (`draft` or `finalizing`), whoever drafted it. So a retry makes no second draft. This is read before any refusal but the caller's role and an archived group, and read again after staging, as for a reissue.
 
 **Refusals.** The route stages a guard write to the group row, then reads the stored rows and refuses:
 - a group archived meanwhile (`ARCHIVED`), as finalize step 1 does;

@@ -1379,8 +1379,19 @@ describe('StatementsPage: the period so far, and closing it now (#398)', () => {
     answer({ close: () => refusal })
     const { router } = renderAt('/groups/g1/statements')
     fireEvent.click(await screen.findByText('Close period now…', {}, { timeout: 3000 }))
+    await screen.findByText('Balance due', {}, { timeout: 3000 })
+    // The period so far: a preview with no end, which sits under the list's key.
+    const sofar = () =>
+      call.mock.calls.filter(
+        ([, , path, body]) =>
+          path === '/statements/preview' && !(body as { periodEnd?: string }).periodEnd,
+      ).length
+    const [lists, previews] = [listRows.mock.calls.length, sofar()]
     fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
     await screen.findByText('That day is after the period ends.', {}, { timeout: 3000 })
+    // A refusal reloads the list, and the period so far with it: something changed meanwhile.
+    await waitFor(() => expect(listRows.mock.calls.length).toBeGreaterThan(lists))
+    await waitFor(() => expect(sofar()).toBeGreaterThan(previews))
 
     refusal = {
       ok: false,
@@ -1429,7 +1440,35 @@ describe('StatementsPage: the period so far, and closing it now (#398)', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
     await screen.findByText(`Pick ${formatDate('2026-10-01')} or later`)
+    // The error is by the field, which takes focus, so it's read out.
+    expect(document.activeElement).toBe(input)
     expect(call.mock.calls.map(([, , path]) => path)).not.toContain('/statements/close')
+    // The first day itself is a one-day period, and closes.
+    fireEvent.change(input, { target: { value: '2026-10-01' } })
+    await screen.findByText(covers('2026-10-01', '2026-10-01'), {}, { timeout: 3000 })
+    fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
+    await waitFor(() =>
+      expect(call.mock.calls.map(([, , path, body]) => [path, body])).toContainEqual([
+        '/statements/close',
+        { groupId: 'g1', periodEnd: '2026-10-01' },
+      ]),
+    )
+  })
+
+  it('says when no day is left to close, rather than offer a panel that can’t', async () => {
+    // A close ended today (12 Nov): the next one can start tomorrow at the earliest.
+    mockGroup('admin')
+    store(statement('s1', { periodStart: '2026-11-01', periodEnd: '2026-11-12', status: 'final' }))
+    answer()
+    renderAt('/groups/g1/statements')
+    await screen.findByText(
+      `Nothing to close until ${formatDate('2026-11-13')}.`,
+      {},
+      {
+        timeout: 3000,
+      },
+    )
+    expect(screen.queryByText('Close period now…')).toBeNull()
   })
 
   it('doesn’t promise a draft at period end to a group with no cycle', async () => {
