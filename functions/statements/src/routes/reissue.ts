@@ -6,7 +6,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { ID, Query } from 'node-appwrite'
-import { closingPeriodOf } from '../period'
+import { closingPeriodOf, latestStatement } from '../period'
 import type { Services } from '../services'
 import {
   activityWrite,
@@ -90,6 +90,14 @@ async function requireFinalizable(db: Db, groupId: string, periodEnd: string): P
   }
   // The job would draft that period again when it ends, on top of this one.
   const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
+  // With no cycle, new periods come only from a close: a reissue only redoes a void one. A range
+  // past the latest statement would push every later close's start past it (statements.md#4).
+  if (group?.statementCycle === 'none') {
+    const latest = await latestStatement(db, groupId)
+    if (!latest || periodEnd > latest.periodEnd) {
+      throw invalid('Only a void period can be drafted again. Close a period to draft a new one.')
+    }
+  }
   if (group?.nextCloseAt) {
     const next = await closingPeriodOf(db, { ...group, nextCloseAt: group.nextCloseAt })
     if (periodEnd >= next.start) {

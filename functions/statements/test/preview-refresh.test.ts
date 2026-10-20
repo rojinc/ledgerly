@@ -12,6 +12,7 @@ import {
   job,
   leftOnTheirOwn,
   member,
+  NOVEMBER_CLOSE,
   ok,
   op,
   payment,
@@ -95,11 +96,25 @@ describe('POST /statements/preview', () => {
   })
 
   it('ends today in the group time zone when no periodEnd is given', async () => {
-    const services = fakes(rowsOf(shift('s1', '2026-11-02', 60), shift('s2', '2026-11-03', 60)))
+    // October is drafted: the job's next period, November, hasn't ended.
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-11-02', 60), shift('s2', '2026-11-03', 60)),
+      groups: [job({}, { nextCloseAt: NOVEMBER_CLOSE })],
+    })
     const { snapshot } = await ok<Preview>(services, 'POST', '/statements/preview', {
       groupId: 'job',
     })
     expect(snapshot.period).toEqual({ start: '2026-11-01', end: '2026-11-02' })
+    expect(snapshot.lines.map((line) => line.transactionId)).toEqual(['s1'])
+  })
+
+  it('ends on the job’s period end while that period waits for the job, as a close would', async () => {
+    // 07:00 on 2 November: October ended, and the job hasn't drafted it yet.
+    const services = fakes(rowsOf(shift('s1', '2026-10-30', 60), shift('s2', '2026-11-02', 60)))
+    const { snapshot } = await ok<Preview>(services, 'POST', '/statements/preview', {
+      groupId: 'job',
+    })
+    expect(snapshot.period).toEqual({ start: '2026-10-01', end: '2026-10-31' })
     expect(snapshot.lines.map((line) => line.transactionId)).toEqual(['s1'])
   })
 

@@ -8,7 +8,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { ID, Query } from 'node-appwrite'
-import { closeStart, jobPeriodEnd } from '../period'
+import { closeEnd, closeStart, jobPeriodEnd } from '../period'
 import type { Services } from '../services'
 import {
   activityWrite,
@@ -38,7 +38,7 @@ export async function closeStatement(
   const { person, group } = await requireMember(db, teams, userId, groupId, { roles: ['admin'] })
   // VALIDATION_FAILED for a pair or a personal group, which have no statements.
   statementTypeOf(group)
-  const end = (periodEnd as LocalDate | undefined) ?? defaultEnd(group, now)
+  const end = (periodEnd as LocalDate | undefined) ?? closeEnd(group, now)
   const existing = await unfinishedEndingOn(db, groupId, end)
   if (existing) return existing
   const start = await closeStart(db, group, end)
@@ -84,13 +84,6 @@ export async function closeStatement(
     tableId: TABLES.statements,
     rowId: statementId,
   })
-}
-
-/** Today in the group's time zone, or the job's period end while that period waits for it. */
-function defaultEnd(group: Groups, now: Date): LocalDate {
-  const today = localToday(group.timezone, now)
-  const jobEnd = jobPeriodEnd(group)
-  return jobEnd && compareDates(jobEnd, today) < 0 ? jobEnd : today
 }
 
 /**

@@ -69,17 +69,11 @@ export async function closingPeriodOf(
  * Where a statement ending on `end` starts when an admin closes it now
  * (statements.md#6-close-a-period-now-post-statementsclose): the day after the group's latest
  * statement, void ones included. A first statement starts where the cycle period containing
- * `end` does; with no cycle, on the group's earliest posted transaction, or the day it was
- * created.
+ * `end` does; with no cycle, on the group's earliest posted transaction up to `end`, or the day
+ * it was created.
  */
 export async function closeStart(db: Db, group: Groups, end: LocalDate): Promise<LocalDate> {
-  const { rows } = await db.listRows<Statements>({
-    databaseId: DATABASE_ID,
-    tableId: TABLES.statements,
-    queries: [Query.equal('groupId', group.$id), Query.orderDesc('periodEnd'), Query.limit(1)],
-    total: false,
-  })
-  const latest = rows[0]
+  const latest = await latestStatement(db, group.$id)
   if (latest) return addDays(latest.periodEnd as LocalDate, 1)
   if (group.statementCycle !== 'none') return periodEndingOn(group, end).start
   const { rows: first } = await db.listRows<Transactions>({
@@ -88,6 +82,7 @@ export async function closeStart(db: Db, group: Groups, end: LocalDate): Promise
     queries: [
       Query.equal('groupId', group.$id),
       Query.equal('status', 'posted'),
+      Query.lessThanEqual('date', end),
       Query.orderAsc('date'),
       Query.limit(1),
     ],
@@ -97,6 +92,27 @@ export async function closeStart(db: Db, group: Groups, end: LocalDate): Promise
     (first[0]?.date as LocalDate | undefined) ??
     localToday(group.timezone, new Date(group.$createdAt))
   )
+}
+
+/** The group's statement with the latest `periodEnd`, void ones included (`idx_group_period`). */
+export async function latestStatement(db: Db, groupId: string): Promise<Statements | undefined> {
+  const { rows } = await db.listRows<Statements>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.statements,
+    queries: [Query.equal('groupId', groupId), Query.orderDesc('periodEnd'), Query.limit(1)],
+    total: false,
+  })
+  return rows[0]
+}
+
+/**
+ * A close's default end, and the preview's: today in the group's time zone, or the job's period
+ * end while that period waits for the job.
+ */
+export function closeEnd(group: Groups, now: Date): LocalDate {
+  const today = localToday(group.timezone, now)
+  const jobEnd = jobPeriodEnd(group)
+  return jobEnd && compareDates(jobEnd, today) < 0 ? jobEnd : today
 }
 
 /** The last day of the period the job drafts next, or null when it drafts none (cycle `none`). */

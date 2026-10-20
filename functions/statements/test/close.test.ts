@@ -366,3 +366,58 @@ describe('POST /statements/preview, the current period so far', () => {
     expect(snapshot.period).toEqual({ start: '2026-10-01', end: '2026-10-20' })
   })
 })
+
+describe('reissue in a group with no cycle', () => {
+  const finalRange = (id: string, start: string, end: string) =>
+    statement(id, {
+      periodStart: start,
+      periodEnd: end,
+      status: 'final',
+      snapshotJson: snapshotClosing({ start, end }, {}),
+    })
+  const reissue = (services: Fakes, periodStart: string, periodEnd: string) =>
+    call(services, 'POST', '/statements/reissue', { groupId: 'job', periodStart, periodEnd })
+
+  it.each([
+    ['the days after the latest statement', '2026-10-21', '2026-11-01'],
+    ['a mistyped year', '2026-10-21', '2062-10-20'],
+  ])('refuses %s, which only a close drafts', async (_case, start, end) => {
+    const services = fakes({
+      groups: [noCycle()],
+      statements: [finalRange('st-a', '2026-10-10', '2026-10-20')],
+    })
+    expect((await reissue(services, start, end)).body).toMatchObject({
+      ok: false,
+      error: { code: 'VALIDATION_FAILED' },
+    })
+    expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it('refuses any range in a group that has no statement yet', async () => {
+    const services = fakes({ groups: [noCycle()] })
+    expect((await reissue(services, '2026-10-10', '2026-10-20')).status).toBe(400)
+  })
+
+  it('redoes a void period', async () => {
+    const services = fakes({
+      groups: [noCycle()],
+      statements: [
+        finalRange('st-a', '2026-10-10', '2026-10-15'),
+        statement('st-b', { periodStart: '2026-10-16', periodEnd: '2026-10-20', status: 'void' }),
+      ],
+    })
+    const { body } = await reissue(services, '2026-10-16', '2026-10-20')
+    expect(body).toMatchObject({ ok: true, data: { status: 'draft', periodEnd: '2026-10-20' } })
+  })
+})
+
+describe('a no-cycle group’s first close', () => {
+  it('ignores an entry dated after the end, so it isn’t refused as before the start', async () => {
+    // Only an entry dated three weeks ahead: the first close starts on the day Acme was created.
+    const services = fakes({ ...rowsOf(shift('s1', '2026-11-20', 60)), groups: [noCycle()] })
+    expect(await close(services)).toMatchObject({
+      periodStart: '2026-10-10',
+      periodEnd: '2026-11-02',
+    })
+  })
+})
