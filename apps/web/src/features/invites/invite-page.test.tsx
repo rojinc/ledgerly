@@ -231,6 +231,25 @@ describe('InvitePage', () => {
     expect(sessionStorage.getItem('ledgerly.inviteToken')).toBe(NEW)
   })
 
+  it('keeps a newer link’s token when an earlier link’s refusal lands after it', async () => {
+    const NEW = 'Zy8-_'.repeat(8)
+    let refuseOld: (result: Result<unknown>) => void = () => {}
+    call.mockReturnValueOnce(
+      new Promise((resolve) => {
+        refuseOld = resolve
+      }),
+    )
+    const { router } = renderAt(`/invite#${TOKEN}`)
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    call.mockResolvedValueOnce(answer({ needsVerification: 'email' }))
+    await act(() => router.navigate(`/invite#${NEW}`))
+    expect(await screen.findByText(/first verify your email/)).toBeTruthy()
+    await act(async () => {
+      refuseOld({ ok: false, error: { code: 'INVITE_INVALID', message: 'Not valid.' } })
+    })
+    expect(sessionStorage.getItem('ledgerly.inviteToken')).toBe(NEW)
+  })
+
   it('says when there’s no token at all', async () => {
     renderAt('/invite')
     expect((await screen.findByRole('alert')).textContent).toBe(

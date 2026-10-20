@@ -35,9 +35,10 @@ function storeToken(token: string) {
   }
 }
 
-function dropToken() {
+/** Drops `token`, unless a newer link in this tab has stored its own since. */
+function dropToken(token: string) {
   try {
-    sessionStorage.removeItem(TOKEN_KEY)
+    if (sessionStorage.getItem(TOKEN_KEY) === token) sessionStorage.removeItem(TOKEN_KEY)
   } catch {
     // Nothing stored.
   }
@@ -167,12 +168,13 @@ function Accept({ token, userId }: { token: string; userId: string }) {
     },
     onSuccess: async (data) => {
       if (!('groupId' in data)) return
-      dropToken()
+      dropToken(token)
       await queryClient.invalidateQueries({ queryKey: queryKeys.groups(userId) })
       navigate('/groups', { replace: true })
     },
     onError: (error) => {
-      if (isInvalid(error)) dropToken()
+      // An earlier link's answer can land after a newer one was opened: only its own token goes.
+      if (isInvalid(error)) dropToken(token)
       // The session ended, or NOT_FOUND: the account was deleted after bootstrap, which bootstrap
       // itself answers with UNAUTHENTICATED. Either way, log in or sign up; the token waits.
       if (isSignedOut(error)) queryClient.setQueryData(queryKeys.currentUser, null)
