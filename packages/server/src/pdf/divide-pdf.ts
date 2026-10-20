@@ -1,6 +1,8 @@
+/// <reference path="./linebreak.d.ts" />
 import { formatMoney } from '@ledgerly/core/money/format'
 import { fontRuns, missingGlyphs, type PdfFont } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
+import LineBreaker from 'linebreak'
 import type {
   Content,
   ContentText,
@@ -51,7 +53,7 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   const print = (text: string): FontRun[] => {
     const shown = text.replace(OTHER_BREAKS, '\n')
     replaced += missingGlyphs(shown).length
-    const runs = fontRuns(shown)
+    const runs = narrow(fontRuns(shown))
     loadFonts(runs.map((run) => run.font))
     return runs
   }
@@ -131,6 +133,7 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
 // the 696 pt under the table's headers.
 const MAX_ROW_LINES = 45
 // The narrowest cell a row's text wraps in: a person's name, set 10 pt into the description's.
+// Every other text the divide prints has a wider one.
 const CELL_WIDTH = 171
 // Each font's widest character at 10 pt (Roboto's medium Ѹ, Noto Sans CJK's ⸻, and any of Noto
 // Emoji's), read from the files: no word pdfmake measures is wider than these say.
@@ -138,54 +141,126 @@ const WIDEST: Record<PdfFont, number> = { Roboto: 11.79, NotoSansCJK: 24.59, Not
 // A line with any Noto Sans CJK is its 1.448 em tall, against 1.172 for Roboto and Noto Emoji:
 // 1.24 times, rounded up.
 const CJK_LINE = 1.25
+const LINE_END = /\r?\n$|\r$/
+
+const widthOf = (font: PdfFont, text: string) => [...text].length * WIDEST[font]
+const graphemes = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+
+/** Where `linebreak` (UAX #14), which pdfmake splits words with, allows a break in `text`. */
+function breaks(text: string): { position: number; required: boolean }[] {
+  const breaker = new LineBreaker(text)
+  const found = []
+  for (let next = breaker.nextBreak(); next; next = breaker.nextBreak()) found.push(next)
+  return found
+}
+
+/** One run's words, as pdfmake's `splitWords()` makes them (pdfmake/js/TextBreaker.js). */
+function splitWords(text: string): { text: string; lineEnd: boolean }[] {
+  if (text === '') return [{ text, lineEnd: false }]
+  let start = 0
+  return breaks(text).map(({ position, required }) => {
+    const word = text.slice(start, position)
+    start = position
+    const lineEnd = required || LINE_END.test(word)
+    return { text: lineEnd ? word.replace(LINE_END, '') : word, lineEnd }
+  })
+}
+
+type Word = { font: PdfFont; text: string; glued: boolean; lineEnd: boolean }
+
+/**
+ * The words pdfmake lays `runs` out in, as its `TextBreaker` makes them: each run split on its
+ * own, and a run's last word glued to the next run's first when the two have no break between
+ * them. pdfmake keeps glued words on one line where they fit, and fills lines with them a
+ * character at a time where they don't.
+ */
+function pdfWords(runs: readonly FontRun[]): Word[] {
+  const words: Word[] = []
+  let last: string | undefined
+  runs.forEach(({ font, text }, index) => {
+    const split = splitWords(text)
+    const previous = words.at(-1)
+    if (last && previous && splitWords(last + split[0]?.text).length === 1) previous.glued = true
+    for (const word of split) words.push({ font, ...word, glued: false })
+    const end = split.at(-1)
+    last = index + 1 < runs.length && !end?.lineEnd ? end?.text : undefined
+  })
+  return words
+}
+
+/**
+ * `runs` with a zero-width space wherever a word would print wider than CELL_WIDTH, at its fonts'
+ * widest. pdfmake widens a column to its widest word, so a longer one pushes the amounts off the
+ * page. breakable() can't see that: it counts the text as typed, but a Thai letter prints as one
+ * `�` or more, and a space pdfmake doesn't break at (a tab, say) prints as `�`. The space goes
+ * between grapheme clusters, so it never cuts an emoji apart, and in Roboto, which has it.
+ */
+function narrow(runs: readonly FontRun[]): FontRun[] {
+  const narrowed: FontRun[] = []
+  const add = (font: PdfFont, text: string) => {
+    const last = narrowed.at(-1)
+    if (last?.font === font) last.text += text
+    else if (text !== '') narrowed.push({ font, text })
+  }
+  for (const { font, text } of runs) {
+    let start = 0
+    for (const { position } of breaks(text)) {
+      const word = text.slice(start, position)
+      start = position
+      if (widthOf(font, word) <= CELL_WIDTH) {
+        add(font, word)
+        continue
+      }
+      let width = 0
+      for (const { segment } of graphemes.segment(word)) {
+        const char = widthOf(font, segment)
+        if (width > 0 && width + char > CELL_WIDTH) {
+          add('Roboto', '\u200B')
+          width = 0
+        }
+        add(font, segment)
+        width += char
+      }
+    }
+  }
+  return narrowed
+}
 
 /**
  * The most lines of Roboto's height that `runs`, as printed, can take in a cell CELL_WIDTH wide.
- * It wraps words greedily, as pdfmake does, with every character as wide as its font's widest:
- * a word ends after a space or a zero-width space, and a line feed or carriage return starts a new
- * line (CR LF counts twice, which is safe); Unicode's other mandatory breaks print as line feeds
- * (OTHER_BREAKS). pdfmake may also break inside a word, which only fills its lines fuller, or keep a space
- * with the word after it (`ѸѸ !ѸѸ`), which costs less than the 11.79 pt the space counts.
+ * It wraps pdfmake's own words (pdfWords()) greedily, as pdfmake does, with every character as
+ * wide as its font's widest, and glued words as one; a required break starts a new line.
  *
- * A word wider than the cell starts a new line, and the next word starts another. pdfmake breaks it
- * where Unicode allows (or between characters, for a word that runs across fonts), packing whole
- * pieces, so any two of its lines together hold more than a cell: it takes at most
- * 1 + 2 × width / CELL_WIDTH lines, wherever the pieces fall.
+ * A word wider than the cell starts a new line, and the next word starts another. pdfmake breaks
+ * it where Unicode allows, or between characters, packing whole pieces, so any two of its lines
+ * together hold more than a cell: it takes at most 1 + 2 × width / CELL_WIDTH lines, wherever the
+ * pieces fall.
  */
 export function wrappedLines(runs: readonly FontRun[]): number {
   let lines = 1
   let x = 0
-  let word: number[] = []
-  const fit = (width: number) => {
-    if (x > 0 && x + width > CELL_WIDTH) {
-      lines++
-      x = 0
-    }
-    x += width
-  }
-  const place = () => {
-    const width = word.reduce((sum, char) => sum + char, 0)
-    if (width <= CELL_WIDTH) fit(width)
-    else {
+  let width = 0
+  const words = pdfWords(runs)
+  words.forEach((word, index) => {
+    width += widthOf(word.font, word.text)
+    if (word.glued) return
+    if (width <= CELL_WIDTH) {
+      if (x > 0 && x + width > CELL_WIDTH) {
+        lines++
+        x = 0
+      }
+      x += width
+    } else {
       if (x > 0) lines++
       lines += Math.floor((2 * width) / CELL_WIDTH)
       x = CELL_WIDTH
     }
-    word = []
-  }
-  for (const { font, text } of runs) {
-    for (const char of text) {
-      if (char === '\n' || char === '\r') {
-        place()
-        lines++
-        x = 0
-        continue
-      }
-      word.push(WIDEST[font])
-      if (char === ' ' || char === '\u200B') place()
+    width = 0
+    if (word.lineEnd && index + 1 < words.length) {
+      lines++
+      x = 0
     }
-  }
-  place()
+  })
   return runs.some((run) => run.font === 'NotoSansCJK') ? lines * CJK_LINE : lines
 }
 

@@ -564,6 +564,62 @@ describe('renderDividePdf', () => {
     expect(count(table, 'q')).toBe(15)
   })
 
+  // pdfmake breaks where Unicode's line breaking allows, not at every space: `( ( ` is glued to the
+  // word after it (LB14), here in another font, so pdfmake fills its lines a character at a time
+  // (AI A's R1 and R2 on #365).
+  it('never drops a row whose spaces pdfmake glues to the next word', async () => {
+    const glued = `x ( ( ${'⏩'.repeat(13)}`
+    const lines = await tableOf('Rent', Array(4).fill(Array(5).fill(glued).join('\n')))
+    expect(count(lines, '⏩')).toBe(4 * 5 * 13)
+    const word = 'Ѹ'.repeat(13)
+    const names = [
+      ...Array(12).fill(`${word} ${word}`),
+      `${word} ${word} ${word}`,
+      ...Array(2).fill(glued),
+    ]
+    const table = await tableOf(Array(14).fill(word).join(' '), names)
+    expect(count(table, 'Ѹ')).toBe(14 * 13 + 12 * 26 + 39)
+    expect(count(table, '⏩')).toBe(2 * 13)
+  })
+
+  // 16 texts of 3 lines each, 48 in all: more than a page holds, so the row breaks across pages.
+  it('lets a row of 48 lines break across pages, with every character', async () => {
+    const text = Array(3).fill('⭐'.repeat(12)).join(' ')
+    const table = await tableOf(text, Array(15).fill(text))
+    expect(count(table, '⭐')).toBe(16 * 36)
+  })
+
+  // A Thai letter prints as one `�` or more, and a tab, an ogham space mark, a narrow no-break space
+  // or a medium mathematical space as one each: none is where pdfmake breaks, though breakable()
+  // takes the spaces for spaces. The divide's own zero-width spaces keep each word narrower than
+  // its column, so no amount is pushed off the page.
+  it.each([
+    ['Thai', 'สมชายใจดีมีสุขสบายดี'],
+    ['tabs', `b${'\t'.repeat(99)}b`],
+    ['ogham space marks', `b${'\u1680'.repeat(99)}b`],
+    ['narrow no-break spaces', `b${'\u202F'.repeat(99)}b`],
+    ['medium mathematical spaces', `b${'\u205F'.repeat(99)}b`],
+  ])('keeps every amount on the page with a name of %s', async (_, name) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const lines = [
+      line('2026-10-03', 'expense', 3000, [share('p0', 3000, 3000)], { description: 'Power' }),
+    ]
+    const pdf = await renderDividePdf(
+      buildStatementSnapshot({
+        ...goldenInput(lines),
+        people: [{ personId: 'p0', name }],
+        previousClosing: [],
+      }),
+    )
+    const text = await pdfText(pdf)
+    expect(text).toContain('Name Opening Paid Share Closing')
+    expect(text).toContain('Transactions Date Description Paid Share Total')
+    // Paid and Share in each table, and the line's total.
+    expect(text.match(/\$30\.00/g)).toHaveLength(5)
+    expect(text).toContain('settled')
+    expect(await textBeyondPage(pdf)).toEqual([])
+  })
+
   it('refuses an invoice snapshot', async () => {
     const snapshot = buildStatementSnapshot(goldenInput())
     const employer = { ...snapshot, group: { ...snapshot.group, type: 'employer' as const } }
@@ -585,11 +641,17 @@ describe('wrappedLines', () => {
     ['three words that fit one to a line', 'abcdefg abcdefg abcdefg', 3],
     ['a line feed', 'a\nb', 2],
     ['a carriage return', 'a\rb', 2],
-    // Twice, which is safe: pdfmake starts one line.
-    ['a CR LF', 'a\r\nb', 3],
-    // Noto Emoji's characters are 12.7 pt: 13 fit.
+    ['a CR LF', 'a\r\nb', 2],
+    // pdfmake starts no line after the last.
+    ['a line feed at the end', 'a\n', 1],
+    // Noto Emoji's characters are 12.7 pt: 13 fit, and pdfmake breaks between two 😀.
     ['13 emoji', '😀'.repeat(13), 1],
-    ['14 emoji', '😀'.repeat(14), 3],
+    ['14 emoji', '😀'.repeat(14), 2],
+    // A zero-width space ends a word.
+    ['two words joined by a zero-width space', `${'Ѹ'.repeat(13)}\u200B${'Ѹ'.repeat(13)}`, 2],
+    // pdfmake glues `( ( ` to the word after it (UAX #14's LB14), even in another font: one word
+    // of 212 pt.
+    ['spaces glued to the next word', `x ( ( ${'⏩'.repeat(13)}`, 4],
     // As printed: ร้าน is 4 �.
     ['Thai', 'ร้าน', 1],
     // A line with Noto Sans CJK is 1.25 of Roboto's.
@@ -600,17 +662,24 @@ describe('wrappedLines', () => {
   })
 
   it('counts each Noto Sans CJK character as wide as its widest, ⸻', () => {
-    // 7 of 24.59 pt fill 172 pt, more than the cell.
+    // 7 of 24.59 pt fill 172 pt, more than the cell; pdfmake breaks between two ideographs.
     expect(lines('一'.repeat(6))).toBe(1.25)
-    expect(lines('一'.repeat(7))).toBe(3 * 1.25)
+    expect(lines('一'.repeat(7))).toBe(2 * 1.25)
   })
 
-  // pdfmake breaks a word wider than the cell into whole pieces, where Unicode allows, so short,
-  // almost a cell, short takes 3 lines, though it would fit 2 cut anywhere.
+  // pdfmake breaks where Unicode allows, so short, almost a cell, short takes 3 lines, though it
+  // would fit 2 cut anywhere.
   it.each([
     ['emoji', `😀${'⏩'.repeat(13)}😀`, 3],
-    ['Roboto, with hyphens', `Ѹ-${'Ѹ'.repeat(14)}-Ѹ`, 3],
-    ['Noto Sans CJK', `一${'⸻'.repeat(6)}⸺一`, 3 * 1.25],
+    ['Roboto, with hyphens', `Ѹ-${'Ѹ'.repeat(13)}-Ѹ`, 3],
+    ['Noto Sans CJK', `一${'⸻'.repeat(5)}⸺一`, 3 * 1.25],
+  ])('counts whole pieces, in %s', (_, text, expected) => {
+    expect(lines(text)).toBe(expected)
+  })
+
+  it.each([
+    // A word of 15: 176.9 pt.
+    ['Roboto, hyphenated', `Ѹ-${'Ѹ'.repeat(14)}-Ѹ`, 5],
     // One word across fonts: pdfmake can't break around a no-break space.
     [
       '⸻ and no-break spaces',
@@ -619,8 +688,8 @@ describe('wrappedLines', () => {
     ],
   ])(
     'counts a word wider than the cell, in %s, as 1 + 2 × its width over the cell',
-    (_, word, expected) => {
-      expect(lines(word)).toBe(expected)
+    (_, text, expected) => {
+      expect(lines(text)).toBe(expected)
     },
   )
 
