@@ -49,10 +49,10 @@ jobs:
         env:
           TZ: Australia/Sydney
 
-      # The functions again in Sydney time: they handle local dates too, and must not depend on
-      # the machine's timezone either (testing.md#rules). Core's Sydney run is the coverage step
-      # above, so only the function workspaces run here.
-      - run: npm test -- --project '@ledgerly/fn-*'
+      # The functions and packages/server again in Sydney time: they handle local dates too (the
+      # server package formats the dates emails and PDFs show), and must not depend on the
+      # machine's timezone either (testing.md#rules). Core's Sydney run is the coverage step above.
+      - run: npm test -- --project '@ledgerly/fn-*' --project '@ledgerly/server'
         env:
           TZ: Australia/Sydney
 
