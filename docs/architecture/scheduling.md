@@ -117,7 +117,7 @@ A schedule whose `nextRunAt` has come is left for now: step 1 hasn't brought its
 
 | Reminder | Condition | Sent to |
 | --- | --- | --- |
-| Bill due soon | status `due`, `dueOn` within 2 days, `remindedAt` empty | joined admins with an account (personal: the owner); an autopay bill due after today says it will be posted that day, unless step 2 will leave it because its creator would pay it but has left; one due today that step 2 left (that, a statement being finalized, or a failed post) asks to mark it paid, as those do |
+| Bill due soon | status `due`, `dueOn` within 2 days, `remindedAt` empty | joined admins with an account (personal: the owner); an autopay bill due after today says it will be posted that day, unless step 2 will leave it because its creator would pay it but has left; one due today that step 2 left (that, a statement being finalized, or a failed post) asks to mark it paid, as those do. Accepted, though a finalize, an open merge or a schedule step 1 hasn't brought in line hold it only for now and a later run autopays it: that run's post finds it posted if someone marked it paid meanwhile, so the ledger is never wrong, only the email needless ([#407](https://github.com/rojinc/ledgerly/issues/407)) |
 | Shift to confirm | status `scheduled`, `date < today`, `remindedAt` empty, whether or not its schedule has `autoPost` | group owner |
 | Timer still running | status `running`, `startedAt` more than 12h ago, `remindedAt` empty | the person who started it |
 
