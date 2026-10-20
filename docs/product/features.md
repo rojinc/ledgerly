@@ -23,7 +23,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-12 | People who haven't joined, registered or not, can be members and show as "not joined". Both cases look the same. | M1 |
 | F-13 | Join and leave dates for members (moving in and out). | M3 |
 | F-14 | Activity feed: who added, changed or voided what, and when. | M3 |
-| F-15 | Archive a group, which makes it read-only. | M2 |
+| F-15 | Archive a group, which makes it read-only; an admin can unarchive it ([#428](https://github.com/rojinc/ledgerly/issues/428), post-launch). | M2 |
 
 ## Employer
 

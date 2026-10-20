@@ -68,7 +68,7 @@ Appwrite runs the function every 60 minutes (`interval: 60`, at a minute it pick
 
 ### Step 1: expand due schedules
 
-Query `schedules` where `nextRunAt <= now` (`idx_nextRunAt`, in pages by `$id`). Skip (and clear `nextRunAt` for) schedules in archived groups. For each:
+Query `schedules` where `nextRunAt <= now` (`idx_nextRunAt`, in pages by `$id`). Skip (and clear `nextRunAt` for) schedules in archived groups. An unarchive doesn't restart them. A schedule was stopped by an archive when it has no `nextRunAt`, isn't paused ([#430](https://github.com/rojinc/ledgerly/issues/430), once its `pausedFrom` lands), and its end (core's `scheduleEnd`: its `endsOn`, or its rule's `UNTIL` or `COUNT`th date, whichever comes first) is today or later, or it never ends. Any other schedule with no `nextRunAt` has finished. A stopped schedule stays stopped until it's edited: the schedules page's **Restart** sends `PATCH` with its stored input, so the deleted-people checks run again, and that expands it from today and never fills in the past. Restart matches #430's Resume, and neither is offered on a finished schedule. Rows from the archived weeks that step 3 marked `remindedAt` stay marked, so they wait for someone to confirm, mark paid or void them. For each:
 
 ```
 today       = localToday(group.timezone, now)

@@ -16,7 +16,7 @@ Use these words exactly as defined here, in code, the UI and docs. If you need a
 | **Group** | A container of people and transactions. Types: `personal`, `house`, `employer`, `pair`. Each group is one Appwrite Team. |
 | **Member** | A person in a group, with a role (`admin`, `member`, `viewer`) and a status (`placeholder`, `active`, `left`). |
 | **Counterpart** | The other person in an `employer` or `pair` group. |
-| **Archived (group)** | A group made read-only for good (`archivedAt` set). Its history stays; its schedules, reminders and statements stop. A personal group can't be archived. |
+| **Archived (group)** | A group made read-only (`archivedAt` set) until an admin unarchives it. Its history stays; while it's archived, its schedules, reminders and statements stop. A personal group can't be archived. |
 | **Owner (of a group)** | The person who created it. In an employer group, the owner is the worker who issues invoices. |
 | **Transaction** | One event that involves money or work: a shift, expense, bill, payment, loan, income or adjustment. |
 | **Kind** | The type of a transaction (`shift`, `expense`, `bill`, `payment`, `loan`, `income`, `adjustment`). |
