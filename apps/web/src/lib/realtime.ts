@@ -51,6 +51,8 @@ const STALE: Record<LiveTable, (groupId: string, rowId: string) => Prefix[]> = {
     ['balances', groupId],
     ['transaction', rowId],
     ['history', groupId],
+    // History's All groups (features/transactions' ALL_GROUPS), which lists every group's rows.
+    ['history', '*'],
     ['today'],
     // Feature-local keys: the dashboard's shares and the bills lists.
     ['myShares'],

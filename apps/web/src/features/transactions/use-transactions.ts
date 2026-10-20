@@ -5,7 +5,13 @@ import type {
   TransactionView,
   VoidTransactionBody,
 } from '@ledgerly/core/schemas/ledger'
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  type InfiniteData,
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import { Query } from 'appwrite'
 import { callFunction, type ErrorCode, type Method } from '../../lib/api'
 import { DATABASE_ID, tablesDB } from '../../lib/appwrite'
@@ -118,38 +124,89 @@ export type HistoryFilters = {
   /** Both included; YYYY-MM-DD in the group's time zone. */
   from?: string
   to?: string
+  /** Text the description contains. */
+  q?: string
+  /** Only the transactions this person has a share in. */
+  personId?: string
+}
+
+/** `useHistory`'s key for a list of groups (All groups). Never a group's ID: those have no `*`. */
+export const ALL_GROUPS = '*'
+
+/** One page of rows, and the next page's cursor: a transaction's ID, or a share's. */
+type HistoryPage = { rows: HistoryRow[]; next?: string }
+
+/** The pages as the lists read them: rows only. */
+function rowPages(data: InfiniteData<HistoryPage, string | undefined>) {
+  return { ...data, pages: data.pages.map((page) => page.rows) }
 }
 
 /**
- * The group's transactions, newest first, in cursor pages on `transactions.idx_group_date`.
- * Ties on a date go by ID, so the cursor is stable.
+ * The transactions of one group, or of a list of groups (All groups), newest first, in cursor
+ * pages on `transactions.idx_group_date`. Ties on a date go by ID, so the cursor is stable.
+ * With a person, it pages their shares on `shares.idx_group_person_date` instead, then reads
+ * those shares' transactions with the other filters, so a page can come back short or empty.
  */
-export function useHistory(groupId: string, filters: HistoryFilters) {
+export function useHistory(group: string | readonly string[], filters: HistoryFilters) {
+  // Query.equal takes at most 100 values, so All groups reads the first 100 groups. Read them
+  // 100 at a time and merge the pages if anyone joins more.
+  const groupIds = typeof group === 'string' ? [group] : group.slice(0, PAGE)
   return useInfiniteQuery({
-    queryKey: queryKeys.history(groupId, filters),
-    enabled: groupId !== '',
+    // All groups' key names its groups, so joining or leaving one reads the list again.
+    queryKey:
+      typeof group === 'string'
+        ? queryKeys.history(group, filters)
+        : queryKeys.history(ALL_GROUPS, { ...filters, groupIds: groupIds.join() }),
+    enabled: groupIds.length > 0 && !groupIds.includes(''),
     initialPageParam: undefined as string | undefined,
-    queryFn: async ({ pageParam }) => {
-      const { rows } = await tablesDB.listRows<HistoryRow & Transactions>({
-        databaseId: DATABASE_ID,
-        tableId: 'transactions',
-        queries: [
-          Query.equal('groupId', groupId),
-          ...(filters.kind ? [Query.equal('kind', filters.kind)] : []),
-          ...(filters.category ? [Query.equal('category', filters.category)] : []),
-          ...(filters.from ? [Query.greaterThanEqual('date', filters.from)] : []),
-          ...(filters.to ? [Query.lessThanEqual('date', filters.to)] : []),
+    queryFn: async ({ pageParam }): Promise<HistoryPage> => {
+      const filtered = [
+        ...(filters.kind ? [Query.equal('kind', filters.kind)] : []),
+        ...(filters.category ? [Query.equal('category', filters.category)] : []),
+        // `description` has no full-text index: `contains` matches a substring, `search` would fail.
+        ...(filters.q ? [Query.contains('description', filters.q)] : []),
+      ]
+      const dates = [
+        ...(filters.from ? [Query.greaterThanEqual('date', filters.from)] : []),
+        ...(filters.to ? [Query.lessThanEqual('date', filters.to)] : []),
+      ]
+      const order = [Query.orderDesc('date'), Query.orderDesc('$id'), Query.limit(HISTORY_PAGE)]
+      const cursor = pageParam === undefined ? [] : [Query.cursorAfter(pageParam)]
+      const read = async (where: string[], after: string[] = []) => {
+        const { rows } = await tablesDB.listRows<HistoryRow & Transactions>({
+          databaseId: DATABASE_ID,
+          tableId: 'transactions',
           // Only what the list shows (data-model.md: inputJson can be large).
-          Query.select(HISTORY_COLUMNS),
-          Query.orderDesc('date'),
-          Query.orderDesc('$id'),
-          Query.limit(HISTORY_PAGE),
-          ...(pageParam === undefined ? [] : [Query.cursorAfter(pageParam)]),
+          queries: [...where, Query.select(HISTORY_COLUMNS), ...order, ...after],
+        })
+        return rows as HistoryRow[]
+      }
+      if (!filters.personId) {
+        const rows = await read([Query.equal('groupId', groupIds), ...filtered, ...dates], cursor)
+        return { rows, next: rows.length < HISTORY_PAGE ? undefined : rows.at(-1)?.$id }
+      }
+      const { rows: shares } = await tablesDB.listRows<Shares>({
+        databaseId: DATABASE_ID,
+        tableId: 'shares',
+        queries: [
+          Query.equal('groupId', groupIds),
+          Query.equal('personId', filters.personId),
+          ...dates,
+          Query.select(['$id', 'transactionId']),
+          ...order,
+          ...cursor,
         ],
       })
-      return rows as HistoryRow[]
+      // I-5: one share per person per transaction, so no ID comes twice. Void rows have no
+      // shares (I-6), so they don't show here.
+      const ids = shares.map((share) => share.transactionId)
+      // Appwrite refuses `Query.equal` with an empty list.
+      const rows = ids.length === 0 ? [] : await read([Query.equal('$id', ids), ...filtered])
+      // A full page of shares may have more after it, however few of its rows the filters kept.
+      return { rows, next: shares.length < HISTORY_PAGE ? undefined : shares.at(-1)?.$id }
     },
-    getNextPageParam: (last) => (last.length < HISTORY_PAGE ? undefined : last.at(-1)?.$id),
+    getNextPageParam: (last) => last.next,
+    select: rowPages,
   })
 }
 
@@ -160,7 +217,9 @@ function refresh(queryClient: ReturnType<typeof useQueryClient>, view: Transacti
   queryClient.setQueryData(queryKeys.transactionShares(transaction.$id), view.shares)
   queryClient.setQueryData(queryKeys.transactionItems(transaction.$id), view.items)
   void queryClient.invalidateQueries({ queryKey: queryKeys.balances(transaction.groupId) })
+  // The group's history (a person's in it too), and All groups', which lists the group's rows.
   void queryClient.invalidateQueries({ queryKey: ['history', transaction.groupId] })
+  void queryClient.invalidateQueries({ queryKey: ['history', ALL_GROUPS] })
   void queryClient.invalidateQueries({ queryKey: ['calendar'] })
 }
 

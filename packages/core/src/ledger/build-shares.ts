@@ -23,8 +23,8 @@ export type LedgerContext = {
 
 export type ShareInput = TransactionTemplate & { kind: TransactionKind; date: LocalDate }
 
-// ledger.md#transaction-kinds, "Allowed in".
-const KINDS_BY_GROUP: Record<GroupType, readonly TransactionKind[]> = {
+// ledger.md#transaction-kinds, "Allowed in". The web's filters offer the same kinds.
+export const KINDS_BY_GROUP: Record<GroupType, readonly TransactionKind[]> = {
   employer: ['shift', 'expense', 'payment', 'adjustment'],
   house: ['expense', 'bill', 'payment', 'loan', 'adjustment'],
   personal: ['expense', 'bill', 'income', 'adjustment'],
