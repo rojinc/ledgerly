@@ -116,10 +116,18 @@ test('changes a shift, adds another, voids one and times one', async ({ page }) 
       .getByRole('link', { name: 'Can’t stop it? Open the shift to void it', exact: true })
       .getAttribute('href')
     expect(href).toMatch(/^\/shifts\/[^/]+$/)
+    // Shown as stopped before the server answers: wait for its answer before leaving, as above.
+    const stopped = page.waitForResponse(
+      (response) =>
+        response.url().includes('/executions') &&
+        (response.request().postData() ?? '').includes('/timer/stop'),
+    )
     await page.getByRole('button', { name: 'Stop', exact: true }).click()
-    const timed = page
-      .getByRole('region', { name: 'Today’s shifts', exact: true })
-      .locator(`a[href="${href}"]`)
-    await expect(timed).toHaveText(/^Shift.*· Confirmed/)
+    const execution = await (await stopped).json()
+    expect(JSON.parse(execution.responseBody)).toMatchObject({ ok: true })
+    // On the shift's own page, not Today's list: a midnight between Start and here would move
+    // the list to a day the shift isn't on (#406).
+    await page.goto(href as string)
+    await expect(page.getByText('Confirmed.', { exact: true })).toBeVisible()
   })
 })

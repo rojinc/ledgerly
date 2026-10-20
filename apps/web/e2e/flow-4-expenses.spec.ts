@@ -1,5 +1,5 @@
 import { formatNet } from '@ledgerly/core/money/format'
-import { expect, test } from '@playwright/test'
+import { expect, type Locator, type Page, test } from '@playwright/test'
 import { runId, testEmail } from './dev-project'
 import { addEmployer, archiveEmployer } from './employer'
 import { logIn, setupUser } from './users'
@@ -26,6 +26,23 @@ function balanceText(netCents: number, employer: string): string {
   return 'All square'
 }
 
+const UNAVAILABLE = 'Balance not available right now.'
+
+/**
+ * Waits for the balance card to read `text`. The balances query doesn't retry (use-groups.ts),
+ * so one call that fails on a cold start after a deploy leaves UNAVAILABLE up: reload once (#406).
+ */
+async function expectBalance(page: Page, balance: Locator, text: string): Promise<void> {
+  const either = [text, UNAVAILABLE].map((words) => words.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+  await expect(balance).toHaveText(new RegExp(`^(${either.join('|')})$`))
+  if ((await balance.textContent()) === UNAVAILABLE) {
+    // In the report, so a reload that keeps happening is seen.
+    test.info().annotations.push({ type: 'reloaded', description: UNAVAILABLE })
+    await page.reload()
+  }
+  await expect(balance).toHaveText(text)
+}
+
 // The employer this test adds, archived after it even when it fails.
 let groupId: string | undefined
 test.afterEach(async ({ page }) => {
@@ -41,7 +58,7 @@ test('records each expense preset and a payment, with the balance after each', a
     .getByRole('region', { name: `Balance with ${employer}`, exact: true })
     .locator('p')
   await page.goto(`/transactions?groupId=${groupId}`)
-  await expect(balance).toHaveText(balanceText(0, employer))
+  await expectBalance(page, balance, balanceText(0, employer))
 
   for (const step of STEPS) {
     await test.step(step.description, async () => {
@@ -55,7 +72,7 @@ test('records each expense preset and a payment, with the balance after each', a
         page.getByRole('heading', { level: 1, name: step.description, exact: true }),
       ).toBeVisible()
       await page.goto(`/transactions?groupId=${groupId}`)
-      await expect(balance).toHaveText(balanceText(step.netCents, employer))
+      await expectBalance(page, balance, balanceText(step.netCents, employer))
     })
   }
 })
