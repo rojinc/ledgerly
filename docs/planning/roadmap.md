@@ -39,7 +39,7 @@ The build for M0 to M4 is merged, and so is M5's spike. What's left is the owner
 | --- | --- | --- |
 | M0 | ✅ merged | The owner's setup: the domain, Resend and backups ([#3](https://github.com/rojinc/ledgerly/issues/3)), and GitBook ([#4](https://github.com/rojinc/ledgerly/issues/4)). |
 | M1 | ✅ merged | None. |
-| M2 | ✅ merged | The owner's dev key for the end-to-end tests ([#78](https://github.com/rojinc/ledgerly/issues/78)): flows 1–5 are written, but none has run against dev yet. Flow 5 is skipped until the flows have a project of their own ([#386](https://github.com/rojinc/ledgerly/issues/386)). |
+| M2 | ✅ merged | The owner's dev key for the end-to-end tests ([#78](https://github.com/rojinc/ledgerly/issues/78)): flows 1–5 are written, but none has run against dev yet. Flow 5 runs too, now that the `account` job deletes each run's accounts and their groups ([#386](https://github.com/rojinc/ledgerly/issues/386)). |
 | M3 | ✅ merged | SMS invites and phone verification ([#40](https://github.com/rojinc/ledgerly/issues/40), [#176](https://github.com/rojinc/ledgerly/issues/176)), cut from v1. They wait on the owner's SMS provider ([#175](https://github.com/rojinc/ledgerly/issues/175)). |
 | M4 | ✅ merged | Account deletion's dev check ([#50](https://github.com/rojinc/ledgerly/issues/50)), the legal review ([#54](https://github.com/rojinc/ledgerly/issues/54), owner), and error tracking with Sentry ([#51](https://github.com/rojinc/ledgerly/issues/51) part 2, cut from v1). |
 | M5 | ✅ the spike's report ([#284](https://github.com/rojinc/ledgerly/pull/284)) | None. The mobile app itself isn't planned yet. |
