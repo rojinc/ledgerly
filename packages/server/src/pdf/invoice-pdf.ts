@@ -10,6 +10,7 @@ import {
   footer,
   formatDate,
   heading,
+  ISSUER_SIZE,
   type Line,
   LOCALE,
   lineText,
@@ -28,8 +29,6 @@ const DESCRIPTION_COLUMN = 221
 // the amounts' column, off the page (#360). The number itself is never broken: it's the payment
 // reference.
 const ISSUER_COLUMN = 250
-// The issuer's name prints at 14 pt, and narrow() measures at 10 pt.
-const ISSUER_NAME = Math.floor((ISSUER_COLUMN * 10) / 14)
 
 /**
  * The statement row's number and issue date, which the snapshot doesn't hold. The due date
@@ -59,9 +58,9 @@ export async function renderInvoicePdf(
   let replaced = 0
   // A text in a column narrower than the page is narrowed to it (#360): pdfmake would widen the
   // column to its widest word instead, until the amounts fall off the page.
-  const print = (text: string, width?: number): ContentText[] => {
+  const print = (text: string, width?: number, fontSize?: number): ContentText[] => {
     replaced += missingGlyphs(text).length
-    const runs = width === undefined ? fontRuns(text) : narrow(fontRuns(text), width)
+    const runs = width === undefined ? fontRuns(text) : narrow(fontRuns(text), width, fontSize)
     loadFonts(runs.map((run) => run.font))
     return runs
   }
@@ -89,7 +88,10 @@ export async function renderInvoicePdf(
     {
       columns: [
         [
-          { text: print(business.businessName ?? issuer.name, ISSUER_NAME), style: 'issuer' },
+          {
+            text: print(business.businessName ?? issuer.name, ISSUER_COLUMN, ISSUER_SIZE),
+            style: 'issuer',
+          },
           ...present([
             business.abn &&
               `ABN ${business.abn.replace(/^(\d{2})(\d{3})(\d{3})(\d{3})$/, '$1 $2 $3 $4')}`,

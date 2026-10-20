@@ -337,8 +337,41 @@ describe('renderInvoicePdf', () => {
     const pdf = await renderInvoicePdf(snapshot, { ...details, displayNumber })
     expect(await textBeyondMargin(pdf)).toEqual([])
     const text = await pdfText(pdf)
-    expect(text).toContain(`INVOICE Number ${displayNumber}`)
+    expect(text).toContain(
+      `INVOICE Number ${displayNumber} Issued 1 Nov 2026 Due 15 Nov 2026 Period 1 Oct 2026 – 31 Oct 2026`,
+    )
     expect(text).toContain(`with ${displayNumber} as the reference`)
+  })
+
+  // #360: the ones that fit on main still do, and a hard wrap never cuts an emoji in half (#300).
+  // The header's column is the narrower, and its name prints at 14 pt.
+  it.each([
+    ['a description of ー', { description: 'ー'.repeat(20) }],
+    ['a description of 14 Ѹ and an emoji', { description: `${'Ѹ'.repeat(14)} 😀` }],
+    ['a Latin description', { description: 'x'.repeat(200) }],
+    ['a business name of 14 Ѹ and an emoji', { businessName: `${'Ѹ'.repeat(14)} 😀` }],
+  ])('keeps %s on the page, with nothing left out (#360)', async (_case, text) => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const snapshot = buildStatementSnapshot({
+      ...goldenInput({ ...fullBusiness, ...('businessName' in text ? text : {}) }),
+      lines: [
+        shift('2026-10-01', 12500),
+        line(
+          '2026-10-02',
+          'expense',
+          4000,
+          [share('worker', 4000, 0), share('employer', 0, 4000)],
+          'description' in text ? text : {},
+        ),
+      ],
+    })
+    const pdf = await renderInvoicePdf(snapshot, details)
+    expect(await textBeyondMargin(pdf)).toEqual([])
+    const printed = await pdfText(pdf)
+    expect(printed).toContain('$40.00 Total work and charges $165.00')
+    expect(printed).toContain('INVOICE Number INV-0010')
+    // An unknown glyph, or half of an emoji, extracts as U+0000.
+    expect(printed).not.toContain('\u0000')
   })
 
   // breakable() puts a zero-width space every 20 characters; between the halves of an emoji or
