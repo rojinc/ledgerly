@@ -6,7 +6,7 @@
 | --- | --- | --- | --- |
 | **the one environment** | `ledgerly-dev` | every merge to `main` | **real users** |
 
-There is no separate prod project for now (owner decision, 2026-10-19). `ledgerly-dev` is production: never reset it, never load test data that could reach real users, and keep schema changes add-only ([below](#schema-changes)).
+There is no separate prod project for now (owner decision, 2026-10-19). `ledgerly-dev` is production: never reset it, never load test data that could reach real users, and keep schema changes add-only ([below](#schema-changes)). The end-to-end flows run against it after each deploy: they reach only Resend test addresses, and leave their rows behind under their run ID ([testing](testing.md#end-to-end)).
 
 - The project is in Appwrite Cloud's Sydney region, close to its users.
 - With real users on it, it needs the **Pro** plan (higher limits, backups): the owner's call (#3).
@@ -32,6 +32,8 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 ## CI/CD (GitHub Actions)
 
 `ci.yml`, on every pull request and every push to `main`: `npm ci` → lint → typecheck → test (`TZ=UTC`) → `@ledgerly/core` coverage (`TZ=Australia/Sydney`, 100% required) → test again (`TZ=Australia/Sydney`) → build.
+
+`e2e.yml`: after each successful Deploy of `main`, and on **Run workflow**, the [user flows](testing.md#end-to-end) in Chromium against dev.
 
 `deploy.yml`:
 

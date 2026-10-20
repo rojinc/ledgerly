@@ -47,6 +47,9 @@ export type LogEvent =
   | 'invite_cleanup_failed'
   | 'placeholder_cleanup_failed'
   | 'account_finish_failed'
+  | 'receipt_cleanup_behind'
+  | 'receipt_cleanup_failed'
+  | 'receipt_row_listed'
 
 /**
  * How each event is written. Most are problems, written with `console.error`: until alerting
@@ -73,6 +76,7 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_left_inputs: 'warn',
   merge_stopped: 'warn',
   merge_walk_cut_off: 'warn',
+  receipt_cleanup_behind: 'warn',
 }
 
 /** What the password notice did (identity-and-invites.md#password-notice). */
@@ -91,9 +95,10 @@ export type ChangeNoticeOutcome =
   | 'failed'
 
 /**
- * What a merge moved or left (identity-and-invites.md#merging-two-persons), what the hourly run
- * found (#finishing-merges): merges, and the merged persons it read, and what scheduler step 5c
- * did with the persons it found (scheduling.md#step-5c-placeholder-clean-up). Each a count.
+ * What a merge moved or left (identity-and-invites.md#merging-two-persons); what the hourly run
+ * found (#finishing-merges): merges, and the merged persons it read; what receipt clean-up did
+ * (scheduling.md#step-5-receipt-clean-up); and what step 5c did with the persons it found
+ * (scheduling.md#step-5c-placeholder-clean-up). Each a count.
  */
 const COUNTS = [
   'groupsJoined',
@@ -111,6 +116,7 @@ const COUNTS = [
   'cutOff',
   'stopped',
   'personsRead',
+  'deleted',
   'cleared',
   'kept',
   'failed',
@@ -135,7 +141,10 @@ export type LogFields = {
   scheduleId?: string
   /** The person a merge moves another one into (`personId` is the one it moves). */
   intoPersonId?: string
-  /** A row a merge left, and its table. */
+  /**
+   * A row a merge left, and its table; or a `receiptFiles` row step 5 found listing a
+   * transaction (`receipt_row_listed`).
+   */
   rowId?: string
   table?: 'members' | 'shares'
   problems?: readonly SnapshotProblem[]

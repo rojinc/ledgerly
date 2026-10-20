@@ -58,4 +58,18 @@ npm test                                  # everything
 npm test -w @ledgerly/core                # one workspace
 npm run coverage -w @ledgerly/core        # core with the 100% coverage gate (CI runs it with TZ=Australia/Sydney)
 npx vitest run packages/core/src/money    # one folder
+npm run test:e2e -w @ledgerly/web         # user flows 1–5 against dev (below)
 ```
+
+## End to end
+
+`apps/web/e2e/` runs [user flows](../product/user-flows.md) in Chromium with Playwright, against the **dev** project: flows 1 and 2 so far, and #38 adds 3–5. `npm test` never picks them up.
+
+- **What runs:** `npm run test:e2e -w @ledgerly/web` starts a local Vite server, so the code under test is the checkout's (another server already on its port is an error, never reused), and points it at dev. The whole suite has 10 minutes. The browser is in `Australia/Sydney` (`timezoneId`) and `en-AU`, so a date that slips a day shows up.
+- **What it needs:** `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID` for dev, and `E2E_APPWRITE_API_KEY`, a dev-only key with only `users.read` and `users.write` ([secrets](../architecture/security-and-privacy.md#secrets-inventory)). Without them, global setup stops with a message naming what's missing. Dev must also list `localhost` as a web platform, since the app is served from `localhost:5173`, in CI too: a console change to the production project, so the owner makes it with the key (#78).
+- **Users:** global setup makes each run an ID (`e2e…`). It creates the users the flows log in as through the API, marked verified, because tests can't open an inbox. A user who signs up in the app is verified the same way. Teardown, which runs even if setup fails partway, deletes every user the run made: the server returns only addresses starting with the run's `delivered+<run ID>-`, so no one else's record is ever read. It deletes the users only, not the rows they made through the app (a person, a profile, identities, a personal group and its team each, and the flows' groups and schedules). Those stay in dev, which is production, after every run: `account POST /delete` refuses an account for 24 hours after its password is set, and the key can't reach the database. Nothing in them reaches a real person, as every address is a test one and the jobs skip a user that's gone.
+- **Addresses:** every address is a Resend test address, `delivered+<run ID>-<label>@resend.dev`, billing emails included. No real inbox, and no real personal data. Names carry the run ID too, so rows a run leaves in dev are easy to spot.
+- **Groups:** each flow that adds an employer archives it afterwards, even when the flow fails, so the statements job doesn't draft its invoices every month. Archiving stops its schedules too.
+- **Waits:** Playwright's auto-waiting and `expect` polling only, never fixed sleeps.
+- **CI:** `.github/workflows/e2e.yml` runs after each successful deploy of `main` to dev (`workflow_run`) and on **Run workflow**, never on pull requests: a PR's code isn't deployed. Like Deploy, it tests only `main`'s latest commit, which is what dev runs. It uploads the Playwright report when a run fails. Until the key is set (#78), a run is skipped with a warning.
+- **Locally:** put the three variables in the repo root's `.env.local`, the key too. Playwright reads that file, and Vite passes only the `VITE_` ones to the browser. Then run the command. `npx playwright install chromium` fetches the browser once.

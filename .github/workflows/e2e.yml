@@ -1,0 +1,107 @@
+name: E2E
+
+# The user flows in apps/web/e2e in a real browser against ledgerly-dev (#38), after each
+# successful deploy of main. A pull request's code isn't deployed, so this never runs on one.
+on:
+  workflow_run:
+    workflows: [Deploy]
+    types: [completed]
+  workflow_dispatch:
+
+# One run at a time against dev; a new deploy's run waits for the one before it.
+concurrency:
+  group: e2e
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+# An explicit bash adds `-o pipefail`, so a failing command before a pipe fails its step.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  e2e:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    # The install, then the suite's own 10 minutes (playwright.config.ts), with room for its
+    # teardown: a job stopped before then leaves the run's users in dev.
+    timeout-minutes: 25
+    # The deploy's own secrets name the dev project. The dev-only key (#78) is passed only to the
+    # step that runs the flows, never to the install. There it reaches npm and Playwright, but not
+    # the Vite server (playwright.config.ts).
+    env:
+      VITE_APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+      VITE_APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_DEV_PROJECT_ID }}
+    steps:
+      # Until the owner adds the key (#78), a run is skipped with a warning. A key without the
+      # dev project's secrets (#3) fails instead: something is set up wrong.
+      - name: Check the secrets
+        id: secrets
+        env:
+          E2E_APPWRITE_API_KEY: ${{ secrets.E2E_APPWRITE_API_KEY }}
+        run: |
+          if [ -n "$VITE_APPWRITE_ENDPOINT" ] && [ -n "$VITE_APPWRITE_PROJECT_ID" ] && [ -n "$E2E_APPWRITE_API_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          elif [ -z "$E2E_APPWRITE_API_KEY" ]; then
+            echo "::warning::E2E skipped: E2E_APPWRITE_API_KEY isn't set yet (#78)."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::E2E_APPWRITE_API_KEY is set, but APPWRITE_ENDPOINT or APPWRITE_DEV_PROJECT_ID isn't."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.secrets.outputs.ready == 'true'
+        with:
+          persist-credentials: false
+          # The commit that was deployed, not whatever main is by now.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # Every branch, so this commit can be checked against main's latest.
+          fetch-depth: 0
+
+      # A Deploy run whose commit is no longer main's latest deploys main's latest in its place, so
+      # dev runs only main's latest. That commit's own Deploy run usually triggers the run that
+      # tests it; if Deploy cancels that run instead, the commit is tested by the next deploy or
+      # by Run workflow.
+      - name: Check this is what dev runs
+        id: latest
+        if: steps.secrets.outputs.ready == 'true'
+        env:
+          SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          if [ "$(git rev-parse origin/main)" = "$SHA" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::Skipped: this isn't main's latest commit, which is what dev runs."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-node@v6
+        if: steps.latest.outputs.run == 'true'
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - if: steps.latest.outputs.run == 'true'
+        run: npm ci
+
+      - if: steps.latest.outputs.run == 'true'
+        run: npx playwright install --with-deps chromium
+
+      - name: User flows
+        if: steps.latest.outputs.run == 'true'
+        run: npm run test:e2e -w @ledgerly/web
+        env:
+          CI: true
+          E2E_APPWRITE_API_KEY: ${{ secrets.E2E_APPWRITE_API_KEY }}
+
+      - uses: actions/upload-artifact@v7
+        if: failure() && steps.latest.outputs.run == 'true'
+        with:
+          name: playwright-report
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+          retention-days: 14

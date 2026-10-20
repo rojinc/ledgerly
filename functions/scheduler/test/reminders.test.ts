@@ -29,6 +29,8 @@ afterEach(() => {
   logged.mockRestore()
 })
 
+// Step 5 has no receipts to clean up in these tests.
+const NO_RECEIPTS = { deleted: 0, skipped: 0, failed: 0 }
 const SYDNEY_YESTERDAY = '2026-10-18'
 
 function transaction(id: string, extra: Partial<Transactions> = {}) {
@@ -167,6 +169,7 @@ describe('POST / (cron run)', () => {
         posted: { posted: 0, skipped: 0, failed: 0 },
         reminders: { sent: 1, skipped: 0, failed: 0 },
         summaries: { sent: 0, skipped: 0, failed: 0 },
+        receipts: NO_RECEIPTS,
         invites: { deleted: 0, skipped: 0, failed: 0 },
         placeholders: { cleared: 0, kept: 0, skipped: 0, failed: 0 },
         // Step 6's first pass backfills each group's balances row.

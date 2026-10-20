@@ -179,7 +179,7 @@ Deletes the files in the `receipts` bucket that no transaction lists, using the 
 - an attach that commits first makes the step's check or commit fail, and the file stays;
 - an attach that commits later finds `deletingAt` and is refused, even one that read the rows before the step made or marked the row, because it reads them again after staging. The row is kept until its `deletingAt` is at least an hour old, which is far longer than any ledger request (15 s timeout), so no attach can miss both the row and the missing file.
 
-Anything that fails for one file or row is counted and left for the next run, and the step carries on. A Storage error is never taken for a database conflict. The run returns `receipts: { deleted, skipped, failed }` and logs nothing per file, apart from `receipt_row_listed`.
+Anything that fails for one file or row is counted and left for the next run, and the step carries on. A Storage error is never taken for a database conflict. A run with any failure logs one error line, `receipt_cleanup_failed`, with the counts and the first error's name only. The run returns `receipts: { deleted, skipped, failed }` and logs nothing per file, apart from `receipt_row_listed`.
 
 ### Step 5b: invite clean-up
 
