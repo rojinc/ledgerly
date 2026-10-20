@@ -431,7 +431,7 @@ describe('BillsPage: recurring', () => {
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Cancel' }))
     expect(
       screen.getByRole('group', {
-        name: 'Pause Rent from today? Bills due from today that you haven’t changed are removed, and no more are made until you resume it.',
+        name: 'Pause Rent from today? Bills due from today that you haven’t paid or changed are removed, and no more are made until you resume it.',
       }),
     ).toBeTruthy()
     expect(call).not.toHaveBeenCalled()

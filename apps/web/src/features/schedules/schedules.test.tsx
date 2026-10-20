@@ -668,6 +668,26 @@ describe('SchedulesPage: pause and resume (#430)', () => {
     expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
   })
 
+  it('pauses from a later date picked, and says that date', async () => {
+    mockGroup(acme)
+    mockSchedules([running])
+    answerWith(paused, { removed: 1 })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    fireEvent.change(screen.getByLabelText('Pause from'), { target: { value: '2026-11-02' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('scheduler', 'POST', `/schedules/${running.$id}/pause`, {
+        pausedFrom: '2026-11-02',
+      }),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(
+        /^Paused from Mon, (2 Nov|Nov 2),? 2026\.$/,
+      ),
+    )
+  })
+
   it('checks the date in words before sending, and puts focus back on Pause after Cancel', async () => {
     mockGroup(acme)
     mockSchedules([running])

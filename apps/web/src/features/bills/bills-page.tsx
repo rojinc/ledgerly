@@ -370,7 +370,7 @@ function RecurringBill({
     asking === 'pause'
       ? expense
         ? `Pause ${schedule.description} from today? Nothing more is added until you resume it. What was added already stays.`
-        : `Pause ${schedule.description} from today? Bills due from today that you haven’t changed are removed, and no more are made until you resume it.`
+        : `Pause ${schedule.description} from today? Bills due from today that you haven’t paid or changed are removed, and no more are made until you resume it.`
       : expense
         ? notStarted
           ? `Remove ${schedule.description}? It hasn’t started yet, so nothing has been added.`
