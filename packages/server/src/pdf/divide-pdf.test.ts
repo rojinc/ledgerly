@@ -127,10 +127,12 @@ async function textItems(
 // Texts drawn over the next text on their line: a word that ran into an amount.
 function printedOver(items: Awaited<ReturnType<typeof textItems>>): string[] {
   const over: string[] = []
-  const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x)
+  // By line, to the point, so items whose baselines differ by a fraction still share one.
+  const line = (item: { y: number }) => Math.round(item.y)
+  const sorted = [...items].sort((a, b) => line(a) - line(b) || a.x - b.x)
   sorted.forEach((item, at) => {
     const next = sorted[at + 1]
-    if (next && Math.abs(next.y - item.y) < 1 && item.right > next.x + 0.5) {
+    if (next && line(next) === line(item) && item.right > next.x + 0.5) {
       over.push(`${item.str} over ${next.str}`)
     }
   })
@@ -675,13 +677,15 @@ describe('renderDividePdf', () => {
     // The People table's names stay inside their column, padding included.
     const top = items.find((item) => item.str === 'Name')?.y as number
     const bottom = items.find((item) => item.str === 'Suggested transfers')?.y as number
-    const chars = new Set(name)
+    // As printed: Thai and the spaces pdfmake doesn't break at print as �.
+    const chars = new Set([...name, '\uFFFD'])
     const names = items.filter(
       (item) =>
         item.y < top &&
         item.y > bottom &&
         [...item.str.replace(/\s/g, '')].every((c) => chars.has(c)),
     )
+    expect(names.length).toBeGreaterThan(0)
     expect(names.filter((item) => item.right > PAGE_MARGIN + NAME_COLUMN + 0.5)).toEqual([])
   })
 
