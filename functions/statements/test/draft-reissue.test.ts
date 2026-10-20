@@ -467,6 +467,21 @@ describe('reissue guards', () => {
     expect(services.db.rows('statements')).toHaveLength(3)
   })
 
+  it('redoes a void range while another group has a draft on those days (#420)', async () => {
+    const services = fakes({
+      ...octoberDrafted,
+      statements: [
+        statement('st-void', { ...firstHalf, status: 'void' }),
+        statement('st-other', { ...firstHalf, groupId: 'job2' }),
+      ],
+    })
+    const draft = await ok<Statements>(services, 'POST', '/statements/reissue', {
+      groupId: 'job',
+      ...firstHalf,
+    })
+    expect(draft).toMatchObject({ ...firstHalf, groupId: 'job', status: 'draft' })
+  })
+
   it('refuses a period the job hasn’t drafted yet', async () => {
     // November, on 2 November: the job would draft it again on 1 December.
     const services = fakes(octoberDrafted)
