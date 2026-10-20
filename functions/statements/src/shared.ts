@@ -222,7 +222,7 @@ export async function isFinalizing(db: Db, groupId: string): Promise<boolean> {
  * and a close's (statements.md#lifecycle).
  */
 export function draftWrite(
-  group: Groups,
+  group: Pick<Groups, '$id'>,
   statementId: string,
   period: { start: string; end: string },
   snapshot: StatementSnapshot,

@@ -42,6 +42,8 @@ export async function closeStatement(
   const existing = await unfinishedEndingOn(db, groupId, end)
   if (existing) return existing
   const start = await closeStart(db, group, end)
+  // Early too, so a refused day costs no snapshot. A day out of range then gets
+  // VALIDATION_FAILED even where the checks after staging would answer CONFLICT first.
   requireInRange(group, { start, end }, now)
   const period = { start, end }
   const { snapshot } = await computeSnapshot(db, group, period, now)

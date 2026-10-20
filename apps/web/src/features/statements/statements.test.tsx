@@ -1331,6 +1331,18 @@ describe('StatementsPage: the period so far, and closing it now (#398)', () => {
     }
   })
 
+  it('offers neither the button nor the period so far in a group with no statements', async () => {
+    mockGroup('admin', { type: 'pair', statementCycle: 'none' })
+    store()
+    answer()
+    renderAt('/groups/g1/statements')
+    // The list is in, so the button would be there by now.
+    await screen.findByText('No invoices yet.', {}, { timeout: 3000 })
+    expect(screen.queryByText('Close period now…')).toBeNull()
+    expect(screen.queryByText('Current period so far')).toBeNull()
+    expect(call.mock.calls.map(([, , path]) => path)).not.toContain('/statements/preview')
+  })
+
   it('says what a close would cover, then drafts it up to the day picked and opens it', async () => {
     store(statement('s1', FINAL))
     answer()
@@ -1388,15 +1400,17 @@ describe('StatementsPage: the period so far, and closing it now (#398)', () => {
   })
 
   it('ends no later than the job’s period before the job drafts it, and checks the day', async () => {
-    // 03:00 on 1 Nov in Sydney: October has ended, and the job drafts it at 06:00.
+    // 03:00 on 1 Nov in Sydney: October has ended, and the job drafts it at 06:00. September's
+    // invoice was voided, so the next one starts on 1 October all the same.
     vi.setSystemTime(new Date('2026-10-31T16:00:00.000Z'))
     mockGroup('admin', { nextCloseAt: '2026-10-31T19:00:00.000Z' })
-    store()
+    store(statement('s1', { periodStart: '2026-09-01', periodEnd: '2026-09-30', status: 'void' }))
     answer({ start: '2026-10-01' })
     renderAt('/groups/g1/statements')
     fireEvent.click(await screen.findByText('Close period now…', {}, { timeout: 3000 }))
     const input = screen.getByLabelText('Last day') as HTMLInputElement
     expect(input.value).toBe('2026-10-31')
+    expect(input.min).toBe('2026-10-01')
     expect(input.max).toBe('2026-10-31')
     await screen.findByText(covers('2026-10-01', '2026-10-31'), {}, { timeout: 3000 })
 
@@ -1406,13 +1420,15 @@ describe('StatementsPage: the period so far, and closing it now (#398)', () => {
     fireEvent.change(input, { target: { value: '' } })
     fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
     await screen.findByText('Required')
-    // A day before the period starts is pointed out before it's refused.
+    // A day the latest statement covers is pointed out, from the list, not sent.
     fireEvent.change(input, { target: { value: '2026-09-30' } })
     await screen.findByText(
-      `The period starts on ${formatDate('2026-10-01')}, so pick that day or a later one.`,
+      `The next one starts on ${formatDate('2026-10-01')}, so pick that day or a later one.`,
       {},
       { timeout: 3000 },
     )
+    fireEvent.click(screen.getByRole('button', { name: 'Close period' }))
+    await screen.findByText(`Pick ${formatDate('2026-10-01')} or later`)
     expect(call.mock.calls.map(([, , path]) => path)).not.toContain('/statements/close')
   })
 

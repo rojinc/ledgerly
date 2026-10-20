@@ -89,6 +89,15 @@ describe('POST /statements/close', () => {
     expect(final).toMatchObject({ status: 'final', displayNumber: 'INV-0010' })
   })
 
+  it('leaves the draft for the admin when the group auto-finalizes', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-11-01', 60), { statements: [octoberFinal] }),
+      groups: [job({ autoFinalize: true }, { nextCloseAt: NOVEMBER_CLOSE })],
+    })
+    expect(await close(services)).toMatchObject({ status: 'draft' })
+    expect(services.db.rows('statements').map((row) => row.status)).toEqual(['final', 'draft'])
+  })
+
   it('takes the end it is given', async () => {
     const draft = await close(midNovember(), { periodEnd: '2026-11-01' })
     expect(draft).toMatchObject({ periodStart: '2026-11-01', periodEnd: '2026-11-01' })
@@ -224,6 +233,18 @@ describe('close refusals', () => {
     expect(services.db.rows('statements')).toEqual([])
   })
 
+  it('checks the day again in a time zone changed just before the close is staged', async () => {
+    // 2 November in Sydney is still 1 November in Honolulu: the 2nd hasn't come there yet.
+    const services = midNovember()
+    beforeStaging(services.db, [op('groups', 'job', { timezone: 'Pacific/Honolulu' })])
+    const response = await failure(services, 'POST', '/statements/close', {
+      groupId: 'job',
+      periodEnd: '2026-11-02',
+    })
+    expect(response.code).toBe('VALIDATION_FAILED')
+    expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
   it('refuses when the group is archived just before the close is staged', async () => {
     const services = midNovember()
     beforeStaging(services.db, [
@@ -251,17 +272,20 @@ describe('close refusals', () => {
     expect(services.db.rows('statements')).toHaveLength(2)
   })
 
-  it('refuses while an earlier draft is unfinished, naming it', async () => {
+  it('refuses while an earlier draft is unfinished, naming the oldest', async () => {
     const services = midNovember({
-      statements: [statement('st-sep', { periodStart: '2026-09-01', periodEnd: '2026-09-30' })],
+      statements: [
+        statement('st-sep', { periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
+        statement('st-aug', { periodStart: '2026-08-01', periodEnd: '2026-08-31' }),
+      ],
     })
     const { status, body } = await call(services, 'POST', '/statements/close', { groupId: 'job' })
     expect(status).toBe(409)
     expect(body).toMatchObject({
       ok: false,
-      error: { code: 'CONFLICT', details: { draftId: 'st-sep' } },
+      error: { code: 'CONFLICT', details: { draftId: 'st-aug' } },
     })
-    expect(services.db.rows('statements')).toHaveLength(2)
+    expect(services.db.rows('statements')).toHaveLength(3)
   })
 
   it('refuses when a statement starts finalizing just before the close is staged', async () => {

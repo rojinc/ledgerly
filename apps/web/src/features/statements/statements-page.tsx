@@ -1,4 +1,4 @@
-import { isLocalDate } from '@ledgerly/core/dates/local-date'
+import { addDays, isLocalDate, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday, periodEndClosedAt } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { formatNet } from '@ledgerly/core/money/format'
@@ -151,7 +151,10 @@ export function StatementsPage() {
         {note}
       </p>
       {kind && <CurrentPeriod groupId={groupId} />}
-      {open && group.data && <ClosePeriod group={group.data} />}
+      {/* Once the list is in: a close can't end before the day after its latest statement. */}
+      {open && group.data && statements.data && (
+        <ClosePeriod group={group.data} statements={statements.data} />
+      )}
       {content}
     </div>
   )
@@ -217,7 +220,7 @@ function CurrentPeriod({ groupId }: { groupId: string }) {
 }
 
 /** An admin drafts the next statement now, up to a day they pick (statements.md#6). */
-function ClosePeriod({ group }: { group: Groups }) {
+function ClosePeriod({ group, statements }: { group: Groups; statements: Statements[] }) {
   const swap = useSwap()
   if (!swap.opened) {
     return (
@@ -226,15 +229,19 @@ function ClosePeriod({ group }: { group: Groups }) {
       </Button>
     )
   }
-  return <CloseForm group={group} heading={swap.heading} onCancel={swap.close} />
+  return (
+    <CloseForm group={group} statements={statements} heading={swap.heading} onCancel={swap.close} />
+  )
 }
 
 function CloseForm({
   group,
+  statements,
   heading,
   onCancel,
 }: {
   group: Groups
+  statements: Statements[]
   heading: RefObject<HTMLHeadingElement | null>
   onCancel: () => void
 }) {
@@ -247,22 +254,33 @@ function CloseForm({
     const due = group.nextCloseAt && periodEndClosedAt(group.nextCloseAt, group.timezone)
     return due && due < today ? due : today
   })
+  // The next statement starts the day after the latest one, void ones included.
+  const ends = statements.map((row) => row.periodEnd as LocalDate)
+  const first =
+    ends.length > 0
+      ? addDays(
+          ends.reduce((a, b) => (a > b ? a : b)),
+          1,
+        )
+      : undefined
   const [periodEnd, setPeriodEnd] = useState<string>(latest)
   const [error, setError] = useState('')
-  const valid = isLocalDate(periodEnd) && periodEnd <= latest
+  // Set when the day picked is before that start.
+  const tooEarly = first && isLocalDate(periodEnd) && periodEnd < first ? first : undefined
+  const valid = isLocalDate(periodEnd) && periodEnd <= latest && !tooEarly
   const preview = usePreviewStatement(group.$id, periodEnd, valid)
   // Where a close ending on that day would start.
   const start = preview.data?.snapshot.period.start
   let covers = ''
-  if (valid) {
+  if (tooEarly) {
+    covers = `The next one starts on ${formatDate(tooEarly)}, so pick that day or a later one.`
+  } else if (valid) {
     const end = formatDate(periodEnd)
     covers = preview.isError
       ? `We couldn’t work out what it would cover. ${preview.error.message}`
       : !start
         ? 'Working out what it covers…'
-        : periodEnd < start
-          ? `The period starts on ${formatDate(start)}, so pick that day or a later one.`
-          : `Covers ${formatDate(start)} – ${end}. Entries after ${end} go on the next one.`
+        : `Covers ${formatDate(start)} – ${end}. Entries after ${end} go on the next one.`
   }
   return (
     <form
@@ -273,7 +291,13 @@ function CloseForm({
         event.preventDefault()
         if (close.isPending) return
         const problem =
-          periodEnd === '' ? 'Required' : valid ? '' : `Pick ${formatDate(latest)} or earlier`
+          periodEnd === ''
+            ? 'Required'
+            : tooEarly
+              ? `Pick ${formatDate(tooEarly)} or later`
+              : valid
+                ? ''
+                : `Pick ${formatDate(latest)} or earlier`
         setError(problem)
         if (problem) return
         close.mutate(periodEnd, {
@@ -292,6 +316,7 @@ function CloseForm({
         id="closePeriodEnd"
         type="date"
         label="Last day"
+        min={first}
         max={latest}
         value={periodEnd}
         onChange={(event) => setPeriodEnd(event.target.value)}
