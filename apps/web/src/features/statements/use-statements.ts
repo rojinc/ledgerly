@@ -1,7 +1,9 @@
+import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Statements } from '@ledgerly/core/generated/rows'
-import type { VoidStatementBody } from '@ledgerly/core/schemas/statements'
+import type { ReissueStatementBody, VoidStatementBody } from '@ledgerly/core/schemas/statements'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AppwriteException, ExecutionMethod, Query, Storage } from 'appwrite'
+import { useNavigate } from 'react-router'
 import { callFunction, type ErrorCode, type Method, parseEnvelope } from '../../lib/api'
 import { client, DATABASE_ID, functions, tablesDB } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
@@ -107,6 +109,33 @@ export function useVoidStatement(id: string) {
     mutationFn: (body: VoidStatementBody) =>
       statements<Statements>('POST', `/statements/${id}/void`, body),
     onSuccess: (statement) => store(queryClient, statement),
+  })
+}
+
+/**
+ * `POST /statements/reissue` with a void statement's own range (statements.md#4), then opens the
+ * draft. While that draft is unfinished, asking again returns it, so a retry makes no second one.
+ */
+export function useReissueStatement(statement: Statements) {
+  const queryClient = useQueryClient()
+  const navigate = useNavigate()
+  return useMutation({
+    mutationFn: () => {
+      // The void statement's own range, as stored.
+      const body: ReissueStatementBody = {
+        groupId: statement.groupId,
+        periodStart: statement.periodStart as LocalDate,
+        periodEnd: statement.periodEnd as LocalDate,
+      }
+      return statements<Statements>('POST', '/statements/reissue', body)
+    },
+    onSuccess: (draft) => {
+      store(queryClient, draft)
+      navigate(`/groups/${draft.groupId}/statements/${draft.$id}`)
+    },
+    // A refusal means the list was out of date, and a lost answer may have made the draft.
+    onError: () =>
+      queryClient.invalidateQueries({ queryKey: queryKeys.statements(statement.groupId) }),
   })
 }
 
