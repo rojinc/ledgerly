@@ -98,6 +98,7 @@ function PasswordForm({ onSignedIn }: { onSignedIn: () => void }) {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (login.isPending) return
     const form = new FormData(event.currentTarget)
     login.mutate({ email: String(form.get('email')), password: String(form.get('password')) })
   }
@@ -122,7 +123,7 @@ function PasswordForm({ onSignedIn }: { onSignedIn: () => void }) {
           Forgot your password?
         </Link>
       </div>
-      <Button type="submit" disabled={login.isPending}>
+      <Button type="submit" aria-disabled={login.isPending}>
         {login.isPending ? 'Logging in…' : 'Log in'}
       </Button>
     </form>
@@ -146,6 +147,7 @@ function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
       <form
         onSubmit={(event) => {
           event.preventDefault()
+          if (sendCode.isPending) return
           sendCode.mutate(email)
         }}
         className="flex flex-col gap-4"
@@ -164,7 +166,7 @@ function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
             onChange={(event) => setEmail(event.target.value)}
           />
         </div>
-        <Button type="submit" disabled={sendCode.isPending}>
+        <Button type="submit" aria-disabled={sendCode.isPending}>
           {sendCode.isPending ? 'Sending…' : 'Email me a code'}
         </Button>
       </form>
@@ -175,6 +177,7 @@ function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
     <form
       onSubmit={(event) => {
         event.preventDefault()
+        if (verifyCode.isPending) return
         const secret = String(new FormData(event.currentTarget).get('code')).trim()
         verifyCode.mutate({ userId, secret })
       }}
@@ -196,7 +199,7 @@ function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
           required
         />
       </div>
-      <Button type="submit" disabled={verifyCode.isPending}>
+      <Button type="submit" aria-disabled={verifyCode.isPending}>
         {verifyCode.isPending ? 'Checking…' : 'Log in'}
       </Button>
       <Button variant="link" onClick={() => sendCode.reset()}>

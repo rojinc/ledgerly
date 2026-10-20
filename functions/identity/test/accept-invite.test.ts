@@ -225,6 +225,18 @@ describe('POST /invites/accept', () => {
     expect(staged).toEqual(['groups', 'members', 'persons', 'activity', 'invites'])
   })
 
+  it('marks a merge into the caller that skipped the group, so it carries on there (#358)', async () => {
+    // Sammy was merged into Sam, a merge that finished without g1, where Sam wasn't joined yet.
+    const sammy = {
+      ...person('pP', null, 'Sammy'),
+      mergedInto: 'pSam',
+      mergeGroupIds: ['g1'],
+    }
+    const services = setup({ persons: [SAM, sammy] })
+    expect(await accept(services)).toEqual({ groupId: 'g1' })
+    expect(rowOf(services, 'persons', 'pP')).toMatchObject({ mergeResumeAt: NOW.toISOString() })
+  })
+
   it('adopts: a new user who signed up with the invited email joins through bootstrap', async () => {
     const services = setup({
       persons: [KIM],

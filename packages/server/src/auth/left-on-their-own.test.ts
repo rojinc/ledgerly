@@ -44,6 +44,26 @@ describe('leftOnTheirOwn', () => {
     expect(await check([activity('a1', 'member.updated', '2026-10-01T00:00:00.000Z')])).toBe(false)
   })
 
+  // A merge's member.joined is dated at its request's start, before a leave written meanwhile (#457).
+  it('goes by when each row was written, not by `at`', async () => {
+    const joined = activity('a1', 'member.joined', '2026-10-01T00:00:00.000Z', {
+      $createdAt: '2026-10-01T00:00:02.000Z',
+    })
+    const left = activity('a2', 'member.left', '2026-10-01T00:00:01.000Z')
+    expect(await check([joined, left])).toBe(false)
+    expect(await check([joined, { ...left, $createdAt: '2026-10-01T00:00:03.000Z' }])).toBe(true)
+  })
+
+  it('goes by `at` between rows written in the same millisecond', async () => {
+    const WRITTEN = '2026-10-01T00:00:00.000Z'
+    const joined = activity('a1', 'member.joined', '2026-09-20T00:00:00.000Z', {
+      $createdAt: WRITTEN,
+    })
+    const left = activity('a2', 'member.left', '2026-09-30T00:00:00.000Z', { $createdAt: WRITTEN })
+    expect(await check([joined, left])).toBe(true)
+    expect(await check([left, { ...joined, at: '2026-09-30T00:00:01.000Z' }])).toBe(false)
+  })
+
   it('ignores rows from before this member row, from others, and from other groups', async () => {
     expect(
       await check([

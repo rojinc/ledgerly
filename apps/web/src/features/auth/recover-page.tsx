@@ -30,6 +30,7 @@ export function RecoverPage() {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (recover.isPending) return
     recover.mutate(String(new FormData(event.currentTarget).get('email')).trim())
   }
 
@@ -56,7 +57,7 @@ export function RecoverPage() {
             <Label htmlFor="email">Email</Label>
             <Input id="email" name="email" type="email" autoComplete="email" required />
           </div>
-          <Button type="submit" disabled={recover.isPending}>
+          <Button type="submit" aria-disabled={recover.isPending}>
             {recover.isPending ? 'Sending…' : 'Send link'}
           </Button>
         </form>

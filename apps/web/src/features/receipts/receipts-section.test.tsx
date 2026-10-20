@@ -316,9 +316,14 @@ describe('ReceiptsSection', () => {
     renderSection(row(['img1']))
     pick()
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
-    expect(
-      (screen.getByLabelText('Add a receipt (photo or PDF)') as HTMLInputElement).disabled,
-    ).toBe(true)
+    const file = screen.getByLabelText('Add a receipt (photo or PDF)')
+    expect(file.getAttribute('aria-disabled')).toBe('true')
+    // It keeps focus, but its picker doesn't open, and a file dropped on it is ignored.
+    file.focus()
+    expect(document.activeElement).toBe(file)
+    expect(fireEvent.click(file)).toBe(false)
+    pick()
+    expect(prepare).toHaveBeenCalledTimes(1)
     const remove = screen.getByRole('button', { name: 'Remove receipt 1' })
     expect(remove.getAttribute('aria-disabled')).toBe('true')
     fireEvent.click(remove)

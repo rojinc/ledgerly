@@ -28,6 +28,7 @@ export function SignupPage() {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    if (signup.isPending) return
     const form = new FormData(event.currentTarget)
     signup.mutate({
       name: String(form.get('name')).trim(),
@@ -63,7 +64,7 @@ export function SignupPage() {
             At least 8 characters.
           </p>
         </div>
-        <Button type="submit" disabled={signup.isPending}>
+        <Button type="submit" aria-disabled={signup.isPending}>
           {signup.isPending ? 'Creating account…' : 'Create account'}
         </Button>
       </form>

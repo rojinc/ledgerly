@@ -422,7 +422,7 @@ describe('EmployerSettingsPage', () => {
     const autoSend = input('Also email it to the billing emails')
     const autoFinalize = input('Finalize invoices automatically when the period ends')
     expect(autoSend.checked).toBe(false)
-    expect(autoSend.disabled).toBe(false)
+    expect(autoSend.getAttribute('aria-disabled')).toBe('false')
     expect(autoSend.getAttribute('aria-describedby')).toBe('autoSend-hint')
     fireEvent.click(autoSend)
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -437,19 +437,79 @@ describe('EmployerSettingsPage', () => {
     // Clearing either clears it, and it can't be ticked again until both are back.
     fireEvent.click(autoFinalize)
     await waitFor(() => expect(autoSend.checked).toBe(false))
-    expect(autoSend.disabled).toBe(true)
+    expect(autoSend.getAttribute('aria-disabled')).toBe('true')
     fireEvent.click(autoFinalize)
-    expect(autoSend.disabled).toBe(false)
+    expect(autoSend.getAttribute('aria-disabled')).toBe('false')
     fireEvent.click(autoSend)
     type('Billing emails', '')
     await waitFor(() => expect(autoSend.checked).toBe(false))
-    expect(autoSend.disabled).toBe(true)
+    expect(autoSend.getAttribute('aria-disabled')).toBe('true')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(2))
     expect(call.mock.calls[1]?.[3]).toMatchObject({
       settings: { autoFinalize: true, recipients: [] },
     })
     expect(call.mock.calls[1]?.[3]).not.toHaveProperty('settings.autoSend')
+  })
+
+  const manual = {
+    ...employer,
+    settingsJson: JSON.stringify({ ...JSON.parse(employer.settingsJson), autoFinalize: false }),
+  }
+
+  it('keeps auto-send focusable while it can’t be used, and a click doesn’t tick it (#459)', async () => {
+    mockGroup(manual)
+    call.mockResolvedValue({ ok: true, data: employer })
+    renderAt('/groups/g1/settings')
+    const autoSend = input('Also email it to the billing emails')
+    expect(autoSend.getAttribute('aria-disabled')).toBe('true')
+    autoSend.focus()
+    expect(document.activeElement).toBe(autoSend)
+    fireEvent.click(autoSend)
+    expect(autoSend.checked).toBe(false)
+    fireEvent.click(screen.getByText('Also email it to the billing emails'))
+    expect(autoSend.checked).toBe(false)
+    // Nor in the form's value: with automatic finalizing back on, a save doesn't send it.
+    fireEvent.click(input('Finalize invoices automatically when the period ends'))
+    expect(autoSend.getAttribute('aria-disabled')).toBe('false')
+    expect(autoSend.checked).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({ settings: { autoFinalize: true } })
+    expect(call.mock.calls[0]?.[3]).not.toHaveProperty('settings.autoSend')
+  })
+
+  it('counts a tick once auto-send can be used again, after a click while it couldn’t (#459)', async () => {
+    mockGroup(manual)
+    call.mockResolvedValue({ ok: true, data: employer })
+    renderAt('/groups/g1/settings')
+    const autoSend = input('Also email it to the billing emails')
+    fireEvent.click(autoSend)
+    fireEvent.click(input('Finalize invoices automatically when the period ends'))
+    fireEvent.click(autoSend)
+    expect(autoSend.checked).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      settings: { autoFinalize: true, autoSend: true },
+    })
+  })
+
+  it('keeps Save focusable while saving, and saves once', async () => {
+    mockGroup(employer)
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/groups/g1/settings')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    saving.focus()
+    expect(document.activeElement).toBe(saving)
+    fireEvent.click(saving)
+    fireEvent.submit(saving.closest('form') as HTMLFormElement)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(call).toHaveBeenCalledTimes(1)
   })
 
   it('shows auto-send as stored', () => {

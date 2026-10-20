@@ -173,8 +173,12 @@ export function ReceiptsSection({
               accept="image/*,application/pdf"
               aria-describedby="receipt-file-status"
               // While one is on its way, another pick would be lost.
-              disabled={busy}
-              className="text-sm file:mr-3 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              aria-disabled={busy}
+              className="text-sm file:mr-3 file:rounded-md file:border file:border-input file:bg-background file:px-3 file:py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring aria-disabled:opacity-50"
+              // Preventing the click keeps the picker shut.
+              onClick={(event) => {
+                if (busy) event.preventDefault()
+              }}
               onChange={(event) => void add(event)}
             />
             <p id="receipt-file-status" role="status" className="text-sm text-muted-foreground">
