@@ -154,7 +154,7 @@ Admin only, in an `employer` or a `house` group. Other groups get `VALIDATION_FA
 
 It reads the period's start again after staging, and answers `CONFLICT` (try again) if a draft or a discard that committed meanwhile moved it, so no two periods overlap and none leaves a gap. A job run or another close at the same moment fails one of the two commits, since both write the group row.
 
-**The current period so far.** `POST /statements/preview` shows any member what the statement would hold if it were closed on `periodEnd`. The default and the start are a close's, not the cycle period's, so the preview matches what an admin would draft. A statement may already cover that day (a close ended today); then the preview starts where the cycle period does, as before. Nothing is saved, nothing is refused for being early or late, and it works in an archived group too.
+**The current period so far.** `POST /statements/preview` shows any member what the statement would hold if it were closed on `periodEnd`. The default and the start are a close's, not the cycle period's, so the preview matches what an admin would draft. A statement may already cover that day (a close ended today); then the preview starts where the cycle period does (a calendar month with no cycle), as before. Nothing is saved, nothing is refused for being early or late, and it works in an archived group too.
 
 ## Snapshot
 
