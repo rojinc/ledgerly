@@ -2,6 +2,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import type { Services } from '../services'
 import { autoPost, type PostCounts } from '../steps/auto-post'
 import { type ExpandCounts, expandDueSchedules } from '../steps/expand'
+import { cleanUpInvites, type InviteCounts } from '../steps/invite-cleanup'
 import { type CheckCounts, nightlyCheck } from '../steps/nightly-check'
 import { type ReminderCounts, sendReminders } from '../steps/reminders'
 import { type SummaryCounts, sendSummaries } from '../steps/summaries'
@@ -11,6 +12,7 @@ export type RunResult = {
   posted: PostCounts
   reminders: ReminderCounts
   summaries: SummaryCounts
+  invites: InviteCounts
   nightly: CheckCounts
 }
 
@@ -27,5 +29,6 @@ export async function run(scheduled: boolean, services: () => Services): Promise
   const posted = await autoPost(built)
   const reminders = await sendReminders(built)
   const summaries = await sendSummaries(built)
-  return { expanded, posted, reminders, summaries, nightly: await nightlyCheck(built) }
+  const invites = await cleanUpInvites(built)
+  return { expanded, posted, reminders, summaries, invites, nightly: await nightlyCheck(built) }
 }
