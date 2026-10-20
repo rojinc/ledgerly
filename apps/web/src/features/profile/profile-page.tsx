@@ -1,6 +1,7 @@
 import { Link } from 'react-router'
 import { useCurrentUser } from '../auth/use-current-user'
 import { BusinessForm } from './business-form'
+import { EmailSection } from './email-section'
 import { HoursCapForm } from './hours-cap-form'
 import { OtherDevicesSection } from './other-devices-section'
 import { PasswordSection } from './password-section'
@@ -39,6 +40,7 @@ export function ProfilePage() {
       />
       <BusinessForm profile={profile.data} onSave={update.mutateAsync} />
       <HoursCapForm profile={profile.data} onSave={update.mutateAsync} />
+      <EmailSection />
       <PasswordSection />
       <OtherDevicesSection />
       <section aria-labelledby="your-data-heading" className="flex flex-col gap-2">
