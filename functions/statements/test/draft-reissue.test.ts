@@ -249,7 +249,8 @@ describe('the statements job (POST /, cron)', () => {
         .sort()
 
     it('starts the day after the last statement when the group moved from New York to Sydney', async () => {
-      // October was due at 06:00 on 1 November in New York; Sydney is 15 hours ahead.
+      // October was due at 06:00 on 1 November in New York; Sydney is 15 hours ahead. A close
+      // stored before #126: groups now re-expresses it in Sydney when the time zone changes.
       const nextCloseAt = closeAtFor('2026-10-31' as LocalDate, 'America/New_York')
       const services = fakes({
         groups: [job({}, { timezone: 'Australia/Sydney', nextCloseAt })],
@@ -258,6 +259,20 @@ describe('the statements job (POST /, cron)', () => {
       expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
       // It reaches 1 November, the day the time stored in nextCloseAt falls on in Sydney.
       expect(periods(services)).toEqual(['2026-10-01..2026-11-01'])
+    })
+
+    it('drafts October once when the group moved from Sydney to Honolulu while it was due (#126)', async () => {
+      // groups closes a due October again in the new time zone: 06:00 on 1 November in Honolulu.
+      const nextCloseAt = closeAtFor('2026-10-31' as LocalDate, 'Pacific/Honolulu')
+      const services = fakes({
+        groups: [job({}, { timezone: 'Pacific/Honolulu', nextCloseAt })],
+        statements: [septemberFinal],
+      })
+      expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+      expect(await runJob(services)).toEqual({ drafted: 0, failed: 0 })
+      // One draft, so one invoice number when it's finalized; November closes in Honolulu.
+      expect(periods(services)).toEqual(['2026-10-01..2026-10-31'])
+      expect(services.db.rows('groups')[0]?.nextCloseAt).toBe('2026-12-01T16:00:00.000Z')
     })
 
     it('leaves no gap or overlap when the cycle went from monthly to weekly', async () => {

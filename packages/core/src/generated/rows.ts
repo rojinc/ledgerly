@@ -133,6 +133,7 @@ export type Persons = Models.Row & {
     mergeCursorsJson: string | null;
     addressMisses: number;
     addressMissesFrom: string | null;
+    orphanedAt: string | null;
 }
 
 export type Identities = Models.Row & {

@@ -88,6 +88,13 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "orphanedAt",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
@@ -107,6 +114,12 @@
         "key": "idx_deletedAt",
         "type": "key",
         "columns": ["deletedAt"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_orphanedAt",
+        "type": "key",
+        "columns": ["orphanedAt"],
         "orders": ["ASC"]
       }
     ]

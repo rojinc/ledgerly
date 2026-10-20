@@ -2,6 +2,9 @@ import { tzOffset } from '@date-fns/tz'
 import { addDays, type LocalDate } from './local-date'
 
 const MS_PER_MINUTE = 60_000
+// 06:00 on the day after a period ends, less 12 hours, is the evening of its last day, even on
+// a night a DST change makes 5 or 7 hours long.
+const BACK_TO_LAST_DAY_MS = 12 * 60 * 60 * 1000
 
 function assertTimeZone(timeZone: string): void {
   // Intl throws on names that aren't IANA zones, e.g. "Mars/Base" or "Mars/Base+10".
@@ -51,4 +54,14 @@ export function localTimeToUtc(date: LocalDate, hour: number, timeZone: string):
  */
 export function closeAtFor(periodEnd: LocalDate, timeZone: string): string {
   return localTimeToUtc(addDays(periodEnd, 1), 6, timeZone)
+}
+
+/**
+ * The last day of the period whose statement is due at `closeAt` (statements.md#periods): the
+ * date in `timeZone` 12 hours before it. The inverse of closeAtFor in the same time zone, so the
+ * statements job reads a period from a stored close, and `groups` can re-express a due close in
+ * a new time zone.
+ */
+export function periodEndClosedAt(closeAt: string, timeZone: string): LocalDate {
+  return localToday(timeZone, new Date(Date.parse(closeAt) - BACK_TO_LAST_DAY_MS))
 }

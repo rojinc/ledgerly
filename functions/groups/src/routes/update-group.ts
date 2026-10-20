@@ -1,4 +1,5 @@
-import { type LocalDate, parseLocalDate } from '@ledgerly/core/dates/local-date'
+import { compareDates, type LocalDate, parseLocalDate } from '@ledgerly/core/dates/local-date'
+import { closeAtFor, localToday, periodEndClosedAt } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
 import type { GroupSettings } from '@ledgerly/core/schemas/groups'
 import { updateGroupBodySchema } from '@ledgerly/core/schemas/groups'
@@ -66,15 +67,23 @@ export async function updateGroup(
     data.settingsJson = JSON.stringify(settings)
   }
   // data-model.md#groups: a new cycle, anchor or time zone moves the next statement. One that
-  // is already due stays, so the statements cron still drafts the period that just ended and
-  // then moves it on; without a cycle there is none.
+  // is already due stays for the same period (in a new time zone, re-expressed there), so the
+  // statements cron still drafts the period that just ended and then moves it on; without a
+  // cycle there is none.
   if ('statementCycle' in after || 'cycleAnchor' in after || 'timezone' in after) {
     const stored = group.nextCloseAt
-    // Compared as instants: Appwrite may return the stored datetime with an offset, not Z.
-    const due = cycle !== 'none' && stored !== null && Date.parse(stored) <= now.getTime()
-    data.nextCloseAt = due
-      ? stored
-      : nextCloseAtFor(cycle, anchor, columns.timezone ?? group.timezone, now)
+    const timeZone = columns.timezone ?? group.timezone
+    const due = cycle !== 'none' && stored !== null && isDue(stored, group.timezone, now)
+    const timeZoneOnly = !('statementCycle' in after || 'cycleAnchor' in after)
+    if (cycle !== 'none' && stored !== null && (due || timeZoneOnly) && 'timezone' in after) {
+      // The stored close's period, read in the time zone it was made in, closes in the new one
+      // (#126), due or not: a period's dates don't depend on the time zone. Kept as it was, a
+      // due close moved west of more than 18 hours would split its period in two, and one moved
+      // east of 6 hours or more would give it a day of the next. Recomputed from today, a move
+      // east into a time zone where the period has already ended would skip it.
+      data.nextCloseAt = closeAtFor(periodEndClosedAt(stored, group.timezone), timeZone)
+    } else if (due) data.nextCloseAt = stored
+    else data.nextCloseAt = nextCloseAtFor(cycle, anchor, timeZone, now)
   }
   const changed = Object.keys(after)
   await conflictAsTryAgain(() =>
@@ -108,6 +117,20 @@ export async function updateGroup(
     }),
   )
   return db.getRow<Groups>({ databaseId: DATABASE_ID, tableId: TABLES.groups, rowId: groupId })
+}
+
+/**
+ * Whether the statements cron has yet to draft the period `closeAt` closes
+ * (statements.md#periods): once that period has ended, read in `timeZone`, the group's before
+ * the change, or once the close has passed. The first covers the hours between a period's end
+ * and its close, so a period that has ended in the group's time zone is never merged into the
+ * next (#126); the second, a close stored in another time zone before #126. Before the period
+ * ends there, a change works the close out from today, as for a group always in that time zone.
+ */
+function isDue(closeAt: string, timeZone: string, now: Date): boolean {
+  const ended = compareDates(periodEndClosedAt(closeAt, timeZone), localToday(timeZone, now)) < 0
+  // Compared as an instant: Appwrite may return the stored datetime with an offset, not Z.
+  return ended || Date.parse(closeAt) <= now.getTime()
 }
 
 function storedAnchor(group: Groups): LocalDate | null {

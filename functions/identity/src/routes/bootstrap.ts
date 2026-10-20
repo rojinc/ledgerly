@@ -10,6 +10,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
 import { profileDefaults } from '@ledgerly/server/identity/defaults'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import { isPlaceholder } from '@ledgerly/server/identity/resolve-person'
 import { ID, Permission, Query, Role } from 'node-appwrite'
 import { parseBody } from '../parse-body'
 import {
@@ -17,7 +18,6 @@ import {
   findPersonOfUser,
   getRowOrNull,
   isAppwriteError,
-  isPlaceholder,
   tryAgain,
   typedKeyDeletes,
 } from '../rows'
@@ -192,7 +192,15 @@ async function planPerson(
         action: 'update',
         tableId: TABLES.persons,
         rowId: person.$id,
-        data: { userId: user.$id, displayName, claimedAt: person.claimedAt ?? now.toISOString() },
+        // The row becomes readable to the user, so a removal's or a purge's `orphanedAt` goes
+        // (data-model.md#persons), with a fresh `rev` as its every writer gives it.
+        data: {
+          userId: user.$id,
+          displayName,
+          claimedAt: person.claimedAt ?? now.toISOString(),
+          orphanedAt: null,
+          rev: randomId(),
+        },
         permissions: owner,
       },
       adopted: true,

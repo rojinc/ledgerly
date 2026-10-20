@@ -45,6 +45,7 @@ export type LogEvent =
   | 'merge_walk_cut_off'
   | 'merge_run'
   | 'invite_cleanup_failed'
+  | 'placeholder_cleanup_failed'
   | 'account_finish_failed'
   | 'receipt_cleanup_behind'
   | 'receipt_cleanup_failed'
@@ -95,8 +96,9 @@ export type ChangeNoticeOutcome =
 
 /**
  * What a merge moved or left (identity-and-invites.md#merging-two-persons); what the hourly run
- * found (#finishing-merges): merges, and the merged persons it read; and what receipt clean-up
- * did (scheduling.md#step-5-receipt-clean-up). Each a count.
+ * found (#finishing-merges): merges, and the merged persons it read; what receipt clean-up did
+ * (scheduling.md#step-5-receipt-clean-up); and what step 5c did with the persons it found
+ * (scheduling.md#step-5c-placeholder-clean-up). Each a count.
  */
 const COUNTS = [
   'groupsJoined',
@@ -115,6 +117,8 @@ const COUNTS = [
   'stopped',
   'personsRead',
   'deleted',
+  'cleared',
+  'kept',
   'failed',
 ] as const
 export type LogCount = (typeof COUNTS)[number]

@@ -6,9 +6,6 @@ import { AppwriteException, type Models, Query } from 'node-appwrite'
 
 // Small helpers like those of identity (functions/identity/src/rows.ts) and groups.
 
-/** What a deleted person, and their member rows in the groups that keep them, are called. */
-export const FORMER_MEMBER = 'Former member'
-
 export function isAppwriteError(error: unknown, code: number): boolean {
   return error instanceof AppwriteException && error.code === code
 }
@@ -34,14 +31,6 @@ export async function getRowOrNull<R extends Models.Row>(
     if (isAppwriteError(error, 404)) return null
     throw error
   }
-}
-
-/**
- * No account, not being merged, not a deleted account: identity's `isPlaceholder()`
- * (functions/identity/src/rows.ts), copied, since functions don't share code outside packages.
- */
-export function isPlaceholder(person: Persons): boolean {
-  return !person.userId && !person.mergedInto && !person.deletedAt
 }
 
 /** Every person naming the user (`idx_userId`): one, unless a bootstrap raced a deletion. */

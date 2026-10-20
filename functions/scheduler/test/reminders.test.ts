@@ -171,6 +171,7 @@ describe('POST / (cron run)', () => {
         summaries: { sent: 0, skipped: 0, failed: 0 },
         receipts: NO_RECEIPTS,
         invites: { deleted: 0, skipped: 0, failed: 0 },
+        placeholders: { cleared: 0, kept: 0, skipped: 0, failed: 0 },
         // Step 6's first pass backfills each group's balances row.
         nightly: {
           checked: 4,

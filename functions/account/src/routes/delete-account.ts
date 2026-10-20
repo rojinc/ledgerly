@@ -23,11 +23,12 @@ import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction, writeInBatches } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import { FORMER_MEMBER } from '@ledgerly/server/identity/resolve-person'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
 import { type Deleting, finalizingStatement, leaveGroups } from '../groups'
 import { parseBody } from '../parse-body'
-import { doneIfGone, FORMER_MEMBER, getRowOrNull, isAppwriteError, personsOfUser } from '../rows'
+import { doneIfGone, getRowOrNull, isAppwriteError, personsOfUser } from '../rows'
 import type { Services, UsersApi } from '../services'
 
 /** The Appwrite label of a user whose account is being deleted; bootstrap refuses them. */

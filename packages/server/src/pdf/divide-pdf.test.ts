@@ -77,6 +77,10 @@ async function pageTexts(pdf: Buffer): Promise<string[]> {
   return text.map((page) => page.replace(/\s+/g, ' '))
 }
 
+// The People table's Name column, without its padding: 515.28 pt less the four amount columns
+// (300) and the cells' padding (64).
+const NAME_COLUMN = 151.28
+
 // The page's left and right margins (layout.ts's PAGE). Right-aligned text ends on the right one,
 // give or take rounding, so a check against it allows half a point.
 const PAGE_MARGIN = 40
@@ -101,6 +105,38 @@ async function textBeyondPage(pdf: Buffer, margin = 0): Promise<string[]> {
     }
   }
   return beyond
+}
+
+// Every text item drawn, with where it starts and ends.
+async function textItems(
+  pdf: Buffer,
+): Promise<{ str: string; x: number; right: number; y: number }[]> {
+  const doc = await getDocumentProxy(new Uint8Array(pdf))
+  const items = []
+  for (let number = 1; number <= doc.numPages; number++) {
+    const page = await doc.getPage(number)
+    for (const item of (await page.getTextContent()).items) {
+      if (!('str' in item) || item.str.trim() === '') continue
+      const [x, y] = [item.transform[4] as number, item.transform[5] as number]
+      items.push({ str: item.str, x, right: x + item.width, y: y - number * 10_000 })
+    }
+  }
+  return items
+}
+
+// Texts drawn over the next text on their line: a word that ran into an amount.
+function printedOver(items: Awaited<ReturnType<typeof textItems>>): string[] {
+  const over: string[] = []
+  // By line, to the point, so items whose baselines differ by a fraction still share one.
+  const line = (item: { y: number }) => Math.round(item.y)
+  const sorted = [...items].sort((a, b) => line(a) - line(b) || a.x - b.x)
+  sorted.forEach((item, at) => {
+    const next = sorted[at + 1]
+    if (next && line(next) === line(item) && item.right > next.x + 0.5) {
+      over.push(`${item.str} over ${next.str}`)
+    }
+  })
+  return over
 }
 
 // Where the build finds each font file (scripts/build-functions.mjs).
@@ -615,6 +651,8 @@ describe('renderDividePdf', () => {
     ['emoji and U+FEFF', '⏩\uFEFF'.repeat(40)],
     ['dashes and no-break spaces', '⸻\u00A0'.repeat(50)],
     ['ideographs and no-break spaces', '一\u00A0'.repeat(50)],
+    // A Latin word with spaces pdfmake leaves at the line's end, then glued emoji.
+    ['spaces, then glued emoji', `${'a'.repeat(13)}  ${'⏩\u00A0'.repeat(6)}⏩`],
   ])('keeps every amount on the page with a name of %s', async (_, name) => {
     vi.spyOn(console, 'warn').mockImplementation(() => {})
     const lines = [
@@ -634,6 +672,43 @@ describe('renderDividePdf', () => {
     expect(text.match(/\$30\.00/g)).toHaveLength(5)
     expect(text).toContain('settled')
     expect(await textBeyondPage(pdf, PAGE_MARGIN - 0.5)).toEqual([])
+    const items = await textItems(pdf)
+    expect(printedOver(items)).toEqual([])
+    // The People table's names stay inside their column, padding included.
+    const top = items.find((item) => item.str === 'Name')?.y as number
+    const bottom = items.find((item) => item.str === 'Suggested transfers')?.y as number
+    // As printed: Thai and the spaces pdfmake doesn't break at print as �.
+    const chars = new Set([...name, '\uFFFD'])
+    const names = items.filter(
+      (item) =>
+        item.y < top &&
+        item.y > bottom &&
+        [...item.str.replace(/\s/g, '')].every((c) => chars.has(c)),
+    )
+    expect(names.length).toBeGreaterThan(0)
+    expect(names.filter((item) => item.right > PAGE_MARGIN + NAME_COLUMN + 0.5)).toEqual([])
+  })
+
+  // A grapheme cluster wider than its column is split between code points, never inside a
+  // surrogate pair, so every emoji in it prints whole: once in each table and once as the line's
+  // description.
+  it('splits a cluster wider than the column between its emoji, not inside one', async () => {
+    const name = `${'😀\u200D'.repeat(12)}😀`
+    const lines = [
+      line('2026-10-03', 'expense', 3000, [share('p0', 3000, 3000)], { description: name }),
+    ]
+    const pdf = await renderDividePdf(
+      buildStatementSnapshot({
+        ...goldenInput(lines),
+        people: [{ personId: 'p0', name }],
+        previousClosing: [],
+      }),
+    )
+    const text = await pdfText(pdf)
+    expect(count(text, '😀')).toBe(3 * 13)
+    expect(text).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+    )
   })
 
   it('refuses an invoice snapshot', async () => {

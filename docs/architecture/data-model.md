@@ -53,7 +53,7 @@ One row per real person or business we track, registered or not. Row IDs are 20 
 | `addressMisses` | integer | default 0. Address checks this person made as a sender in `identity POST /invites` and `POST /reminders`, together, in the window that started at `addressMissesFrom`, except those a new invite or reminder was sent to: each check is counted before it runs, and a new invite or reminder that's sent takes its count back if the window hasn't changed since (a reminder retry never does) ([invites](identity-and-invites.md#invites), step 2; `ADDRESS_MISS_LIMIT`). A count only: no address, target or route. Written only by `identity`, under the row's `rev` guard. Rows made before this column may read `null`: count that as 0. |
 | `addressMissesFrom` | datetime? | When that window started: the first counted check after the last window ended. `null` until a first one. Written only by `identity`, with `addressMisses`. Each new window overwrites both columns, and they stay on a deleted person's anonymised row: a count and a time only, which account deletion doesn't need to clear (the lead on #274). |
 | `deletedAt` | datetime? | Account deleted; the person is kept anonymised for others' history ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). Set first, as the point of no return; a person with `deletedAt` and `userId` both set has a deletion still to finish. |
-| `orphanedAt` | datetime? | When a [removal](permissions.md#leaving-a-group), or a [purge](identity-and-invites.md#each-group-they-joined), took this placeholder's last member row. 30 days later, [scheduler step 5c](scheduling.md#step-5c-placeholder-clean-up) deletes its identities and the invites sent to them, and replaces its `displayName` with "Former member", if it's still a placeholder that no member row names, and either way clears this. An adoption clears it too, since it makes the row readable to its user ([claim](identity-and-invites.md#claim-linking-records-to-a-new-account)). A person re-added or merged since can keep a stale value until step 5c. Written only by `groups` (the removal), `account` (the purge), `identity` (the adoption) and `scheduler` (step 5c), each with a fresh `rev`. |
+| `orphanedAt` | datetime? | When a [removal](permissions.md#leaving-a-group), or a [purge](identity-and-invites.md#each-group-they-joined), took this placeholder's last member row. 30 days later, [scheduler step 5c](scheduling.md#step-5c-placeholder-clean-up) deletes its identities and the invites sent to them, and replaces its `displayName` with "Former member", if it's still a placeholder that no member row names, and either way clears this. An adoption clears it too, since it makes the row readable to its user ([claim](identity-and-invites.md#claim-linking-records-to-a-new-account)). A person re-added or merged since can keep a stale value until step 5c. Written only by `groups` (the removal), `account` (the purge), `identity` (the adoption) and `scheduler` (step 5c), each with a fresh `rev`, and by the one-off `scripts/backfill-orphaned-at.mjs`, which sets it on every placeholder that has none and that no member row names, as removals left them before this column existed. The lead runs it once in each environment, from `main`, after #342's functions are deployed there and a minute has passed (so no old removal is still running), with a one-off key (`rows.read`, `rows.write`) deleted afterwards. A later run marks again only the placeholders step 5c has cleared, which have nothing more to clear. |
 | `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)). The person row is a guard for invite and reminder limits and the address-miss count, for adds that find the person, for a merge's writes on the person it merges into, for a purge deleting a placeholder's member rows, for a member removal ([permissions](permissions.md#leaving-a-group)), and for step 5c's clean-up. |
 
 Indexes: `idx_userId (userId)`, `idx_mergedInto (mergedInto)`, `idx_deletedAt (deletedAt)` (the hourly job finds deletions to finish), `idx_orphanedAt (orphanedAt)` (step 5c finds placeholders to clear).
@@ -123,7 +123,7 @@ Row ID = Appwrite Team ID ([D-004](decisions.md)).
 | `region` | varchar(16) | For public holidays |
 | `statementCycle` | enum(none, weekly, fortnightly, monthly) | default `none` (employer default `monthly`) |
 | `cycleAnchor` | varchar(10)? | First day of the first period, for weekly and fortnightly cycles |
-| `nextCloseAt` | datetime? | When the current period's statement is due to be drafted ([statements](statements.md#periods)). Set by `groups` on create and whenever `statementCycle`, `cycleAnchor` or `timezone` changes; moved forward by `statements`. |
+| `nextCloseAt` | datetime? | When the current period's statement is due to be drafted ([statements](statements.md#periods)). Set by `groups` on create and whenever `statementCycle`, `cycleAnchor` or `timezone` changes (one already due, its period ended in the group's time zone before the change or its close passed, stays for the same period, and a time zone change alone keeps the stored close's period, both re-expressed in the new time zone); moved forward by `statements`. |
 | `nextCheckAt` | datetime? | When the group's [nightly check](scheduling.md#step-6-nightly-check) is next due. Written only by `scheduler`. Empty means due now, so a group's first check is also the backfill of its `balances` row. |
 | `settingsJson` | text | `GroupSettings` (below) |
 | `archivedAt` | datetime? | Archived groups are read-only |
@@ -192,7 +192,7 @@ Indexes:
 | `idx_schedule_date` | scheduleId, date | schedule edits |
 | `idx_statementId` | statementId | statement detail, void |
 | `idx_status_date` | status, date | scheduler auto-post |
-| `idx_status_dueOn` | status, dueOn | bill reminders |
+| `idx_status_dueOn` | status, dueOn | bill autopay and reminders |
 
 Permissions: `read("team:<groupId>")`.
 
@@ -358,7 +358,7 @@ Permissions: `read("team:<groupId>")`.
 | `acceptedAt` | datetime? | |
 
 Indexes: `uniq_tokenHash (tokenHash)` **unique**, `idx_invitedBy_sentAt (invitedBy, sentAt)`, `idx_identity_sentAt (identityKey, sentAt)`, `idx_acceptedAt (acceptedAt)`, `idx_expiresAt (expiresAt)`.
-Permissions: none (server only). The scheduler deletes a row 30 days after `acceptedAt` or `expiresAt` ([step 5b](scheduling.md#step-5b-invite-clean-up)); a purge or an account deletion can delete it sooner ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
+Permissions: none (server only). The scheduler deletes a row 30 days after `acceptedAt` or `expiresAt` ([step 5b](scheduling.md#step-5b-invite-clean-up)), and those to a placeholder's keys when it clears the placeholder ([step 5c](scheduling.md#step-5c-placeholder-clean-up)); a purge or an account deletion can delete it sooner ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
 
 ## reminders
 
