@@ -292,6 +292,13 @@ export function EmployerForm(props: Props) {
             />
           )}
         </Field>
+        {/* Before the rate, which is typed in the currency. */}
+        <PlaceFields
+          register={form.register}
+          errors={errors}
+          zone={defaultValues.timezone}
+          group={props.mode === 'create' ? 'new' : 'saved'}
+        />
         <TextField
           id="defaultRate"
           label={`Default hourly rate (${currency.trim().toUpperCase()})`}
@@ -339,12 +346,6 @@ export function EmployerForm(props: Props) {
             Finalize invoices automatically when the period ends
           </label>
         </div>
-        <PlaceFields
-          register={form.register}
-          errors={errors}
-          zone={defaultValues.timezone}
-          group={props.mode === 'create' ? 'new' : 'saved'}
-        />
       </fieldset>
       {!readOnly && (
         <Button type="submit" disabled={isSubmitting}>

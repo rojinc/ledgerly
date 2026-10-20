@@ -419,6 +419,51 @@ describe('EmployerSettingsPage', () => {
     expect(body).not.toHaveProperty('currency')
   })
 
+  it('reads the rate in a currency changed here, in either direction', async () => {
+    // AUD to JPY: "25.50" has cents, which yen don't, so it's refused until typed again.
+    mockGroup(employer)
+    call.mockResolvedValue({ ok: true, data: { ...employer, currency: 'JPY' } })
+    renderAt('/groups/g1/settings')
+    type('Currency', 'jpy')
+    expect(screen.getByLabelText('Default hourly rate (JPY)')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByText('Enter an amount like 2550', {}, { timeout: 3000 })
+    expect(call).not.toHaveBeenCalled()
+    type(/Default hourly rate/, '3000')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const toYen = call.mock.calls[0]?.[3] as {
+      currency: string
+      settings: { defaultRateCents: number }
+    }
+    expect([toYen.currency, toYen.settings.defaultRateCents]).toEqual(['JPY', 3000])
+    cleanup()
+    call.mockClear()
+
+    // JPY to AUD: "2550" reads as $2,550.00, and the label right under the currency says so.
+    mockGroup({ ...employer, currency: 'JPY' })
+    call.mockResolvedValue({ ok: true, data: employer })
+    renderAt('/groups/g1/settings')
+    expect(input(/Default hourly rate/).value).toBe('2550')
+    type('Currency', 'aud')
+    expect(screen.getByLabelText('Default hourly rate (AUD)')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    const toDollars = call.mock.calls[0]?.[3] as {
+      currency: string
+      settings: { defaultRateCents: number }
+    }
+    expect([toDollars.currency, toDollars.settings.defaultRateCents]).toEqual(['AUD', 255000])
+  })
+
+  it('asks for the currency before the rate, which is read in it', () => {
+    mockGroup(employer)
+    renderAt('/groups/g1/settings')
+    const currency = screen.getByLabelText('Currency')
+    const rate = screen.getByLabelText(/Default hourly rate/)
+    expect(currency.compareDocumentPosition(rate) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
   it('shows why when the currency can’t change any more', async () => {
     mockGroup(employer)
     // functions-api.md#groups: refused once the group has a transaction.

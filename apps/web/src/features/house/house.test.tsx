@@ -1037,7 +1037,13 @@ describe('HousePage', () => {
         return ok(stored.group)
       })
       renderAt('/groups/g1')
-      const settings = await screen.findByRole('region', { name: 'Settings' })
+      // By text first: a cold role query is slow (#303).
+      await screen.findByText(
+        'A period that has already ended keeps its dates.',
+        {},
+        { timeout: 3000 },
+      )
+      const settings = screen.getByRole('region', { name: 'Settings' })
       const field = (label: string) => within(settings).getByLabelText(label) as HTMLInputElement
       // The house's, not the profile's.
       expect(field('Time zone').value).toBe('Australia/Sydney')
@@ -1069,8 +1075,8 @@ describe('HousePage', () => {
         ),
       )
       renderAt('/groups/g1')
-      const settings = await screen.findByRole('region', { name: 'Settings' })
-      expect(within(settings).getByText(/It can’t change once something is recorded/)).toBeTruthy()
+      await screen.findByText(/It can’t change once something is recorded/, {}, { timeout: 3000 })
+      const settings = screen.getByRole('region', { name: 'Settings' })
       fireEvent.change(within(settings).getByLabelText('Currency'), { target: { value: 'nzd' } })
       fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
       await within(settings).findByText(
