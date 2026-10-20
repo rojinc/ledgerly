@@ -158,6 +158,11 @@ export const endScheduleBodySchema = z.strictObject({ endsOn: scheduleDateSchema
 
 export type EndScheduleBody = z.infer<typeof endScheduleBodySchema>
 
+/** `POST /schedules/{id}/pause`. The function also refuses a date before local today. */
+export const pauseScheduleBodySchema = z.strictObject({ pausedFrom: scheduleDateSchema })
+
+export type PauseScheduleBody = z.infer<typeof pauseScheduleBodySchema>
+
 /** `POST /schedules/preview`: a ScheduleInput without `id`, plus how many dates to show. */
 export const previewScheduleBodySchema = z
   .strictObject({ ...scheduleFields, count: z.int().min(1).max(100).optional() })
@@ -183,6 +188,12 @@ export type UpdatedSchedule = {
 
 /** `POST /schedules/{id}/end`: occurrences deleted. */
 export type EndedSchedule = { schedule: Schedules; removed: number }
+
+/** `POST /schedules/{id}/pause`: occurrences deleted. */
+export type PausedSchedule = { schedule: Schedules; removed: number }
+
+/** `POST /schedules/{id}/resume`: occurrences created. */
+export type ResumedSchedule = { schedule: Schedules; created: number }
 
 /** `POST /schedules/preview` */
 export type SchedulePreview = {

@@ -250,6 +250,7 @@ export type Schedules = Models.Row & {
     rrule: string;
     startsOn: string;
     endsOn: string | null;
+    pausedFrom: string | null;
     exdates: string[] | null;
     skipPublicHolidays: boolean;
     autoPost: boolean;
