@@ -33,10 +33,14 @@ const HOUSE = {
   name: 'Flat 3',
   currency: 'AUD',
   timezone: 'Australia/Sydney',
+  region: 'AU-NSW',
   statementCycle: 'monthly',
   settingsJson: JSON.stringify({ type: 'house', autoFinalize: false, defaultBillSplit: 'days' }),
   archivedAt: null,
 } as Groups
+
+// The caller's profile: a new house starts with its time zone, region and currency (F-10).
+const PROFILE = { $id: 'u1', timezone: 'Pacific/Auckland', region: 'NZ-AUK', currency: 'NZD' }
 
 function member(id: string, extra: Partial<Members>): Members {
   return {
@@ -81,7 +85,8 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'] })
   vi.setSystemTime(NOW)
   seed()
-  getRow.mockImplementation((async () => stored.group) as never)
+  getRow.mockImplementation((async ({ tableId }: { tableId: string }) =>
+    tableId === 'profiles' ? PROFILE : stored.group) as never)
   // useMyMember asks for one person's row; useMembers for the whole house.
   listRows.mockImplementation((async ({
     tableId,
@@ -164,11 +169,20 @@ async function row(name: string) {
   return found
 }
 
+/** The new house form, once the profile has loaded. */
+function newHouseForm() {
+  return screen.findByLabelText('House name', {}, { timeout: 3000 })
+}
+
 describe('NewHousePage', () => {
   it('creates a house with the defaults, then opens it', async () => {
     call.mockResolvedValue(ok({ group: { ...HOUSE, $id: 'new1' }, members: [] }))
     const { router, queryClient } = renderAt('/groups/new-house')
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    await newHouseForm()
+    expect(input('Time zone').value).toBe('Pacific/Auckland')
+    expect(input('Public holiday region').value).toBe('NZ-AUK')
+    expect(input('Currency').value).toBe('NZD')
     type('House name', ' Flat 3 ')
     click('Create house')
     await waitFor(() => expect(router.state.location.pathname).toBe('/groups/new1'))
@@ -176,11 +190,13 @@ describe('NewHousePage', () => {
     expect(invalidate).toHaveBeenCalledWith({ queryKey: queryKeys.groups('u1') })
     const [fn, method, path, body] = sent() as [string, string, string, { id: string }]
     expect([fn, method, path]).toEqual(['groups', 'POST', '/groups'])
-    // Currency, time zone and region come from the profile, on the server.
     expect(body).toStrictEqual({
       id: body.id,
       type: 'house',
       name: 'Flat 3',
+      timezone: 'Pacific/Auckland',
+      region: 'NZ-AUK',
+      currency: 'NZD',
       statementCycle: 'monthly',
       settings: { type: 'house', autoFinalize: false, defaultBillSplit: 'days' },
     })
@@ -189,6 +205,7 @@ describe('NewHousePage', () => {
   it('sends an equal split, no monthly divide and auto-finalize as chosen', async () => {
     call.mockResolvedValue(ok({ group: { ...HOUSE, $id: 'new1' }, members: [] }))
     renderAt('/groups/new-house')
+    await newHouseForm()
     type('House name', 'Flat 3')
     fireEvent.change(screen.getByLabelText('Split bills'), { target: { value: 'equal' } })
     fireEvent.click(screen.getByLabelText('Close each month with a divide'))
@@ -201,8 +218,40 @@ describe('NewHousePage', () => {
     })
   })
 
+  it('sends the time zone, region and currency chosen, and checks them', async () => {
+    call.mockResolvedValue(ok({ group: { ...HOUSE, $id: 'new1' }, members: [] }))
+    renderAt('/groups/new-house')
+    await newHouseForm()
+    expect(screen.getByText(/It can’t change once something is recorded/)).toBeTruthy()
+    type('House name', 'Flat 3')
+    type('Time zone', 'Australia/Sydney')
+    type('Public holiday region', 'New South Wales')
+    type('Currency', 'aud')
+    click('Create house')
+    expect((await screen.findByText('Expected e.g. AU-NSW', {}, { timeout: 3000 })).id).toBe(
+      'region-error',
+    )
+    expect(call).not.toHaveBeenCalled()
+    type('Public holiday region', 'au-nsw')
+    click('Create house')
+    await waitFor(() => expect(call).toHaveBeenCalled())
+    expect(sent()?.[3]).toMatchObject({
+      timezone: 'Australia/Sydney',
+      region: 'AU-NSW',
+      currency: 'AUD',
+    })
+  })
+
+  it('says when the profile can’t be loaded', async () => {
+    getRow.mockRejectedValue(new Error('offline'))
+    renderAt('/groups/new-house')
+    await screen.findByText(/couldn’t load your profile/, {}, { timeout: 3000 })
+    expect(screen.queryByLabelText('House name')).toBeNull()
+  })
+
   it('needs a name, and keeps its ID when a refused try is sent again', async () => {
     renderAt('/groups/new-house')
+    await newHouseForm()
     click('Create house')
     expect(await screen.findByText('Required')).toBeTruthy()
     expect(call).not.toHaveBeenCalled()
@@ -980,6 +1029,63 @@ describe('HousePage', () => {
       fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
       await waitFor(() => expect(call).toHaveBeenCalled())
       expect(sent()).toEqual(['groups', 'PATCH', '/groups/g1', { name: 'Flat 4' }])
+    })
+
+    it('shows the house’s own time zone, region and currency, and sends only those changed', async () => {
+      call.mockImplementation(async (_fn, _method, _path, body) => {
+        stored.group = { ...stored.group, ...(body as Partial<Groups>) }
+        return ok(stored.group)
+      })
+      renderAt('/groups/g1')
+      // By text first: a cold role query is slow (#303).
+      await screen.findByText(
+        'A period that has already ended keeps its dates.',
+        {},
+        { timeout: 3000 },
+      )
+      const settings = screen.getByRole('region', { name: 'Settings' })
+      const field = (label: string) => within(settings).getByLabelText(label) as HTMLInputElement
+      // The house's, not the profile's.
+      expect(field('Time zone').value).toBe('Australia/Sydney')
+      expect(field('Public holiday region').value).toBe('AU-NSW')
+      expect(field('Currency').value).toBe('AUD')
+      // statements.md#periods (#126).
+      expect(
+        within(settings).getByText('A period that has already ended keeps its dates.'),
+      ).toBeTruthy()
+      fireEvent.change(field('Time zone'), { target: { value: 'Pacific/Auckland' } })
+      fireEvent.change(field('Public holiday region'), { target: { value: 'nz-auk' } })
+      fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
+      await within(settings).findByText('Saved.', {}, { timeout: 3000 })
+      expect(sent()).toEqual([
+        'groups',
+        'PATCH',
+        '/groups/g1',
+        { timezone: 'Pacific/Auckland', region: 'NZ-AUK' },
+      ])
+      expect(field('Public holiday region').value).toBe('NZ-AUK')
+    })
+
+    it('shows why when the currency can’t change any more', async () => {
+      // functions-api.md#groups: refused once the house has a transaction.
+      call.mockResolvedValue(
+        refused(
+          'VALIDATION_FAILED',
+          "The currency can't change after the group's first transaction.",
+        ),
+      )
+      renderAt('/groups/g1')
+      await screen.findByText(/It can’t change once something is recorded/, {}, { timeout: 3000 })
+      const settings = screen.getByRole('region', { name: 'Settings' })
+      fireEvent.change(within(settings).getByLabelText('Currency'), { target: { value: 'nzd' } })
+      fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
+      await within(settings).findByText(
+        "The currency can't change after the group's first transaction.",
+        {},
+        { timeout: 3000 },
+      )
+      expect(sent()).toEqual(['groups', 'PATCH', '/groups/g1', { currency: 'NZD' }])
+      expect(within(settings).queryByText('Saved.')).toBeNull()
     })
 
     it('sends nothing when nothing changed', async () => {

@@ -5,21 +5,17 @@ import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
+import { PlaceFields, type PlaceValues, toPlaceBody } from './place-fields'
 
-export type ProfileValues = {
+export type ProfileValues = PlaceValues & {
   displayName: string
-  timezone: string
-  region: string
-  currency: string
   summaryFrequency: NonNullable<UpdateProfileBody['summaryFrequency']>
 }
 
 export function toProfileBody(values: ProfileValues): UpdateProfileBody {
   return {
     displayName: values.displayName,
-    timezone: values.timezone,
-    region: values.region.trim().toUpperCase(),
-    currency: values.currency.trim().toUpperCase(),
+    ...toPlaceBody(values),
     summaryFrequency: values.summaryFrequency,
   }
 }
@@ -30,13 +26,6 @@ const SUMMARY_OPTIONS = [
   ['fortnightly', 'Fortnightly'],
   ['monthly', 'Monthly'],
 ] as const
-
-function timeZones(current: string): string[] {
-  // Some browsers leave UTC out of this list, and older ones don't have it at all.
-  const zones =
-    typeof Intl.supportedValuesOf === 'function' ? Intl.supportedValuesOf('timeZone') : []
-  return zones.includes(current) ? zones : [current, ...zones]
-}
 
 type Props = {
   profile: Profiles
@@ -83,35 +72,7 @@ export function ProfileForm({ profile, displayName, onSave }: Props) {
         error={errors.displayName}
         {...form.register('displayName')}
       />
-      <SelectField
-        id="timezone"
-        label="Time zone"
-        error={errors.timezone}
-        {...form.register('timezone')}
-      >
-        {timeZones(profile.timezone).map((zone) => (
-          <option key={zone} value={zone}>
-            {zone.replaceAll('_', ' ')}
-          </option>
-        ))}
-      </SelectField>
-      <TextField
-        id="region"
-        label="Public holiday region"
-        hint="Country and state, e.g. AU-NSW."
-        autoCapitalize="characters"
-        error={errors.region}
-        {...form.register('region')}
-      />
-      <TextField
-        id="currency"
-        label="Currency"
-        hint="Three letters, e.g. AUD."
-        autoCapitalize="characters"
-        maxLength={3}
-        error={errors.currency}
-        {...form.register('currency')}
-      />
+      <PlaceFields register={form.register} errors={errors} zone={profile.timezone} />
       <SelectField
         id="summaryFrequency"
         label="Summary email"
