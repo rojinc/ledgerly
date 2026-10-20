@@ -357,7 +357,7 @@ Permissions: `read("team:<groupId>")`.
 | `acceptedAt` | datetime? | |
 
 Indexes: `uniq_tokenHash (tokenHash)` **unique**, `idx_invitedBy_sentAt (invitedBy, sentAt)`, `idx_identity_sentAt (identityKey, sentAt)`, `idx_acceptedAt (acceptedAt)`, `idx_expiresAt (expiresAt)`.
-Permissions: none (server only). The scheduler deletes a row 30 days after `acceptedAt` or `expiresAt` ([step 5b](scheduling.md#step-5b-invite-clean-up)); a purge or an account deletion can delete it sooner ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
+Permissions: none (server only). The scheduler deletes a row 30 days after `acceptedAt` or `expiresAt` ([step 5b](scheduling.md#step-5b-invite-clean-up)); a purge, an account deletion or a member removal can delete it sooner ([deleting an account](identity-and-invites.md#deleting-an-account-m4), [removing completely](permissions.md#leaving-a-group)).
 
 ## reminders
 
