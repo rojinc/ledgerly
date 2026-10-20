@@ -3,6 +3,7 @@ import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import {
   checkKindRules,
+  everyPersonId,
   type PostTransactionBody,
   type TransactionTemplate,
 } from '@ledgerly/core/schemas/ledger'
@@ -109,7 +110,13 @@ export async function postInTransaction(
     invalid('Only a scheduled or due transaction can be posted.')
   }
   await guardGroupAndMembers(tx, db, group, ledger, planned.people)
-  await refuseDeletedPeople(tx, db, ledger, { kind: existing.kind, input, before: stored })
+  // Unposted, so it has no shares (I-6): only its input names anyone yet.
+  await refuseDeletedPeople(tx, db, ledger, {
+    kind: existing.kind,
+    people: planned.people,
+    before: everyPersonId(stored),
+    unposted: { madeAt: existing.$createdAt, input: stored },
+  })
   await requireNotFinalizing(db, existing.groupId, [existing.date, date])
   await requireNoOpenMerge(db, existing, oldShares, oldItems)
   const row = { ...existing, date }

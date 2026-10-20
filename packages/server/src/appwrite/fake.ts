@@ -84,6 +84,7 @@ export class FakeDb implements Db {
     let limit = DEFAULT_LIMIT
     let offset = 0
     let cursorAfter: unknown
+    let selected: string[] | undefined
     const orders: Array<{ attribute: string; direction: 1 | -1 }> = []
     for (const query of queries) {
       const { method, attribute = '', values = [] } = query
@@ -96,6 +97,10 @@ export class FakeDb implements Db {
           break
         case 'cursorAfter':
           cursorAfter = values[0]
+          break
+        case 'select':
+          for (const column of values as string[]) checkQueryColumn(params.tableId, column)
+          selected = values as string[]
           break
         case 'orderAsc':
         case 'orderDesc':
@@ -132,7 +137,14 @@ export class FakeDb implements Db {
       rows = rows.slice(index + 1)
     }
     const page = rows.slice(offset, offset + limit)
-    return { total, rows: page.map((row) => structuredClone(row) as unknown as R) }
+    // As Appwrite does: the selected columns, and every system one.
+    const pick = (row: Record<string, unknown>) =>
+      selected === undefined
+        ? row
+        : Object.fromEntries(
+            Object.entries(row).filter(([key]) => key.startsWith('$') || selected.includes(key)),
+          )
+    return { total, rows: page.map((row) => structuredClone(pick(row)) as unknown as R) }
   }
 
   async createTransaction(): Promise<Models.Transaction> {

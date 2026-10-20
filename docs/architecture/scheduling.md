@@ -64,7 +64,7 @@ The scheduler may run twice, overlap with itself or crash halfway. None of that 
 
 ## The scheduler job
 
-Appwrite runs the function every 60 minutes (`interval: 60`, at a minute it picks; [the plan allows no cron](../engineering/environments-and-deploys.md#function-settings)), **asynchronously** and with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up ([step 5](#step-5-receipt-clean-up), which has its own time limit), then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
+Appwrite runs the function every 60 minutes (`interval: 60`, at a minute it picks; [the plan allows no cron](../engineering/environments-and-deploys.md#function-settings)), **asynchronously** and with a generous timeout. Appwrite sends each run as `POST /` with the `schedule` trigger. That route refuses a person (`FORBIDDEN`) or a call without a JWT (`UNAUTHENTICATED`), and returns only counts. The steps run in order: expand, auto-post, reminders, summaries, receipt clean-up ([step 5](#step-5-receipt-clean-up)) and invite clean-up ([step 5b](#step-5b-invite-clean-up)), which each have their own time limit, then the nightly check, last. Each processes items in batches of 100, and a run stops taking new items 12 minutes after it began (the timeout is 900 s); anything left is picked up on the next run.
 
 ### Step 1: expand due schedules
 
@@ -159,7 +159,7 @@ Deletes the files in the `receipts` bucket that no transaction lists, using the 
 
 **The checkpoint.** The step first reads the [`checkpoints`](data-model.md#checkpoints) row `receipt-clean-up`, once per run. Its `through` is the time up to which every upload has been dealt with. Until the [backfill](data-model.md#receiptfiles) has made that row, or when the read fails for any reason, the step does nothing.
 
-**Time.** The step stops 4 minutes after it starts, or at the run's limit if that comes first, so step 6 always gets the rest of the budget. Pass 1 stops after 2 of those minutes, and pass 2 has what's left. There's no count limit. A pass that stops with work left logs `receipt_cleanup_behind` with the step's counts.
+**Time.** The step stops 4 minutes after it starts, or at the run's limit if that comes first, so steps 5b and 6 always get the rest of the budget. Pass 1 stops after 2 of those minutes, and pass 2 has what's left. There's no count limit. A pass that stops with work left logs `receipt_cleanup_behind` with the step's counts.
 
 1. **Never attached:** files with `$createdAt` after `through` and at or before `now − 24 h`, oldest first (`$createdAt`, then `$id`), with their `receiptFiles` rows read a page at a time. `listFiles` pages with `Query.cursorAfter`, and a deleted file can't be a cursor. So the cursor is the last file on the page that this pass didn't delete; when it deleted the whole page, the next query keeps the cursor it had (the top of the window on the first page): every file before it is done, and the deleted ones are gone by then, so no kept file is listed twice. A query that fails ends the pass for this run. A file that has a row is left to pass 2. For each file with no row:
    1. One database transaction creates the row with `detachedAt` set to the file's `$createdAt` and `deletingAt = now`. If the row exists by then (409), the ledger attached the file first, and it's skipped.
@@ -180,6 +180,19 @@ Deletes the files in the `receipts` bucket that no transaction lists, using the 
 - an attach that commits later finds `deletingAt` and is refused, even one that read the rows before the step made or marked the row, because it reads them again after staging. The row is kept until its `deletingAt` is at least an hour old, which is far longer than any ledger request (15 s timeout), so no attach can miss both the row and the missing file.
 
 Anything that fails for one file or row is counted and left for the next run, and the step carries on. A Storage error is never taken for a database conflict. The run returns `receipts: { deleted, skipped, failed }` and logs nothing per file, apart from `receipt_row_listed`.
+
+### Step 5b: invite clean-up
+
+Deletes each [`invites`](data-model.md#invites) row 30 days after its invite was accepted or expired ([retention](security-and-privacy.md#retention)). By then the link is dead: it expires 14 days after it's sent, and accept refuses it from `expiresAt` on. No rate limit counts the row either, since they look back 7 days at most. With the row gone, an old link gets the same `INVITE_INVALID` as an unknown one ([invites](identity-and-invites.md#invites)). `cutoff` is when the run started, minus 30 days.
+
+1. **Which rows:** first those with `acceptedAt <= cutoff` (`idx_acceptedAt`), then those with no `acceptedAt` and `expiresAt <= cutoff` (`idx_expiresAt`), so no row is found twice. Accept refuses from `expiresAt` on, so a row with an old `expiresAt` and a recent `acceptedAt` can't exist. Each query is read with `pages()` (`$id` order, `greaterThan('$id', last)`, never a cursor, since the step deletes rows as it goes: [scaling](scaling.md#appwrite-limits-we-design-around)).
+2. **Deleting:** in batches of at most 90 rows as they're read, each deleted in one database transaction (`writeInBatches()`, [conventions](../engineering/conventions.md#functions)). There's no guard and no second read, because nothing else changes a row this step finds: `POST /invites` only creates rows, and accept sets `acceptedAt` once, before `expiresAt`, and writes nothing to a row that has it.
+3. **Races with a purge, an account deletion or an overlapping run of this step,** which delete invites too ([each group they joined](identity-and-invites.md#each-group-they-joined), [order](identity-and-invites.md#order) step 5, [idempotency](#idempotency)):
+   - one that deletes a row first makes this step's batch fail with 409. The batch's rows count as `skipped`, and the next run deletes the rest of them, since the gone row no longer matches;
+   - one that loses fails its own commit and runs again: an account deletion on the user's retry or its hourly job, a purge on its next run, this step on the next hourly run.
+4. **Time:** the step stops 1 minute after it starts, or at the run's limit if that comes first, so step 6 gets the rest of the budget. A rerun finds whatever is left: a deleted row never matches again, and a kept one still does.
+
+Any other failure, of a query or a batch, ends the step for this run: the batch's rows count as `failed`, and the step logs one error line, `invite_cleanup_failed`, with the failed count and the error's name only. Then step 6 runs as usual. The run returns `invites: { deleted, skipped, failed }` and logs nothing per row.
 
 ### Step 6: nightly check
 

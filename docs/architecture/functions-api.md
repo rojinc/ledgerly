@@ -39,7 +39,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired, or the invite isn't the caller's (used by someone else, or its address is another account's) |
-| `RATE_LIMITED` | 429 | Too many invites or reminders |
+| `RATE_LIMITED` | 429 | Too many invites or reminders, or too many wrong addresses typed for them ([#274](https://github.com/rojinc/ledgerly/issues/274)) |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |
 
@@ -104,7 +104,7 @@ Row types (`Transactions`, `Shares`, `Items` and one per table) are generated fr
 Each route parses its body with its schema from `packages/core/src/schemas/` before doing anything else. Beyond the types on this page, the schemas enforce:
 
 - **No unknown keys.** A misspelled or extra field returns `VALIDATION_FAILED`; it is never silently dropped.
-- **Text** is trimmed, then must fit its column ([data model](data-model.md)): descriptions and reasons 1–200 characters, names 1–100 (item names 1–120), notes up to 1000. Time zones are IANA names (`Australia/Sydney`, `UTC`), not offsets.
+- **Text** is trimmed, then must fit its column ([data model](data-model.md)): descriptions and reasons 1–200 characters, names 1–100 (item names 1–120), notes up to 1000. A description is first folded to one line, so it prints as one in emails and PDFs ([#346](https://github.com/rojinc/ledgerly/issues/346)): bidi controls (Unicode `Bidi_Control`) and every other control character (`Cc`) that isn't whitespace are removed, each run of whitespace (`White_Space`, line breaks and tabs included) becomes one space, and it's trimmed. The zero-width joiner stays, so emoji sequences hold. Its length counts after the fold, so one of nothing else is refused as empty. Emails fold the names they show the same way (`oneLine()` in `packages/core/src/schemas/common.ts`). Time zones are IANA names (`Australia/Sydney`, `UTC`), not offsets.
 - **Amounts** are integer cents, at most `MAX_AMOUNT_CENTS` in size, and so are computed totals: a shift's `minutes × rateCents / 60` and the sum of the `items`. Rates are ≥ 0. A shift's `minutes` and `breakMinutes` are at most 1440 (one day).
 - **People:** a list names each person at most once, and a transaction names at most 15 people in all.
 - **Kinds:** `shift`, `bill`, `payment` and `adjustment` are required for their own kind and rejected on any other. `payers` and `split` are for expense, bill and loan; `items` (1–30) for expense and bill; a `days` split for bills only. `totalCents` is required unless the kind is `shift` (where it is computed, so it is rejected) or there are `items`. A payment's `fromPersonId` and `toPersonId` must be different people. Sums against the total (payers, `exact` splits, items) and the sign rules are ledger rules, checked by `buildShares()`.
@@ -156,6 +156,7 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 - **Newly:** not on the transaction already. On it already are:
   - the people its stored input names (`everyPersonId()`: payers, the split, items);
   - those holding one of its shares;
+  - for a posted shift, its two people, so one of no minutes, with no shares, can still be corrected;
   - for a row not yet posted that was made before their account was deleted (its `$createdAt` earlier than their `deletedAt`), those its stored input splits it to, by its split or the default split, and a shift's two people. That's the stored input as it is, never this request's `date` or `payers`, and a payer the server fills in never counts.
 
   For a create or a timer start, everyone counts as newly named. A row whose create raced the deletion may count as made after it.

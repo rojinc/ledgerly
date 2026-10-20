@@ -204,13 +204,14 @@ describe('POST / (the users.*.update.password event)', () => {
     expect(services.sendEmail).not.toHaveBeenCalled()
   })
 
-  it('refuses a run without a JWT that isn’t an event, and a scheduled run', async () => {
+  it('refuses a run without a JWT that isn’t an event; a scheduled run finishes merges instead', async () => {
     const services = changed()
     expect((await call(services, 'POST', '/', userBody(), null)).status).toBe(401)
+    // The hourly run shares `POST /` (identity-and-invites.md#finishing-merges).
     const scheduled = await call(services, 'POST', '/', userBody(), null, {
       'x-appwrite-trigger': 'schedule',
     })
-    expect(scheduled.status).toBe(403)
+    expect(scheduled.body).toMatchObject({ ok: true, data: { unfinished: 0 } })
     expect(services.sendEmail).not.toHaveBeenCalled()
   })
 

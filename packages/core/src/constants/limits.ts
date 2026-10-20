@@ -24,3 +24,7 @@ export const REMINDER_LIMITS = {
   perRecipient: { count: 3, days: 7 },
   perSender: { count: 20, days: 1 },
 } as const
+
+// #274: wrong-address answers from invites and reminders, counted together per sender, over a
+// window that starts at the first miss (identity-and-invites.md#invites, step 2).
+export const ADDRESS_MISS_LIMIT = { count: 10, hours: 24 } as const
