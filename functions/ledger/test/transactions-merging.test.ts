@@ -215,7 +215,8 @@ describe('while a merge is open in the row’s group', () => {
 
   it('holds the row where U’s account was deleted, though U’s member.left is newest (#362)', async () => {
     // Bob deleted their account after step 2, which stops the merge where it was. The deletion
-    // kept the house, with Bob's row `left` and a member.left by Bob, and Pat's shares are Pat's.
+    // kept the house, with Bob's row `left` and a member.left by Bob (bobQuit's, written after
+    // deletedAt: the keep's), and Pat's shares are Pat's.
     const bobDeleted: Write = {
       action: 'update',
       tableId: 'persons',
@@ -226,6 +227,34 @@ describe('while a merge is open in the row’s group', () => {
     const before = ledgerOf(db)
     expectMerging(await call(db, 'PATCH', '/transactions/b1', { ...byDays, description: 'Power' }))
     expect(ledgerOf(db)).toEqual(before)
+  })
+
+  it('lets an edit through where U left on their own before deleting their account (#370)', async () => {
+    // Bob left on their own after step 2, so step 3 left the row on Pat. Then Bob deleted their
+    // account, and the keep wrote a second member.left. Only the first counts.
+    const due = { ...byDays, split: withPat, bill: { status: 'due', dueOn: '2026-10-25' } }
+    const db = await written(due, marked(), ...stepTwo, ...bobQuit)
+    const deletedAt = '2026-10-18T02:00:00.000Z'
+    vi.setSystemTime(new Date(deletedAt))
+    await commit(
+      db,
+      { action: 'update', tableId: 'persons', rowId: 'bob', data: { deletedAt } },
+      {
+        action: 'create',
+        tableId: 'activity',
+        rowId: 'a-bob-kept',
+        data: {
+          groupId: 'house',
+          actorPersonId: 'bob',
+          action: 'member.left',
+          subjectPersonId: 'bob',
+          summary: 'left',
+          at: deletedAt,
+        },
+      },
+    )
+    const alone = { ...due, split: { mode: 'equal', personIds: ['alice'] } }
+    expect((await call(db, 'PATCH', '/transactions/b1', alone)).status).toBe(200)
   })
 
   it('/post refuses a due bill whose stored split names the person', async () => {

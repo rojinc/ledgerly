@@ -54,6 +54,14 @@ const LEFT_BY_U = {
   summary: 'left',
   at: '2026-10-10T00:00:00.000Z',
 }
+// U, deleted: the deletion's keep writes a member.left of U's, on or after deletedAt.
+const DELETED_U = person(2, { userId: null, deletedAt: '2026-10-10T00:00:00.000Z' })
+const KEPT_BY_DELETION = {
+  ...LEFT_BY_U,
+  $id: 'aKept',
+  $createdAt: '2026-10-10T00:00:01.000Z',
+  at: '2026-10-10T00:00:01.000Z',
+}
 // Before step 1: pP isn't marked yet, and still has its own row in g1.
 const UNMARKED = {
   persons: [{ ...P, mergedInto: null, mergeGroupIds: null }],
@@ -248,12 +256,29 @@ describe('while a merge into the member is open in the group', () => {
     // kept g1, with U's row "Former member", `left` and a member.left by U (as if they'd left on
     // their own), and pP's share is still pP's.
     const services = open({
-      u: person(2, { userId: null, deletedAt: '2026-10-10T00:00:00.000Z' }),
+      u: DELETED_U,
       members: [{ ...MOVED_OUT, displayName: 'Former member' }],
-      activity: [LEFT_BY_U],
+      activity: [KEPT_BY_DELETION],
     })
     expect(await refusal(services, 'DELETE', '/groups/g1/members/m2')).toMatchObject(MERGING)
     expect(memberIds(services)).toEqual(['m1', 'm2'])
+  })
+
+  it('goes ahead removing a deleted U who had left on their own before the deletion (#370)', async () => {
+    // U left on their own after step 2, so step 3 left pP's rows on pP there, and pP has no share
+    // (that leave was refused while it had one). The deletion's keep then wrote a second
+    // member.left. Only the first counts, so the group is as it was before the deletion.
+    const services = open({
+      u: DELETED_U,
+      members: [
+        { ...MOVED_OUT, displayName: 'Former member', $createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+      shares: [],
+      transactions: [scheduled('pP')],
+      activity: [{ ...LEFT_BY_U, $createdAt: '2026-10-05T00:00:00.000Z' }, KEPT_BY_DELETION],
+    })
+    expect(await ok(services, 'DELETE', '/groups/g1/members/m2')).toEqual({})
+    expect(memberIds(services)).toEqual(['m1'])
   })
 
   it('goes ahead where P keeps its own row (a kept group, or one step 2 hasn’t reached)', async () => {
