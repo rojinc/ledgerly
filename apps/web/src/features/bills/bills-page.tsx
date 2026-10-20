@@ -11,6 +11,7 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { useGroup, useMyMember } from '../groups/use-groups'
 import { describeRepeat, fromRrule } from '../schedules/rrule'
 import { hasEnded } from '../schedules/schedules-page'
+import { usePauseSchedule, useResumeSchedule } from '../schedules/use-schedules'
 import { formatDate } from '../statements/invoice-view'
 import { isOverdue, monthsBefore, storedExtras } from './bill-values'
 import { lastDue, templateCents } from './recurring-values'
@@ -93,7 +94,7 @@ function PersonalBillsPage() {
           <RecurringBills
             group={personal.group}
             canStop={() => true}
-            onStopped={(message) => {
+            onDone={(message) => {
               setDone(message)
               heading.current?.focus()
             }}
@@ -164,7 +165,7 @@ function HouseBillsPage({ groupId }: { groupId: string }) {
             group={house}
             // The scheduler lets its creator or an admin end it (functions-api.md#scheduler).
             canStop={(schedule) => canAdd && (admin || schedule.createdBy === personId)}
-            onStopped={(message) => {
+            onDone={(message) => {
               setDone(message)
               heading.current?.focus()
             }}
@@ -237,17 +238,17 @@ function BillLists({ group }: { group: Groups }) {
 }
 
 /**
- * A group's recurring bills (#75), and a house's recurring expenses (#403), told what was stopped.
- * `canStop`: whether the caller may stop this one.
+ * A group's recurring bills (#75), and a house's recurring expenses (#403), told what was stopped,
+ * paused or resumed (#430). `canStop`: whether the caller may stop, pause or resume this one.
  */
 function RecurringBills({
   group,
   canStop,
-  onStopped,
+  onDone,
 }: {
   group: Groups
   canStop: (schedule: Schedules) => boolean
-  onStopped: (message: string) => void
+  onDone: (message: string) => void
 }) {
   const today = localToday(group.timezone, new Date())
   const money = (cents: number) => formatMoney(cents, group.currency)
@@ -269,7 +270,7 @@ function RecurringBills({
                 today={today}
                 money={money}
                 canStop={canStop(schedule)}
-                onStopped={onStopped}
+                onDone={onDone}
               />
             ))}
           </ul>
@@ -328,21 +329,26 @@ function RecurringBill({
   today,
   money,
   canStop,
-  onStopped,
+  onDone,
 }: {
   schedule: Schedules
   today: LocalDate
   money: (cents: number) => string
   canStop: boolean
-  onStopped: (message: string) => void
+  onDone: (message: string) => void
 }) {
   const stop = useStopRecurringBill(schedule)
-  const [confirming, setConfirming] = useState(false)
+  const pause = usePauseSchedule(schedule)
+  const resume = useResumeSchedule(schedule)
+  // The question open, if any: stop it, or pause it from today.
+  const [asking, setAsking] = useState<'stop' | 'pause'>()
   const stopButton = useRef<HTMLButtonElement>(null)
+  const pauseButton = useRef<HTMLButtonElement>(null)
   const cancelButton = useRef<HTMLButtonElement>(null)
   const repeat = fromRrule(schedule.rrule)
   const cents = templateCents(schedule)
   const ended = hasEnded(schedule, today)
+  const { pausedFrom } = schedule
   // The rule's own last date is in its words already; a stop's earlier end date isn't.
   const last =
     schedule.endsOn && lastDue(schedule) === schedule.endsOn ? schedule.endsOn : undefined
@@ -356,8 +362,33 @@ function RecurringBill({
     // An expense always posts itself (#403): only a bill's autopay is a choice.
     schedule.autoPost && !expense ? 'Autopay' : undefined,
     notStarted ? `Starts ${formatDate(schedule.startsOn)}` : undefined,
-    ended ? 'Ended' : last ? `Last due ${formatDate(last)}` : undefined,
+    ended
+      ? 'Ended'
+      : pausedFrom
+        ? `Paused from ${formatDate(pausedFrom)}`
+        : last
+          ? `Last due ${formatDate(last)}`
+          : undefined,
   ].filter(Boolean)
+  const pending = stop.isPending || pause.isPending
+  const question =
+    asking === 'pause'
+      ? expense
+        ? `Pause ${schedule.description} from today? Nothing more is added until you resume it. What was added already stays.`
+        : `Pause ${schedule.description} from today? Bills due from today that you haven’t changed are removed, and no more are made until you resume it.`
+      : expense
+        ? notStarted
+          ? `Remove ${schedule.description}? It hasn’t started yet, so nothing has been added.`
+          : `Stop ${schedule.description} from today? Nothing more is added after today. What was added already stays.`
+        : notStarted
+          ? `Remove ${schedule.description}? It hasn’t started yet, so its bills are removed, except any you’ve already paid.`
+          : `Stop ${schedule.description} from today? No more bills are made after today. Bills already made stay, so you can still pay or skip them.`
+  const ask = (question: 'stop' | 'pause') => {
+    resume.reset()
+    // The buttons go as the question opens: focus moves to its safe answer, Cancel.
+    flushSync(() => setAsking(question))
+    cancelButton.current?.focus()
+  }
   return (
     <li className="flex flex-col gap-2 px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -365,69 +396,116 @@ function RecurringBill({
           <span className="block font-medium break-words">{schedule.description}</span>
           <span className="block text-sm text-muted-foreground">{details.join(' · ')}</span>
         </span>
-        {/* Stopping sets its end date, so one already set has nothing to stop. */}
-        {canStop && !ended && !schedule.endsOn && !confirming && (
-          <Button
-            ref={stopButton}
-            variant="outline"
-            onClick={() => {
-              // The button goes as the question opens: focus moves to its safe answer, Cancel.
-              flushSync(() => setConfirming(true))
-              cancelButton.current?.focus()
-            }}
-            aria-label={`Stop ${schedule.description}`}
-          >
-            Stop
-          </Button>
+        {canStop && !ended && !asking && (
+          <span className="flex flex-wrap gap-2">
+            {pausedFrom ? (
+              <Button
+                variant="outline"
+                aria-disabled={resume.isPending}
+                onClick={() => {
+                  if (resume.isPending) return
+                  resume.mutate(undefined, {
+                    onSuccess: () =>
+                      onDone(
+                        expense
+                          ? `Resumed ${schedule.description}. It’s added again from today; nothing is added for the days in between.`
+                          : `Resumed ${schedule.description}. Bills are made again from today; none are made for the days in between.`,
+                      ),
+                  })
+                }}
+                aria-label={`Resume ${schedule.description}`}
+              >
+                {resume.isPending ? 'Resuming…' : 'Resume'}
+              </Button>
+            ) : (
+              <Button
+                ref={pauseButton}
+                variant="outline"
+                onClick={() => ask('pause')}
+                aria-label={`Pause ${schedule.description}`}
+              >
+                Pause
+              </Button>
+            )}
+            {/* Stopping sets its end date, so one already set has nothing to stop. */}
+            {!schedule.endsOn && (
+              <Button
+                ref={stopButton}
+                variant="outline"
+                onClick={() => ask('stop')}
+                aria-label={`Stop ${schedule.description}`}
+              >
+                Stop
+              </Button>
+            )}
+          </span>
         )}
       </div>
-      {confirming && (
+      {resume.isError && <Message alert>{resume.error.message}</Message>}
+      {asking && (
         // A fieldset is a group: named by the question, which is read out with Cancel.
         <fieldset
-          aria-labelledby={`stop-${schedule.$id}`}
+          aria-labelledby={`${asking}-${schedule.$id}`}
           className="m-0 flex min-w-0 flex-col gap-2 rounded-md border border-border p-3"
         >
-          <p id={`stop-${schedule.$id}`} className="text-sm">
-            {expense
-              ? notStarted
-                ? `Remove ${schedule.description}? It hasn’t started yet, so nothing has been added.`
-                : `Stop ${schedule.description} from today? Nothing more is added after today. What was added already stays.`
-              : notStarted
-                ? `Remove ${schedule.description}? It hasn’t started yet, so its bills are removed, except any you’ve already paid.`
-                : `Stop ${schedule.description} from today? No more bills are made after today. Bills already made stay, so you can still pay or skip them.`}
+          <p id={`${asking}-${schedule.$id}`} className="text-sm">
+            {question}
           </p>
-          {stop.isError && <Message alert>{stop.error.message}</Message>}
+          {asking === 'stop' && stop.isError && <Message alert>{stop.error.message}</Message>}
+          {asking === 'pause' && pause.isError && <Message alert>{pause.error.message}</Message>}
           <div className="flex flex-wrap gap-2">
-            <Button
-              aria-disabled={stop.isPending}
-              onClick={() => {
-                if (stop.isPending) return
-                stop.mutate(today, {
-                  // Undefined when it was removed; a schedule when it was ended.
-                  onSuccess: (stopped) => {
-                    setConfirming(false)
-                    onStopped(
-                      stopped
-                        ? `Stopped ${schedule.description}. ${expense ? 'What was added already stays.' : 'Bills already made stay.'}`
-                        : `Removed ${schedule.description}.`,
-                    )
-                  },
-                })
-              }}
-            >
-              {stop.isPending ? 'Stopping…' : notStarted ? 'Remove it' : 'Stop it'}
-            </Button>
+            {asking === 'pause' ? (
+              <Button
+                aria-disabled={pending}
+                onClick={() => {
+                  if (pending) return
+                  pause.mutate(
+                    { pausedFrom: today },
+                    {
+                      onSuccess: () => {
+                        setAsking(undefined)
+                        onDone(`Paused ${schedule.description} from today. Resume it to carry on.`)
+                      },
+                    },
+                  )
+                }}
+              >
+                {pause.isPending ? 'Pausing…' : 'Pause it'}
+              </Button>
+            ) : (
+              <Button
+                aria-disabled={pending}
+                onClick={() => {
+                  if (pending) return
+                  stop.mutate(today, {
+                    // Undefined when it was removed; a schedule when it was ended.
+                    onSuccess: (stopped) => {
+                      setAsking(undefined)
+                      onDone(
+                        stopped
+                          ? `Stopped ${schedule.description}. ${expense ? 'What was added already stays.' : 'Bills already made stay.'}`
+                          : `Removed ${schedule.description}.`,
+                      )
+                    },
+                  })
+                }}
+              >
+                {stop.isPending ? 'Stopping…' : notStarted ? 'Remove it' : 'Stop it'}
+              </Button>
+            )}
             <Button
               ref={cancelButton}
               variant="ghost"
-              aria-disabled={stop.isPending}
+              aria-disabled={pending}
               onClick={() => {
-                if (stop.isPending) return
-                setConfirming(false)
+                if (pending) return
+                const button = asking === 'pause' ? pauseButton : stopButton
+                setAsking(undefined)
                 // A refusal shown in the question goes with it.
                 stop.reset()
-                // The Stop button comes back: focus goes back to it.
-                requestAnimationFrame(() => stopButton.current?.focus())
+                pause.reset()
+                // Its button comes back: focus goes back to it.
+                requestAnimationFrame(() => button.current?.focus())
               }}
             >
               Cancel

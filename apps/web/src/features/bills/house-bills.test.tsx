@@ -491,11 +491,11 @@ describe('HouseBillsPage: recurring (#403)', () => {
       )
     ).map((item) => item.textContent)
 
-  it('lists its bills and expenses, and offers Stop to a member only on their own', async () => {
+  it('lists its bills and expenses, and offers Pause and Stop to a member only on their own', async () => {
     mockHouse(HOUSE, 'member', { recurring: ROWS })
     renderAt('/bills?groupId=house1')
     expect(await items()).toEqual([
-      expect.stringMatching(/^InternetEvery Monday · A?\$80\.00Stop$/),
+      expect.stringMatching(/^InternetEvery Monday · A?\$80\.00PauseStop$/),
       // An expense always posts itself: it isn't called autopay.
       expect.stringMatching(/^CleanerExpense · Every Monday · A?\$100\.00$/),
     ])
@@ -503,7 +503,7 @@ describe('HouseBillsPage: recurring (#403)', () => {
     mockHouse(HOUSE, 'viewer', { recurring: ROWS })
     renderAt('/bills?groupId=house1')
     expect(await items()).toHaveLength(2)
-    expect(screen.queryByRole('button', { name: /^Stop/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /^(Stop|Pause|Resume)/ })).toBeNull()
   })
 
   it('lets an admin stop anyone’s recurring expense, in an expense’s words', async () => {

@@ -2,7 +2,7 @@ import type { Groups, Members, Schedules } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
 import { useGroups, useMyMember } from '../groups/use-groups'
@@ -619,5 +619,130 @@ describe('#137 review', () => {
         'Only an admin, or the member who set it up, can change this schedule.',
       ),
     ).toBeTruthy()
+  })
+})
+
+describe('SchedulesPage: pause and resume (#430)', () => {
+  // 11:00 on Monday 19 Oct 2026 in Sydney.
+  const NOW = new Date('2026-10-19T00:00:00.000Z')
+  const running = { ...thursdays, startsOn: '2026-10-01' }
+  const paused = { ...running, pausedFrom: '2026-11-02' }
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+  })
+  afterEach(() => vi.useRealTimers())
+
+  /** The scheduler answers with `after`, which the list then reads as stored. */
+  function answerWith(after: Schedules, extra: object) {
+    call.mockImplementation(async () => {
+      mockSchedules([after])
+      return { ok: true, data: { schedule: after, ...extra } }
+    })
+  }
+
+  it('pauses from today by default, then shows the pause, with focus on Resume', async () => {
+    mockGroup(acme)
+    mockSchedules([running])
+    answerWith({ ...running, pausedFrom: '2026-10-19' }, { removed: 2 })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    const field = screen.getByLabelText('Pause from') as HTMLInputElement
+    expect(document.activeElement).toBe(field)
+    expect(field.value).toBe('2026-10-19')
+    expect(field.min).toBe('2026-10-19')
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith('scheduler', 'POST', `/schedules/${running.$id}/pause`, {
+        pausedFrom: '2026-10-19',
+      }),
+    )
+    expect(await screen.findByText(/· Paused from Mon, (19 Oct|Oct 19),? 2026$/)).toBeTruthy()
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Resume' })),
+    )
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
+  })
+
+  it('checks the date in words before sending, and puts focus back on Pause after Cancel', async () => {
+    mockGroup(acme)
+    mockSchedules([running])
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    const field = screen.getByLabelText('Pause from')
+    fireEvent.change(field, { target: { value: '2026-10-18' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    expect(
+      screen.getByText(/^Pick today, Mon, (19 Oct|Oct 19),? 2026, or a later date$/),
+    ).toBeTruthy()
+    fireEvent.change(field, { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    expect(screen.getByText('Required')).toBeTruthy()
+    expect(call).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause' }))
+  })
+
+  it('resumes with no body, says so, and puts focus on Pause', async () => {
+    mockGroup(acme)
+    mockSchedules([paused])
+    answerWith({ ...paused, pausedFrom: null }, { created: 3 })
+    renderAt('/schedules?groupId=g1')
+    expect(await screen.findByText(/· Paused from Mon, (2 Nov|Nov 2),? 2026$/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Resume' }))
+    await waitFor(() =>
+      expect(call).toHaveBeenCalledWith(
+        'scheduler',
+        'POST',
+        `/schedules/${paused.$id}/resume`,
+        undefined,
+      ),
+    )
+    expect((await screen.findByRole('status')).textContent).toBe(
+      'Resumed. Shifts carry on from today; the days in between aren’t added.',
+    )
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Pause' })),
+    )
+    expect(screen.queryByText(/Paused from/)).toBeNull()
+  })
+
+  it('shows a refusal from pause in its form, and from resume under the row', async () => {
+    mockGroup(acme)
+    mockSchedules([running, { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays' }])
+    mockScheduler({ ok: false, error: { code: 'FORBIDDEN', message: 'Only an admin can.' } })
+    renderAt('/schedules?groupId=g1')
+    const row = (await screen.findByText('Thursday shift')).closest('li') as HTMLElement
+    fireEvent.click(within(row).getByRole('button', { name: 'Pause' }))
+    fireEvent.click(within(row).getByRole('button', { name: 'Pause schedule' }))
+    expect((await within(row).findByRole('alert')).textContent).toBe('Only an admin can.')
+    const other = screen.getByText('Saturdays').closest('li') as HTMLElement
+    fireEvent.click(within(other).getByRole('button', { name: 'Resume' }))
+    expect((await within(other).findByRole('alert')).textContent).toBe('Only an admin can.')
+    expect(within(other).getByText(/Paused from/)).toBeTruthy()
+  })
+
+  it('offers no Pause or Resume to a viewer, on someone else’s schedule, when archived, or once ended', async () => {
+    const rows = [running, { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays' }]
+    for (const [role, group, createdBy] of [
+      ['viewer', acme, 'pw'],
+      ['member', acme, 'pe'],
+      ['admin', { ...acme, archivedAt: '2026-10-01T00:00:00.000Z' }, 'pw'],
+    ] as const) {
+      mockGroup(group as Groups, role)
+      mockSchedules(rows.map((row) => ({ ...row, createdBy })))
+      renderAt('/schedules?groupId=g1')
+      expect(await screen.findByText('Saturdays')).toBeTruthy()
+      expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
+      expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull()
+      cleanup()
+    }
+    mockGroup(acme)
+    mockSchedules([{ ...paused, endsOn: '2026-10-18' }])
+    renderAt('/schedules?groupId=g1')
+    expect(await screen.findByText(/· Ended$/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull()
   })
 })
