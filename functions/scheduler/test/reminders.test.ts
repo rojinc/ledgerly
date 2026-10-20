@@ -408,7 +408,8 @@ describe('step 3: shift to confirm', () => {
     const list = services.db.listRows.bind(services.db)
     vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
       const page = await list(params)
-      if (params.tableId === 'transactions' && page.rows.length > 0) {
+      const step3 = params.queries?.some((query) => query.includes('"kind"'))
+      if (params.tableId === 'transactions' && step3 && page.rows.length > 0) {
         // Posted and locked by a final statement before the reminder is staged.
         await withTransaction(services.db, (tx) =>
           tx.write({
@@ -427,12 +428,55 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 't1')).toBeNull()
   })
 
+  it('sends nothing about a shift deleted after the page was read, and counts nothing', async () => {
+    const services = seeded([transaction('t1')])
+    const list = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const page = await list(params)
+      // Step 3's shift query (step 2 reads the row first, to post it).
+      const step3 = params.queries?.some((query) => query.includes('"kind"'))
+      if (params.tableId === 'transactions' && step3 && page.rows.length > 0) {
+        // Gone before its remindedAt is staged, which then fails with 409 (#243).
+        await withTransaction(services.db, (tx) =>
+          tx.write({ action: 'delete', tableId: 'transactions', rowId: 't1' }),
+        )
+      }
+      return page
+    })
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 0 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
+  })
+
+  it('counts and logs any other 404 when its remindedAt is staged, such as an expired transaction', async () => {
+    const services = seeded([transaction('t1')])
+    const stage = services.db.createOperations.bind(services.db)
+    vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+      if (JSON.stringify(params.operations).includes('"remindedAt"')) {
+        throw new AppwriteException('Transaction not found', 404, 'transaction_not_found')
+      }
+      return stage(params)
+    })
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(services.sendEmail).not.toHaveBeenCalled()
+    expect(remindedAt(services, 't1')).toBeNull()
+    expect(logged.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'reminder_failed',
+        groupId: 'acme',
+        transactionId: 't1',
+        cause: 'AppwriteException 404 transaction_not_found',
+      },
+    ])
+  })
+
   it('sends nothing when another run reminded it first', async () => {
     const services = seeded([transaction('t1')])
     const list = services.db.listRows.bind(services.db)
     vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
       const page = await list(params)
-      if (params.tableId === 'transactions' && page.rows.length > 0) {
+      const step3 = params.queries?.some((query) => query.includes('"kind"'))
+      if (params.tableId === 'transactions' && step3 && page.rows.length > 0) {
         await withTransaction(services.db, (tx) =>
           tx.write({
             action: 'update',

@@ -19,12 +19,7 @@ import {
   teamRead,
   transactionColumns,
 } from '@ledgerly/server/ledger/transactions'
-import {
-  goneIsRaced,
-  guardSchedule,
-  itemsOf,
-  laterOf,
-} from '@ledgerly/server/scheduler/end-schedule'
+import { guardSchedule, itemsOf, laterOf } from '@ledgerly/server/scheduler/end-schedule'
 import { Query } from 'node-appwrite'
 
 const MS_PER_MINUTE = 60_000
@@ -205,9 +200,11 @@ export async function generateOccurrences(
       : { generatedThrough: laterOf(compareDates(reached, to) < 0 ? reached : to, after) }
     await withTransaction(db, async (tx) => {
       await guardSchedule(tx, db, seen, progress)
-      if (batch.length === 0) return
+      // A batch that only saves its progress too: its dates came from the group's time zone and
+      // region. `batchesOf` counts the group row's write in every batch.
       await guardGroupAndMembers(tx, db, group, ledger, people)
-      await goneIsRaced(tx.write(...batch.flatMap((step) => stepWrites(schedule, step))))
+      if (batch.length === 0) return
+      await tx.write(...batch.flatMap((step) => stepWrites(schedule, step)))
       await requireUnchanged(db, batch)
     })
     seen = { ...seen, ...progress }

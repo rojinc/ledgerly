@@ -244,9 +244,13 @@ async function remind(
     })
   } catch (error) {
     if (error instanceof Changed) return
-    // The row changed or went away after staging: the next run looks at it again.
     const lost = error instanceof AppwriteException && (error.code === 404 || error.code === 409)
-    if (!lost || outcome === undefined) throw error
+    // With no outcome yet, only a 409 is a row that went away (withTransaction reports a gone
+    // row's 404 as one): any other 404, such as an expired transaction, counts as failed.
+    if (!lost || (outcome === undefined && error.code !== 409)) throw error
+    // Deleted before `remindedAt` was staged (a 409 there): like a row that changed, it gets
+    // nothing. One that changed or went away after staging: the next run looks at it again.
+    if (outcome === undefined) return
   }
   if (outcome) counts[outcome] += 1
 }

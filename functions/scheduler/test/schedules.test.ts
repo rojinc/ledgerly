@@ -224,6 +224,32 @@ describe('POST /schedules', () => {
     ])
   })
 
+  it('skips the public holidays of a region set just before its expansion guards the group', async () => {
+    const services = seeded()
+    // Tuesdays, holidays skipped. 3 November is Melbourne Cup Day in Victoria, not in NSW.
+    const tuesdays = { ...thursdays, rrule: 'FREQ=WEEKLY;BYDAY=TU', skipPublicHolidays: true }
+    beforeStaging(
+      services.db,
+      // The expansion's guard, once the schedule is saved: not the one saving it.
+      (operations) =>
+        operations.includes('"tableId":"groups"') && scheduleRow(services) !== undefined,
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'groups',
+            rowId: 'acme',
+            data: { region: 'AU-VIC' },
+          }),
+        ),
+    )
+    await create(services, tuesdays)
+    const dates = occurrences(services).map((row) => row.date)
+    expect(dates).toContain('2026-10-27')
+    expect(dates).not.toContain('2026-11-03')
+    expect(dates).toContain('2026-11-10')
+  })
+
   it('makes bills due on their own date, and lets a house member add their own', async () => {
     const services = seeded()
     const { created } = await create(services, rent, 'u2')

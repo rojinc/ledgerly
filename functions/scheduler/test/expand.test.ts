@@ -4,7 +4,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
 import { nextRunAt } from '../src/occurrences'
 import type { RunResult } from '../src/routes/run'
-import { type Fakes, fakes, group, member, ok, person } from './harness'
+import { beforeStaging, type Fakes, fakes, group, member, ok, person } from './harness'
 
 const ID = 'thursdaysAcmeSam0001'
 
@@ -173,6 +173,45 @@ describe('step 1: expand due schedules', () => {
     })
     expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 7, failed: 0 })
     expect(dates(services)).toHaveLength(8)
+  })
+
+  it('guards the group in a run with nothing to write too, so it runs again with a new region', async () => {
+    // 00:10 on Tuesday 8 September in Melbourne: the window moves on to Tuesday 3 November,
+    // Melbourne Cup Day in Victoria, so the run has nothing to write. NSW works that day.
+    const services = fakes(
+      {
+        persons: [person('pSam', 'u1'), person('pAcme', null)],
+        groups: [group('acme', 'pSam', { timezone: 'Australia/Melbourne', region: 'AU-VIC' })],
+        members: [member('acme', 'pSam'), member('acme', 'pAcme', { status: 'placeholder' })],
+        schedules: [
+          schedule({
+            description: 'Tuesday shift',
+            rrule: 'FREQ=WEEKLY;BYDAY=TU',
+            skipPublicHolidays: true,
+            generatedThrough: '2026-11-02',
+            nextRunAt: '2026-09-07T14:05:00.000Z',
+          }),
+        ],
+      },
+      { accounts: {}, now: new Date('2026-09-07T14:10:00.000Z') },
+    )
+    // The group moves to NSW after the run read it, just before it saves its progress.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"tableId":"schedules"'),
+      () =>
+        withTransaction(services.db, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'groups',
+            rowId: 'acme',
+            data: { region: 'AU-NSW' },
+          }),
+        ),
+    )
+    expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 1, failed: 0 })
+    expect(dates(services)).toEqual(['2026-11-03'])
+    expect(scheduleRow(services)?.generatedThrough).toBe('2026-11-03')
   })
 
   it('clears nextRunAt in an archived group and creates nothing', async () => {
