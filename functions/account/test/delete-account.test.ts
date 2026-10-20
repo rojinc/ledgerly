@@ -697,6 +697,21 @@ describe('POST /delete: each group they joined', () => {
     ).toEqual(['sDone_20261012', 'sDone_20261026', 'sDone_20261102', 'sToday_20261019'])
   })
 
+  it('keeps the pause of a paused schedule it ends, so a resume can’t make more (#430)', async () => {
+    const services = kept()
+    const paused = schedule('sPaused', 'h1', 'p1', ['p1'], { pausedFrom: '2026-11-02' })
+    await insert(services, 'schedules', [paused])
+    await insert(services, 'transactions', [occurrence(paused, '2026-10-26')])
+    expect((await remove(services)).finished).toBe(true)
+
+    expect(rowOf(services, 'schedules', 'sPaused')).toMatchObject({
+      endsOn: TODAY,
+      pausedFrom: '2026-11-02',
+      nextRunAt: DELETED_AT,
+    })
+    expect(rowOf(services, 'transactions', 'sPaused_20261026')).toBeUndefined()
+  })
+
   it('waits with the archive while a statement is being finalized, then finishes on a later run', async () => {
     const services = kept()
     // A finalize that started after step 1 checked (which refuses one they could finish). Its

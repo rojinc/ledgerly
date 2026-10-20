@@ -1,12 +1,15 @@
-import { daysBetween, type LocalDate } from '@ledgerly/core/dates/local-date'
+import { compareDates, daysBetween, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Schedules } from '@ledgerly/core/generated/rows'
 import type { ScheduleInput } from '@ledgerly/core/schemas/scheduler'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { type Membership, requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
-import type { Ledger } from '@ledgerly/server/ledger/transactions'
+import { refuseDeletedCreator, refuseDeletedPeople } from '@ledgerly/server/ledger/deleted-people'
+import { guardGroupAndMembers, type Ledger, loadLedger } from '@ledgerly/server/ledger/transactions'
+import { guardSchedule } from '@ledgerly/server/scheduler/end-schedule'
 import { AppwriteException } from 'node-appwrite'
 import { planOccurrence, type ScheduleTemplate } from './occurrences'
 import type { Services } from './services'
@@ -86,6 +89,45 @@ export function checkTemplate(
   ledger: Ledger,
 ): string[] {
   return planOccurrence(schedule, schedule.startsOn as LocalDate, ledger).planned.people
+}
+
+/**
+ * Saves `changes`, which make the schedule expand again from `today`, for `PATCH` and `resume`
+ * (scheduling.md#schedule-routes). The template, as it will be, must fit the ledger (a trial on
+ * `startsOn`) and name nobody who deleted their account (a trial on the first day it can make an
+ * occurrence). In one transaction with the schedule, group and named members' guards. Returns
+ * the ledger, for the expansion.
+ */
+export async function saveToExpand(
+  db: Db,
+  membership: Membership,
+  schedule: Schedules,
+  changes: Partial<Schedules>,
+  today: LocalDate,
+): Promise<Ledger> {
+  const next = { ...schedule, ...changes }
+  const ledger = await loadLedger(db, membership)
+  const people = checkTemplate(next, ledger)
+  // Deleted people (functions-api.md#ledger): a trial on the first day this can make an
+  // occurrence.
+  const startsOn = next.startsOn as LocalDate
+  const firstDay = compareDates(startsOn, today) > 0 ? startsOn : today
+  const named = planOccurrence(next, firstDay, ledger).planned.people
+  await withTransaction(db, async (tx) => {
+    await guardSchedule(tx, db, schedule, changes)
+    // The people the template names stay members while it exists (ledger.md#concurrency).
+    await guardGroupAndMembers(tx, db, membership.group, ledger, people)
+    // Deleting their account ended the schedules they made or that name them, and this could
+    // start one again (functions-api.md#ledger). The creator is checked, and guarded, first;
+    // then the whole template, also people it named already.
+    await refuseDeletedCreator(tx, db, schedule.createdBy)
+    await refuseDeletedPeople(tx, db, ledger, {
+      kind: next.kind,
+      people: named.filter((personId) => personId !== schedule.createdBy),
+      guard: true,
+    })
+  })
+  return ledger
 }
 
 // A new schedule's past occurrences are made at once and wait for the user, so a start date is at

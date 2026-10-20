@@ -7,7 +7,9 @@ import {
 import { createSchedule } from './routes/create-schedule'
 import { deleteSchedule } from './routes/delete-schedule'
 import { endSchedule } from './routes/end-schedule'
+import { pauseSchedule } from './routes/pause-schedule'
 import { previewSchedule } from './routes/preview-schedule'
+import { resumeSchedule } from './routes/resume-schedule'
 import { run } from './routes/run'
 import { updateSchedule } from './routes/update-schedule'
 import { type Services, servicesFromRequest } from './services'
@@ -28,6 +30,12 @@ export function schedulerRoutes(
     ),
     route('POST', '/schedules/:id/end', async (ctx) =>
       endSchedule(services(ctx), ctx.userId, ctx.params.id, ctx.body),
+    ),
+    route('POST', '/schedules/:id/pause', async (ctx) =>
+      pauseSchedule(services(ctx), ctx.userId, ctx.params.id, ctx.body),
+    ),
+    route('POST', '/schedules/:id/resume', async (ctx) =>
+      resumeSchedule(services(ctx), ctx.userId, ctx.params.id),
     ),
     route('DELETE', '/schedules/:id', async (ctx) =>
       deleteSchedule(services(ctx), ctx.userId, ctx.params.id),
