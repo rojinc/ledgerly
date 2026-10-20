@@ -1,6 +1,6 @@
 import type { Profiles } from '@ledgerly/core/generated/rows'
 import { updateProfileBodySchema } from '@ledgerly/core/schemas/identity'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { BusinessForm } from './business-form'
 import { EmailSettingsForm } from './email-settings-form'
@@ -93,6 +93,22 @@ describe('ProfileForm', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     expect((await screen.findByRole('alert')).textContent).toBe('Please log in again.')
   })
+
+  it('keeps Save focusable while saving, and saves once', async () => {
+    const onSave = vi.fn().mockReturnValue(new Promise(() => {}))
+    render(<ProfileForm profile={profile} displayName="Sam Lee" onSave={onSave} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    saving.focus()
+    expect(document.activeElement).toBe(saving)
+    fireEvent.click(saving)
+    fireEvent.submit(saving.closest('form') as HTMLFormElement)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(onSave).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('BusinessForm', () => {
@@ -149,6 +165,22 @@ describe('BusinessForm', () => {
   it('ignores saved details that are not valid JSON', () => {
     render(<BusinessForm profile={{ ...profile, businessJson: '{oops' }} onSave={vi.fn()} />)
     expect((screen.getByLabelText('ABN') as HTMLInputElement).value).toBe('')
+  })
+
+  it('keeps Save invoice details focusable while saving, and saves once', async () => {
+    const onSave = vi.fn().mockReturnValue(new Promise(() => {}))
+    render(<BusinessForm profile={profile} onSave={onSave} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Save invoice details' }))
+    const saving = await screen.findByRole('button', { name: 'Saving…' })
+    expect(saving.getAttribute('aria-disabled')).toBe('true')
+    saving.focus()
+    expect(document.activeElement).toBe(saving)
+    fireEvent.click(saving)
+    fireEvent.submit(saving.closest('form') as HTMLFormElement)
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(onSave).toHaveBeenCalledTimes(1)
   })
 })
 

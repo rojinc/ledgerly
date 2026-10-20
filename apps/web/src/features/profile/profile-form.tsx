@@ -49,15 +49,22 @@ export function ProfileForm({ profile, displayName, onSave }: Props) {
   return (
     <form
       noValidate
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          await onSave(body)
-          // Show what was stored (trimmed, upper-cased), not what was typed.
-          form.reset(body as ProfileValues)
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
+      onSubmit={(event) => {
+        // Save stays focusable while saving (aria-disabled), so a second submit is ignored here.
+        if (isSubmitting) {
+          event.preventDefault()
+          return
         }
-      })}
+        void form.handleSubmit(async (body) => {
+          try {
+            await onSave(body)
+            // Show what was stored (trimmed, upper-cased), not what was typed.
+            form.reset(body as ProfileValues)
+          } catch (error) {
+            form.setError('root', { message: (error as Error).message })
+          }
+        })(event)
+      }}
       className="flex flex-col gap-4"
       aria-labelledby="profile-heading"
     >
@@ -85,7 +92,7 @@ export function ProfileForm({ profile, displayName, onSave }: Props) {
           </option>
         ))}
       </SelectField>
-      <Button type="submit" disabled={isSubmitting}>
+      <Button type="submit" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : 'Save'}
       </Button>
       {isSubmitSuccessful && !isDirty && !errors.root && <Alert>Saved.</Alert>}

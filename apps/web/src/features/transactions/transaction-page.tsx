@@ -529,6 +529,7 @@ function VoidForm({
       className="flex flex-col gap-3 border-t border-border pt-4"
       onSubmit={(event) => {
         event.preventDefault()
+        if (voidRow.isPending) return
         if (reason.trim() === '') {
           setError('Say why, for example “Entered twice”.')
           return
@@ -546,7 +547,12 @@ function VoidForm({
         error={error ? { type: 'validate', message: error } : undefined}
       />
       {voidRow.isError && <Message alert>{voidRow.error.message}</Message>}
-      <Button type="submit" variant="outline" className="self-start" disabled={voidRow.isPending}>
+      <Button
+        type="submit"
+        variant="outline"
+        className="self-start"
+        aria-disabled={voidRow.isPending}
+      >
         Void
       </Button>
     </form>

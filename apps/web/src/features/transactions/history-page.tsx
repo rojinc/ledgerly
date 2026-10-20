@@ -401,8 +401,10 @@ function History({
         <Button
           variant="outline"
           className="self-start"
-          disabled={history.isFetchingNextPage}
-          onClick={() => history.fetchNextPage()}
+          aria-disabled={history.isFetchingNextPage}
+          onClick={() => {
+            if (!history.isFetchingNextPage) void history.fetchNextPage()
+          }}
         >
           {history.isFetchingNextPage ? 'Loading…' : 'Load more'}
         </Button>

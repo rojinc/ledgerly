@@ -291,15 +291,22 @@ function ScheduleForm({
       <form
         noValidate
         className="flex flex-1 flex-col gap-4"
-        onSubmit={form.handleSubmit(async (input) => {
-          try {
-            await save.mutateAsync(input)
-            // The list's heading takes focus: this form, and its button, are gone.
-            navigate(`/schedules?groupId=${group.$id}`, { state: { saved: true } })
-          } catch (error) {
-            form.setError('root', { message: (error as Error).message })
+        onSubmit={(event) => {
+          // Save stays focusable while saving (aria-disabled), so a second submit is ignored here.
+          if (isSubmitting) {
+            event.preventDefault()
+            return
           }
-        })}
+          void form.handleSubmit(async (input) => {
+            try {
+              await save.mutateAsync(input)
+              // The list's heading takes focus: this form, and its button, are gone.
+              navigate(`/schedules?groupId=${group.$id}`, { state: { saved: true } })
+            } catch (error) {
+              form.setError('root', { message: (error as Error).message })
+            }
+          })(event)
+        }}
       >
         {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
         <TextField
@@ -434,7 +441,7 @@ function ScheduleForm({
             ? `Each shift: ${Math.floor(minutes / 60)} h ${minutes % 60} min`
             : ' '}
         </p>
-        <Button type="submit" className="self-start" disabled={isSubmitting}>
+        <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : schedule ? 'Save' : 'Create schedule'}
         </Button>
       </form>

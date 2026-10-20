@@ -266,24 +266,31 @@ export function EmployerForm(props: Props) {
   return (
     <form
       noValidate
-      onSubmit={form.handleSubmit(async (body) => {
-        try {
-          if (props.mode === 'create') {
-            await props.onSave(body as CreateGroupBody)
-          } else {
-            // Time zone, region and currency only when changed here, as the house form does, so a
-            // save doesn't undo another admin's change.
-            const changes = { ...(body as UpdateGroupBody) }
-            for (const field of ['timezone', 'region', 'currency'] as const) {
-              if (!form.formState.dirtyFields[field]) delete changes[field]
-            }
-            // Show what was stored (trimmed, one email per line, the kept anchor), not what was typed.
-            form.reset(await props.onSave(changes))
-          }
-        } catch (error) {
-          form.setError('root', { message: (error as Error).message })
+      onSubmit={(event) => {
+        // Save stays focusable while saving (aria-disabled), so a second submit is ignored here.
+        if (isSubmitting) {
+          event.preventDefault()
+          return
         }
-      })}
+        void form.handleSubmit(async (body) => {
+          try {
+            if (props.mode === 'create') {
+              await props.onSave(body as CreateGroupBody)
+            } else {
+              // Time zone, region and currency only when changed here, as the house form does, so a
+              // save doesn't undo another admin's change.
+              const changes = { ...(body as UpdateGroupBody) }
+              for (const field of ['timezone', 'region', 'currency'] as const) {
+                if (!form.formState.dirtyFields[field]) delete changes[field]
+              }
+              // Show what was stored (trimmed, one email per line, the kept anchor), not what was typed.
+              form.reset(await props.onSave(changes))
+            }
+          } catch (error) {
+            form.setError('root', { message: (error as Error).message })
+          }
+        })(event)
+      }}
       className="flex flex-col gap-4"
     >
       {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
@@ -371,9 +378,16 @@ export function EmployerForm(props: Props) {
           <input
             id="autoSend"
             type="checkbox"
-            className="mt-0.5 size-5 shrink-0 accent-primary"
-            disabled={!sendable}
+            className="mt-0.5 size-5 shrink-0 accent-primary aria-disabled:opacity-50"
+            aria-disabled={!sendable}
             aria-describedby="autoSend-hint"
+            // Preventing the click undoes the tick, but React fires onChange from that same click:
+            // stopping it in the capture phase keeps it from onChange, so the value stays too.
+            onClickCapture={(event) => {
+              if (sendable) return
+              event.preventDefault()
+              event.stopPropagation()
+            }}
             {...form.register('autoSend')}
           />
           <div className="flex min-w-0 flex-col gap-1">
@@ -388,7 +402,7 @@ export function EmployerForm(props: Props) {
         </div>
       </fieldset>
       {!readOnly && (
-        <Button type="submit" disabled={isSubmitting}>
+        <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : props.mode === 'create' ? 'Create employer' : 'Save'}
         </Button>
       )}
