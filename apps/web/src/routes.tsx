@@ -1,5 +1,6 @@
 import { Navigate, type RouteObject } from 'react-router'
 import { AppLayout } from './app-layout'
+import { DeleteAccountPage } from './features/account/delete-account-page'
 import { ActivityPage } from './features/activity/activity-page'
 import { LoginPage } from './features/auth/login-page'
 import { RecoverCompletePage } from './features/auth/recover-complete-page'
@@ -30,6 +31,8 @@ export const routes: RouteObject[] = [
     ],
   },
   { path: 'verify-email', element: <VerifyEmailPage /> },
+  // Guards itself: it stays up to say the account was deleted once there's no user.
+  { path: 'account/delete', element: <DeleteAccountPage /> },
   // No guard: someone signed in may open the emailed link.
   { path: 'recover/complete', element: <RecoverCompletePage /> },
   {
