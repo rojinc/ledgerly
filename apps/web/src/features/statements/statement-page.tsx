@@ -461,6 +461,15 @@ function FinalActions({
           </Button>
         )}
       </div>
+      {/* A final statement never changes: a mistake on it is fixed on the next one (#400). */}
+      {admin && (
+        <Link
+          to={`/transactions/new?groupId=${group.$id}&kind=adjustment`}
+          className="self-start text-sm underline underline-offset-4"
+        >
+          Correct with an adjustment
+        </Link>
+      )}
       {downloadError && <Message alert>{downloadError}</Message>}
       {send.isError && <Message alert>{send.error.message}</Message>}
       {/* Mounted from the start, so the news is read out. */}

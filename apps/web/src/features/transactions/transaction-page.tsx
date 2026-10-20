@@ -1,5 +1,5 @@
 import type { Groups, Items, Members, Transactions } from '@ledgerly/core/generated/rows'
-import { formatMoney } from '@ledgerly/core/money/format'
+import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router'
 import { useSwap } from '../../lib/use-swap'
@@ -217,20 +217,24 @@ function Details({ row }: { row: Transactions }) {
           <h2 id="shares-heading" className="font-medium">
             {row.kind === 'shift'
               ? 'Who earned it, and who owes it'
-              : 'Who paid, and who it was for'}
+              : row.kind === 'adjustment'
+                ? 'Whose balance it changes'
+                : 'Who paid, and who it was for'}
           </h2>
           <ul className="flex flex-col gap-1 text-sm">
             {shares.data.map((share) => (
               <li key={share.$id} className="break-words">
                 {names.get(share.personId) ?? 'Someone'}:{' '}
-                {[
-                  share.givenCents !== 0 &&
-                    `${row.kind === 'shift' ? 'earned' : 'paid'} ${formatMoney(share.givenCents, group.data.currency)}`,
-                  share.receivedCents !== 0 &&
-                    `${row.kind === 'payment' ? 'received' : row.kind === 'shift' ? 'owes' : 'for them'} ${formatMoney(share.receivedCents, group.data.currency)}`,
-                ]
-                  .filter(Boolean)
-                  .join(', ')}
+                {row.kind === 'adjustment'
+                  ? adjustmentText(share, group.data.currency)
+                  : [
+                      share.givenCents !== 0 &&
+                        `${row.kind === 'shift' ? 'earned' : 'paid'} ${formatMoney(share.givenCents, group.data.currency)}`,
+                      share.receivedCents !== 0 &&
+                        `${row.kind === 'payment' ? 'received' : row.kind === 'shift' ? 'owes' : 'for them'} ${formatMoney(share.receivedCents, group.data.currency)}`,
+                    ]
+                      .filter(Boolean)
+                      .join(', ')}
               </li>
             ))}
           </ul>
@@ -259,6 +263,16 @@ function Details({ row }: { row: Transactions }) {
       )}
     </>
   )
+}
+
+/** An adjustment's share as the change to that person's balance (ledger.md#concepts-in-one-minute). */
+function adjustmentText(
+  share: { givenCents: number; receivedCents: number },
+  currency: string,
+): string {
+  const net = share.givenCents - share.receivedCents
+  if (net === 0) return 'no change'
+  return `${net > 0 ? 'is owed' : 'owes'} ${formatNet(Math.abs(net), currency)} more`
 }
 
 /** `Alice, Bob and Cara`. */
