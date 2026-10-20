@@ -369,10 +369,10 @@ describe('moveMembers (step 2)', () => {
     for (const groupId of ['g1', 'g2', 'g3']) {
       expect(services.teams.members(groupId)?.map((member) => member.userId)).toEqual(['u1'])
     }
+    // U had joined g3 already, so only g1 and g2 get a member.joined row (#349).
     expect(joinedRows(services)).toEqual([
       ['g1', 'pU', 'pU', 'joined', NOW.toISOString()],
       ['g2', 'pU', 'pU', 'joined', NOW.toISOString()],
-      ['g3', 'pU', 'pU', 'joined', NOW.toISOString()],
     ])
     // Nothing points at P any more: a second run is a no-op.
     expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({

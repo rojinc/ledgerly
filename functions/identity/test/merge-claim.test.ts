@@ -965,6 +965,26 @@ describe('POST /claim, merging a placeholder', () => {
     },
   )
 
+  // #349: Claim step 3 joins Sam's own row first, so the merge's step 2 writes no second
+  // member.joined there.
+  it('writes one member.joined where Sam’s own placeholder row and Sammy’s are both there', async () => {
+    const services = house({
+      groups: [group('g3')],
+      members: [
+        placeholderRow('m5', 'g3', 'pSam', BEFORE),
+        placeholderRow('m6', 'g3', 'pP', BEFORE),
+      ],
+    })
+    await claim(services)
+    const joined = services.db
+      .rows('activity')
+      .filter((row) => row.groupId === 'g3' && row.action === 'member.joined')
+    expect(joined).toHaveLength(1)
+    expect(services.db.rows('members').filter((row) => row.groupId === 'g3')).toMatchObject([
+      { $id: 'm5', personId: 'pSam', status: 'active' },
+    ])
+  })
+
   // #349 (a): Claim step 3 joins Sam's own placeholder row before the merge carries on.
   it('joins Sam’s own placeholder row first, so the merge renames Sammy there too', async () => {
     const services = await sammyInG3({
