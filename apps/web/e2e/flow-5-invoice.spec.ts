@@ -17,7 +17,12 @@ test.afterEach(async ({ page }) => {
   if (groupId) await archiveEmployer(page, groupId)
 })
 
-test('invoices last month: the draft, finalize and send, its number and PDF', async ({ page }) => {
+// Skipped until the flows have a project of their own (#386): each run would leave a final
+// invoice in dev, which is production, and a final statement is never changed or deleted
+// (D-010). The lead's call on #389.
+test.skip('invoices last month: the draft, finalize and send, its number and PDF', async ({
+  page,
+}) => {
   await logIn(page, setupUser('max'))
   const employer = `Nimbus ${runId()}`
   const billing = testEmail('nimbus-billing')
