@@ -91,6 +91,19 @@ describe('updateProfileBodySchema', () => {
     ])
     expect(paths(updateProfileBodySchema, { lastInvoiceNumber: 10 })).toEqual([''])
   })
+
+  it('takes the emails to turn off, each at most once, or [] for none (#431)', () => {
+    const all = ['billDue', 'shiftToConfirm', 'statementReady']
+    expect(paths(updateProfileBodySchema, { emailOptOuts: all })).toEqual([])
+    expect(paths(updateProfileBodySchema, { emailOptOuts: [] })).toEqual([])
+    expect(paths(updateProfileBodySchema, { emailOptOuts: ['timerRunning'] })).toEqual([
+      'emailOptOuts.0',
+    ])
+    expect(paths(updateProfileBodySchema, { emailOptOuts: ['billDue', 'billDue'] })).toEqual([
+      'emailOptOuts',
+    ])
+    expect(paths(updateProfileBodySchema, { emailOptOuts: null })).toEqual(['emailOptOuts'])
+  })
 })
 
 describe('createInviteBodySchema', () => {

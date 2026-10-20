@@ -157,6 +157,7 @@ export type Profiles = Models.Row & {
     hoursCapMinutes: number | null;
     hoursCapPeriod: ProfilesHoursCapPeriod | null;
     hoursCapStartsOn: string | null;
+    emailOptOuts: string[] | null;
 }
 
 export type Groups = Models.Row & {

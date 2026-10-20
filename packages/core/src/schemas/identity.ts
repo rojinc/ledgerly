@@ -81,6 +81,20 @@ export const hoursCapSchema = z
 
 export type HoursCap = z.infer<typeof hoursCapSchema>
 
+/**
+ * The emails a user can turn off on Profile (data-model.md#profiles): bill due and shift to
+ * confirm (scheduler step 3), and statement ready (the statements job). No other email is in this
+ * list.
+ */
+export const emailTypeSchema = z.enum(['billDue', 'shiftToConfirm', 'statementReady'])
+
+export type EmailType = z.infer<typeof emailTypeSchema>
+
+/** `profiles.emailOptOuts`: the emails turned off, each at most once. */
+export const emailOptOutsSchema = z
+  .array(emailTypeSchema)
+  .refine((types) => new Set(types).size === types.length, 'Each email can appear only once')
+
 /** `PATCH /profile` */
 export const updateProfileBodySchema = z.strictObject({
   displayName: displayNameSchema.optional(),
@@ -92,6 +106,8 @@ export const updateProfileBodySchema = z.strictObject({
   summaryFrequency: z.enum(['none', 'weekly', 'fortnightly', 'monthly']).optional(),
   /** `null` clears it. */
   hoursCap: hoursCapSchema.nullable().optional(),
+  /** Replaces the whole list; `[]` turns every email back on. */
+  emailOptOuts: emailOptOutsSchema.optional(),
 })
 
 export type UpdateProfileBody = z.infer<typeof updateProfileBodySchema>
