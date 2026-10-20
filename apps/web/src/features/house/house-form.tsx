@@ -10,6 +10,7 @@ import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
+import { PlaceFields } from '../profile/place-fields'
 import {
   type HouseValues,
   toHouseFields,
@@ -109,6 +110,12 @@ export function HouseForm(props: Props) {
         id="autoFinalize"
         label="Finalize the divide automatically when the month ends"
         {...form.register('autoFinalize')}
+      />
+      <PlaceFields
+        register={form.register}
+        errors={errors}
+        zone={props.defaultValues.timezone}
+        group={props.mode === 'create' ? 'new' : 'saved'}
       />
       <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : props.mode === 'create' ? 'Create house' : 'Save'}

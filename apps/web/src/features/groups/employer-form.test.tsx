@@ -25,10 +25,11 @@ const groupHook = vi.mocked(useGroup)
 const memberHook = vi.mocked(useMyMember)
 const profileHook = vi.mocked(useProfile)
 
-function mockProfile(currency: string) {
-  profileHook.mockReturnValue({ data: { currency }, isError: false } as ReturnType<
-    typeof useProfile
-  >)
+function mockProfile(currency: string, timezone = 'Australia/Sydney', region = 'AU-NSW') {
+  profileHook.mockReturnValue({
+    data: { currency, timezone, region },
+    isError: false,
+  } as ReturnType<typeof useProfile>)
 }
 
 const employer = {
@@ -161,6 +162,8 @@ describe('NewEmployerPage', () => {
       id: (body as { id: string }).id,
       type: 'employer',
       name: 'Acme Cafe',
+      timezone: 'Australia/Sydney',
+      region: 'AU-NSW',
       currency: 'AUD',
       counterpart: { displayName: 'Acme Cafe' },
       statementCycle: 'fortnightly',
@@ -191,6 +194,46 @@ describe('NewEmployerPage', () => {
     }
     expect(body.currency).toBe('JPY')
     expect(body.settings.defaultRateCents).toBe(25)
+  })
+
+  it('starts with the profile’s time zone, region and currency, and sends the ones chosen', async () => {
+    mockProfile('NZD', 'Pacific/Auckland', 'NZ-AUK')
+    call.mockResolvedValue(created)
+    renderAt('/groups/new-employer')
+    expect(input('Time zone').value).toBe('Pacific/Auckland')
+    expect(input('Public holiday region').value).toBe('NZ-AUK')
+    expect(input('Currency').value).toBe('NZD')
+    expect(screen.getByText(/It can’t change once something is recorded/)).toBeTruthy()
+    // A new group has no period yet.
+    expect(screen.queryByText('A period that has already ended keeps its dates.')).toBeNull()
+    type('Employer name', 'Acme Cafe')
+    type('Time zone', 'Asia/Tokyo')
+    type('Public holiday region', ' jp ')
+    type('Currency', 'jpy')
+    // The rate is typed in the group's currency, not the profile's.
+    expect(screen.getByLabelText('Default hourly rate (JPY)')).toBeTruthy()
+    type(/Default hourly rate/, '2500')
+    fireEvent.click(screen.getByRole('button', { name: 'Create employer' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call.mock.calls[0]?.[3]).toMatchObject({
+      timezone: 'Asia/Tokyo',
+      region: 'JP',
+      currency: 'JPY',
+      settings: { defaultRateCents: 2500 },
+    })
+  })
+
+  it('shows an inline error for a currency that isn’t three letters, and not one for the rate', async () => {
+    renderAt('/groups/new-employer')
+    type('Employer name', 'Acme Cafe')
+    type(/Default hourly rate/, '25.50')
+    type('Currency', 'A1')
+    fireEvent.click(screen.getByRole('button', { name: 'Create employer' }))
+    expect((await screen.findByText('Expected e.g. AUD', {}, { timeout: 3000 })).id).toBe(
+      'currency-error',
+    )
+    expect(input(/Default hourly rate/).getAttribute('aria-invalid')).toBe('false')
+    expect(call).not.toHaveBeenCalled()
   })
 
   it('says the employer may already exist on a conflict, keeping the id', async () => {
@@ -279,9 +322,10 @@ describe('NewEmployerPage', () => {
   })
 
   it('keeps the form when a background refetch of the profile fails', () => {
-    profileHook.mockReturnValue({ data: { currency: 'AUD' }, isError: true } as ReturnType<
-      typeof useProfile
-    >)
+    profileHook.mockReturnValue({
+      data: { currency: 'AUD', timezone: 'Australia/Sydney', region: 'AU-NSW' },
+      isError: true,
+    } as ReturnType<typeof useProfile>)
     renderAt('/groups/new-employer')
     expect(screen.getByLabelText('Employer name')).toBeTruthy()
     expect(screen.queryByRole('alert')).toBeNull()
@@ -356,6 +400,50 @@ describe('EmployerSettingsPage', () => {
     expect(queryClient.getQueryData(['group', 'g1'])).toEqual(saved)
   })
 
+  it('shows the group’s own time zone, region and currency, and sends only those changed', async () => {
+    mockGroup({ ...employer, timezone: 'Pacific/Auckland', region: 'NZ-AUK', currency: 'NZD' })
+    call.mockResolvedValue({ ok: true, data: { ...employer, timezone: 'Asia/Tokyo' } })
+    renderAt('/groups/g1/settings')
+    expect(input('Time zone').value).toBe('Pacific/Auckland')
+    expect(input('Public holiday region').value).toBe('NZ-AUK')
+    expect(input('Currency').value).toBe('NZD')
+    expect(screen.getByLabelText('Default hourly rate (NZD)')).toBeTruthy()
+    // statements.md#periods (#126).
+    expect(screen.getByText('A period that has already ended keeps its dates.')).toBeTruthy()
+    type('Time zone', 'Asia/Tokyo')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByText('Saved.', {}, { timeout: 3000 })
+    const body = call.mock.calls[0]?.[3] as Record<string, unknown>
+    expect(body.timezone).toBe('Asia/Tokyo')
+    expect(body).not.toHaveProperty('region')
+    expect(body).not.toHaveProperty('currency')
+  })
+
+  it('shows why when the currency can’t change any more', async () => {
+    mockGroup(employer)
+    // functions-api.md#groups: refused once the group has a transaction.
+    call.mockResolvedValue({
+      ok: false,
+      error: {
+        code: 'VALIDATION_FAILED',
+        message: "The currency can't change after the group's first transaction.",
+      },
+    })
+    renderAt('/groups/g1/settings')
+    expect(screen.getByText(/It can’t change once something is recorded/)).toBeTruthy()
+    type('Currency', 'usd')
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await screen.findByText(
+      "The currency can't change after the group's first transaction.",
+      {},
+      {
+        timeout: 3000,
+      },
+    )
+    expect(call.mock.calls[0]?.[3]).toMatchObject({ currency: 'USD' })
+    expect(screen.queryByText('Saved.')).toBeNull()
+  })
+
   it('keeps the stored anchor after saving another cycle', async () => {
     mockGroup(employer)
     call.mockResolvedValue({ ok: true, data: { ...employer, statementCycle: 'monthly' } })
@@ -383,6 +471,9 @@ describe('EmployerSettingsPage', () => {
     expect(screen.getByText('Only an admin can change these settings.')).toBeTruthy()
     expect(input('Group name').disabled).toBe(false) // disabled through its fieldset
     expect(input('Group name').matches(':disabled')).toBe(true)
+    for (const label of ['Time zone', 'Public holiday region', 'Currency']) {
+      expect(input(label).matches(':disabled')).toBe(true)
+    }
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
   })
 
@@ -462,11 +553,17 @@ describe('centsToText', () => {
 describe('toEmployerValues', () => {
   it('uses the employer defaults for a group without employer settings', () => {
     expect(
-      toEmployerValues(
-        { name: 'X', settings: { type: 'house', autoFinalize: true, defaultBillSplit: 'days' } },
-        'AUD',
-      ),
+      toEmployerValues({
+        name: 'X',
+        timezone: 'Australia/Sydney',
+        region: 'AU-NSW',
+        currency: 'AUD',
+        settings: { type: 'house', autoFinalize: true, defaultBillSplit: 'days' },
+      }),
     ).toEqual({
+      timezone: 'Australia/Sydney',
+      region: 'AU-NSW',
+      currency: 'AUD',
       name: 'X',
       recipients: '',
       defaultRate: '0.00',

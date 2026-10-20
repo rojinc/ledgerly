@@ -8,12 +8,13 @@ import {
   type updateMemberBodySchema,
 } from '@ledgerly/core/schemas/groups'
 import type { z } from 'zod'
+import { type PlaceValues, placeOf, toPlaceBody } from '../profile/place-fields'
 import { formatDate } from '../statements/invoice-view'
 
 type HouseSettings = Extract<GroupSettings, { type: 'house' }>
 
 /** The house form's fields: new house and settings (functions-api.md#groups). */
-export type HouseValues = {
+export type HouseValues = PlaceValues & {
   name: string
   defaultBillSplit: HouseSettings['defaultBillSplit']
   /** "Close each month with a divide": `statementCycle` monthly, else none (statements.md). */
@@ -21,8 +22,8 @@ export type HouseValues = {
   autoFinalize: boolean
 }
 
-/** A new house's defaults. Currency, time zone and region come from the profile, on the server. */
-export const NEW_HOUSE: HouseValues = {
+/** A new house's defaults. Time zone, region and currency start as the profile's (F-10). */
+export const NEW_HOUSE: Omit<HouseValues, keyof PlaceValues> = {
   name: '',
   defaultBillSplit: 'days',
   monthlyDivide: true,
@@ -33,6 +34,7 @@ export const NEW_HOUSE: HouseValues = {
 export function toHouseFields(values: HouseValues) {
   return {
     name: values.name.trim(),
+    ...toPlaceBody(values),
     statementCycle: values.monthlyDivide ? ('monthly' as const) : ('none' as const),
     settings: {
       type: 'house' as const,
@@ -60,12 +62,18 @@ export function toHouseSettingsBody(
   const pick = <K extends keyof HouseValues>(key: K) => (changed[key] ? values[key] : stored[key])
   const fields = toHouseFields({
     name: pick('name'),
+    timezone: pick('timezone'),
+    region: pick('region'),
+    currency: pick('currency'),
     defaultBillSplit: pick('defaultBillSplit'),
     monthlyDivide: pick('monthlyDivide'),
     autoFinalize: pick('autoFinalize'),
   })
   return {
     ...(changed.name ? { name: fields.name } : {}),
+    ...(changed.timezone ? { timezone: fields.timezone } : {}),
+    ...(changed.region ? { region: fields.region } : {}),
+    ...(changed.currency ? { currency: fields.currency } : {}),
     ...(changed.monthlyDivide ? { statementCycle: fields.statementCycle } : {}),
     ...(changed.defaultBillSplit || changed.autoFinalize ? { settings: fields.settings } : {}),
   }
@@ -81,6 +89,7 @@ export function toHouseValues(group: Groups): HouseValues | undefined {
     if (!settings.success || settings.data.type !== 'house') return undefined
     return {
       name: group.name,
+      ...placeOf(group),
       defaultBillSplit: settings.data.defaultBillSplit,
       monthlyDivide: group.statementCycle === 'monthly',
       autoFinalize: settings.data.autoFinalize,

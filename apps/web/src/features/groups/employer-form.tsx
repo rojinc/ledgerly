@@ -12,11 +12,12 @@ import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { Field, SelectField, TextField } from '../../ui/field'
+import { PlaceFields, type PlaceValues, placeOf, toPlaceBody } from '../profile/place-fields'
 
 type Cycle = NonNullable<CreateGroupBody['statementCycle']>
 type EmployerSettings = Extract<GroupSettings, { type: 'employer' }>
 
-export type EmployerValues = {
+export type EmployerValues = PlaceValues & {
   name: string
   recipients: string
   defaultRate: string
@@ -101,29 +102,36 @@ function cycleFields(values: EmployerValues) {
 /** `POST /groups` for a new employer. The group is named after the employer. */
 export function toCreateBody(
   values: EmployerValues,
-  currency: string,
   id: string,
 ): z.input<typeof createGroupBodySchema> {
+  const place = toPlaceBody(values)
   return {
     id,
     type: 'employer',
     name: values.name,
-    currency,
+    ...place,
     counterpart: { displayName: values.name },
     ...cycleFields(values),
-    settings: toSettings(values, currency),
+    // The rate is typed in the group's currency.
+    settings: toSettings(values, place.currency),
   }
 }
 
-/** `PATCH /groups/{id}`. */
-export function toUpdateBody(
-  values: EmployerValues,
-  currency: string,
-): z.input<typeof updateGroupBodySchema> {
-  return { name: values.name, ...cycleFields(values), settings: toSettings(values, currency) }
+/**
+ * `PATCH /groups/{id}` with every field, for the resolver to check. The form then leaves out the
+ * time zone, region and currency unless they changed.
+ */
+export function toUpdateBody(values: EmployerValues): z.input<typeof updateGroupBodySchema> {
+  const place = toPlaceBody(values)
+  return {
+    name: values.name,
+    ...place,
+    ...cycleFields(values),
+    settings: toSettings(values, place.currency),
+  }
 }
 
-type StoredGroup = {
+type StoredGroup = PlaceValues & {
   name?: string
   statementCycle?: Cycle
   cycleAnchor?: string | null
@@ -131,12 +139,13 @@ type StoredGroup = {
 }
 
 /** Form values for a stored group or a saved body. Other settings types get the defaults. */
-export function toEmployerValues(group: StoredGroup, currency: string): EmployerValues {
+export function toEmployerValues(group: StoredGroup): EmployerValues {
   const settings = group.settings?.type === 'employer' ? group.settings : EMPLOYER_DEFAULTS
   return {
+    ...placeOf(group),
     name: group.name ?? '',
     recipients: settings.recipients.join('\n'),
-    defaultRate: centsToText(settings.defaultRateCents, currency),
+    defaultRate: centsToText(settings.defaultRateCents, group.currency),
     statementCycle: group.statementCycle ?? 'monthly',
     cycleAnchor: group.cycleAnchor ?? '',
     paymentTermsDays: String(settings.paymentTermsDays),
@@ -158,7 +167,6 @@ function recipientsError(node: unknown, values: EmployerValues): string {
 export function employerResolver<TBody>(
   schema: z.ZodType<TBody>,
   toBody: (values: EmployerValues) => unknown,
-  currency: string,
 ): Resolver<EmployerValues, unknown, TBody> {
   const resolve = schemaResolver<EmployerValues, TBody>(schema, toBody)
   return async (values, context, options) => {
@@ -174,7 +182,12 @@ export function employerResolver<TBody>(
     )
     const recipients = get(found, 'settings.recipients')
     if (recipients) add('recipients', recipientsError(recipients, values))
-    if (get(found, 'settings.defaultRateCents')) {
+    for (const field of ['timezone', 'region', 'currency'] as const) {
+      add(field, get(found, field)?.message)
+    }
+    // The rate is read in the currency: until that's valid, there's nothing to say about it.
+    if (get(found, 'settings.defaultRateCents') && !errors.currency) {
+      const currency = toPlaceBody(values).currency
       const example = centsToText(2550, currency)
       add(
         'defaultRate',
@@ -200,7 +213,6 @@ export function employerResolver<TBody>(
 }
 
 type Props = {
-  currency: string
   defaultValues: EmployerValues
   /** Shows the settings without a way to change them. */
   readOnly?: boolean
@@ -217,24 +229,18 @@ const TEXTAREA =
   'w-full rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 aria-invalid:border-destructive'
 
 export function EmployerForm(props: Props) {
-  const { currency, defaultValues, readOnly = false } = props
+  const { defaultValues, readOnly = false } = props
   const form = useForm<EmployerValues, unknown, CreateGroupBody | UpdateGroupBody>({
     resolver:
       props.mode === 'create'
-        ? employerResolver<CreateGroupBody | UpdateGroupBody>(
-            createGroupBodySchema,
-            (values) => toCreateBody(values, currency, props.id),
-            currency,
+        ? employerResolver<CreateGroupBody | UpdateGroupBody>(createGroupBodySchema, (values) =>
+            toCreateBody(values, props.id),
           )
-        : employerResolver<CreateGroupBody | UpdateGroupBody>(
-            updateGroupBodySchema,
-            (values) => toUpdateBody(values, currency),
-            currency,
-          ),
+        : employerResolver<CreateGroupBody | UpdateGroupBody>(updateGroupBodySchema, toUpdateBody),
     defaultValues,
   })
   const { errors, isDirty, isSubmitting, isSubmitSuccessful } = form.formState
-  const cycle = form.watch('statementCycle')
+  const [cycle, currency] = form.watch(['statementCycle', 'currency'])
 
   return (
     <form
@@ -244,8 +250,14 @@ export function EmployerForm(props: Props) {
           if (props.mode === 'create') {
             await props.onSave(body as CreateGroupBody)
           } else {
+            // Time zone, region and currency only when changed here, as the house form does, so a
+            // save doesn't undo another admin's change.
+            const changes = { ...(body as UpdateGroupBody) }
+            for (const field of ['timezone', 'region', 'currency'] as const) {
+              if (!form.formState.dirtyFields[field]) delete changes[field]
+            }
             // Show what was stored (trimmed, one email per line, the kept anchor), not what was typed.
-            form.reset(await props.onSave(body as UpdateGroupBody))
+            form.reset(await props.onSave(changes))
           }
         } catch (error) {
           form.setError('root', { message: (error as Error).message })
@@ -282,7 +294,7 @@ export function EmployerForm(props: Props) {
         </Field>
         <TextField
           id="defaultRate"
-          label={`Default hourly rate (${currency})`}
+          label={`Default hourly rate (${currency.trim().toUpperCase()})`}
           inputMode="decimal"
           error={errors.defaultRate}
           {...form.register('defaultRate')}
@@ -327,6 +339,12 @@ export function EmployerForm(props: Props) {
             Finalize invoices automatically when the period ends
           </label>
         </div>
+        <PlaceFields
+          register={form.register}
+          errors={errors}
+          zone={defaultValues.timezone}
+          group={props.mode === 'create' ? 'new' : 'saved'}
+        />
       </fieldset>
       {!readOnly && (
         <Button type="submit" disabled={isSubmitting}>

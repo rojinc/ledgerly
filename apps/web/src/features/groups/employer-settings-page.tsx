@@ -24,9 +24,7 @@ function parseSettings(json: string) {
 // would then overwrite the stored rate and billing emails with them.
 function formValues(group: Groups): EmployerValues | undefined {
   const settings = parseSettings(group.settingsJson)
-  return settings?.type === 'employer'
-    ? toEmployerValues({ ...group, settings }, group.currency)
-    : undefined
+  return settings?.type === 'employer' ? toEmployerValues({ ...group, settings }) : undefined
 }
 
 function Message({ children, alert = false }: { children: string; alert?: boolean }) {
@@ -107,13 +105,7 @@ export function EmployerSettingsPage() {
         >
           Invoices
         </Link>
-        <EmployerForm
-          mode="settings"
-          currency={group.data.currency}
-          defaultValues={values}
-          readOnly={!isAdmin}
-          onSave={save}
-        />
+        <EmployerForm mode="settings" defaultValues={values} readOnly={!isAdmin} onSave={save} />
         {isAdmin && <ArchiveGroup group={group.data} onArchived={() => heading.current?.focus()} />}
       </>
     )

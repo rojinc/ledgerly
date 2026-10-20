@@ -11,7 +11,7 @@ Step-by-step journeys through the product. Each step names the function route it
 
 ## 2. Set up an employer with a weekly shift
 
-1. **Groups → New → Employer.** The user enters the employer's name and billing email(s), the default rate ($25/h), the invoice cycle (monthly) and payment terms (14 days). → `groups POST /groups`.
+1. **Groups → New → Employer.** The user enters the employer's name and billing email(s), the default rate ($25/h), the invoice cycle (monthly) and payment terms (14 days). The time zone, holiday region and currency start as the profile's (F-10). → `groups POST /groups`.
 2. **Add schedule:** every Thursday, 09:00, 5 hours, $25/h, starting 1 Oct 2026, skip public holidays (NSW). → `scheduler POST /schedules`.
 3. The calendar immediately shows dashed shifts for the next 8 weeks. Public holidays are left out.
 

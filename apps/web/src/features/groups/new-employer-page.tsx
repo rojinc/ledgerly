@@ -6,10 +6,12 @@ import { useNavigate } from 'react-router'
 import { callFunction } from '../../lib/api'
 import { queryKeys } from '../../lib/query-keys'
 import { useCurrentUser } from '../auth/use-current-user'
+import { type PlaceValues, placeOf } from '../profile/place-fields'
 import { useProfile } from '../profile/use-profile'
 import { EmployerForm, type EmployerValues } from './employer-form'
 
-const DEFAULTS: EmployerValues = {
+// Time zone, region and currency start as the profile's (F-10).
+const DEFAULTS: Omit<EmployerValues, keyof PlaceValues> = {
   name: '',
   recipients: '',
   defaultRate: '',
@@ -22,7 +24,7 @@ const DEFAULTS: EmployerValues = {
 export function NewEmployerPage() {
   // RequireAuth renders this page only for a signed-in, bootstrapped user.
   const userId = useCurrentUser().data?.$id ?? ''
-  // Not the bootstrap copy, which keeps the currency from before a profile change.
+  // Not the bootstrap copy, which keeps the profile from before a change.
   const profile = useProfile(userId)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -55,9 +57,7 @@ export function NewEmployerPage() {
         <EmployerForm
           mode="create"
           id={id}
-          // Sent with the body, so the group has the currency the rate was typed in.
-          currency={profile.data.currency}
-          defaultValues={DEFAULTS}
+          defaultValues={{ ...DEFAULTS, ...placeOf(profile.data) }}
           onSave={create}
         />
       ) : (
