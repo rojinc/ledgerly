@@ -492,6 +492,89 @@ function categoryName(category: string): string {
   return category === 'none' ? 'No category' : category.charAt(0).toUpperCase() + category.slice(1)
 }
 
+/** One transaction someone else changed, as a change email shows it. */
+export type ChangedTransaction = {
+  groupName: string
+  description: string
+  // Their names in that group, in the order they changed it.
+  changedBy: readonly string[]
+  currency: string
+  totalCents: { before: number; after: number }
+  date: { before: LocalDate; after: LocalDate }
+  // The reader's own net in it, before and after.
+  netCents: { before: number; after: number }
+  voided: boolean
+  url: string
+}
+
+// The most transactions one change email lists; the rest are counted.
+const MAX_CHANGES = 10
+
+/**
+ * To a member, at most once per hour of changes, about the posted transactions they're in that
+ * someone else edited or voided (scheduling.md#step-3b-transaction-change-emails). The subject
+ * names no one and no amount. It never shows a note, a void reason or anyone else's part.
+ * `profileUrl` is where these emails are turned off.
+ */
+export function transactionChangesEmail(input: {
+  changes: readonly ChangedTransaction[]
+  profileUrl: string
+}): EmailContent {
+  const shown = input.changes.slice(0, MAX_CHANGES)
+  const more = input.changes.length - shown.length
+  return message(
+    'A transaction you’re in was changed',
+    [
+      input.changes.length === 1
+        ? 'Someone changed a transaction you’re in.'
+        : `Someone changed ${input.changes.length} transactions you’re in.`,
+      ...shown.flatMap(changeBlocks),
+      ...(more > 0 ? [`And ${more} more. Open Ledgerly to see them.`] : []),
+      'You can turn these emails off in your profile.',
+    ],
+    [
+      ...shown.map((change) => ({
+        label: `Open “${shortLine(change.description)}”`,
+        url: change.url,
+      })),
+      { label: 'Change your emails', url: input.profileUrl },
+    ],
+  )
+}
+
+function changeBlocks(change: ChangedTransaction): Block[] {
+  const total = (cents: number) => formatMoney(cents, change.currency, LOCALE)
+  // A net is worked out from amounts, so it can pass the amount cap, as a reminder's can.
+  const part = (cents: number) =>
+    cents > 0
+      ? `you’re owed ${formatNet(cents, change.currency, LOCALE)}`
+      : cents < 0
+        ? `you owe ${formatNet(-cents, change.currency, LOCALE)}`
+        : 'nothing owed either way'
+  const names = change.changedBy.map(shortLine)
+  const who =
+    names.length === 1
+      ? names[0]
+      : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+  return [
+    `“${oneLine(change.description)}” in ${shortLine(change.groupName)}, ${change.voided ? 'voided' : 'changed'} by ${who}:`,
+    [
+      `Total: ${fromTo(change.totalCents, total)}`,
+      `Date: ${fromTo(change.date, longDate)}`,
+      change.voided
+        ? `Your part: ${part(change.netCents.before)}, and nothing now it’s voided`
+        : `Your part: ${fromTo(change.netCents, part)}`,
+    ],
+  ]
+}
+
+// `A → B`, or just `A` when it didn't change.
+function fromTo<T>(change: { before: T; after: T }, show: (value: T) => string): string {
+  return change.before === change.after
+    ? show(change.before)
+    : `${show(change.before)} → ${show(change.after)}`
+}
+
 // A paragraph, or a list of short lines.
 type Block = string | readonly string[]
 type Link = { label: string; url: string }
