@@ -297,7 +297,7 @@ An email or phone change notice that hasn't gone out yet ([#345](https://github.
 | --- | --- | --- |
 | `userId` | varchar(36) | The account |
 | `kind` | enum(email, phone) | Which notice |
-| `identityId` | varchar(36) | The address it goes to, as its `identities` row ID: an email notice's old address, or the verified email a phone notice went to first. A retry sends there even if the account's email has changed since ([#462](https://github.com/rojinc/ledgerly/pull/462)) |
+| `identityId` | varchar(36) | The address it goes to, as its `identities` row ID: an email notice's old address, or the verified email a phone notice was first meant for. A retry sends there even if the account's email has changed since ([#462](https://github.com/rojinc/ledgerly/pull/462)) |
 | `idempotencyKey` | varchar(128) | The key the event run used, which every retry reuses, since the user's `$updatedAt` it was made from may change |
 | `attempts` | integer | default 0. Failed retries so far |
 
@@ -306,7 +306,7 @@ Permissions: none (server only). A row goes when:
 - it's sent, or Resend has seen its key;
 - Resend refuses it for good (`validation_error`);
 - the user or their person is gone, or its identity is gone, moved or no longer verified (`gone`);
-- or at the first hourly run 23 hours after its key was made (`expired`).
+- or at the first hourly run that reaches it 23 hours after its key was made, normally the first (`expired`). None is sent after that.
 
 So an account deletion needs to clear nothing here.
 
