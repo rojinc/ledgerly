@@ -372,7 +372,7 @@ function PauseSchedule({
           {pause.error.message}
         </p>
       )}
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         <Button type="submit" size="sm" aria-disabled={pause.isPending}>
           {pause.isPending ? 'Pausing…' : 'Pause schedule'}
         </Button>
@@ -441,7 +441,7 @@ function EndSchedule({
           {end.error.message}
         </p>
       )}
-      <div className="flex gap-3">
+      <div className="flex flex-wrap gap-3">
         {/* aria-disabled, not disabled: a disabled button loses focus. */}
         <Button type="submit" size="sm" aria-disabled={end.isPending}>
           {end.isPending ? 'Ending…' : 'End schedule'}
