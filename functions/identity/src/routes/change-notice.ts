@@ -76,7 +76,8 @@ export type NoticeCounts = { retried: number; failed: number; expired: number; g
  * an event run of `users.*.update.email` or `users.*.update.phone` naming `userId` (event-run.ts).
  * Writes a `changeNotices` row per email before sending, and deletes each once it's sent, so the
  * hourly run tries the rest (step 8). Each email's outcome goes to the log, with the ID; throws
- * after the last if any wasn't sent.
+ * after the last if any wasn't sent. When every send fails for now (`sendingBlocked`, #469), the
+ * first such email is the last tried.
  */
 export async function changeNotice(
   services: Services,
@@ -119,10 +120,10 @@ export async function changeNotice(
     }
     const line = await deliver(pace, email)
     log(line)
-    const settled = line.outcome === 'sent' || ('error' in line && refused(line.error))
+    const settled = line.outcome === 'sent' || ('error' in line && refusedForGood(line.error))
     if (settled) await forget(services.db, rows.get(email.idempotencyKey))
     allSent &&= line.outcome === 'sent'
-    // Resend refuses every send for now (our key or domain, #469): logged once, and the rest
+    // Every send fails for now (our key, domain or settings, #469): logged once, and the rest
     // keep their rows for the hourly run.
     if ('error' in line && sendingBlocked(line.error)) break
   }
@@ -134,7 +135,8 @@ export async function changeNotice(
  * Step 8: tries the `changeNotices` rows again, oldest first, in identity's hourly run, after its
  * merges, leaving rows an event run may still be sending (RUN_MS). Step 6's limits count from the
  * run's start (`started`), so the merges' time comes off them. A row is deleted once its email is sent, or can never be (refused, gone, or 23 hours
- * old). A 429 ends the retries for the run, since Resend's limit is shared; any other failure
+ * old). A 429 ends the retries for the run, since Resend's limit is shared, as does a send that
+ * every send would meet (`sendingBlocked`, #469), with no `attempts` added; any other failure
  * adds 1 to `attempts`. Rows it doesn't reach wait for the next hour.
  */
 export async function retryNotices(services: Services, started: number): Promise<NoticeCounts> {
@@ -191,7 +193,7 @@ export async function retryNotices(services: Services, started: number): Promise
         await forget(services.db, row.$id)
         continue
       }
-      if (refused(error)) {
+      if (refusedForGood(error)) {
         counts.failed += 1
         log({ outcome: 'failed', error })
         await forget(services.db, row.$id)
@@ -202,8 +204,8 @@ export async function retryNotices(services: Services, started: number): Promise
       error = thrown
     }
     counts.failed += 1
-    // Resend's shared limit, or every send refused for now (our key or domain, #469): logged
-    // once, with no row changed, and the rest wait for the next run.
+    // Resend's shared limit, or every send failing for now (our key, domain or settings, #469):
+    // logged once, with no row changed, and the rest wait for the next run.
     if (
       (error instanceof EmailError && error.type === 'rate_limit_exceeded') ||
       sendingBlocked(error)
@@ -476,12 +478,6 @@ async function deliver(pace: Pacer, email: Email): Promise<Line> {
       error.type === 'rate_limit_exceeded' && attempt === 1 && (await pace.start(retryAt))
     if (!retry) return { outcome: 'failed', error }
   }
-}
-
-// Resend refused the email itself (`validation_error` with 400 or 422), so no later try would
-// send it. A 401 or 403 is our key or domain: the row stays for the next run (#469).
-function refused(error: unknown): boolean {
-  return refusedForGood(error)
 }
 
 function sha256(text: string): string {

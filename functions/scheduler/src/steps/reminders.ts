@@ -12,7 +12,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { EmailError, refusedForGood, sendingBlocked } from '@ledgerly/server/email/send-email'
+import { neverSent, sendingBlocked } from '@ledgerly/server/email/send-email'
 import {
   billDueSoonEmail,
   type EmailContent,
@@ -189,8 +189,8 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
 }
 
 // A row that keeps failing mustn't hold up the rows after it: it counts as failed, is logged
-// (IDs and the error's name only), and the next run tries it again. True when Resend refuses
-// every send for now (our key or domain, #469): the step stops there, having logged it once.
+// (IDs and the error's name only), and the next run tries it again. True when every send fails
+// for now (our key, domain or settings, #469): the step stops there, having logged it once.
 async function counted(
   counts: ReminderCounts,
   row: Transactions,
@@ -277,15 +277,6 @@ async function remind(
     if (outcome === undefined) return
   }
   if (outcome) counts[outcome] += 1
-}
-
-// Resend's answers for an email it will never send as asked: a bad address (refusedForGood), or
-// the same key with different content (the group was renamed after a send whose mark failed).
-export function neverSent(error: unknown): boolean {
-  return (
-    refusedForGood(error) ||
-    (error instanceof EmailError && error.type === 'invalid_idempotent_request')
-  )
 }
 
 // It still needs the reminder the page read it for.

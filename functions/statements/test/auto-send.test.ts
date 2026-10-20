@@ -10,6 +10,7 @@ import {
   fakes,
   house,
   job,
+  member,
   NOVEMBER_CLOSE,
   NOW,
   ok,
@@ -321,6 +322,54 @@ describe('the statements job, with autoSend on', () => {
       ])
     },
   )
+
+  it('stops at the notice to the admins when it meets a 403 there: one line each (#469)', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-09-02', 60), shift('s2', '2026-10-02', 60), {
+        statements: [
+          statement('st-sep', { periodStart: '2026-09-01', periodEnd: '2026-09-30' }),
+          statement('st-oct'),
+        ],
+      }),
+      groups: [job(AUTO, { nextCloseAt: NOVEMBER_CLOSE })],
+    })
+    // Dan is Acme's second admin, so a notice is left to try after the first.
+    const { $id: _, ...dan } = member('m-dan', 'job', 'dan', 'admin')
+    await commitNow(services.db, [
+      op('members', 'm-dan', dan, 'create'),
+      op(
+        'identities',
+        'i-dan',
+        { key: 'email:dan@example.com', type: 'email', personId: 'dan', verified: true },
+        'create',
+      ),
+    ])
+    for (const id of ['st-sep', 'st-oct']) {
+      await ok(services, 'POST', `/statements/${id}/finalize`, { send: false })
+      await commitNow(services.db, [op('statements', id, { autoSendUntil: WINDOW_END })])
+    }
+    const tried: string[] = []
+    failing(services, (email) => {
+      tried.push(email.idempotencyKey ?? '')
+      return isInvoice(email)
+        ? new EmailError('Resend could not be reached: timeout', 'timeout')
+        : new EmailError('Resend answered 403 validation_error', 'validation_error', 403)
+    })
+    await runJob(services)
+    // The first invoice's employer email and one notice: not the other admin's, or the next invoice.
+    const first = tried[0]?.split('/')[1]
+    expect(tried).toHaveLength(2)
+    expect(tried[0]).toBe(`invoice/${first}/first/employer`)
+    expect(tried[1]).toMatch(new RegExp(`^auto-send-failed/${first}/(sam|dan)$`))
+    expect(logged().map((line) => line.event)).toEqual([
+      'auto_send_failed',
+      'auto_send_notice_failed',
+    ])
+    expect(invoices(services).map((row) => [row.sentAt, row.autoSendUntil])).toEqual([
+      [null, WINDOW_END],
+      [null, WINDOW_END],
+    ])
+  })
 
   it('takes concurrent_idempotent_requests, an admin’s Send at the same moment, as transient', async () => {
     const services = octoberDue()
