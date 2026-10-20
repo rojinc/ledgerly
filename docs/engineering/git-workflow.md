@@ -66,4 +66,4 @@ The ruleset `protect-main` is active on `main`:
 - linear history (squash merges only; merge and rebase merges are turned off in repo settings),
 - no force pushes and no deletion.
 
-Head branches are deleted automatically after merge. When the CI workflow (#2) lands, add its `ci` check to the ruleset as a required status check.
+Head branches are deleted automatically after merge. `ci` stays an optional check: with `paths-ignore`, a docs-only pull request gets no `ci` run, so a required check would block it (the lead, on #96).

@@ -1,14 +1,18 @@
 name: CI
 
+# Pull requests only, so Actions minutes last (environments-and-deploys.md#cicd-github-actions):
+# main is checked by the lead's local gates on each merge, and Deploy builds it again. Docs-only
+# changes don't run, and a draft runs once it's marked ready.
 on:
   pull_request:
-  push:
-    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
 
-# A new push to a PR cancels that PR's older runs. Each push to main gets its own
-# group, so no run on main is ever cancelled, even while it waits in the queue.
+# A new push to a PR cancels that PR's older runs.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -17,6 +21,7 @@ permissions:
 jobs:
   ci:
     name: ci
+    if: ${{ !github.event.pull_request.draft }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -44,9 +49,10 @@ jobs:
         env:
           TZ: Australia/Sydney
 
-      # Every workspace again in Sydney time: functions and the web app handle local dates
-      # too, and must not depend on the machine's timezone either (testing.md#rules).
-      - run: npm test
+      # The functions and packages/server again in Sydney time: they handle local dates too (the
+      # server package formats the dates emails and PDFs show), and must not depend on the
+      # machine's timezone either (testing.md#rules). Core's Sydney run is the coverage step above.
+      - run: npm test -- --project '@ledgerly/fn-*' --project '@ledgerly/server'
         env:
           TZ: Australia/Sydney
 
