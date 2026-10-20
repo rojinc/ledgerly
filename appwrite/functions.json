@@ -53,6 +53,31 @@
     "scopes": ["rows.read", "rows.write", "teams.read", "teams.write", "users.read"]
   },
   {
+    "$id": "account",
+    "name": "account",
+    "runtime": "node-24",
+    "path": "../functions/account",
+    "entrypoint": "dist/main.js",
+    "commands": "",
+    "ignore": ["*", "!dist/", "!dist/**", "!package.json"],
+    "execute": ["users"],
+    "events": [],
+    "interval": 60,
+    "timeout": 900,
+    "enabled": true,
+    "logging": true,
+    "scopes": [
+      "rows.read",
+      "rows.write",
+      "teams.read",
+      "teams.write",
+      "users.read",
+      "users.write",
+      "files.read",
+      "files.write"
+    ]
+  },
+  {
     "$id": "scheduler",
     "name": "scheduler",
     "runtime": "node-24",

@@ -24,7 +24,22 @@ export function text(min: number, max: number) {
   return z.string().trim().min(min).max(max)
 }
 
-export const descriptionSchema = text(1, 200)
+// Bidi controls can make the text around them read in another order, and other control
+// characters print as nothing or start a new line. The zero-width joiner (U+200D) is neither, so
+// emoji sequences stay whole.
+const HIDDEN = /\p{Bidi_Control}|[^\P{Cc}\p{White_Space}]/gu
+const SPACES = /\p{White_Space}+/gu
+
+/**
+ * Someone's text as one line (functions-api.md#validation): no bidi or other control
+ * characters, each run of whitespace (a line break or a tab included) one space, and trimmed.
+ */
+export function oneLine(text: string): string {
+  return text.replace(HIDDEN, '').replace(SPACES, ' ').trim()
+}
+
+/** Folded to one line, then 1–200 characters long. */
+export const descriptionSchema = z.string().overwrite(oneLine).min(1).max(200)
 
 /** A person's name (`persons.displayName`, `members.displayName`). */
 export const displayNameSchema = text(1, 100)

@@ -670,6 +670,7 @@ describe('moveMembers (step 2)', () => {
       ],
     })
     const adds = vi.spyOn(services.teams, 'createMembership')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     const asked: string[] = []
     const onlyG2 = (groupId: string) => {
       asked.push(groupId)
@@ -691,6 +692,8 @@ describe('moveMembers (step 2)', () => {
     ])
     expect(adds.mock.calls.map(([params]) => params.teamId)).not.toContain('g1')
     expect(services.db.rows('groups').find((row) => row.$id === 'g1')?.rev).toBe('r0')
+    // Put off as not ready, not for a gone team: no merge_put_off_team_gone line.
+    expect(warn).not.toHaveBeenCalled()
   })
 
   it('starts no row once the deadline has passed', async () => {
@@ -698,6 +701,7 @@ describe('moveMembers (step 2)', () => {
       persons: [U, P],
       members: [placeholderRow('m1', 'g1', 'pP', CREATED)],
     })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, 0, ready)).toEqual({
       kept: new Set(),
       joined: [],
@@ -705,6 +709,7 @@ describe('moveMembers (step 2)', () => {
       done: false,
     })
     expect(members(services)).toEqual([['m1', 'g1', 'pP', 'placeholder', '2026-09-01']])
+    expect(warn).not.toHaveBeenCalled()
   })
 
   // #334: an account deletion purging a group deletes its team first and its rows last.
@@ -731,6 +736,7 @@ describe('moveMembers (step 2)', () => {
 
     it('is put off, with nothing written there, while the other groups go on', async () => {
       const services = purging((teamId) => (teamId === 'g1' ? gone() : undefined))
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
         kept: new Set(),
         joined: ['g2'],
@@ -744,6 +750,10 @@ describe('moveMembers (step 2)', () => {
       expect(joinedRows(services).map(([groupId]) => groupId)).toEqual(['g2'])
       // Not even g1's guard was written.
       expect(services.db.rows('groups').find((row) => row.$id === 'g1')?.rev).toBe('r0')
+      // By ID, so the group holding the merge open can be found.
+      expect(warn.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+        { fn: 'unknown', event: 'merge_put_off_team_gone', personId: 'pP', groupId: 'g1' },
+      ])
     })
 
     it('leaves the row moved, but not a group U joined, when the team goes just after the commit', async () => {
@@ -751,6 +761,7 @@ describe('moveMembers (step 2)', () => {
       const services = purging((teamId, call) =>
         teamId === 'g1' && call === 2 ? gone() : undefined,
       )
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
         kept: new Set(),
         joined: ['g2'],
@@ -759,6 +770,8 @@ describe('moveMembers (step 2)', () => {
       })
       // The purge deletes g1's row with the others.
       expect(members(services)[0]).toEqual(['m1', 'g1', 'pU', 'active', '2026-09-01'])
+      // The row moved, so nothing was put off: no merge_put_off_team_gone line.
+      expect(warn).not.toHaveBeenCalled()
     })
 
     it('still stops on any other team error', async () => {
@@ -801,6 +814,7 @@ describe('moveMembers (step 2)', () => {
     it('keeps P’s row there, and U out of its team, while the other groups go on', async () => {
       const services = withP([FINALIZING])
       const adds = vi.spyOn(services.teams, 'createMembership')
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
       expect(await moveMembers(services, 'u1', 'pP', 'pU', GROUPS, FAR, ready)).toEqual({
         kept: new Set(),
         joined: ['g2'],
@@ -814,6 +828,8 @@ describe('moveMembers (step 2)', () => {
       // Never added, so never taken out again.
       expect(adds.mock.calls.map(([params]) => params.teamId)).toEqual(['g2', 'g2'])
       expect(services.teams.members('g1')).toEqual([])
+      // A finalize isn't a gone team: no merge_put_off_team_gone line.
+      expect(warn).not.toHaveBeenCalled()
     })
 
     it('puts it off when the finalize starts after the first check, and takes back the team', async () => {

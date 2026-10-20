@@ -32,6 +32,7 @@ export type FakeAccount = AccountUser & { sessions: Session[] }
 export function account(overrides: Partial<FakeAccount> = {}): FakeAccount {
   return {
     $id: 'u1',
+    $updatedAt: '2026-01-01T00:00:00.000Z',
     labels: [],
     status: true,
     passwordUpdate: '2026-01-01T00:00:00.000Z',
@@ -40,7 +41,10 @@ export function account(overrides: Partial<FakeAccount> = {}): FakeAccount {
   }
 }
 
-/** In-memory Users, with Appwrite's 404 for a user who doesn't exist (or no longer does). */
+/**
+ * In-memory Users, with Appwrite's 404 for a user who doesn't exist (or no longer does). Like
+ * FakeDb, it stamps `$updatedAt` with the real clock, which is later than `NOW`.
+ */
 export class FakeUsers implements UsersApi {
   private users: Map<string, FakeAccount>
 
@@ -64,12 +68,12 @@ export class FakeUsers implements UsersApi {
   }
 
   async updateLabels({ userId, labels }: { userId: string; labels: string[] }): Promise<object> {
-    this.find(userId).labels = [...labels]
+    Object.assign(this.find(userId), { labels: [...labels], $updatedAt: new Date().toISOString() })
     return {}
   }
 
   async updateStatus({ userId, status }: { userId: string; status: boolean }): Promise<object> {
-    this.find(userId).status = status
+    Object.assign(this.find(userId), { status, $updatedAt: new Date().toISOString() })
     return {}
   }
 
@@ -82,6 +86,35 @@ export class FakeUsers implements UsersApi {
     this.find(userId)
     this.users.delete(userId)
     return {}
+  }
+
+  /** Appwrite's list, for the queries the job sends: a label, paging by `$id`, a limit. */
+  async list({ queries }: { queries: string[] }): Promise<{ users: AccountUser[] }> {
+    let found = [...this.users.values()].sort((a, b) => (a.$id < b.$id ? -1 : 1))
+    let limit = 25
+    for (const query of queries) {
+      const {
+        method,
+        attribute,
+        values = [],
+      } = JSON.parse(query) as {
+        method: string
+        attribute?: string
+        values?: unknown[]
+      }
+      if (method === 'contains' && attribute === 'labels') {
+        found = found.filter((user) => values.some((label) => user.labels.includes(`${label}`)))
+      } else if (method === 'greaterThan' && attribute === '$id') {
+        found = found.filter((user) => user.$id > `${values[0]}`)
+      } else if (method === 'limit') {
+        limit = Number(values[0])
+      } else if (!(method === 'orderAsc' && attribute === '$id')) {
+        throw new Error(`FakeUsers does not support ${query}`)
+      }
+    }
+    return {
+      users: found.slice(0, limit).map(({ sessions: _sessions, ...user }) => structuredClone(user)),
+    }
   }
 
   private find(userId: string): FakeAccount {
@@ -262,8 +295,8 @@ type Envelope =
 
 /**
  * Sends a request through the function's real handler, as `userId` (null: no JWT) with a JWT
- * made for `sessionId` (null: a JWT that names no session). Defaults: `POST /delete` with
- * `{ confirm: 'DELETE' }`, as u1 in session s1.
+ * made for `sessionId` (null: a JWT that names no session), or as a cron run with `scheduled`.
+ * Defaults: `POST /delete` with `{ confirm: 'DELETE' }`, as u1 in session s1.
  */
 export async function call(
   services: Services,
@@ -273,9 +306,16 @@ export async function call(
     body?: unknown
     userId?: string | null
     sessionId?: string | null
+    scheduled?: boolean
   } = {},
 ): Promise<{ status: number; body: Envelope; logs: string[] }> {
-  const { method = 'POST', path = '/delete', userId = 'u1', sessionId = 's1' } = options
+  const {
+    method = 'POST',
+    path = '/delete',
+    userId = 'u1',
+    sessionId = 's1',
+    scheduled = false,
+  } = options
   // A body given as undefined sends none.
   const body = 'body' in options ? options.body : { confirm: 'DELETE' }
   // Appwrite's JWT payload; the fake verification accepts any JWT.
@@ -292,7 +332,10 @@ export async function call(
     req: {
       method,
       path,
-      headers: userId === null ? {} : { 'x-appwrite-user-jwt': jwt },
+      headers: {
+        ...(userId === null ? {} : { 'x-appwrite-user-jwt': jwt }),
+        ...(scheduled ? { 'x-appwrite-trigger': 'schedule' } : {}),
+      },
       bodyText: body === undefined ? '' : JSON.stringify(body),
     },
     res: {

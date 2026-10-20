@@ -11,6 +11,7 @@ import {
   emptyBodySchema,
   idSchema,
   localDateSchema,
+  oneLine,
   peopleList,
   phoneSchema,
   rateCentsSchema,
@@ -84,7 +85,52 @@ describe('text', () => {
   })
 })
 
+describe('oneLine', () => {
+  it.each([
+    ['a line feed', 'Rent\nOctober'],
+    ['a carriage return', 'Rent\rOctober'],
+    ['CR LF', 'Rent\r\nOctober'],
+    ['a tab', 'Rent\tOctober'],
+    ['a vertical tab and a form feed', 'Rent\v\fOctober'],
+    ['a next line', 'Rent\u0085October'],
+    ['the line and paragraph separators', 'Rent\u2028\u2029October'],
+    ['no-break spaces', 'Rent\u00a0\u202fOctober'],
+    ['a run of spaces', 'Rent   October'],
+  ])('folds %s into one space', (_, text) => expect(oneLine(text)).toBe('Rent October'))
+
+  it.each([
+    ['NUL', '\u0000'],
+    ['DEL', '\u007f'],
+    ['the last C1 control', '\u009f'],
+    ['the Arabic letter mark', '\u061c'],
+    ['the left-to-right and right-to-left marks', '\u200e\u200f'],
+    ['embeddings and overrides', '\u202a\u202b\u202c\u202d\u202e'],
+    ['isolates', '\u2066\u2067\u2068\u2069'],
+  ])('removes %s', (_, hidden) => expect(oneLine(`Gas${hidden}Bill`)).toBe('GasBill'))
+
+  it('removes a control between spaces without leaving two', () => {
+    expect(oneLine('Gas \u0000 bill')).toBe('Gas bill')
+  })
+
+  it('keeps an emoji sequence whole, and trims', () => {
+    expect(oneLine(' \u202e\n👩\u200d💻 Laptop\t')).toBe('👩\u200d💻 Laptop')
+  })
+
+  it('leaves its own result as it is', () => {
+    const once = oneLine(' a\u0000\n\u202e b\u00a0\tc ')
+    expect(oneLine(once)).toBe(once)
+  })
+})
+
 describe('descriptionSchema and displayNameSchema', () => {
+  it('fold a description to one line before checking its length', () => {
+    const folded = descriptionSchema.parse(`${'x\n'.repeat(99)}x`)
+    expect(folded).toHaveLength(199)
+    expect(folded).not.toContain('\n')
+    expect(accepts(descriptionSchema, ' \u202e\u0000\n\t')).toBe(false)
+    expect(accepts(descriptionSchema, `${'x'.repeat(200)}\u202e`)).toBe(true)
+  })
+
   it('fit their columns', () => {
     expect(accepts(descriptionSchema, 'x'.repeat(200))).toBe(true)
     expect(accepts(descriptionSchema, 'x'.repeat(201))).toBe(false)

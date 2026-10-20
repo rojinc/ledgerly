@@ -190,8 +190,8 @@ export type MembersResult = { kept: Set<string>; joined: string[]; putOff: strin
  * finalized is put off whole, P's row included: its inputs and shares must wait, and P's row
  * moved without them would let a leave, a removal or an edit count P's part as someone else's.
  * A group step 3 can't go on in (`ready` false) is put off the same way, before anything is
- * written, and so is one whose team is gone: an account deletion is purging it, its rows last
- * (#334). A row is finished once it no longer points at P, so a retry carries on.
+ * written, and so is one whose team is gone (logged by ID): an account deletion is purging it,
+ * its rows last (#334). A row is finished once it no longer points at P, so a retry carries on.
  */
 export async function moveMembers(
   services: Services,
@@ -231,6 +231,9 @@ export async function moveMembers(
       }
     } catch (error) {
       if (!(error instanceof Finalizing || error instanceof TeamGone)) throw error
+      // By ID, so a team gone for any reason but a purge shows which group holds the merge open.
+      if (error instanceof TeamGone)
+        logProblem('merge_put_off_team_gone', { personId: fromId, groupId })
       result.putOff.push(groupId)
     }
   }

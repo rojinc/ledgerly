@@ -23,7 +23,7 @@ export type Ok<T> = { ok: true; data: T }
 export type Err = { ok: false; error: { code: ErrorCode; message: string; details?: unknown } }
 export type Result<T> = Ok<T> | Err
 
-export type FunctionId = 'ledger' | 'groups' | 'identity' | 'scheduler' | 'statements'
+export type FunctionId = 'ledger' | 'groups' | 'identity' | 'account' | 'scheduler' | 'statements'
 export type Method = 'GET' | 'POST' | 'PATCH' | 'DELETE'
 
 function isErrorCode(value: unknown): value is ErrorCode {
