@@ -1,18 +1,15 @@
-import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
+import { addDays } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import { scheduleInputSchema, type UpdatedSchedule } from '@ledgerly/core/schemas/scheduler'
-import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
-import { refuseDeletedCreator, refuseDeletedPeople } from '@ledgerly/server/ledger/deleted-people'
-import { guardGroupAndMembers, ledgerRoute, loadLedger } from '@ledgerly/server/ledger/transactions'
-import { guardSchedule } from '@ledgerly/server/scheduler/end-schedule'
-import { generateOccurrences, planOccurrence } from '../occurrences'
+import { ledgerRoute } from '@ledgerly/server/ledger/transactions'
+import { generateOccurrences } from '../occurrences'
 import { parseBody } from '../parse-body'
 import {
-  checkTemplate,
   getSchedule,
   requireRecentStart,
   requireScheduleWriter,
+  saveToExpand,
   scheduleColumns,
 } from '../schedule-rows'
 import type { Services } from '../services'
@@ -55,27 +52,7 @@ export async function updateSchedule(
       // Due at once, so a cron run finishes the expansion if this request can't.
       nextRunAt: now.toISOString(),
     }
-    const ledger = await loadLedger(db, membership)
-    const people = checkTemplate({ ...schedule, ...changes }, ledger)
-    // Deleted people (functions-api.md#ledger): a trial on the first day this edit can make an
-    // occurrence.
-    const startsOn = changes.startsOn as LocalDate
-    const firstDay = compareDates(startsOn, today) > 0 ? startsOn : today
-    const named = planOccurrence({ ...schedule, ...changes }, firstDay, ledger).planned.people
-    await withTransaction(db, async (tx) => {
-      await guardSchedule(tx, db, schedule, changes)
-      // The people the new template names stay members while it exists (ledger.md#concurrency).
-      await guardGroupAndMembers(tx, db, membership.group, ledger, people)
-      // Deleting their account ended the schedules they made or that name them, and this edit
-      // could start one again (functions-api.md#ledger). The creator is checked, and guarded,
-      // first; then the whole template, also people it named already.
-      await refuseDeletedCreator(tx, db, schedule.createdBy)
-      await refuseDeletedPeople(tx, db, ledger, {
-        kind: input.kind,
-        people: named.filter((personId) => personId !== schedule.createdBy),
-        guard: true,
-      })
-    })
+    const ledger = await saveToExpand(db, membership, schedule, changes, today)
     // The expansion brings the occurrences from today on in line with the new rule. One that
     // stops partway is finished by the next cron run.
     const expansion = await generateOccurrences(

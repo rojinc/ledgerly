@@ -19,6 +19,7 @@ const SCHEDULE_COLUMNS = [
   'rrule',
   'startsOn',
   'endsOn',
+  'pausedFrom',
   'exdates',
   'skipPublicHolidays',
   'autoPost',
@@ -46,16 +47,44 @@ export async function endScheduleOn(
   endsOn: LocalDate,
   now: Date,
 ): Promise<number> {
+  return stopAfter(db, group, schedule, endsOn, { endsOn }, now)
+}
+
+/**
+ * Pauses the schedule from `pausedFrom`, as `scheduler POST /schedules/{id}/pause` does once it
+ * has checked the caller and that the date isn't before today (scheduling.md#schedule-routes):
+ * as an end on the day before, but it sets `pausedFrom` and keeps `endsOn`, so a resume carries
+ * on to the user's own end. Returns how many occurrences it deleted.
+ */
+export async function pauseScheduleFrom(
+  db: Db,
+  group: Groups,
+  schedule: Schedules,
+  pausedFrom: LocalDate,
+  now: Date,
+): Promise<number> {
+  return stopAfter(db, group, schedule, addDays(pausedFrom, -1), { pausedFrom }, now)
+}
+
+// An end or a pause: stages `data` with the schedule's progress, then deletes what's after `last`.
+async function stopAfter(
+  db: Db,
+  group: Groups,
+  schedule: Schedules,
+  last: LocalDate,
+  data: Partial<Schedules>,
+  now: Date,
+): Promise<number> {
   const today = localToday(group.timezone, now)
   const yesterday = addDays(today, -1)
   const generated = schedule.generatedThrough as LocalDate | null
-  const done = generated !== null && compareDates(generated, endsOn) >= 0
+  const done = generated !== null && compareDates(generated, last) >= 0
   // The next run carries on from here: up to a later end, or deleting what's left after an
   // earlier one. Never from before today, so nothing past is made, changed or deleted.
-  const through = generated === null ? null : laterOf(done ? endsOn : generated, yesterday)
+  const through = generated === null ? null : laterOf(done ? last : generated, yesterday)
   await withTransaction(db, async (tx) => {
     await guardSchedule(tx, db, schedule, {
-      endsOn,
+      ...data,
       generatedThrough: through,
       nextRunAt: now.toISOString(),
     })
@@ -63,7 +92,7 @@ export async function endScheduleOn(
     await guardGroup(tx, db, group)
   })
   // Only future ones: a past occurrence that wasn't posted waits for the user.
-  const after = addDays(endsOn, 1)
+  const after = addDays(last, 1)
   const from = compareDates(after, today) > 0 ? after : today
   return removeOccurrences(db, group, schedule.$id, from, now)
 }

@@ -12,8 +12,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { RunResult } from '../src/routes/run'
 import { call, type Fakes, fakes, group, member, NOW, person } from './harness'
 
-// Random edits, ends, cron runs on later days, manual edits, timeouts and runs that run out of
-// time against one schedule, a shift in Sydney or a bill in Los Angeles, with scheduling.md's
+// Random edits, ends, pauses, resumes, cron runs on later days, manual edits, timeouts and runs
+// that run out of time against one schedule, a shift in Sydney or a bill in Los Angeles, with scheduling.md's
 // promises checked after every step. Seeded, so a failure repeats.
 
 const ID = 'propertySchedule0001'
@@ -231,14 +231,15 @@ function autoPosted(was: Transactions, schedule: Schedules): Transactions {
 }
 
 // The last day the schedule can fall on (scheduling.md#expanding-occurrences): the first of its
-// endsOn, its rule's UNTIL and its COUNTth date, counted before exdates and holidays. Null when it
-// never ends.
+// endsOn, the day before its pausedFrom, its rule's UNTIL and its COUNTth date, counted before
+// exdates, holidays and a pause. Null when it never ends.
 function endOf(schedule: Schedules): LocalDate | null {
   const startsOn = schedule.startsOn as LocalDate
   const parts = new Map(
     schedule.rrule.split(';').map((part) => part.split('=') as [string, string]),
   )
   const ends = schedule.endsOn ? [schedule.endsOn as LocalDate] : []
+  if (schedule.pausedFrom) ends.push(addDays(schedule.pausedFrom as LocalDate, -1))
   const until = parts.get('UNTIL')
   if (until) ends.push(`${until.slice(0, 4)}-${until.slice(4, 6)}-${until.slice(6)}` as LocalDate)
   const count = Number(parts.get('COUNT') ?? 0)
@@ -484,7 +485,7 @@ describe('reconcile, under random edits, ends, runs and timeouts', () => {
       const today = localToday(groupRow(services, groupId).timezone, services.now)
       const touched = new Set<string>()
       // After a timeout or a run that ran out of time, the next hourly run usually comes first.
-      const action = !schedule ? 0 : unfinished && random(3) !== 0 ? 2 + random(3) : random(7)
+      const action = !schedule ? 0 : unfinished && random(3) !== 0 ? 2 + random(3) : random(9)
       const cron = action >= 2 && action <= 4
       try {
         let request: Request | undefined
@@ -503,6 +504,13 @@ describe('reconcile, under random edits, ends, runs and timeouts', () => {
           const body = { endsOn: compareDates(day, startsOn) < 0 ? startsOn : day }
           request = (on) => call(on, 'POST', `/schedules/${ID}/end`, { body })
           label = `END ${body.endsOn}`
+        } else if (action === 7) {
+          const body = { pausedFrom: addDays(today, random(60)) }
+          request = (on) => call(on, 'POST', `/schedules/${ID}/pause`, { body })
+          label = `PAUSE ${body.pausedFrom}`
+        } else if (action === 8) {
+          request = (on) => call(on, 'POST', `/schedules/${ID}/resume`)
+          label = 'RESUME'
         } else if (cron) {
           // A later day, now and then after an outage of weeks, or the same hour again.
           if (action < 4) {
@@ -539,10 +547,15 @@ describe('reconcile, under random edits, ends, runs and timeouts', () => {
             const result = body.ok ? (body.data as RunResult) : undefined
             expect(result?.expanded.failed, 'expanded.failed').toBe(0)
           }
-          // Without a fault a POST, a PATCH and a cron run finish the expansion; an end leaves
-          // the rest to the next run.
+          // Without a fault a POST, a PATCH, a resume and a cron run finish the expansion; an end
+          // and a pause leave the rest to the next run. A resume of a schedule that isn't paused
+          // changes nothing.
           if (after && fault.at === 0 && !fault.short) {
-            expect(isDue(after, services.now), 'due').toBe(action === 1)
+            const leaves =
+              action === 8 && !schedule?.pausedFrom
+                ? schedule !== undefined && isDue(schedule, services.now)
+                : action === 1 || action === 7
+            expect(isDue(after, services.now), 'due').toBe(leaves)
           }
         } else {
           const open = rows(services).filter(changeable)

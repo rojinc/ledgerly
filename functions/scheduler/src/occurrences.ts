@@ -218,14 +218,13 @@ export async function generateOccurrences(
 }
 
 /**
- * The last date the schedule can fall on: its `endsOn`, or its rule's own end (`UNTIL`, or the
- * `COUNT`th date, counted before exdates and holidays as RFC 5545 does), whichever is first.
- * Null when it never ends.
+ * The last date the schedule can fall on: the earliest of its `endsOn`, the day before its
+ * `pausedFrom`, and its rule's own end (`UNTIL`, or the `COUNT`th date, counted before exdates,
+ * holidays and a pause as RFC 5545 does). Null when it never ends.
  */
 export function scheduleEnd(
-  schedule: Pick<Schedules, 'rrule' | 'startsOn' | 'endsOn'>,
+  schedule: Pick<Schedules, 'rrule' | 'startsOn' | 'endsOn' | 'pausedFrom'>,
 ): LocalDate | null {
-  const endsOn = schedule.endsOn as LocalDate | null
   const parts = new Map(
     schedule.rrule.split(';').map((part) => part.split('=') as [string, string]),
   )
@@ -242,8 +241,9 @@ export function scheduleEnd(
           () => false,
         ).at(-1) ?? startsOn)
       : null
-  if (!ruleEnd) return endsOn
-  return endsOn && compareDates(endsOn, ruleEnd) < 0 ? endsOn : ruleEnd
+  const paused = schedule.pausedFrom ? addDays(schedule.pausedFrom as LocalDate, -1) : null
+  const ends = [schedule.endsOn as LocalDate | null, paused, ruleEnd]
+  return ends.filter((date) => date !== null).sort(compareDates)[0] ?? null
 }
 
 // Still `scheduled` or `due`, and not edited: the schedule may change or delete it.
