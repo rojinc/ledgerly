@@ -18,8 +18,12 @@ export default defineConfig({
   testDir: 'e2e',
   // Each flow's steps build on each other, in order; flows run side by side with their own users.
   fullyParallel: false,
+  // One per flow file, set here: Playwright's default (half the CPUs) is 1 on a 2-vCPU runner, and
+  // the flows back to back could outlast the 10 minutes before their afterEach archives run.
+  workers: 5,
   forbidOnly: Boolean(process.env.CI),
-  timeout: 60_000,
+  // One flow and every function call it makes; flow 5 alone waits up to a minute for a finalize.
+  timeout: 3 * 60_000,
   // The whole suite, within #38's 10 minutes.
   globalTimeout: 10 * 60_000,
   expect: { timeout: 15_000 },

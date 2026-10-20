@@ -23,8 +23,11 @@ export default async function globalSetup() {
     const users = {
       // Flow 1's user A, who adds B before B has an account.
       alex: await createUser('alex', 'Alex'),
-      // Flow 2's worker.
+      // The workers of flows 2–5, one each, so each flow starts from an empty dashboard.
       sam: await createUser('sam', 'Sam'),
+      kim: await createUser('kim', 'Kim'),
+      lee: await createUser('lee', 'Lee'),
+      max: await createUser('max', 'Max'),
     }
     process.env.E2E_USERS = JSON.stringify(users)
   } catch (error) {

@@ -3,7 +3,7 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import { expect, type Page, test } from '@playwright/test'
 import { runId, testEmail } from './dev-project'
-import { archiveEmployer } from './employer'
+import { addEmployer, archiveEmployer } from './employer'
 import { logIn, setupUser } from './users'
 
 // User flow 2 (docs/product/user-flows.md#2-set-up-an-employer-with-a-weekly-shift). The
@@ -29,18 +29,10 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
 
   // Step 1: Groups → New → Employer, from the guide.
   await page.getByRole('link', { name: /^Hours I work for someone/ }).click()
-  await page.getByLabel('Employer name').fill(employer)
-  await page.getByLabel('Billing emails').fill(testEmail('acme-billing'))
-  await page.getByLabel('Default hourly rate (AUD)').fill('25')
-  await page.getByLabel('Invoice cycle').selectOption({ label: 'Monthly' })
-  await page.getByLabel('Payment terms (days)').fill('14')
-  await page.getByRole('button', { name: 'Create employer', exact: true }).click()
-  await expect(page.getByRole('heading', { level: 1, name: employer })).toBeVisible()
-  // Before anything else can fail, so afterEach archives it.
-  groupId = /\/groups\/([^/]+)\/settings/.exec(page.url())?.[1]
-  expect(groupId).toBeTruthy()
+  const billing = testEmail('acme-billing')
+  groupId = await addEmployer(page, employer, billing)
   // Its settings, as saved.
-  await expect(page.getByLabel('Billing emails')).toHaveValue(testEmail('acme-billing'))
+  await expect(page.getByLabel('Billing emails')).toHaveValue(billing)
   await expect(page.getByLabel('Default hourly rate (AUD)')).toHaveValue('25.00')
   await expect(page.getByLabel('Invoice cycle')).toHaveValue('monthly')
   await expect(page.getByLabel('Payment terms (days)')).toHaveValue('14')
