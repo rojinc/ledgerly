@@ -78,7 +78,7 @@ export function autoSendFailedEmail(input: {
     `Invoice ${displayNumber} for ${groupName} couldn't be emailed`,
     [
       `Invoice ${displayNumber} for ${groupName} is final, but it couldn't be emailed to the billing emails automatically.`,
-      'Check the billing emails, then send it from the app.',
+      'It may be tried again for up to a day, or you can send it from the app now.',
     ],
     [{ label: 'Open the invoice', url: input.url }],
   )

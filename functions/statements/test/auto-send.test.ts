@@ -60,6 +60,7 @@ function failing(services: Fakes, fail: (email: Email) => Error | undefined) {
 }
 
 const isInvoice = (email: Email) => email.idempotencyKey?.startsWith('invoice/') ?? false
+const isInvoiceKey = (key: string | undefined) => key?.startsWith('invoice/') ?? false
 
 describe('the statements job, with autoSend on', () => {
   it('emails the invoice it auto-finalizes in the same run, as an admin’s Send does', async () => {
@@ -266,11 +267,14 @@ describe('the statements job, with autoSend on', () => {
     expect(invoices(services)[0]?.sentAt).toBe(services.now.toISOString())
   })
 
-  it('closes the window on a permanent failure, so no later run sends', async () => {
+  it.each([
+    ['validation_error', 422],
+    ['invalid_idempotent_request', 409],
+  ])('closes the window on Resend’s %s, so no later run sends', async (type, status) => {
     const services = octoberDue()
     failing(services, (email) =>
       isInvoice(email)
-        ? new EmailError('Resend answered 422 validation_error', 'validation_error', 422)
+        ? new EmailError(`Resend answered ${status} ${type}`, type, status)
         : undefined,
     )
     await runJob(services)
@@ -280,6 +284,87 @@ describe('the statements job, with autoSend on', () => {
     services.now = new Date(NOW.getTime() + HOUR_MS)
     await runJob(services)
     expect(keys(services)).toEqual([`auto-send-failed/${invoice?.$id}/sam`])
+  })
+
+  it('takes concurrent_idempotent_requests, an admin’s Send at the same moment, as transient', async () => {
+    const services = octoberDue()
+    const send = services.sendEmail
+    failing(services, (email) =>
+      isInvoice(email)
+        ? new EmailError(
+            'Resend answered 409 concurrent_idempotent_requests',
+            'concurrent_idempotent_requests',
+            409,
+          )
+        : undefined,
+    )
+    await runJob(services)
+    const [invoice] = invoices(services)
+    expect(invoice).toMatchObject({ sentAt: null, autoSendUntil: WINDOW_END })
+    // The window stays open, and the next run sends with the same keys.
+    services.sendEmail = send
+    services.now = new Date(NOW.getTime() + HOUR_MS)
+    await runJob(services)
+    expect(keys(services).filter(isInvoiceKey)).toEqual([
+      `invoice/${invoice?.$id}/first/employer`,
+      `invoice/${invoice?.$id}/first/copy`,
+    ])
+    expect(invoices(services)[0]?.sentAt).toBe(services.now.toISOString())
+  })
+
+  it('ends quietly when a void gets in first: no sentAt, no notice and no log', async () => {
+    const services = octoberDue()
+    const original = services.sendEmail
+    let voided = false
+    services.sendEmail = async (email) => {
+      if (email.idempotencyKey?.endsWith('/copy') && !voided) {
+        voided = true
+        // An admin voids it just before the job's sentAt write commits.
+        beforeCommits(services.db, [
+          op('statements', email.idempotencyKey.split('/')[1] ?? '', { status: 'void' }),
+        ])
+      }
+      return original(email)
+    }
+    await runJob(services)
+    expect(invoices(services)[0]).toMatchObject({ status: 'void', sentAt: null })
+    expect(keys(services).filter((key) => key?.startsWith('auto-send-failed/'))).toEqual([])
+    expect(errors).toEqual([])
+  })
+
+  it('reads the invoice again before sending, so one voided since the listing isn’t sent', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-02', 120), { statements: [statement('st1')] }),
+      groups: [job(AUTO, { nextCloseAt: NOVEMBER_CLOSE })],
+    })
+    await ok(services, 'POST', '/statements/st1/finalize', { send: false })
+    await commitNow(services.db, [op('statements', 'st1', { autoSendUntil: WINDOW_END })])
+    const listRows = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      const page = await listRows(params)
+      if (params.tableId === 'statements' && params.queries?.join().includes('autoSendUntil')) {
+        await commitNow(services.db, [op('statements', 'st1', { status: 'void' })])
+      }
+      return page
+    })
+    await runJob(services)
+    expect(services.sent).toEqual([])
+  })
+
+  it('keeps the drafts when listing the invoices to send fails, and logs it', async () => {
+    const services = octoberDue()
+    const listRows = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      if (params.tableId === 'statements' && params.queries?.join().includes('autoSendUntil')) {
+        throw new AppwriteException('Database is down', 503, 'general_unknown')
+      }
+      return listRows(params)
+    })
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    expect(services.sent).toEqual([])
+    expect(logged()).toEqual([
+      { fn: 'unknown', event: 'auto_send_failed', cause: expect.any(String) },
+    ])
   })
 
   it('doesn’t send without the worker’s verified email, which an admin’s Send would', async () => {

@@ -57,7 +57,9 @@ describe('autoSendFailedEmail (#432)', () => {
     })
     expectWellFormed(content)
     expect(content.subject).toBe("Invoice INV-0010 for Acme Pty Ltd couldn't be emailed")
-    expect(content.text).toContain('Check the billing emails, then send it from the app.')
+    expect(content.text).toContain(
+      'It may be tried again for up to a day, or you can send it from the app now.',
+    )
     expect(content.html).toContain(
       '<a href="https://app.example/statements/stmt-1">Open the invoice</a>',
     )
