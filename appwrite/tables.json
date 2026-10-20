@@ -1391,6 +1391,18 @@
         "type": "key",
         "columns": ["identityKey", "sentAt"],
         "orders": ["ASC", "ASC"]
+      },
+      {
+        "key": "idx_acceptedAt",
+        "type": "key",
+        "columns": ["acceptedAt"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_expiresAt",
+        "type": "key",
+        "columns": ["expiresAt"],
+        "orders": ["ASC"]
       }
     ]
   },
