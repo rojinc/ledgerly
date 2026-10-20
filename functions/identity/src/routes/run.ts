@@ -40,7 +40,18 @@ export async function run(scheduled: boolean, services: () => Services): Promise
   const started = Date.now()
   const deadline = started + MERGE_BUDGET_MS
   const result = { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0 }
-  const { merges, read, complete } = await unfinishedMerges(built.db, deadline)
+  let walk: Awaited<ReturnType<typeof unfinishedMerges>> = {
+    merges: new Map(),
+    read: 0,
+    complete: true,
+  }
+  try {
+    walk = await unfinishedMerges(built.db, deadline)
+  } catch (error) {
+    // An error, the alert; the change notices below still get their retry.
+    logProblem('merge_run_failed', { error })
+  }
+  const { merges, read, complete } = walk
   // Merged persons are kept for good, so a walk that outgrows the budget would hide every merge
   // past it: this says so (scaling.md).
   if (!complete) logProblem('merge_walk_cut_off', { count: read })
