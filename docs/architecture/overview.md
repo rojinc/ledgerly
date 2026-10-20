@@ -22,7 +22,8 @@
 │             identity    bootstrap, profile, claim, merge, invites,    │
 │                         join                                          │
 │             scheduler   hourly: schedules, auto-post, reminders,      │
-│                         summaries, receipt clean-up, nightly check    │
+│                         summaries, receipt and invite clean-up,       │
+│                         nightly check                                 │
 │             statements  hourly + HTTP: invoices, divides, PDFs        │
 └───────────────────────────────────────────────────────────────────────┘
         │                                 │
@@ -61,7 +62,7 @@
 
 | Job | Trigger | What it does |
 | --- | --- | --- |
-| `scheduler` | every 60 minutes | Creates occurrences for due schedules, auto-posts past shifts and autopay bills, sends reminders and summary emails, deletes receipt files no transaction lists, and runs the nightly check (balances row, ledger invariants, team memberships) |
+| `scheduler` | every 60 minutes | Creates occurrences for due schedules, auto-posts past shifts and autopay bills, sends reminders and summary emails, deletes receipt files no transaction lists and invite rows 30 days after they're accepted or expire, and runs the nightly check (balances row, ledger invariants, team memberships) |
 | `statements` | every 60 minutes | Drafts statements for periods that ended, and auto-finalizes where enabled |
 | `identity` | every 60 minutes | Carries on person merges a claim left unfinished ([finishing merges](identity-and-invites.md#finishing-merges)) |
 
