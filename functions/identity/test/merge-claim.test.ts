@@ -1,4 +1,5 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { finishMerges } from '../src/run-merge'
 import { account, BEFORE, beforeCommit, call, type Fakes, fakes, placeholderRow } from './harness'
@@ -174,7 +175,20 @@ function house(more: Record<string, object[]> = {}): Fakes {
         },
         ...(more.reminders ?? []),
       ],
-      activity: more.activity ?? [],
+      activity: [
+        // Alex added Sammy to g1 (#257: once merged, the feed names Sam).
+        {
+          $id: 'aAdded',
+          $createdAt: BEFORE,
+          at: BEFORE,
+          groupId: 'g1',
+          actorPersonId: 'pX',
+          action: 'member.added',
+          subjectPersonId: 'pP',
+          summary: 'was added',
+        },
+        ...(more.activity ?? []),
+      ],
     } as Parameters<typeof fakes>[0],
     { teams: { g1: ['u2'], g2: ['u1'], g3: ['u2'] } },
   )
@@ -205,6 +219,7 @@ function namingSammy(services: Fakes) {
     'transactions',
     'schedules',
     'reminders',
+    'activity',
   ] as const
   return Object.fromEntries(
     tables.map((table) => [
@@ -244,7 +259,7 @@ function partDone(services: Fakes) {
       !services.db
         .rows('members')
         .some((row) => row.groupId === groupId && row.personId === 'pP') &&
-      ['shares', 'transactions', 'schedules'].some((table) =>
+      ['shares', 'transactions', 'schedules', 'activity'].some((table) =>
         services.db
           .rows(table as 'shares')
           .some((row) => row.groupId === groupId && /\bpP\b/.test(JSON.stringify(row))),
@@ -280,9 +295,17 @@ function recorded(services: Fakes, groupIds: string[]): string {
   )
 }
 
+/** The logProblem lines a spy saw, without `fn`. */
+function events(spy: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+  return spy.mock.calls.map(([line]: unknown[]) => {
+    const { fn: _fn, ...event } = JSON.parse(String(line)) as Record<string, unknown>
+    return event
+  })
+}
+
 /** The merges that stopped on an error: none, unless a test makes one. */
 function stopped() {
-  return warn.mock.calls.filter(([line]: unknown[]) => /stopped/.test(String(line)))
+  return events(warn).filter(({ event }) => event === 'merge_stopped')
 }
 
 describe('POST /claim, merging a placeholder', () => {
@@ -295,6 +318,13 @@ describe('POST /claim, merging a placeholder', () => {
     expect(body).toEqual({ ok: true, data: { linkedGroupIds: ['g1'] } })
 
     expect(nets(services, 'g1')).toEqual({ pX: before.g1.pX, pSam: before.g1.pP })
+    // The feed names Sam on the row written when Alex added Sammy (#257); nothing else changed.
+    expect(services.db.rows('activity').find((row) => row.$id === 'aAdded')).toMatchObject({
+      subjectPersonId: 'pSam',
+      actorPersonId: 'pX',
+      action: 'member.added',
+      summary: 'was added',
+    })
     expect(nets(services, 'g2')).toEqual({ pSam: (before.g2.pSam ?? 0) + (before.g2.pP ?? 0) })
     // One share per person in t2 (I-5).
     expect(
@@ -341,6 +371,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: [],
       schedules: [],
       reminders: [],
+      activity: [],
     })
 
     // The schedule names Sam now; Sam's personal group was never searched.
@@ -446,6 +477,17 @@ describe('POST /claim, merging a placeholder', () => {
           action: 'member.left',
           summary: 'Left',
         },
+        // Sammy stays Sammy in a kept group, activity included (#257).
+        {
+          $id: 'aKept',
+          $createdAt: BEFORE,
+          at: BEFORE,
+          groupId: 'g3',
+          actorPersonId: 'pX',
+          action: 'member.added',
+          subjectPersonId: 'pP',
+          summary: 'was added',
+        },
       ],
     })
     expect((await claim(services)).body).toEqual({ ok: true, data: { linkedGroupIds: ['g1'] } })
@@ -456,6 +498,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: ['t3'],
       schedules: [],
       reminders: ['rKept'],
+      activity: ['aKept'],
     })
     expect(services.teams.members('g3')?.map((member) => member.userId)).toEqual(['u2'])
     expect(nets(services, 'g3')).toEqual({ pX: 1000, pP: -1000 })
@@ -466,7 +509,8 @@ describe('POST /claim, merging a placeholder', () => {
       statements: [{ $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' }],
     })
     await claim(services)
-    // g2 is done. g1 waits whole, Sammy's member row included, and so does the phone.
+    // g2 is done. g1 waits, Sammy's member row included (the reminder moves, as it's found by
+    // person), and so does the phone.
     expect(namingSammy(services)).toEqual({
       identities: ['iPhone'],
       members: ['m1'],
@@ -474,6 +518,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: ['t1'],
       schedules: ['sc1'],
       reminders: [],
+      activity: ['aAdded'],
     })
     await withTransaction(services.db, (tx) =>
       tx.write({
@@ -491,8 +536,75 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: [],
       schedules: [],
       reminders: [],
+      activity: [],
     })
     expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
+  })
+
+  // #334: an account deletion purging a group deletes its team first and its rows last.
+  it('puts off a group a purge is deleting, merges the others, and finishes once its rows go', async () => {
+    const services = house()
+    // As the purge does it: g1 is archived first, then its team deleted.
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'groups',
+        rowId: 'g1',
+        data: { archivedAt: '2026-10-19T00:00:00.000Z' },
+      }),
+    )
+    const add = services.teams.createMembership.bind(services.teams)
+    vi.spyOn(services.teams, 'createMembership').mockImplementation(async (params) => {
+      if (params.teamId === 'g1')
+        throw new AppwriteException('Team not found', 404, 'team_not_found')
+      return (await add(params)) as never
+    })
+    expect((await claim(services)).body).toEqual({ ok: true, data: { linkedGroupIds: [] } })
+    expect(stopped()).toEqual([])
+    expect(events(warn)).toContainEqual({
+      event: 'merge_put_off_team_gone',
+      personId: 'pP',
+      groupId: 'g1',
+    })
+    // g2 is done. g1 waits, and so does the phone.
+    expect(namingSammy(services)).toEqual({
+      identities: ['iPhone'],
+      members: ['m1'],
+      shares: ['s2'],
+      transactions: ['t1'],
+      schedules: ['sc1'],
+      reminders: [],
+      activity: ['aAdded'],
+    })
+    // The purge reaches g1's rows.
+    await withTransaction(services.db, (tx) =>
+      tx.write(
+        ...(
+          [
+            ['members', 'm1'],
+            ['members', 'm2'],
+            ['shares', 's1'],
+            ['shares', 's2'],
+            ['transactions', 't1'],
+            ['schedules', 'sc1'],
+            ['reminders', 'rToSammy'],
+            ['activity', 'aAdded'],
+            // The group row goes last, while mergeGroupIds still lists it.
+            ['groups', 'g1'],
+          ] as const
+        ).map(([tableId, rowId]) => ({ action: 'delete' as const, tableId, rowId })),
+      ),
+    )
+    expect((await claim(services)).body).toEqual({ ok: true, data: { linkedGroupIds: [] } })
+    expect(namingSammy(services)).toEqual({
+      identities: [],
+      members: [],
+      shares: [],
+      transactions: [],
+      schedules: [],
+      reminders: [],
+      activity: [],
+    })
   })
 
   it('moves no share in a group whose inputs it put off, even once the finalize ends', async () => {
@@ -576,12 +688,13 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: ['t3'],
       schedules: [],
       reminders: [],
+      activity: [],
     })
   })
 
   // Cut off after every step and batch in turn: each read of the clock is one place it can stop.
-  // A whole merge of this house reads it 23 times, so the 23rd run isn't cut at all.
-  it.each(Array.from({ length: 23 }, (_, n) => n + 1))(
+  // A whole merge of this house reads it 26 times, so the 26th run isn't cut at all.
+  it.each(Array.from({ length: 26 }, (_, n) => n + 1))(
     'carries on a merge cut off at clock read %i, and adds nothing twice',
     async (cutAt) => {
       const services = house()
@@ -613,6 +726,7 @@ describe('POST /claim, merging a placeholder', () => {
         transactions: [],
         schedules: [],
         reminders: [],
+        activity: [],
       })
       expect(nets(services, 'g1')).toEqual({ pX: 4500, pSam: -4500 })
       expect(nets(services, 'g2')).toEqual({ pSam: 0 })
@@ -637,6 +751,18 @@ describe('POST /claim, merging a placeholder', () => {
         ),
       ],
       shares: [share('s9', 't9', 'g3', 'pX', 2000, 1000), share('s10', 't9', 'g3', 'pP', 0, 1000)],
+      activity: [
+        {
+          $id: 'aG3',
+          $createdAt: BEFORE,
+          at: BEFORE,
+          groupId: 'g3',
+          actorPersonId: 'pX',
+          action: 'member.added',
+          subjectPersonId: 'pP',
+          summary: 'was added',
+        },
+      ],
     })
     // Marked in that earlier claim, so g3 is one of Sammy's groups.
     await withTransaction(services.db, (tx) =>
@@ -656,17 +782,117 @@ describe('POST /claim, merging a placeholder', () => {
     // waits. The input names Sam now: it named a non-member before, so nothing changes there.
     expect(services.db.rows('shares').find((row) => row.$id === 's10')?.personId).toBe('pP')
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: [] })
-    expect(warn).toHaveBeenCalledWith(
-      'merge pP into pSam left shares row s10 in group g3 for a later claim',
+    // Sam isn't joined there, so the activity stays on Sammy too, logged by ID (#338).
+    expect(services.db.rows('activity').find((row) => row.$id === 'aG3')?.subjectPersonId).toBe(
+      'pP',
     )
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_stray_row',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      groupId: 'g3',
+      table: 'shares',
+      rowId: 's10',
+    })
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_subjects',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      groupId: 'g3',
+      count: 1,
+    })
+  })
+
+  // #338: subjects move only where Sam is joined, so no row g3's team reads links Sammy's key to
+  // Sam's account (D-016). They don't hold the merge open: with nothing else of Sammy's left in
+  // g3, the merge finishes and the phone moves.
+  // Sam left g3 on their own (their own member.left, the newest of theirs there), after step 1.
+  const leftOnTheirOwn = {
+    members: [
+      placeholderRow('m9', 'g3', 'pSam', BEFORE, {
+        status: 'left',
+        role: 'viewer',
+        displayName: 'Sam Lee',
+        leftOn: '2026-10-05',
+      }),
+    ],
+    activity: [
+      {
+        $id: 'aSamLeft',
+        $createdAt: '2026-10-05T00:00:00.000Z',
+        at: '2026-10-05T00:00:00.000Z',
+        groupId: 'g3',
+        actorPersonId: 'pSam',
+        action: 'member.left',
+        subjectPersonId: 'pSam',
+        summary: 'left',
+      },
+    ],
+  }
+  it.each([
+    ['no row', { members: [], activity: [] }],
+    [
+      'only a placeholder row',
+      { members: [placeholderRow('m9', 'g3', 'pSam', BEFORE)], activity: [] },
+    ],
+    ['a row they left on their own', leftOnTheirOwn],
+  ])('leaves Sammy’s activity in a group where Sam has %s, and still finishes', async (_, more) => {
+    const services = house({
+      groups: [group('g3')],
+      members: more.members,
+      activity: [
+        ...more.activity,
+        {
+          $id: 'aG3',
+          $createdAt: BEFORE,
+          at: BEFORE,
+          groupId: 'g3',
+          actorPersonId: 'pX',
+          action: 'member.added',
+          subjectPersonId: 'pP',
+          summary: 'was added',
+        },
+      ],
+    })
+    // Sammy's row in g3 was removed after step 1 listed it.
+    await withTransaction(services.db, (tx) =>
+      tx.write({
+        action: 'update',
+        tableId: 'persons',
+        rowId: 'pP',
+        data: {
+          mergedInto: 'pSam',
+          mergeGroupIds: ['g1', 'g2', 'g3'],
+          mergeMembersJson: recorded(services, ['g1', 'g2', 'g3']),
+        },
+      }),
+    )
+    await claim(services)
+    expect(namingSammy(services)).toEqual({
+      identities: [],
+      members: [],
+      shares: [],
+      transactions: [],
+      schedules: [],
+      reminders: [],
+      activity: ['aG3'],
+    })
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_subjects',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      groupId: 'g3',
+      count: 1,
+    })
+    expect(events(log)).toContainEqual(expect.objectContaining({ event: 'merge_finished' }))
   })
 
   // Two claims cut off in turn: the second finishes the group the first left part done before
   // it starts another, since both walk Sammy's groups in step 1's order.
-  it.each(Array.from({ length: 22 }, (_, n) => n + 1))(
+  it.each(Array.from({ length: 25 }, (_, n) => n + 1))(
     'leaves at most one group part done after two claims, the first cut off at read %i',
     async (first) => {
-      for (let second = 1; second <= 22; second += 1) {
+      for (let second = 1; second <= 25; second += 1) {
         const services = house()
         await withTransaction(services.db, (tx) =>
           tx.write({
@@ -689,10 +915,10 @@ describe('POST /claim, merging a placeholder', () => {
 
   // AI A's F on #242: the first claim puts g1 off (a finalize) and is cut off in g2. The second,
   // once the finalize has ended, finishes g2 before it starts g1 again.
-  it.each(Array.from({ length: 22 }, (_, n) => n + 1))(
+  it.each(Array.from({ length: 25 }, (_, n) => n + 1))(
     'leaves at most one group part done when the first claim put a group off and was cut off at read %i',
     async (first) => {
-      for (let second = 1; second <= 22; second += 1) {
+      for (let second = 1; second <= 25; second += 1) {
         const services = house({
           statements: [
             { $id: 'st1', groupId: 'g1', status: 'finalizing', periodStart: '2026-10-01' },
@@ -749,7 +975,11 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     expect(phase).toBe(2)
     // g1's template and t1 both still name Sammy: g1 waits whole for the next claim.
-    expect(namingSammy(services)).toMatchObject({ schedules: ['sc1'], transactions: ['t1'] })
+    expect(namingSammy(services)).toMatchObject({
+      schedules: ['sc1'],
+      transactions: ['t1'],
+      activity: ['aAdded'],
+    })
   })
 
   it('keeps the merge open when a row of Sammy’s appears outside the groups it walked', async () => {
@@ -776,16 +1006,25 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     expect(added).toBe(true)
     expect(namingSammy(services).identities).toEqual(['iPhone'])
-    expect(warn).toHaveBeenCalledWith(
-      'merge pP into pSam left members row m9 in group g9 for a later claim',
-    )
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_stray_row',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      groupId: 'g9',
+      table: 'members',
+      rowId: 'm9',
+    })
     // The next claim walks Sammy's rows too, but step 1 recorded no dates for g9, so the group
     // waits whole (#301) and the merge stays open, logged.
     vi.mocked(services.db.listRows).mockRestore()
     await claim(services)
     expect(namingSammy(services).identities).toEqual(['iPhone'])
     expect(services.db.rows('members').find((member) => member.$id === 'm9')?.personId).toBe('pP')
-    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g9')
+    expect(events(error)).toContainEqual({
+      event: 'merge_no_member_dates',
+      personId: 'pP',
+      groupId: 'g9',
+    })
   })
 
   it('moves nothing in a group whose finalize ends just after step 2 put it off', async () => {
@@ -826,7 +1065,12 @@ describe('POST /claim, merging a placeholder', () => {
     const services = house({ transactions: [unreadable] })
     await claim(services)
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], transactions: ['t8'] })
-    expect(warn).toHaveBeenCalledWith('merge pP into pSam left transaction t8 as it is')
+    expect(events(warn)).toContainEqual({
+      event: 'merge_left_transaction',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+      transactionId: 't8',
+    })
   })
 
   it('plans a days item as it was before the merge, with the dates step 1 recorded (B2)', async () => {
@@ -900,8 +1144,12 @@ describe('POST /claim, merging a placeholder', () => {
     await claim(services)
     // Nothing moved: Sammy keeps both rows, the shares and the key.
     expect(namingSammy(services)).toMatchObject({ identities: ['iPhone'], members: ['m1', 'm3'] })
-    expect(error).toHaveBeenCalledWith('merge pP: its recorded member dates are unreadable')
-    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
+    expect(events(error)).toContainEqual({ event: 'merge_member_dates_unreadable', personId: 'pP' })
+    expect(events(error)).toContainEqual({
+      event: 'merge_no_member_dates',
+      personId: 'pP',
+      groupId: 'g1',
+    })
   })
 
   it('carries each group’s input scan on from its own resume point (#242 G)', async () => {
@@ -969,7 +1217,11 @@ describe('POST /claim, merging a placeholder', () => {
       shares: ['s2'],
       transactions: ['t1'],
     })
-    expect(error).toHaveBeenCalledWith('merge pP: no recorded member dates for group g1')
+    expect(events(error)).toContainEqual({
+      event: 'merge_no_member_dates',
+      personId: 'pP',
+      groupId: 'g1',
+    })
     expect(stopped()).toEqual([])
   })
 
@@ -996,7 +1248,7 @@ describe('POST /claim, merging a placeholder', () => {
     const { status, body } = await claim(services)
     expect(status).toBe(200)
     expect(body).toEqual({ ok: true, data: { linkedGroupIds: expect.arrayContaining(['g9']) } })
-    expect(stopped()).toEqual([['merge into pSam stopped: Error']])
+    expect(stopped()).toEqual([{ event: 'merge_stopped', intoPersonId: 'pSam', cause: 'Error' }])
     // The next claim carries on with the merge.
     vi.mocked(services.db.listRows).mockRestore()
     warn.mockClear()
@@ -1027,6 +1279,7 @@ describe('POST /claim, merging a placeholder', () => {
       transactions: [],
       schedules: [],
       reminders: [],
+      activity: [],
     })
     const after = services.db.rows('transactions').find((row) => row.$id === 't1')
     expect([after?.statementId, after?.status, after?.totalCents]).toEqual([
@@ -1052,12 +1305,16 @@ describe('POST /claim, merging a placeholder', () => {
     )
     expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
       joined: [],
-      finished: 0,
+      finished: [],
     })
     // Sammy's rows stay Sammy's, and Sam was taken out of g1's team again.
     expect(services.db.rows('members').find((row) => row.$id === 'm1')?.personId).toBe('pP')
     expect(services.teams.members('g1')?.map((member) => member.userId)).toEqual(['u2'])
-    expect(log).toHaveBeenCalledWith('merge pP into pSam stopped: that account is being deleted')
+    expect(events(log)).toContainEqual({
+      event: 'merge_stopped_into_deleted',
+      personId: 'pP',
+      intoPersonId: 'pSam',
+    })
   })
 
   it('stops every merge into an account being deleted, ones with only their identities left too', async () => {
@@ -1133,7 +1390,7 @@ describe('POST /claim, merging a placeholder', () => {
     // Tried again, the merge stops before it joins anything.
     expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
       joined: [],
-      finished: 0,
+      finished: [],
     })
     expect(services.db.rows('members').filter((row) => row.personId === 'pP')).toHaveLength(2)
   })
@@ -1151,7 +1408,7 @@ describe('POST /claim, merging a placeholder', () => {
       )
       expect(await finishMerges(services, 'u1', 'pSam', Number.MAX_SAFE_INTEGER)).toEqual({
         joined: [],
-        finished: 0,
+        finished: [],
       })
       expect(namingSammy(services).members).toEqual(['m1', 'm3'])
     }

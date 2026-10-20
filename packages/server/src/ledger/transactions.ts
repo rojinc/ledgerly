@@ -6,6 +6,7 @@ import type {
   Groups,
   Items,
   Members,
+  Persons,
   Shares,
   Statements,
   Transactions,
@@ -14,7 +15,7 @@ import { buildShares, type LedgerContext, type Share } from '@ledgerly/core/ledg
 import { assertShareInvariants } from '@ledgerly/core/ledger/invariants'
 import { LedgerError } from '@ledgerly/core/ledger/ledger-error'
 import { formatMoney } from '@ledgerly/core/money/format'
-import { localDateSchema } from '@ledgerly/core/schemas/common'
+import { localDateSchema, type MergingRefusal } from '@ledgerly/core/schemas/common'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import {
   everyPersonId,
@@ -168,6 +169,77 @@ export async function requireNotFinalizing(
       'A statement covering this date is being finalized. Try again soon.',
     )
   }
+}
+
+/**
+ * CONFLICT, with `merging`, when the row names a person whose merge is still open in its group
+ * (identity-and-invites.md#while-a-merge-is-open-in-a-group): its shares, stored input or item
+ * splits name a P with `mergedInto` set who lists the group in `mergeGroupIds` and has no member
+ * row there, while U (P's `mergedInto`) has a joined one (not `placeholder`). Per group, so it
+ * holds whether or not the merge finishes elsewhere. Planning the row again with today's members
+ * would count P's part as someone else's before the merge writes it out. Routes call it before
+ * planning, and again after staging the group row, so a merge's step 2 that lands meanwhile fails
+ * their commit.
+ */
+export async function requireNoOpenMerge(
+  db: Db,
+  row: Transactions,
+  shares: readonly Pick<Shares, 'personId'>[],
+  items: readonly Items[],
+): Promise<void> {
+  // The bill's period names no one, and its stored shape isn't a template's.
+  const { bill: _period, ...stored } = storedInputSchema.parse(JSON.parse(row.inputJson))
+  const named = new Set([
+    ...shares.map((share) => share.personId),
+    ...everyPersonId(stored),
+    ...items.flatMap((item) => everyPersonId({ split: JSON.parse(item.splitJson) })),
+  ])
+  // A shift names no one, and Appwrite refuses an `equal` with no values.
+  if (named.size === 0) return
+  // Its shares and the people its input names: at most about 30, so one read.
+  const { rows: merged } = await db.listRows<Persons>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.persons,
+    queries: [Query.equal('$id', [...named]), Query.isNotNull('mergedInto'), Query.limit(100)],
+    total: false,
+  })
+  for (const person of merged) {
+    if (!person.mergeGroupIds?.includes(row.groupId)) continue
+    // P's and U's member rows here: one read, as the group has at most one of each.
+    const { rows: members } = await db.listRows<Members>({
+      databaseId: DATABASE_ID,
+      tableId: TABLES.members,
+      queries: [
+        Query.equal('groupId', row.groupId),
+        Query.equal('personId', [person.$id, person.mergedInto as string]),
+        Query.limit(2),
+      ],
+      total: false,
+    })
+    const has = (personId: string) => members.find((member) => member.personId === personId)
+    // Step 2 always leaves U's row joined; a placeholder row of U's isn't P's place (D-016).
+    if (
+      has(person.$id) ||
+      (has(person.mergedInto as string)?.status ?? 'placeholder') === 'placeholder'
+    ) {
+      continue
+    }
+    const details: MergingRefusal = { reason: 'merging' }
+    throw new AppError(
+      'CONFLICT',
+      "Some of this group's records are still being updated. Try again shortly.",
+      details,
+    )
+  }
+}
+
+/** Whether `error` is requireNoOpenMerge's refusal. */
+export function isMergingRefusal(error: unknown): boolean {
+  return (
+    error instanceof AppError &&
+    error.code === 'CONFLICT' &&
+    (error.details as Partial<MergingRefusal> | undefined)?.reason === 'merging'
+  )
 }
 
 export type Ledger = {

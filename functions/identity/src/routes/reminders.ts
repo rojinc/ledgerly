@@ -9,6 +9,7 @@ import { requireMember } from '@ledgerly/server/auth/require-member'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { reminderEmail } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { readGroupNets } from '@ledgerly/server/ledger/balances'
 import { ID, Permission, Query, Role } from 'node-appwrite'
@@ -109,11 +110,7 @@ async function deliver(
     // Sent already under this key, with other content: it counts as sent.
     if (error instanceof EmailError && ALREADY_SENT.has(error.type)) return
     // Resend's type and status, never its message, which can quote the address.
-    const cause =
-      error instanceof EmailError
-        ? `EmailError ${error.type} ${error.status ?? ''}`.trim()
-        : 'Error'
-    console.error(`reminder ${input.id} not sent: ${cause}`)
+    logProblem('person_reminder_failed', { reminderId: input.id, error })
     throw new AppError('INTERNAL', NOT_SENT)
   }
 }
@@ -160,9 +157,11 @@ async function commitReminder(
       if ((await getRowOrNull<Persons>(db, TABLES.persons, sender))?.deletedAt !== null) {
         throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
       }
-      if ((await getRowOrNull<Persons>(db, TABLES.persons, recipient))?.deletedAt !== null) {
-        throw new AppError('VALIDATION_FAILED', WRONG_ADDRESS)
-      }
+      const to = await getRowOrNull<Persons>(db, TABLES.persons, recipient)
+      if (to?.deletedAt !== null) throw new AppError('VALIDATION_FAILED', WRONG_ADDRESS)
+      // A merge's step 1 marked the recipient meanwhile: the retry resolves to who they became,
+      // so no reminder or activity row names a person the merge has already moved past.
+      if (to.mergedInto) throw tryAgain()
       await checkLimits(db, { sentBy: sender, toPersonId: recipient, groupId }, now)
       await tx.write(
         {

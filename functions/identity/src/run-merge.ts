@@ -2,15 +2,19 @@ import type { Groups, Identities, Members, Persons, Shares } from '@ledgerly/cor
 import { type MergeMembers, mergeMembersSchema } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import { logProblem } from '@ledgerly/server/http/log'
 import { Query } from 'node-appwrite'
 import {
   IntoDeleted,
   intoDeleted,
+  joinedHere,
   memberOf,
   moveIdentities,
   moveMembers,
   moveReminders,
   moveShares,
+  moveSubjects,
+  subjectsOf,
 } from './merge'
 import { cursorsOf, moveInputs, moveTemplates } from './merge-inputs'
 import type { Services } from './services'
@@ -24,7 +28,7 @@ export const MERGE_BUDGET_MS = 9_000
 const PAGE = 100
 
 /** What the merges did: the groups U joined, and how many merges finished. */
-export type MergesResult = { joined: string[]; finished: number }
+export type MergesResult = { joined: string[]; finished: string[] }
 
 /**
  * Carries on with every merge into U (`idx_mergedInto`) that isn't finished, until `deadline`
@@ -38,7 +42,7 @@ export async function finishMerges(
   intoId: string,
   deadline: number,
 ): Promise<MergesResult> {
-  const result: MergesResult = { joined: [], finished: 0 }
+  const result: MergesResult = { joined: [], finished: [] }
   for (const placeholder of await mergedInto(services.db, intoId)) {
     if (Date.now() >= deadline) break
     // Only a placeholder is ever merged: one with an account, or deleted, is left alone.
@@ -49,10 +53,10 @@ export async function finishMerges(
       if (await intoDeleted(services.db, intoId)) throw new IntoDeleted()
       const { joined, finished } = await runSteps(services, userId, placeholder, intoId, deadline)
       result.joined.push(...joined)
-      if (finished) result.finished += 1
+      if (finished) result.finished.push(placeholder.$id)
     } catch (error) {
       if (!(error instanceof IntoDeleted)) throw error
-      console.log(`merge ${placeholder.$id} into ${intoId} stopped: that account is being deleted`)
+      logProblem('merge_stopped_into_deleted', { personId: placeholder.$id, intoPersonId: intoId })
       break
     }
   }
@@ -61,10 +65,10 @@ export async function finishMerges(
 
 /**
  * Steps 2 and 3 for P, one group at a time: P's member row there, then the group's templates,
- * inputs and shares, before the next group. A cut-off then leaves at most one group part done,
- * and a group that can't go on now (a statement being finalized) waits whole. One whose finalize
- * starts after its member row moved waits part done, and a later claim finishes it first. Then
- * reminders, and P's identities once nothing else names P (step 4).
+ * inputs, activity subjects and shares, before the next group. A cut-off then leaves at most one
+ * group part done, and a group that can't go on now (a statement being finalized) waits whole.
+ * One whose finalize starts after its member row moved waits part done, and a later claim
+ * finishes it first. Then reminders, and P's identities once nothing else names P (step 4).
  */
 async function runSteps(
   services: Services,
@@ -76,17 +80,18 @@ async function runSteps(
   const { db, now } = services
   const fromId = placeholder.$id
   const merge = { from: fromId, into: intoId }
+  const ids = { personId: fromId, intoPersonId: intoId }
   const kept = new Set<string>()
   const joined: string[] = []
   const putOff = new Set<string>()
-  const moved = { inputs: 0, voided: 0, shares: 0, skipped: 0 }
+  const moved = { inputs: 0, voided: 0, shares: 0, subjects: 0, skipped: 0 }
   const recorded = memberDatesOf(placeholder) ?? []
   const cursors = cursorsOf(placeholder)
   // Step 3 never plans a posted row's items without step 1's dates (#301), so a group without
   // them waits whole, P's row included, and keeps the merge open. A kept group needs none.
   const ready = (groupId: string) => {
     if (recorded.some((entry) => entry.groupId === groupId)) return true
-    console.error(`merge ${fromId}: no recorded member dates for group ${groupId}`)
+    logProblem('merge_no_member_dates', { personId: fromId, groupId })
     return false
   }
   let done = true
@@ -142,6 +147,22 @@ async function runSteps(
     }
     // Rows left as they are keep the merge open, but their group's shares can still move.
     if (!templates.done || !inputs.done) done = false
+    // Activity rows about P are about U from now on (#257): the feed names U, not "A former member".
+    // Only where U is joined, as share batches check (#338). Elsewhere a row the team reads would
+    // link the placeholder to U's account (D-016), so they stay on P and don't hold the merge open.
+    if (await joinedHere(db, groupId, intoId)) {
+      const subjects = await moveSubjects(db, fromId, intoId, [groupId], deadline)
+      moved.subjects += subjects.moved
+      if (!subjects.done) {
+        done = false
+        break
+      }
+    } else {
+      const left = await subjectsOf(db, fromId, groupId)
+      if (left > 0) {
+        logProblem('merge_left_subjects', { ...ids, groupId, count: left })
+      }
+    }
     // Neither has a row here (U's, once P's, was removed since): a share moved to U would be one
     // with no member row (I-3), so P's stay, and `stray()` keeps the merge open while one is left.
     // An input naming P names a non-member already, so renaming it changed nothing there.
@@ -156,7 +177,15 @@ async function runSteps(
     }
   }
   const reminders = await moveReminders(db, fromId, intoId, kept, deadline)
-  const counts = `${joined.length} groups joined, ${moved.inputs} inputs, ${moved.voided} voided, ${moved.shares} shares, ${reminders.moved} reminders, ${moved.skipped} left as they are`
+  const counts = {
+    groupsJoined: joined.length,
+    inputs: moved.inputs,
+    voided: moved.voided,
+    shares: moved.shares,
+    subjects: moved.subjects,
+    reminders: reminders.moved,
+    leftAsTheyAre: moved.skipped,
+  }
   if (
     done &&
     putOff.size === 0 &&
@@ -165,13 +194,11 @@ async function runSteps(
     !(await stray(db, fromId, intoId, kept))
   ) {
     const identities = await moveIdentities(db, fromId, intoId, deadline)
-    console.log(`merge ${fromId} into ${intoId}: ${counts}, ${identities} identities`)
+    logProblem('merge_finished', { ...ids, counts: { ...counts, identities } })
     // Cut off partway, some identities are still P's, and the next claim moves the rest.
     return { joined, finished: !(await hasIdentity(db, fromId)) }
   }
-  console.log(
-    `merge ${fromId} into ${intoId} carries on next claim: ${counts}, ${putOff.size} groups put off`,
-  )
+  logProblem('merge_carries_on', { ...ids, counts: { ...counts, groupsPutOff: putOff.size } })
   return { joined, finished: false }
 }
 
@@ -200,9 +227,13 @@ async function stray(
     })
     const row = rows[0]
     if (row) {
-      console.warn(
-        `merge ${fromId} into ${intoId} left ${tableId} row ${row.$id} in group ${row.groupId} for a later claim`,
-      )
+      logProblem('merge_left_stray_row', {
+        personId: fromId,
+        intoPersonId: intoId,
+        groupId: row.groupId,
+        table: tableId === TABLES.members ? 'members' : 'shares',
+        rowId: row.$id,
+      })
       return true
     }
   }
@@ -220,7 +251,7 @@ function memberDatesOf(placeholder: Persons): MergeMembers | undefined {
   }
   const parsed = mergeMembersSchema.safeParse(raw)
   if (parsed.success) return parsed.data
-  console.error(`merge ${placeholder.$id}: its recorded member dates are unreadable`)
+  logProblem('merge_member_dates_unreadable', { personId: placeholder.$id })
   return undefined
 }
 

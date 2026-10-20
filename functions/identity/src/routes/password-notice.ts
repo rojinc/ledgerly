@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto'
 import type { Profiles } from '@ledgerly/core/generated/rows'
-import { idSchema } from '@ledgerly/core/schemas/common'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { passwordChangedEmail } from '@ledgerly/server/email/templates'
-import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem, type NoticeOutcome } from '@ledgerly/server/http/log'
 import { getRowOrNull, isAppwriteError } from '../rows'
 import type { AccountUser, Services } from '../services'
 
@@ -12,48 +11,24 @@ import type { AccountUser, Services } from '../services'
 // queue, short enough that a replay can't email about an old change.
 const PASSWORD_NOTICE_WINDOW_MINUTES = 60
 
-type Outcome = 'sent' | 'stale' | 'unverified' | 'gone' | `failed (${string})`
+type Outcome = Exclude<NoticeOutcome, 'failed'>
 
 /**
- * `identity POST /` (identity-and-invites.md#password-notice): the `users.*.update.password` and
- * `users.*.recovery.*.update` events, run without a JWT. Only the user ID is read: from the event's name, else the body's
- * `$id`. The body can carry the password hash, so it's never logged or stored; everything else
- * comes from `users.get`. `{}` unless the send fails; the outcome goes to the log, with the ID.
+ * The password notice (identity-and-invites.md#password-notice), for an event run of
+ * `users.*.update.password` or `users.*.recovery.*.update` naming `userId` (event-run.ts).
+ * Everything comes from `users.get`. Throws if the send fails; the outcome goes to the log, with
+ * the ID.
  */
-export async function passwordNotice(
-  services: Services,
-  event: boolean,
-  headers: Record<string, string>,
-  body: unknown,
-): Promise<Record<string, never>> {
-  if (!event) throw new AppError('FORBIDDEN', 'Only Appwrite sends this.')
-  const userId = idFromEvent(headers['x-appwrite-event']) ?? idFromBody(body)
-  const log = (outcome: Outcome) =>
-    console.log(`identity: password notice for user ${userId ?? '(none)'}: ${outcome}`)
+export async function passwordNotice(services: Services, userId: string): Promise<void> {
+  const log = (fields: { outcome: NoticeOutcome; error?: unknown }) =>
+    logProblem('password_notice', { userId, ...fields })
   try {
-    log(userId === null ? 'gone' : await notify(services, userId))
+    log({ outcome: await notify(services, userId) })
   } catch (error) {
     // Appwrite doesn't run an event again, so a failed send is lost; the run fails with it.
-    if (error instanceof EmailError) log(`failed (${error.type})`)
+    if (error instanceof EmailError) log({ outcome: 'failed', error })
     throw error
   }
-  return {}
-}
-
-// `users.<userId>.update.password`, or `users.<userId>.recovery.<tokenId>.update`. The whole name
-// is matched: a user ID can contain `.`, so `users.<victimId>.x.update.password` is user
-// `<victimId>.x`'s event, not the victim's.
-const EVENT_NAME = /^users\.(.+)\.(?:update\.password|recovery\.[^.]+\.update)$/
-
-function idFromEvent(name: string | undefined): string | null {
-  const parsed = idSchema.safeParse(name?.match(EVENT_NAME)?.[1])
-  return parsed.success ? parsed.data : null
-}
-
-function idFromBody(body: unknown): string | null {
-  const id = typeof body === 'object' && body !== null ? (body as { $id?: unknown }).$id : null
-  const parsed = idSchema.safeParse(id)
-  return parsed.success ? parsed.data : null
 }
 
 async function notify(services: Services, userId: string): Promise<Outcome> {
@@ -83,7 +58,7 @@ async function notify(services: Services, userId: string): Promise<Outcome> {
 }
 
 // The web app's address, without a trailing slash. A missing APP_URL fails the run.
-function appBase(appUrl: string): string {
+export function appBase(appUrl: string): string {
   if (!/^https?:\/\//.test(appUrl)) {
     throw new Error('APP_URL is not set. Add it as an Appwrite project variable.')
   }

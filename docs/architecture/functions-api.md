@@ -30,7 +30,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 
 | Code | HTTP | When |
 | --- | --- | --- |
-| `UNAUTHENTICATED` | 401 | No signed-in user |
+| `UNAUTHENTICATED` | 401 | No signed-in user. Also `identity POST /invites` and `POST /reminders` from a caller (the inviter or the sender) whose account deletion started while the request ran ([invites](identity-and-invites.md#invites), [reminders](identity-and-invites.md#reminders)); one that started before gets `NOT_A_MEMBER` ([permissions](permissions.md)) |
 | `VALIDATION_FAILED` | 400 | Payload failed the zod schema or a ledger rule. `details` holds the issues. |
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
@@ -38,8 +38,8 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, another request changed the same rows at the same time (try again), a merge into one of the people is still open in the group (`details: { reason: 'merging' }`; try again shortly, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
-| `INVITE_INVALID` | 400 | Invite token unknown, expired or used |
-| `RATE_LIMITED` | 429 | Too many invites or reminders |
+| `INVITE_INVALID` | 400 | Invite token unknown, expired, or the invite isn't the caller's (used by someone else, or its address is another account's) |
+| `RATE_LIMITED` | 429 | Too many invites or reminders, or too many wrong addresses typed for them ([#274](https://github.com/rojinc/ledgerly/issues/274)) |
 | `INVARIANT_VIOLATION` | 500 | A ledger invariant would break. Must never happen; logged as an error. |
 | `INTERNAL` | 500 | Anything else |
 
@@ -104,7 +104,7 @@ Row types (`Transactions`, `Shares`, `Items` and one per table) are generated fr
 Each route parses its body with its schema from `packages/core/src/schemas/` before doing anything else. Beyond the types on this page, the schemas enforce:
 
 - **No unknown keys.** A misspelled or extra field returns `VALIDATION_FAILED`; it is never silently dropped.
-- **Text** is trimmed, then must fit its column ([data model](data-model.md)): descriptions and reasons 1–200 characters, names 1–100 (item names 1–120), notes up to 1000. Time zones are IANA names (`Australia/Sydney`, `UTC`), not offsets.
+- **Text** is trimmed, then must fit its column ([data model](data-model.md)): descriptions and reasons 1–200 characters, names 1–100 (item names 1–120), notes up to 1000. A description is first folded to one line, so it prints as one in emails and PDFs ([#346](https://github.com/rojinc/ledgerly/issues/346)): bidi controls (Unicode `Bidi_Control`) and every other control character (`Cc`) that isn't whitespace are removed, each run of whitespace (`White_Space`, line breaks and tabs included) becomes one space, and it's trimmed. The zero-width joiner stays, so emoji sequences hold. Its length counts after the fold, so one of nothing else is refused as empty. Emails fold the names they show the same way (`oneLine()` in `packages/core/src/schemas/common.ts`). Time zones are IANA names (`Australia/Sydney`, `UTC`), not offsets.
 - **Amounts** are integer cents, at most `MAX_AMOUNT_CENTS` in size, and so are computed totals: a shift's `minutes × rateCents / 60` and the sum of the `items`. Rates are ≥ 0. A shift's `minutes` and `breakMinutes` are at most 1440 (one day).
 - **People:** a list names each person at most once, and a transaction names at most 15 people in all.
 - **Kinds:** `shift`, `bill`, `payment` and `adjustment` are required for their own kind and rejected on any other. `payers` and `split` are for expense, bill and loan; `items` (1–30) for expense and bill; a `days` split for bills only. `totalCents` is required unless the kind is `shift` (where it is computed, so it is rejected) or there are `items`. A payment's `fromPersonId` and `toPersonId` must be different people. Sums against the total (payers, `exact` splits, items) and the sign rules are ledger rules, checked by `buildShares()`.
@@ -150,11 +150,25 @@ On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't 
 
 A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `remindedAt`, so the new date gets its own reminder. An auto-post occurrence cleared this way is one step 2 posts again: on its new date, or at the next hourly run if that date has passed, unless step 2's rules hold it back (a date before the day it was made, or more than 7 days ago; [auto-post](scheduling.md#step-2-auto-post)).
 
-**Deleted people.** `POST /transactions`, `PATCH` and `/post` refuse, with `VALIDATION_FAILED`, an input whose people (`everyPersonId()`: payers, the split, items) include a person with `deletedAt` whom the stored input didn't already name, **in a group where that person's member row isn't `placeholder`**. Payments and adjustments are exempt, so balances with a former member can still be settled. Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). The scheduler's `POST` and `PATCH /schedules` apply the same rule to the template, and `PATCH` checks the whole template, people the stored one named included: deleting an account ends the schedules that name them, and an edit could start one again.
+**Deleted people.** `POST /transactions`, `PATCH`, `/post` and `POST /timer/start` refuse, with `VALIDATION_FAILED`, a write that would newly name a person with `deletedAt`, **in a group where that person's member row isn't `placeholder`**.
+
+- **Who a write names:** everyone it gives a share, or would once posted, and everyone its input names. That's its payers (the payer the server fills in included), its split or the default split, its items, and a shift's two people.
+- **Newly:** not on the transaction already. On it already are:
+  - the people its stored input names (`everyPersonId()`: payers, the split, items);
+  - those holding one of its shares;
+  - for a posted shift, its two people, so one of no minutes, with no shares, can still be corrected;
+  - for a row not yet posted that was made before their account was deleted (its `$createdAt` earlier than their `deletedAt`), those its stored input splits it to, by its split or the default split, and a shift's two people. That's the stored input as it is, never this request's `date` or `payers`, and a payer the server fills in never counts.
+
+  For a create or a timer start, everyone counts as newly named. A row whose create raced the deletion may count as made after it.
+- **So a row made before the deletion** can still be posted as it is, and edited, even where only its default split or its shift gives them a share. An edit that gives them their first share (a new date in a house, say) is refused. **A row made after it** can't give them a share.
+- **Exempt:** payments and adjustments, so balances with a former member can still be settled; and `POST /timer/stop`, since the timer was checked when it started and its shares go to the same two people.
+- Where they never joined, nothing is refused, so the answer can't show that they deleted their account ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). A transaction that already names them can still be corrected, posted and voided ([deleting an account](identity-and-invites.md#deleting-an-account-m4)).
+- **Schedules:** the scheduler's `POST` and `PATCH /schedules` apply the same rule to a trial occurrence on the first date the save can make one: `startsOn`, or for `PATCH` the later of `startsOn` and today in the group's time zone. Its payer, when the template names none, is the schedule's creator, as in the ledger-rules trial ([scheduling](scheduling.md#schedule-routes)). `PATCH` checks everyone the trial names, those the stored template named included. On the deletion day they're still in a house's default split (their `leftOn` is today), so a schedule that keeps it can be added or edited again from the next day.
+- **A schedule a deleted person created can't be edited:** `PATCH /schedules/{id}` refuses (`VALIDATION_FAILED`) while its creator has `deletedAt`. It can still be ended or deleted, and an admin adds a new schedule instead. Deleting an account ends the schedules the person created, or whose template names them (`everyPersonId()`), and in a kept `pair` or `employer` group every schedule made before the deletion; an edit could otherwise start one again.
 
 **Merges still open.** `PATCH` and `/post` refuse with `CONFLICT` (`details: { reason: 'merging' }`) a row whose stored shares, input or item splits name a person whose merge is still open in the group ([merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)). The app asks to try again shortly.
 
-**Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a row with several stored payers; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
+**Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a posted row with several stored payers or none; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
 
 `/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
 

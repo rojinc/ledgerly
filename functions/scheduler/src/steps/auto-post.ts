@@ -1,20 +1,22 @@
 import { addDays, compareDates, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import type { Groups, Members, Transactions } from '@ledgerly/core/generated/rows'
+import type { Groups, Members, Persons, Transactions } from '@ledgerly/core/generated/rows'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { postInTransaction } from '@ledgerly/server/ledger/post'
 import {
   findTransaction,
+  isMergingRefusal,
   type Ledger,
   ledgerRoute,
   loadGroupLedger,
   Raced,
 } from '@ledgerly/server/ledger/transactions'
-import { AppwriteException, Query } from 'node-appwrite'
+import { Query } from 'node-appwrite'
 import { madeLate } from '../occurrences'
 import { findSchedule } from '../schedule-rows'
 import type { Services } from '../services'
@@ -42,15 +44,16 @@ export async function autoPost(services: Services): Promise<PostCounts> {
     // Never posted, so not read every hour; post() checks it again.
     Query.isNull('remindedAt'),
   ])
-  for await (const { $id } of occurrences) {
+  for await (const { $id, groupId } of occurrences) {
     try {
       if (await post(services, $id)) counts.posted += 1
     } catch (error) {
-      if (error instanceof AppError && error.code === 'LOCKED') {
+      // A finalizing statement, or a merge still open in the group: a later run posts it.
+      if ((error instanceof AppError && error.code === 'LOCKED') || isMergingRefusal(error)) {
         counts.skipped += 1
       } else {
         counts.failed += 1
-        console.error(`scheduler: auto-post failed for transaction ${$id}: ${describe(error)}`)
+        logProblem('auto_post_failed', { groupId, transactionId: $id, error })
       }
     }
   }
@@ -107,8 +110,8 @@ async function post({ db, now }: Services, rowId: string): Promise<boolean> {
 }
 
 // The creator pays an expense or bill whose input names no payers (build-shares.ts), but not
-// once they're no longer an active member of the group: it waits for someone to confirm it
-// (scheduling.md#step-2-auto-post).
+// once they're no longer an active member of the group, or have deleted their account (before the
+// deletion reaches this group): it waits for someone to confirm it (scheduling.md#step-2-auto-post).
 async function creatorWouldPayAfterLeaving(
   db: Db,
   row: Transactions,
@@ -125,7 +128,13 @@ async function creatorWouldPayAfterLeaving(
         rowId: memberRow,
       })
     : undefined
-  return member?.status !== 'active'
+  if (member?.status !== 'active') return true
+  const person = await db.getRow<Persons>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.persons,
+    rowId: creator,
+  })
+  return Boolean(person.deletedAt)
 }
 
 // Left for the user (scheduling.md#step-2-auto-post): made after its own day, or already
@@ -140,12 +149,4 @@ function isDue(row: Transactions, group: Groups, now: Date): boolean {
   if (row.status !== 'scheduled') return false
   const day = compareDates(row.date as LocalDate, localToday(group.timezone, now))
   return row.kind === 'shift' ? day < 0 : day <= 0
-}
-
-// An error's name and code, never its message, which can quote stored text
-// (security-and-privacy.md).
-export function describe(error: unknown): string {
-  if (error instanceof AppError) return `AppError ${error.code}`
-  if (error instanceof AppwriteException) return `AppwriteException ${error.code} ${error.type}`
-  return error instanceof Error ? error.name : typeof error
 }

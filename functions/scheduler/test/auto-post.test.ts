@@ -95,7 +95,7 @@ function sharesOf(services: Fakes, transactionId: string): Shares[] {
 
 function update(
   services: Fakes,
-  tableId: 'transactions' | 'groups' | 'schedules' | 'members',
+  tableId: 'transactions' | 'groups' | 'schedules' | 'members' | 'persons',
   rowId: string,
   data: object,
 ) {
@@ -256,6 +256,65 @@ describe('step 2: auto-post', () => {
     })
     expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
     expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('leaves an expense its creator would pay once they have deleted their account', async () => {
+    // Before the deletion reaches the group: Alex's member row is still active. The split names
+    // Alex, so only this check keeps Alex from paying.
+    const services = seeded()
+    await create(services, groceries, 'u2')
+    await update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' })
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('doesn’t post an expense its creator would pay if they delete their account just before its guard', async () => {
+    const services = seeded()
+    await create(services, groceries, 'u2')
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 0 })
+    expect(row(services, id).status).toBe('scheduled')
+    expect(row(services, `${groceries.id}_20261019`).status).toBe('scheduled')
+  })
+
+  it('is refused by the ledger when the creator it would pay deletes their account just before its guard', async () => {
+    // The split leaves Alex out, so only the payer it fills in would name Alex, and a filled-in
+    // payer is never kept (functions-api.md#ledger).
+    const services = seeded()
+    const forSam = {
+      ...groceries,
+      template: { totalCents: 6_000, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await create(services, forSam, 'u2')
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 1 })
+    expect(row(services, id).status).toBe('scheduled')
+  })
+
+  it('is refused too when the default split leaves out the creator it would pay', async () => {
+    // Alex joined on the 13th, so the default split on the 12th is Sam's alone. The occurrence
+    // was made before the deletion, but the payer it fills in still isn't kept (#337 re-check).
+    const services = seeded()
+    await create(services, { ...groceries, template: { totalCents: 6_000 } }, 'u2')
+    await update(services, 'members', 'elm-pAlex', { joinedOn: '2026-10-13' })
+    const id = `${groceries.id}_20261012`
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"updatedBy"') && operations.includes(id),
+      () => update(services, 'persons', 'pAlex', { deletedAt: '2026-10-18T20:30:00.000Z' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 1 })
+    expect(row(services, id).status).toBe('scheduled')
   })
 
   it('doesn’t post an expense its creator would pay if they move out just before its guard', async () => {
@@ -449,6 +508,85 @@ describe('step 2: auto-post', () => {
     expect(row(services, `${ID}_20261015`).status).toBe('scheduled')
   })
 
+  it('waits while a merge of a person it names is open in the group, then posts it', async () => {
+    vi.setSystemTime(NOW)
+    const services = seeded()
+    // Pat, a placeholder in Elm St with a key, shares the groceries too.
+    await withTransaction(services.db, (tx) =>
+      tx.write(
+        { action: 'create', tableId: 'persons', rowId: 'pPat', data: { displayName: 'Pat' } },
+        {
+          action: 'create',
+          tableId: 'members',
+          rowId: 'elm-pPat',
+          data: {
+            groupId: 'elm',
+            personId: 'pPat',
+            displayName: 'Pat',
+            role: 'member',
+            status: 'placeholder',
+            joinedOn: '2026-01-01',
+          },
+        },
+        {
+          action: 'create',
+          tableId: 'identities',
+          rowId: 'id-pat',
+          data: { key: 'pat@example.com', type: 'email', personId: 'pPat' },
+        },
+      ),
+    )
+    const split = { mode: 'equal', personIds: ['pSam', 'pAlex', 'pPat'] }
+    await create(services, {
+      ...groceries,
+      startsOn: '2026-10-19',
+      template: { ...groceries.template, split },
+    })
+    // Pat's merge into Alex: step 2 has taken Pat's member row in Elm St, step 3 hasn't run.
+    await withTransaction(services.db, (tx) =>
+      tx.write(
+        {
+          action: 'update',
+          tableId: 'persons',
+          rowId: 'pPat',
+          data: { mergedInto: 'pAlex', mergeGroupIds: ['elm'] },
+        },
+        { action: 'delete', tableId: 'members', rowId: 'elm-pPat' },
+      ),
+    )
+    const id = `${groceries.id}_20261019`
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 1, failed: 0 })
+    expect(row(services, id).status).toBe('scheduled')
+    // The merge finishes: Pat's part of the input is Alex's (#242 Q2), and Pat's key has moved.
+    const input = JSON.parse(row(services, id).inputJson)
+    const weights = [
+      { personId: 'pSam', weight: 1 },
+      { personId: 'pAlex', weight: 2 },
+    ]
+    await update(services, 'transactions', id, {
+      inputJson: JSON.stringify({ ...input, split: { mode: 'weights', weights } }),
+    })
+    await withTransaction(services.db, (tx) =>
+      tx.write({ action: 'delete', tableId: 'identities', rowId: 'id-pat' }),
+    )
+    expect((await runCron(services)).posted).toEqual({ posted: 1, skipped: 0, failed: 0 })
+    expect(row(services, id).status).toBe('posted')
+  })
+
+  it('counts a post that keeps losing races as failed, not as a merge to wait for', async () => {
+    vi.setSystemTime(NOW)
+    const services = seeded()
+    await create(services, { ...groceries, startsOn: '2026-10-19' })
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const commit = services.db.updateTransaction.bind(services.db)
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      if (params.commit) throw new AppwriteException('Conflict', 409, 'transaction_conflict')
+      return commit(params)
+    })
+    // Its CONFLICT has no `merging` reason.
+    expect((await runCron(services)).posted).toEqual({ posted: 0, skipped: 0, failed: 1 })
+  })
+
   it('keeps trying a shift nobody can be asked about, and posts it once it can', async () => {
     // Sam has no account email here, so the 07:00 reminder has nobody to ask.
     const services = seeded(
@@ -489,9 +627,15 @@ describe('step 2: auto-post', () => {
     expect(row(services, `${ID}_20261015`).status).toBe('scheduled')
     expect(services.db.rows('shares')).toEqual([])
     // IDs and codes only.
-    expect(log).toHaveBeenCalledWith(
-      `scheduler: auto-post failed for transaction ${ID}_20261015: AppError INVARIANT_VIOLATION`,
-    )
+    expect(log.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'auto_post_failed',
+        groupId: 'acme',
+        transactionId: `${ID}_20261015`,
+        cause: 'AppError INVARIANT_VIOLATION',
+      },
+    ])
   })
 
   it('posts an occurrence once when two runs overlap', async () => {

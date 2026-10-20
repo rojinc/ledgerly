@@ -1,4 +1,4 @@
-import type { IdentitiesType, Members, Persons } from '@ledgerly/core/generated/rows'
+import type { Identities, IdentitiesType, Members, Persons } from '@ledgerly/core/generated/rows'
 import { identityKey } from '@ledgerly/core/identity/normalize'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { ClaimResult } from '@ledgerly/core/schemas/identity'
@@ -6,6 +6,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { logProblem } from '@ledgerly/server/http/log'
 import { ID, Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
 import { markMerged } from '../merge'
@@ -54,7 +55,7 @@ export function verifiedIdentities(user: AccountUser): VerifiedIdentity[] {
       identities.push({ type, key: identityKey(type, value) })
     } catch (error) {
       if (!(error instanceof RangeError)) throw error
-      console.warn(`skipped an unusable verified ${type}`)
+      logProblem('claim_identity_unusable', { identityType: type })
     }
   }
   return identities
@@ -79,11 +80,11 @@ export async function claim(
   // Every merge into this person that isn't finished: one just marked, or one cut off before.
   // A merge that fails is left for the next claim, so it never stops a login.
   const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
-    console.warn(`merge into ${person.$id} stopped: ${errorName(error)}`)
-    return { joined: [], finished: 0 }
+    logProblem('merge_stopped', { intoPersonId: person.$id, error })
+    return { joined: [], finished: [] }
   })
   // A finished merge moved P's identities here, the claimed one too: it's verified now.
-  if (merges.finished > 0) await claimIdentities(services, person.$id, identities)
+  if (merges.finished.length > 0) await claimIdentities(services, person.$id, identities)
   const linked = new Set(merges.joined)
   for (const member of await rowsToJoin(services.db, person)) {
     if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
@@ -137,16 +138,7 @@ async function claimIdentity(
     return
   }
   if (identity.personId === personId) {
-    if (identity.verified && identity.verifiedAt) return
-    await withTransaction(db, async (tx) => {
-      await tx.write({
-        action: 'update',
-        tableId: TABLES.identities,
-        rowId: identity.$id,
-        data: { verified: true, verifiedAt: identity.verifiedAt ?? now.toISOString() },
-      })
-      await guardPerson(tx, db, personId, setUpFirst)
-    })
+    await markVerified(db, now, identity, setUpFirst)
     return
   }
   // Someone else's: a registered person keeps it. A placeholder is the same human as the
@@ -154,6 +146,28 @@ async function claimIdentity(
   // carries the merge on (`finishMerges`). markMerged leaves alone a person with an account,
   // or one another adoption or merge got first. Only the keys the user verified move to them.
   await markMerged(db, identity.personId, personId, verified)
+}
+
+/**
+ * Marks the person's own identity verified, keeping its first `verifiedAt`. Throws `deleted()`
+ * once the person's account is being deleted (guardPerson).
+ */
+export async function markVerified(
+  db: Db,
+  now: Date,
+  identity: Identities,
+  deleted: () => AppError,
+): Promise<void> {
+  if (identity.verified && identity.verifiedAt) return
+  await withTransaction(db, async (tx) => {
+    await tx.write({
+      action: 'update',
+      tableId: TABLES.identities,
+      rowId: identity.$id,
+      data: { verified: true, verifiedAt: identity.verifiedAt ?? now.toISOString() },
+    })
+    await guardPerson(tx, db, identity.personId, deleted)
+  })
 }
 
 // Step 3: the person's `placeholder` rows added strictly before `claimedAt`, while they had no
@@ -183,11 +197,4 @@ async function rowsToJoin(db: Db, person: Persons): Promise<Members[]> {
     if (page.length < PAGE_SIZE) return rows
     cursor = page.at(-1)?.$id
   }
-}
-
-/** An error's code or class name, never its message, which may quote stored data. */
-function errorName(error: unknown): string {
-  if (error instanceof AppError) return error.code
-  if (isAppwriteError(error, 409)) return 'conflict'
-  return error instanceof Error ? error.name : 'unknown'
 }

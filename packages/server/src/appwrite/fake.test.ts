@@ -72,6 +72,19 @@ describe('FakeDb reads', () => {
     expect(await ids(db, [Query.greaterThanEqual('date', '2026-10-05')])).toEqual(['t2', 't4'])
   })
 
+  it('returns only the selected columns, and the system ones, as Appwrite does', async () => {
+    const db = transactions()
+    const { rows } = await db.listRows({
+      ...DB,
+      queries: [Query.select(['status']), Query.equal('$id', 't1')],
+    })
+    expect(rows.map((row) => Object.keys(row).filter((key) => !key.startsWith('$')))).toEqual([
+      ['status'],
+    ])
+    expect(rows[0]).toMatchObject({ $id: 't1', status: 'posted' })
+    await expect(db.listRows({ ...DB, queries: [Query.select(['nope'])] })).rejects.toThrow()
+  })
+
   it('orders, pages and counts the total before paging', async () => {
     const db = transactions()
     const page = await db.listRows({
@@ -118,6 +131,14 @@ describe('FakeDb reads', () => {
     await expect(
       db.listRows({ ...DB, queries: [Query.contains('description', 'rent')] }),
     ).rejects.toThrow('FakeDb does not support the "contains" query')
+  })
+
+  it('refuses an `equal` with no values, as Appwrite does', async () => {
+    const db = transactions()
+    await expect(db.listRows({ ...DB, queries: [Query.equal('$id', [])] })).rejects.toMatchObject({
+      code: 400,
+      type: 'general_query_invalid',
+    })
   })
 })
 

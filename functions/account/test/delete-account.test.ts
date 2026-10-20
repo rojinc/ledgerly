@@ -1,5 +1,4 @@
 import type { DeleteAccountResult } from '@ledgerly/core/schemas/identity'
-import type { TableId } from '@ledgerly/server/appwrite/tables'
 import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { describe, expect, it, vi } from 'vitest'
@@ -8,19 +7,25 @@ import {
   beforeCommit,
   beforeStaging,
   call,
+  crashOnCall,
+  crashOnList,
   type Fakes,
   FakeUsers,
   failure,
   fakes,
   group,
+  insert,
   member,
   minutesAgo,
   NOW,
   occurrence,
   ok,
   person,
+  rowOf,
   schedule,
+  setRow,
   TODAY,
+  teamOf,
 } from './harness'
 
 const DELETED_AT = NOW.toISOString()
@@ -46,42 +51,44 @@ const ALL_TABLES = [
 // run too. Sam's weekly groceries in h1 are made up to 2 November.
 const groceries = schedule('sGroceries', 'h1', 'p1', ['p1', 'p2'])
 
-function kept(accountOverrides: Parameters<typeof account>[0] = {}) {
-  return fakes(
-    {
-      persons: [
-        // Bootstrap gives the user read access to their own person; step 6 takes it away.
-        person('p1', 'u1', { displayName: 'Sam Lee', $permissions: ['read("user:u1")'] }),
-        person('p2', 'u2'),
-        person('p3', 'u3'),
-      ],
-      identities: [
-        identity('i1', 'email:sam@example.com', 'p1'),
-        identity('i2', 'phone:+61412345678', 'p1'),
-        identity('i3', 'email:alex@example.com', 'p2'),
-      ],
-      profiles: [profile('u1', 'p1'), profile('u2', 'p2')],
-      invites: [invite('v1', 'p1'), invite('v2', 'p1'), invite('v3', 'p2')],
-      groups: [group('h1', 'house', 'p2'), group('e1', 'employer', 'p1')],
-      members: [
-        member('h1', 'p1', { displayName: 'Sam' }),
-        member('h1', 'p2'),
-        member('e1', 'p1', { displayName: 'Sam' }),
-        member('e1', 'p3', { role: 'viewer' }),
-      ],
-      schedules: [groceries],
-      transactions: [
-        occurrence(groceries, '2026-10-12'),
-        occurrence(groceries, '2026-10-19'),
-        occurrence(groceries, '2026-10-26'),
-        occurrence(groceries, '2026-11-02'),
-      ],
-    },
-    {
-      accounts: [account(accountOverrides)],
-      teams: { h1: ['u1', 'u2'], e1: ['u1', 'u3'] },
-    },
-  )
+// `extra` adds seed rows, which may set `$createdAt` (a write may not).
+function kept(accountOverrides: Parameters<typeof account>[0] = {}, extra: Seed = {}) {
+  const seed: Seed = {
+    persons: [
+      // Bootstrap gives the user read access to their own person; step 6 takes it away.
+      person('p1', 'u1', { displayName: 'Sam Lee', $permissions: ['read("user:u1")'] }),
+      person('p2', 'u2'),
+      person('p3', 'u3'),
+    ],
+    identities: [
+      identity('i1', 'email:sam@example.com', 'p1'),
+      identity('i2', 'phone:+61412345678', 'p1'),
+      identity('i3', 'email:alex@example.com', 'p2'),
+    ],
+    profiles: [profile('u1', 'p1'), profile('u2', 'p2')],
+    invites: [invite('v1', 'p1'), invite('v2', 'p1'), invite('v3', 'p2')],
+    groups: [group('h1', 'house', 'p2'), group('e1', 'employer', 'p1')],
+    members: [
+      member('h1', 'p1', { displayName: 'Sam' }),
+      member('h1', 'p2'),
+      member('e1', 'p1', { displayName: 'Sam' }),
+      member('e1', 'p3', { role: 'viewer' }),
+    ],
+    schedules: [groceries],
+    transactions: [
+      occurrence(groceries, '2026-10-12'),
+      occurrence(groceries, '2026-10-19'),
+      occurrence(groceries, '2026-10-26'),
+      occurrence(groceries, '2026-11-02'),
+    ],
+  }
+  for (const [tableId, rows] of Object.entries(extra)) {
+    seed[tableId] = [...(seed[tableId] ?? []), ...rows]
+  }
+  return fakes(seed, {
+    accounts: [account(accountOverrides)],
+    teams: { h1: ['u1', 'u2'], e1: ['u1', 'u3'] },
+  })
 }
 
 function identity(id: string, key: string, personId: string) {
@@ -138,25 +145,39 @@ function remove(services: Fakes) {
   return ok<DeleteAccountResult>(services)
 }
 
-function setRow(services: Fakes, tableId: TableId, rowId: string, data: object) {
-  return withTransaction(services.db, (tx) =>
-    tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
+type Seed = NonNullable<Parameters<typeof fakes>[0]>
+
+// Before DELETED_AT, as Appwrite writes times (`+00:00`).
+const BEFORE = '2026-10-18T19:00:00.000+00:00'
+
+// kept(), plus Sam's pair group q1 with Alex (p2), the other admin, so it isn't archived; and the
+// employer group e2, where Sam (p1) is the employer and Kim (p3) the admin who logs the shifts.
+async function withPairAndEmployer(extra: Seed): Promise<Fakes> {
+  const services = kept(
+    {},
+    {
+      ...extra,
+      groups: [group('q1', 'pair', 'p2'), group('e2', 'employer', 'p3')],
+      members: [
+        member('q1', 'p1'),
+        member('q1', 'p2'),
+        member('e2', 'p1', { role: 'viewer' }),
+        member('e2', 'p3'),
+      ],
+    },
   )
+  for (const [teamId, userId] of [
+    ['q1', 'u2'],
+    ['e2', 'u3'],
+  ] as const) {
+    await services.teams.create({ teamId, name: teamId })
+    await services.teams.createMembership({ teamId, roles: [], userId: 'u1' })
+    await services.teams.createMembership({ teamId, roles: [], userId })
+  }
+  return services
 }
 
-function insert(
-  services: Fakes,
-  tableId: TableId,
-  rows: Array<Record<string, unknown> & { $id: string }>,
-) {
-  return withTransaction(services.db, (tx) =>
-    tx.write(
-      ...rows.map(({ $id, ...data }) => ({ action: 'create' as const, tableId, rowId: $id, data })),
-    ),
-  )
-}
-
-// Their personal group: nobody else is ever in its team, so it's purged (#50 PR-2).
+// Their personal group: nobody else is ever in its team, so it's purged (purge.test.ts).
 async function withPersonalGroup(services: Fakes) {
   await insert(services, 'groups', [group('me', 'personal', 'p1')])
   await insert(services, 'members', [member('me', 'p1')])
@@ -164,16 +185,8 @@ async function withPersonalGroup(services: Fakes) {
   await services.teams.createMembership({ teamId: 'me', roles: [], userId: 'u1' })
 }
 
-function rowOf(services: Fakes, tableId: TableId, rowId: string) {
-  return services.db.rows(tableId).find((row) => row.$id === rowId)
-}
-
 function activityIn(services: Fakes, groupId: string) {
   return services.db.rows('activity').filter((row) => row.groupId === groupId)
-}
-
-function teamOf(services: Fakes, teamId: string) {
-  return services.teams.members(teamId)?.map((membership) => membership.userId)
 }
 
 /** Every row, team and account, for "changes nothing" and "the same rows" checks. */
@@ -361,7 +374,8 @@ describe('POST /delete: steps 2 and 3', () => {
         { $id: 's2', $createdAt: minutesAgo(60) },
       ],
     })
-    await withPersonalGroup(services)
+    // Out of time before the groups, so the rest waits.
+    services.outOfTime = () => true
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
     expect(rowOf(services, 'persons', 'p1')).toMatchObject({
       userId: 'u1',
@@ -577,6 +591,73 @@ describe('POST /delete: each group they joined', () => {
     ])
   })
 
+  it('ends every schedule made before the deletion in a kept pair or employer group (#320)', async () => {
+    // Made by the other side before the deletion, and their templates don't name Sam.
+    const pair = schedule('sPair', 'q1', 'p2', ['p2'], { $createdAt: BEFORE })
+    const shifts = schedule('sShifts', 'e2', 'p3', ['p3'], { $createdAt: BEFORE })
+    // Not started, with nothing posted: deleted, as it can't end before it starts.
+    const soon = schedule('sSoon', 'q1', 'p2', ['p2'], {
+      $createdAt: BEFORE,
+      startsOn: '2026-11-02',
+    })
+    // The same in the house h1: it keeps running.
+    const house = schedule('sHouse', 'h1', 'p2', ['p2'], { $createdAt: BEFORE })
+    const services = await withPairAndEmployer({
+      schedules: [pair, shifts, soon, house],
+      transactions: [
+        occurrence(pair, '2026-10-26'),
+        occurrence(shifts, '2026-10-26'),
+        occurrence(soon, '2026-11-02'),
+        occurrence(house, '2026-10-26'),
+      ],
+    })
+    const houseBefore = rowOf(services, 'schedules', 'sHouse')
+    expect((await remove(services)).finished).toBe(true)
+
+    expect(rowOf(services, 'groups', 'q1')).toMatchObject({ archivedAt: null })
+    expect(rowOf(services, 'groups', 'e2')).toMatchObject({ archivedAt: null })
+    for (const id of ['sPair', 'sShifts']) {
+      expect(rowOf(services, 'schedules', id)).toMatchObject({ endsOn: TODAY })
+    }
+    expect(rowOf(services, 'schedules', 'sSoon')).toBeUndefined()
+    expect(rowOf(services, 'schedules', 'sHouse')).toEqual(houseBefore)
+    const ids = services.db.rows('transactions').map((row) => row.$id)
+    expect(ids).toContain('sHouse_20261026')
+    for (const id of ['sPair_20261026', 'sShifts_20261026', 'sSoon_20261102']) {
+      expect(ids).not.toContain(id)
+    }
+  })
+
+  it('leaves a schedule the other side made after the deletion, on every rerun (#320)', async () => {
+    const services = await withPairAndEmployer({
+      schedules: [
+        schedule('sPair', 'q1', 'p2', ['p2'], { $createdAt: BEFORE }),
+        schedule('sPairB', 'q1', 'p2', ['p2'], { $createdAt: BEFORE }),
+      ],
+    })
+    // Out of time once the first is ended, so the run stops inside q1 and the next one comes back.
+    services.outOfTime = () => rowOf(services, 'schedules', 'sPair')?.endsOn === TODAY
+    expect((await remove(services)).finished).toBe(false)
+    expect(rowOf(services, 'schedules', 'sPairB')).toMatchObject({ endsOn: null })
+    // Alex makes two more meanwhile, one not started yet. Written now, so after DELETED_AT.
+    await insert(services, 'schedules', [
+      schedule('sLater', 'q1', 'p2', ['p2']),
+      schedule('sLaterSoon', 'q1', 'p2', ['p2'], { startsOn: '2026-11-02' }),
+    ])
+    const before = [
+      rowOf(services, 'schedules', 'sLater'),
+      rowOf(services, 'schedules', 'sLaterSoon'),
+    ]
+    services.outOfTime = () => false
+    expect((await remove(services)).finished).toBe(true)
+
+    expect(rowOf(services, 'schedules', 'sPairB')).toMatchObject({ endsOn: TODAY })
+    expect([
+      rowOf(services, 'schedules', 'sLater'),
+      rowOf(services, 'schedules', 'sLaterSoon'),
+    ]).toEqual(before)
+  })
+
   it('ends an ended schedule again only while it has a future occurrence an end would delete', async () => {
     const services = kept()
     const ended = { endsOn: '2026-10-10', generatedThrough: '2026-10-10', nextRunAt: null }
@@ -671,7 +752,9 @@ describe('POST /delete: each group they joined', () => {
     expect(rowOf(services, 'statements', 'st1')).toMatchObject({ status: 'finalizing' })
     expect(rowOf(services, 'members', 'e1-p1')).toMatchObject({ displayName: 'Former member' })
     expect(teamOf(services, 'e1')).toEqual(['u3'])
-    expect(errors.mock.calls).toEqual([['account: group e1 not archived: statement st1 is stuck']])
+    expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      { fn: 'unknown', event: 'stuck_finalize_not_archived', groupId: 'e1', statementId: 'st1' },
+    ])
     errors.mockRestore()
   })
 
@@ -771,22 +854,17 @@ describe('POST /delete: each group they joined', () => {
     ])
   })
 
-  it('leaves a group nobody else is in, such as their personal group, untouched for its purge', async () => {
+  it('purges a group nobody else is in, such as their personal group, and keeps the others', async () => {
     const services = kept()
     await withPersonalGroup(services)
-    const personal = {
-      group: rowOf(services, 'groups', 'me'),
-      member: rowOf(services, 'members', 'me-p1'),
-    }
-    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
-    expect(rowOf(services, 'groups', 'me')).toEqual(personal.group)
-    expect(rowOf(services, 'members', 'me-p1')).toEqual(personal.member)
-    expect(teamOf(services, 'me')).toEqual(['u1'])
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    expect(rowOf(services, 'groups', 'me')).toBeUndefined()
+    expect(rowOf(services, 'members', 'me-p1')).toBeUndefined()
+    expect(teamOf(services, 'me')).toBeUndefined()
     expect(activityIn(services, 'me')).toEqual([])
-    // The other groups are done, and steps 5–7 wait.
     expect(teamOf(services, 'h1')).toEqual(['u2'])
-    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: 'u1' })
-    expect(rowOf(services, 'profiles', 'u1')).toBeDefined()
+    expect(rowOf(services, 'members', 'h1-p1')).toMatchObject({ status: 'left' })
+    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: null })
   })
 
   it('leaves groups where they never joined exactly as they are', async () => {
@@ -805,13 +883,13 @@ describe('POST /delete: each group they joined', () => {
     expect(activityIn(services, 'g5')).toEqual([])
   })
 
-  it('leaves a group whose team is gone to the purge that deleted it', async () => {
+  it('carries on the purge of a group whose team is gone, without deciding again', async () => {
     const services = kept()
     await insert(services, 'groups', [group('g6', 'house', 'p1', { archivedAt: DELETED_AT })])
     await insert(services, 'members', [member('g6', 'p1')])
-    const row = rowOf(services, 'members', 'g6-p1')
-    expect((await remove(services)).finished).toBe(false)
-    expect(rowOf(services, 'members', 'g6-p1')).toEqual(row)
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'groups', 'g6')).toBeUndefined()
+    expect(rowOf(services, 'members', 'g6-p1')).toBeUndefined()
   })
 
   it('never decides again: a kept group stays kept once everyone else has left its team', async () => {
@@ -990,8 +1068,13 @@ describe('POST /delete: each group they joined', () => {
     expect(rowOf(services, 'schedules', 'sBadOwn')).toMatchObject({ endsOn: TODAY })
     expect(rowOf(services, 'schedules', 'sBadOther')).toEqual(otherBefore)
     // Their own needs no template, so only the other one is read.
-    expect(errors.mock.calls).toEqual([
-      ["account: schedule sBadOther has a template that can't be read"],
+    expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'schedule_template_unreadable',
+        groupId: 'h1',
+        scheduleId: 'sBadOther',
+      },
     ])
     errors.mockRestore()
   })
@@ -1116,53 +1199,56 @@ describe('POST /delete: steps 5 to 7', () => {
     expect(services.users.account('u1')).toBeUndefined()
   })
 
-  it('keeps the user while a person a bootstrap made after step 2 waits for its purge', async () => {
+  it('purges a person a bootstrap made after step 2, with its personal group, then deletes the user', async () => {
     const services = kept()
-    // The bootstrap found no person naming the user once step 6 had cleared it.
+    // A bootstrap that read no label and no deleted person before step 3, and no profile once
+    // step 5 had deleted it, commits its person, profile, personal group and team before step 6.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"userId":null'),
+      async () => {
+        await services.teams.create({ teamId: 'gNew', name: 'Personal' })
+        await services.teams.createMembership({ teamId: 'gNew', roles: [], userId: 'u1' })
+        await insert(services, 'persons', [person('pNew', 'u1', { claimedAt: DELETED_AT })])
+        await insert(services, 'profiles', [profile('u1', 'pNew')])
+        await insert(services, 'identities', [identity('iNew', 'email:sam@example.com', 'pNew')])
+        await insert(services, 'groups', [group('gNew', 'personal', 'pNew')])
+        await insert(services, 'members', [member('gNew', 'pNew')])
+      },
+    )
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    for (const [tableId, rowId] of [
+      ['persons', 'pNew'],
+      ['profiles', 'u1'],
+      ['identities', 'iNew'],
+      ['groups', 'gNew'],
+      ['members', 'gNew-pNew'],
+    ] as const) {
+      expect(rowOf(services, tableId, rowId)).toBeUndefined()
+    }
+    expect(teamOf(services, 'gNew')).toBeUndefined()
+    expect(activityIn(services, 'gNew')).toEqual([])
+    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: null })
+    expect(services.users.account('u1')).toBeUndefined()
+  })
+
+  it('keeps the user while the person a bootstrap made isn’t empty after all', async () => {
+    const services = kept()
+    // It adopted a placeholder someone had added to a group.
     beforeStaging(
       services.db,
       (operations) => operations.includes('"userId":null'),
       () => insert(services, 'persons', [person('pNew', 'u1', { claimedAt: DELETED_AT })]),
     )
+    await insert(services, 'members', [
+      member('h1', 'pNew', { role: 'member', status: 'placeholder' }),
+    ])
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: false })
-    expect(services.users.account('u1')).toMatchObject({ labels: ['deleted'], status: false })
-    expect(rowOf(services, 'persons', 'p1')).toMatchObject({ userId: null })
     expect(rowOf(services, 'persons', 'pNew')).toMatchObject({ userId: 'u1', deletedAt: null })
+    expect(rowOf(services, 'members', 'h1-pNew')).toBeDefined()
+    expect(services.users.account('u1')).toMatchObject({ labels: ['deleted'], status: false })
   })
 })
-
-// Throws once, at the `nth` listing of a table `when` picks, as a crash would.
-function crashOnList(
-  services: Fakes,
-  when: (tableId: string, queries: string) => boolean,
-  nth = 1,
-) {
-  const list = services.db.listRows.bind(services.db)
-  let seen = 0
-  vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
-    if (when(params.tableId, JSON.stringify(params.queries ?? [])) && ++seen === nth) {
-      throw new Error('Crashed')
-    }
-    return list(params)
-  })
-}
-
-// Throws once, at the first call of `method` whose first argument `when` picks.
-function crashOnCall<T extends object>(
-  target: T,
-  method: keyof T & string,
-  when: (params: Record<string, unknown>) => boolean = () => true,
-) {
-  const original = (target[method] as (params: unknown) => Promise<unknown>).bind(target)
-  let crashed = false
-  vi.spyOn(target, method as never).mockImplementation((async (params: Record<string, unknown>) => {
-    if (!crashed && when(params)) {
-      crashed = true
-      throw new Error('Crashed')
-    }
-    return original(params)
-  }) as never)
-}
 
 describe('POST /delete: reruns and the time budget', () => {
   // e1 comes first ($id order): kept and archived, then h1, kept with Sam's schedule.
@@ -1237,7 +1323,7 @@ describe('POST /delete: reruns and the time budget', () => {
     crashOnCall(services.users, 'delete')
     expect((await call(services)).status).toBe(500)
     vi.restoreAllMocks()
-    // No person names the user any more, so only the job can find it (#50 PR-3).
+    // No person names the user any more, so only the job can find it (hourly-job.test.ts).
     expect(await failure(services)).toMatchObject({ status: 404, code: 'NOT_FOUND' })
     const { users, ...rest } = state(services)
     const { users: _, ...done } = await oneRun()
@@ -1282,9 +1368,8 @@ describe('POST /delete: reruns and the time budget', () => {
 })
 
 describe('other routes', () => {
-  it('answers like every function: POST / comes with the hourly job (#50 PR-3)', async () => {
+  it('answers like every function', async () => {
     const services = kept()
-    expect(await failure(services, { path: '/' })).toMatchObject({ status: 404, code: 'NOT_FOUND' })
     expect(await failure(services, { method: 'GET' })).toMatchObject({ code: 'NOT_FOUND' })
     expect(await failure(services, { userId: null })).toMatchObject({
       status: 401,

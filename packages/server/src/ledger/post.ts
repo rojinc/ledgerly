@@ -3,6 +3,7 @@ import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import {
   checkKindRules,
+  everyPersonId,
   type PostTransactionBody,
   type TransactionTemplate,
 } from '@ledgerly/core/schemas/ledger'
@@ -19,12 +20,14 @@ import {
   guardTransaction,
   invalid,
   type Ledger,
+  listItems,
   listShares,
   money,
   parseBody,
   plan,
   Raced,
   replaceRows,
+  requireNoOpenMerge,
   requireNotFinalizing,
   requireNotTooFarAhead,
   shareColumns,
@@ -74,6 +77,13 @@ export async function postInTransaction(
   if (ready && !ready(existing)) throw new Raced()
   const date = (changes.date ?? existing.date) as LocalDate
   requireNotTooFarAhead(date, group, now)
+  const [oldShares, oldItems] = await Promise.all([
+    listShares(db, existing.$id),
+    listItems(db, existing.$id),
+  ])
+  // Before planning, which would refuse the merged person as not a member, and again after
+  // the guard writes, for a merge step 2 that commits in between.
+  await requireNoOpenMerge(db, existing, oldShares, oldItems)
   const stored = await storedInput(db, existing)
   const input = {
     ...stored,
@@ -100,9 +110,15 @@ export async function postInTransaction(
     invalid('Only a scheduled or due transaction can be posted.')
   }
   await guardGroupAndMembers(tx, db, group, ledger, planned.people)
-  await refuseDeletedPeople(tx, db, ledger, { kind: existing.kind, input, before: stored })
+  // Unposted, so it has no shares (I-6): only its input names anyone yet.
+  await refuseDeletedPeople(tx, db, ledger, {
+    kind: existing.kind,
+    people: planned.people,
+    before: everyPersonId(stored),
+    unposted: { madeAt: existing.$createdAt, input: stored },
+  })
   await requireNotFinalizing(db, existing.groupId, [existing.date, date])
-  const oldShares = await listShares(db, existing.$id)
+  await requireNoOpenMerge(db, existing, oldShares, oldItems)
   const row = { ...existing, date }
   const shares = planned.shares.map((share) => shareColumns(row, share))
   const balances = await balanceWrite(db, existing.groupId, oldShares, shares)

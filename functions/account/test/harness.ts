@@ -7,11 +7,13 @@ import type {
 } from '@ledgerly/core/generated/rows'
 import { FakeDb } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
+import type { TableId } from '@ledgerly/server/appwrite/tables'
+import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { createHandler } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
 import { vi } from 'vitest'
 import { accountRoutes } from '../src/main'
-import type { AccountUser, Services, UsersApi } from '../src/services'
+import type { AccountUser, FilesApi, Services, UsersApi } from '../src/services'
 
 // 07:00 on Monday 19 October in Sydney, still Sunday 18 October in UTC. Earlier than the real
 // clock, which FakeDb stamps `$createdAt` with, as Appwrite's is by the time a deletion runs.
@@ -30,6 +32,7 @@ export type FakeAccount = AccountUser & { sessions: Session[] }
 export function account(overrides: Partial<FakeAccount> = {}): FakeAccount {
   return {
     $id: 'u1',
+    $updatedAt: '2026-01-01T00:00:00.000Z',
     labels: [],
     status: true,
     passwordUpdate: '2026-01-01T00:00:00.000Z',
@@ -38,7 +41,10 @@ export function account(overrides: Partial<FakeAccount> = {}): FakeAccount {
   }
 }
 
-/** In-memory Users, with Appwrite's 404 for a user who doesn't exist (or no longer does). */
+/**
+ * In-memory Users, with Appwrite's 404 for a user who doesn't exist (or no longer does). Like
+ * FakeDb, it stamps `$updatedAt` with the real clock, which is later than `NOW`.
+ */
 export class FakeUsers implements UsersApi {
   private users: Map<string, FakeAccount>
 
@@ -62,12 +68,12 @@ export class FakeUsers implements UsersApi {
   }
 
   async updateLabels({ userId, labels }: { userId: string; labels: string[] }): Promise<object> {
-    this.find(userId).labels = [...labels]
+    Object.assign(this.find(userId), { labels: [...labels], $updatedAt: new Date().toISOString() })
     return {}
   }
 
   async updateStatus({ userId, status }: { userId: string; status: boolean }): Promise<object> {
-    this.find(userId).status = status
+    Object.assign(this.find(userId), { status, $updatedAt: new Date().toISOString() })
     return {}
   }
 
@@ -82,6 +88,35 @@ export class FakeUsers implements UsersApi {
     return {}
   }
 
+  /** Appwrite's list, for the queries the job sends: a label, paging by `$id`, a limit. */
+  async list({ queries }: { queries: string[] }): Promise<{ users: AccountUser[] }> {
+    let found = [...this.users.values()].sort((a, b) => (a.$id < b.$id ? -1 : 1))
+    let limit = 25
+    for (const query of queries) {
+      const {
+        method,
+        attribute,
+        values = [],
+      } = JSON.parse(query) as {
+        method: string
+        attribute?: string
+        values?: unknown[]
+      }
+      if (method === 'contains' && attribute === 'labels') {
+        found = found.filter((user) => values.some((label) => user.labels.includes(`${label}`)))
+      } else if (method === 'greaterThan' && attribute === '$id') {
+        found = found.filter((user) => user.$id > `${values[0]}`)
+      } else if (method === 'limit') {
+        limit = Number(values[0])
+      } else if (!(method === 'orderAsc' && attribute === '$id')) {
+        throw new Error(`FakeUsers does not support ${query}`)
+      }
+    }
+    return {
+      users: found.slice(0, limit).map(({ sessions: _sessions, ...user }) => structuredClone(user)),
+    }
+  }
+
   private find(userId: string): FakeAccount {
     const user = this.users.get(userId)
     if (!user) throw new AppwriteException('User not found', 404, 'user_not_found')
@@ -89,10 +124,55 @@ export class FakeUsers implements UsersApi {
   }
 }
 
+/**
+ * In-memory Storage, with Appwrite's 404 for a file that doesn't exist (or no longer does), and
+ * for a bucket that doesn't (`removeBucket`).
+ */
+export class FakeFiles implements FilesApi {
+  private files = new Map<string, string[]>()
+  private missingBuckets = new Set<string>()
+
+  /** Every call naming this bucket fails as Appwrite's do for a bucket that doesn't exist. */
+  removeBucket(bucketId: string): void {
+    this.missingBuckets.add(bucketId)
+  }
+
+  /** A file in the bucket with these permissions. */
+  upload(bucketId: string, fileId: string, permissions: string[]): void {
+    this.files.set(`${bucketId}/${fileId}`, [...permissions])
+  }
+
+  /** Every file as `bucketId/fileId`, for assertions. */
+  ids(): string[] {
+    return [...this.files.keys()]
+  }
+
+  async getFile({ bucketId, fileId }: { bucketId: string; fileId: string }) {
+    return { $permissions: [...this.find(bucketId, fileId)] }
+  }
+
+  async deleteFile({ bucketId, fileId }: { bucketId: string; fileId: string }): Promise<object> {
+    this.find(bucketId, fileId)
+    this.files.delete(`${bucketId}/${fileId}`)
+    return {}
+  }
+
+  private find(bucketId: string, fileId: string): string[] {
+    if (this.missingBuckets.has(bucketId)) {
+      throw new AppwriteException('Bucket not found', 404, 'storage_bucket_not_found')
+    }
+    const permissions = this.files.get(`${bucketId}/${fileId}`)
+    if (!permissions) {
+      throw new AppwriteException('File not found', 404, 'storage_file_not_found')
+    }
+    return permissions
+  }
+}
+
 type Seed = ConstructorParameters<typeof FakeDb>[0]
 type SeedRow<R> = Partial<R> & { $id: string }
 
-export type Fakes = Services & { db: FakeDb; teams: FakeTeams; users: FakeUsers }
+export type Fakes = Services & { db: FakeDb; teams: FakeTeams; users: FakeUsers; files: FakeFiles }
 
 export function fakes(
   seed: Seed = {},
@@ -102,6 +182,7 @@ export function fakes(
     db: new FakeDb(seed),
     teams: new FakeTeams(options.teams),
     users: new FakeUsers(options.accounts ?? [account()]),
+    files: new FakeFiles(),
     now: NOW,
     outOfTime: () => false,
   }
@@ -214,8 +295,8 @@ type Envelope =
 
 /**
  * Sends a request through the function's real handler, as `userId` (null: no JWT) with a JWT
- * made for `sessionId` (null: a JWT that names no session). Defaults: `POST /delete` with
- * `{ confirm: 'DELETE' }`, as u1 in session s1.
+ * made for `sessionId` (null: a JWT that names no session), or as a cron run with `scheduled`.
+ * Defaults: `POST /delete` with `{ confirm: 'DELETE' }`, as u1 in session s1.
  */
 export async function call(
   services: Services,
@@ -225,9 +306,16 @@ export async function call(
     body?: unknown
     userId?: string | null
     sessionId?: string | null
+    scheduled?: boolean
   } = {},
 ): Promise<{ status: number; body: Envelope; logs: string[] }> {
-  const { method = 'POST', path = '/delete', userId = 'u1', sessionId = 's1' } = options
+  const {
+    method = 'POST',
+    path = '/delete',
+    userId = 'u1',
+    sessionId = 's1',
+    scheduled = false,
+  } = options
   // A body given as undefined sends none.
   const body = 'body' in options ? options.body : { confirm: 'DELETE' }
   // Appwrite's JWT payload; the fake verification accepts any JWT.
@@ -244,7 +332,10 @@ export async function call(
     req: {
       method,
       path,
-      headers: userId === null ? {} : { 'x-appwrite-user-jwt': jwt },
+      headers: {
+        ...(userId === null ? {} : { 'x-appwrite-user-jwt': jwt }),
+        ...(scheduled ? { 'x-appwrite-trigger': 'schedule' } : {}),
+      },
       bodyText: body === undefined ? '' : JSON.stringify(body),
     },
     res: {
@@ -311,4 +402,61 @@ export function beforeCommit(db: FakeDb, change: () => Promise<unknown>) {
     }
     return commit(params)
   })
+}
+
+export function setRow(services: Fakes, tableId: TableId, rowId: string, data: object) {
+  return withTransaction(services.db, (tx) =>
+    tx.write({ action: 'update', tableId, rowId, data: { ...data } }),
+  )
+}
+
+export function insert(
+  services: Fakes,
+  tableId: TableId,
+  rows: Array<Record<string, unknown> & { $id: string }>,
+) {
+  return withTransaction(services.db, (tx) =>
+    tx.write(
+      ...rows.map(({ $id, ...data }) => ({ action: 'create' as const, tableId, rowId: $id, data })),
+    ),
+  )
+}
+
+export function rowOf(services: Fakes, tableId: TableId, rowId: string) {
+  return services.db.rows(tableId).find((row) => row.$id === rowId)
+}
+
+export function teamOf(services: Fakes, teamId: string) {
+  return services.teams.members(teamId)?.map((membership) => membership.userId)
+}
+
+/** Throws once, at the `nth` listing of a table `when` picks, as a crash would. */
+export function crashOnList(
+  services: Fakes,
+  when: (tableId: string, queries: string) => boolean,
+  nth = 1,
+) {
+  const list = services.db.listRows.bind(services.db)
+  let seen = 0
+  vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+    if (when(params.tableId, JSON.stringify(params.queries ?? [])) && ++seen === nth) {
+      throw new Error('Crashed')
+    }
+    return list(params)
+  })
+}
+
+/** Throws once, at the `nth` call of `method` whose first argument `when` picks. */
+export function crashOnCall<T extends object>(
+  target: T,
+  method: keyof T & string,
+  when: (params: Record<string, unknown>) => boolean = () => true,
+  nth = 1,
+) {
+  const original = (target[method] as (params: unknown) => Promise<unknown>).bind(target)
+  let seen = 0
+  vi.spyOn(target, method as never).mockImplementation((async (params: Record<string, unknown>) => {
+    if (when(params) && ++seen === nth) throw new Error('Crashed')
+    return original(params)
+  }) as never)
 }

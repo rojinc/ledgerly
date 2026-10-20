@@ -30,8 +30,8 @@ import { parseBody } from '../parse-body'
 import { doneIfGone, FORMER_MEMBER, getRowOrNull, isAppwriteError, personsOfUser } from '../rows'
 import type { Services, UsersApi } from '../services'
 
-// The Appwrite label of a user whose account is being deleted; bootstrap refuses them.
-const DELETED_LABEL = 'deleted'
+/** The Appwrite label of a user whose account is being deleted; bootstrap refuses them. */
+export const DELETED_LABEL = 'deleted'
 const MS_PER_MINUTE = 60_000
 const MS_PER_HOUR = 60 * MS_PER_MINUTE
 
@@ -39,9 +39,8 @@ const MS_PER_HOUR = 60 * MS_PER_MINUTE
  * `account POST /delete` (identity-and-invites.md#deleting-an-account-m4). The refusals change
  * nothing. After step 2, the point of no return, every step runs to the end and can be repeated:
  * a call once `deletedAt` is set skips the checks (apart from the body) and carries on. Stops
- * between steps and groups once the time budget is used up; `finished: false` leaves the rest to
- * the hourly job. Purging a group nobody else is in comes with #50 PR-2, so until then such a
- * group (every personal group) waits untouched, and so do steps 5–7.
+ * between steps, groups and a purge's batches once the time budget is used up; `finished: false`
+ * leaves the rest to the hourly job.
  */
 export async function deleteAccount(
   services: Services,
@@ -190,8 +189,12 @@ async function markDeleted({ db, now }: Services, person: Persons): Promise<Dele
   }
 }
 
-// Steps 3–7. True once the account is gone.
-async function finish(services: Services, userId: string, person: Deleting): Promise<boolean> {
+/** Steps 3–7, which the hourly job also runs. True once the account is gone. */
+export async function finish(
+  services: Services,
+  userId: string,
+  person: Deleting,
+): Promise<boolean> {
   const { db, users, outOfTime } = services
   await lockOut(users, userId)
   if (!(await leaveGroups(services, userId, person))) return false
@@ -210,10 +213,49 @@ async function finish(services: Services, userId: string, person: Deleting): Pro
     }),
   )
   if (outOfTime()) return false
-  // Step 7 looks again just before: a bootstrap that committed after step 2 made a person of its
-  // own, which is purged (#50 PR-2) before the user goes, so no person is left naming the ID.
+  return deleteUser(services, userId)
+}
+
+/**
+ * Step 7, which the hourly job also runs for a user labelled `deleted` that no deleted person
+ * names any more. It looks again just before: a bootstrap that committed after step 2 made a
+ * person of its own, which is purged before the user goes, so no person is left naming the ID.
+ * False while one is left, for the next run.
+ */
+export async function deleteUser(services: Services, userId: string): Promise<boolean> {
+  const { db, users } = services
+  for (const stray of await personsOfUser(db, userId)) {
+    if (stray.deletedAt) continue
+    if (!(await purgeStray(services, userId, stray))) return false
+  }
   if ((await personsOfUser(db, userId)).some((other) => !other.deletedAt)) return false
   await doneIfGone(() => users.delete({ userId }))
+  return true
+}
+
+// Step 7's stray person. It's new and empty, so its groups go as theirs do (its personal group,
+// which nobody else is in, is purged; its own `$createdAt` stands in for `deletedAt`, since it was
+// made after step 2 and its rows are newer still), then its own rows (step 5) and the person
+// itself. Stage, then check: a person a member row still names isn't empty after all, and is left
+// for the next run.
+async function purgeStray(services: Services, userId: string, stray: Persons): Promise<boolean> {
+  const { db, outOfTime } = services
+  if (!(await leaveGroups(services, userId, { ...stray, deletedAt: stray.$createdAt }))) {
+    return false
+  }
+  if (outOfTime()) return false
+  await deleteOwnRows(db, userId, stray.$id)
+  try {
+    await withTransaction(db, async (tx) => {
+      await tx.write({ action: 'delete', tableId: TABLES.persons, rowId: stray.$id })
+      // idx_person_status
+      const named = await allRows<Members>(db, TABLES.members, [Query.equal('personId', stray.$id)])
+      if (named.length > 0) throw new Raced()
+    })
+  } catch (error) {
+    if (error instanceof Raced || isAppwriteError(error, 409)) return false
+    throw error
+  }
   return true
 }
 

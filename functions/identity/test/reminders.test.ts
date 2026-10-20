@@ -1,6 +1,8 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { EmailError } from '@ledgerly/server/email/send-email'
 import { describe, expect, it, vi } from 'vitest'
+import { markMerged } from '../src/merge'
+import { finishMerges } from '../src/run-merge'
 import {
   account,
   beforeCommit,
@@ -517,6 +519,36 @@ describe('identity POST /reminders', () => {
     expect(services.db.rows('reminders')).toEqual([])
   })
 
+  // AI A on #331: a merge of the recipient landing mid-request, at either point.
+  it.each(['staging', 'commit'] as const)(
+    'asks to try again when a merge of the recipient lands at %s, and the retry reminds who they became',
+    async (at) => {
+      const alexNow = { ...SAM, $id: 'pAlexU', userId: 'u2', displayName: 'Alex' }
+      const services = fixture({ persons: [SAM, ALEX, alexNow] })
+      const merge = async () => {
+        expect(await markMerged(services.db, 'pAlex', 'pAlexU', ['email:alex@example.com'])).toBe(
+          true,
+        )
+        await finishMerges(services, 'u2', 'pAlexU', Date.now() + 9_000)
+      }
+      if (at === 'staging')
+        beforeStaging(services.db, (operations) => operations.includes('persons'), merge)
+      else beforeCommit(services.db, merge)
+      expect((await failure(services, 'POST', '/reminders', BODY)).code).toBe('CONFLICT')
+      expect(services.sendEmail).not.toHaveBeenCalled()
+      expect(services.db.rows('reminders')).toEqual([])
+      expect(services.db.rows('activity').filter((row) => row.action === 'reminder.sent')).toEqual(
+        [],
+      )
+      await ok(services, 'POST', '/reminders', BODY)
+      expect(services.db.rows('reminders')).toMatchObject([{ $id: 'r1', toPersonId: 'pAlexU' }])
+      expect(
+        services.db.rows('activity').find((row) => row.action === 'reminder.sent')?.subjectPersonId,
+      ).toBe('pAlexU')
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+    },
+  )
+
   it('finds the other member past a row of someone merged into the sender', async () => {
     const services = fixture({
       persons: [SAM, ALEX, { ...ALEX, $id: 'pOld', mergedInto: 'pSam' }],
@@ -585,7 +617,13 @@ describe('identity POST /reminders', () => {
       ...BODY,
       email: 'stranger@example.com',
     })
-    expect(errors).toHaveBeenCalledWith('reminder r1 not sent: EmailError application_error 500')
+    expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
+      expect.objectContaining({
+        event: 'person_reminder_failed',
+        reminderId: 'r1',
+        cause: 'EmailError application_error 500',
+      }),
+    ])
     const logged = [...first.logs, ...second.logs, ...errors.mock.calls.map(String)].join('\n')
     expect(logged).not.toMatch(/alex@|stranger@|Sam|Alex|50\.00|5000/)
   })
