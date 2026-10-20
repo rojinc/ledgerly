@@ -463,8 +463,14 @@ describe('receipts on PATCH /transactions/{id}', () => {
     expect(response.status).toBe(200)
     expect(rows.transactions(db)[0]?.receiptFileIds).toBeNull()
     expect(receiptActivity(db)).toHaveLength(1)
+    // Nobody's part changed, so the change email sends nothing (scheduling.md#step-3b).
+    const half = [
+      { personId: 'alice', netCents: 4500 },
+      { personId: 'bob', netCents: -4500 },
+    ]
     expect(JSON.parse(receiptActivity(db)[0]?.changesJson ?? '')).toEqual({
       receiptFileIds: { before: ['f1'], after: [] },
+      nets: { before: half, after: half },
     })
   })
 
