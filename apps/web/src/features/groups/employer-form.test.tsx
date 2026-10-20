@@ -505,7 +505,7 @@ describe('EmployerSettingsPage', () => {
     saving.focus()
     expect(document.activeElement).toBe(saving)
     fireEvent.click(saving)
-    fireEvent.submit(saving.closest('form') as HTMLFormElement)
+    expect(fireEvent.submit(saving.closest('form') as HTMLFormElement)).toBe(false)
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })

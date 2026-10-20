@@ -2176,7 +2176,7 @@ describe('TransactionPage', () => {
     button.focus()
     expect(document.activeElement).toBe(button)
     fireEvent.click(button)
-    fireEvent.submit(button.closest('form') as HTMLFormElement)
+    expect(fireEvent.submit(button.closest('form') as HTMLFormElement)).toBe(false)
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })

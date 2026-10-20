@@ -43,13 +43,13 @@ function logIn() {
   fireEvent.click(screen.getByRole('button', { name: 'Log in' }))
 }
 
-/** A busy submit keeps focus, and pressing it or submitting again sends nothing more. */
+/** A busy submit keeps focus, and pressing it or submitting again is cancelled and sends nothing. */
 async function pressWhileBusy(button: HTMLElement) {
   expect(button.getAttribute('aria-disabled')).toBe('true')
   button.focus()
   expect(document.activeElement).toBe(button)
   fireEvent.click(button)
-  fireEvent.submit(button.closest('form') as HTMLFormElement)
+  expect(fireEvent.submit(button.closest('form') as HTMLFormElement)).toBe(false)
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0))
   })

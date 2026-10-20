@@ -85,7 +85,7 @@ describe('RecoverPage', () => {
     busy.focus()
     expect(document.activeElement).toBe(busy)
     fireEvent.click(busy)
-    fireEvent.submit(busy.closest('form') as HTMLFormElement)
+    expect(fireEvent.submit(busy.closest('form') as HTMLFormElement)).toBe(false)
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
