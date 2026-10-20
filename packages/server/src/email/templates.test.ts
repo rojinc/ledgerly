@@ -662,6 +662,102 @@ describe('billDueSoonEmail, with names someone typed', () => {
   })
 })
 
+// A name someone typed (#387), with a bidi override, a line break and a line separator, and
+// the one line each template shows instead.
+const TYPED = 'Elm\u202E St\nPay now: https://evil.example\u2028today'
+const FOLDED = 'Elm St Pay now: https://evil.example today'
+
+function expectOneLine(content: EmailContent) {
+  for (const part of [content.subject, content.text, content.html]) {
+    expect(part).not.toMatch(/[\u202E\u2028]/)
+    expect(part).not.toContain('\nPay now')
+  }
+}
+
+describe('names someone typed, in the other templates', () => {
+  it('statementReadyEmail folds the group name', () => {
+    const content = statementReadyEmail({
+      type: 'divide',
+      groupName: TYPED,
+      periodStart: day('2026-10-01'),
+      periodEnd: day('2026-10-31'),
+      url: 'https://app.example/s',
+    })
+    expectOneLine(content)
+    expect(content.subject).toBe(`Your October divide for ${FOLDED} is ready to review`)
+    expect(content.text).toContain(`Your October divide for ${FOLDED} has been drafted.`)
+  })
+
+  it('invoiceEmail folds the business name and the number', () => {
+    const content = invoiceEmail({
+      ...invoice,
+      issuerName: TYPED,
+      displayNumber: 'INV\u202E\n0010\u2028',
+    })
+    expectOneLine(content)
+    expect(content.subject).toBe(`Invoice INV 0010 from ${FOLDED}`)
+    expect(content.text).toContain(`Please find attached invoice INV 0010 from ${FOLDED} for`)
+    expect(content.attachments?.[0]?.filename).toBe('INV-0010.pdf')
+  })
+
+  it('divideEmail folds the group name and every name in both lists', () => {
+    const content = divideEmail({
+      groupName: TYPED,
+      periodStart: day('2026-10-01'),
+      periodEnd: day('2026-10-31'),
+      currency: 'AUD',
+      closingCents: 0,
+      pays: [{ name: `Al${TYPED}`, cents: 100 }],
+      receives: [{ name: `Bo${TYPED}`, cents: 100 }],
+      url: 'https://app.example/d',
+      pdf: new Uint8Array([37, 80, 68, 70]),
+    })
+    expectOneLine(content)
+    expect(content.subject).toBe(`Your October divide for ${FOLDED}`)
+    expect(content.text).toContain(`Here's the October divide for ${FOLDED}.`)
+    expect(content.text).toContain(`Pay Al${FOLDED} $1.00.`)
+    expect(content.text).toContain(`Bo${FOLDED} pays you $1.00.`)
+  })
+
+  it('shiftToConfirmEmail folds the group name', () => {
+    const content = shiftToConfirmEmail({
+      groupName: TYPED,
+      date: day('2026-10-15'),
+      url: 'https://app.example/t',
+    })
+    expectOneLine(content)
+    expect(content.text).toContain(`Your shift in ${FOLDED} on Thursday 15 October`)
+  })
+
+  it('timerRunningEmail folds the group name', () => {
+    const content = timerRunningEmail({
+      groupName: TYPED,
+      startedAt: '2026-10-15T21:02:00.000Z',
+      timeZone: 'Australia/Sydney',
+      url: 'https://app.example/t',
+    })
+    expectOneLine(content)
+    expect(content.text).toContain(`Your timer in ${FOLDED} has been running since`)
+  })
+
+  it('summaryEmail folds each group name, owed or owing', () => {
+    const content = summaryEmail({
+      periodStart: day('2026-10-12'),
+      periodEnd: day('2026-10-18'),
+      reports: [],
+      balances: [
+        { groupName: `Al${TYPED}`, currency: 'AUD', cents: 100 },
+        { groupName: `Bo${TYPED}`, currency: 'AUD', cents: -200 },
+      ],
+      url: 'https://app.example/',
+      profileUrl: 'https://app.example/profile',
+    })
+    expectOneLine(content)
+    expect(content.text).toContain(`Owed to you:\n\n- Al${FOLDED}: $1.00`)
+    expect(content.text).toContain(`You owe:\n\n- Bo${FOLDED}: $2.00`)
+  })
+})
+
 describe('user-typed text', () => {
   it('is escaped in the HTML and kept on one line in the subject', () => {
     const content = statementReadyEmail({
@@ -675,7 +771,7 @@ describe('user-typed text', () => {
       `Your October invoice for <b>Tom & Jo's</b> Bcc: x@example.com "Ltd" is ready to review`,
     )
     expect(content.html).toContain(
-      'for &lt;b&gt;Tom &amp; Jo&#39;s&lt;/b&gt;\r\nBcc: x@example.com &quot;Ltd&quot; has been drafted.',
+      'for &lt;b&gt;Tom &amp; Jo&#39;s&lt;/b&gt; Bcc: x@example.com &quot;Ltd&quot; has been drafted.',
     )
     expect(content.html).not.toContain('<b>')
     expect(content.html).toContain('href="https://app.example/s?a=1&amp;b=&quot;2&quot;"')

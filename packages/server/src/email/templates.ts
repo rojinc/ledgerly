@@ -44,10 +44,11 @@ export function statementReadyEmail(input: {
   url: string
 }): EmailContent {
   const period = periodLabel(input.periodStart, input.periodEnd)
+  const groupName = oneLine(input.groupName)
   return message(
-    `Your ${period} ${input.type} for ${input.groupName} is ready to review`,
+    `Your ${period} ${input.type} for ${groupName} is ready to review`,
     [
-      `Your ${period} ${input.type} for ${input.groupName} has been drafted.`,
+      `Your ${period} ${input.type} for ${groupName} has been drafted.`,
       'Check it before you finalize it. You can still add or fix transactions until then.',
     ],
     [{ label: `Review the ${input.type}`, url: input.url }],
@@ -70,10 +71,13 @@ export function invoiceEmail(input: {
 }): EmailContent {
   const amount = formatMoney(input.balanceDueCents, input.currency, LOCALE)
   const period = periodLabelWithYear(input.periodStart, input.periodEnd)
+  // The worker types the name and the number's prefix.
+  const issuerName = oneLine(input.issuerName)
+  const displayNumber = oneLine(input.displayNumber)
   return {
-    ...message(`Invoice ${input.displayNumber} from ${input.issuerName}`, [
+    ...message(`Invoice ${displayNumber} from ${issuerName}`, [
       'Hello,',
-      `Please find attached invoice ${input.displayNumber} from ${input.issuerName} for ${period}.`,
+      `Please find attached invoice ${displayNumber} from ${issuerName} for ${period}.`,
       input.balanceDueCents > 0
         ? `${amount} is due by ${longDate(input.dueOn)}.`
         : nothingToPay(input.balanceDueCents, input.currency),
@@ -81,7 +85,7 @@ export function invoiceEmail(input: {
     ]),
     // The prefix is user-typed; keep the file name to characters every mail client accepts.
     attachments: [
-      { filename: `${input.displayNumber.replace(/[^\w.-]/g, '-')}.pdf`, content: input.pdf },
+      { filename: `${displayNumber.replace(/[^\w.-]/g, '-')}.pdf`, content: input.pdf },
     ],
   }
 }
@@ -109,6 +113,7 @@ export function divideEmail(input: {
 }): EmailContent {
   const money = (cents: number) => formatMoney(cents, input.currency, LOCALE)
   const period = periodLabel(input.periodStart, input.periodEnd)
+  const groupName = oneLine(input.groupName)
   const standing =
     input.closingCents < 0
       ? `You owe ${money(-input.closingCents)}.`
@@ -117,12 +122,12 @@ export function divideEmail(input: {
         : "You're settled up."
   return {
     ...message(
-      `Your ${period} divide for ${input.groupName}`,
+      `Your ${period} divide for ${groupName}`,
       [
-        `Here's the ${period} divide for ${input.groupName}. The PDF is attached.`,
+        `Here's the ${period} divide for ${groupName}. The PDF is attached.`,
         standing,
-        ...input.pays.map((to) => `Pay ${to.name} ${money(to.cents)}.`),
-        ...input.receives.map((from) => `${from.name} pays you ${money(from.cents)}.`),
+        ...input.pays.map((to) => `Pay ${oneLine(to.name)} ${money(to.cents)}.`),
+        ...input.receives.map((from) => `${oneLine(from.name)} pays you ${money(from.cents)}.`),
       ],
       [{ label: 'Open the divide', url: input.url }],
     ),
@@ -175,7 +180,7 @@ export function shiftToConfirmEmail(input: {
   return message(
     `Confirm your shift on ${day}`,
     [
-      `Your shift in ${input.groupName} on ${day} hasn't been confirmed yet.`,
+      `Your shift in ${oneLine(input.groupName)} on ${day} hasn't been confirmed yet.`,
       'Confirm it, or change the hours if they were different, so it goes on your invoice.',
     ],
     [{ label: 'Confirm the shift', url: input.url }],
@@ -203,7 +208,7 @@ export function timerRunningEmail(input: {
   return message(
     'Your timer is still running',
     [
-      `Your timer in ${input.groupName} has been running since ${since}.`,
+      `Your timer in ${oneLine(input.groupName)} has been running since ${since}.`,
       "If you've finished, stop it and set the end time so the hours are right.",
     ],
     [{ label: 'Open the timer', url: input.url }],
@@ -435,10 +440,10 @@ function summaryBlocks(
         ]
       : []),
     ...(owed.length > 0
-      ? ['Owed to you:', owed.map((entry) => `${entry.groupName}: ${money(entry.cents)}`)]
+      ? ['Owed to you:', owed.map((entry) => `${oneLine(entry.groupName)}: ${money(entry.cents)}`)]
       : []),
     ...(owing.length > 0
-      ? ['You owe:', owing.map((entry) => `${entry.groupName}: ${money(-entry.cents)}`)]
+      ? ['You owe:', owing.map((entry) => `${oneLine(entry.groupName)}: ${money(-entry.cents)}`)]
       : []),
   ]
 }
@@ -453,8 +458,9 @@ type Block = string | readonly string[]
 type Link = { label: string; url: string }
 
 // The same paragraphs and lists as HTML and as plain text. Names are user-typed, so HTML
-// escapes everything, and the subject is kept to one line. No images, so no tracking pixels
-// (security-and-privacy.md).
+// escapes everything, and the subject is kept to one line. Each template folds the names it
+// shows (`oneLine()`), not whole paragraphs, which would turn the narrow no-break spaces in
+// times and money into plain ones. No images, so no tracking pixels (security-and-privacy.md).
 function message(
   subject: string,
   blocks: readonly Block[],
