@@ -44,6 +44,16 @@ const U_ROW = member('m2', 'g1', 'p2', 'member', 'active')
 const P_ROW = member('mP', 'g1', 'pP', 'member', 'placeholder')
 // U moved out (leftOn set) before the merge, and hasn't left on their own: no member.left.
 const MOVED_OUT = member('m2', 'g1', 'p2', 'viewer', 'left', { leftOn: '2026-10-10' })
+// U's own member.left there: a leave on their own, or account deletion keeping the group.
+const LEFT_BY_U = {
+  $id: 'aLeft',
+  groupId: 'g1',
+  actorPersonId: 'p2',
+  action: 'member.left',
+  subjectPersonId: 'p2',
+  summary: 'left',
+  at: '2026-10-10T00:00:00.000Z',
+}
 // Before step 1: pP isn't marked yet, and still has its own row in g1.
 const UNMARKED = {
   persons: [{ ...P, mergedInto: null, mergeGroupIds: null }],
@@ -52,6 +62,7 @@ const UNMARKED = {
 
 function open(
   more: {
+    u?: object
     persons?: object[]
     identities?: object[]
     members?: object[]
@@ -62,7 +73,7 @@ function open(
 ) {
   return fakes(
     {
-      persons: [person(1), person(2), ...(more.persons ?? [P])],
+      persons: [person(1), more.u ?? person(2), ...(more.persons ?? [P])],
       identities: more.identities ?? [PHONE],
       groups: [group('g1', 'house')],
       members: [member('m1', 'g1', 'p1', 'admin', 'active'), ...(more.members ?? [U_ROW])],
@@ -226,20 +237,23 @@ describe('while a merge into the member is open in the group', () => {
       // U's leave was refused while P had a share here, so P has none; P is named only unposted.
       shares: [],
       transactions: [scheduled('pP')],
-      activity: [
-        {
-          $id: 'aLeft',
-          groupId: 'g1',
-          actorPersonId: 'p2',
-          action: 'member.left',
-          subjectPersonId: 'p2',
-          summary: 'left',
-          at: '2026-10-10T00:00:00.000Z',
-        },
-      ],
+      activity: [LEFT_BY_U],
     })
     expect(await ok(services, 'DELETE', '/groups/g1/members/m2')).toEqual({})
     expect(memberIds(services)).toEqual(['m1'])
+  })
+
+  it('refuses removing a deleted U’s kept row while P has a share (#362)', async () => {
+    // U deleted their account after step 2, which stops the merge where it was. The deletion
+    // kept g1, with U's row "Former member", `left` and a member.left by U (as if they'd left on
+    // their own), and pP's share is still pP's.
+    const services = open({
+      u: person(2, { userId: null, deletedAt: '2026-10-10T00:00:00.000Z' }),
+      members: [{ ...MOVED_OUT, displayName: 'Former member' }],
+      activity: [LEFT_BY_U],
+    })
+    expect(await refusal(services, 'DELETE', '/groups/g1/members/m2')).toMatchObject(MERGING)
+    expect(memberIds(services)).toEqual(['m1', 'm2'])
   })
 
   it('goes ahead where P keeps its own row (a kept group, or one step 2 hasn’t reached)', async () => {

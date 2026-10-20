@@ -250,8 +250,9 @@ export async function hasShares(db: Db, groupId: string, personId: string): Prom
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): a P merged into them
  * (`idx_mergedInto`) lists the group in `mergeGroupIds`, has no member row here any more while
  * theirs is joined (step 2 gave P's place to them; a row they left on their own doesn't count, as
- * step 3 leaves P's rows on P there), and is still `named` here, which a leave or a
- * removal would count as someone else's. Per group, so a merge stuck elsewhere doesn't hold this one.
+ * step 3 leaves P's rows on P there, unless they're being deleted), and is still `named` here,
+ * which a leave or a removal would count as someone else's. Per group, so a merge stuck elsewhere
+ * doesn't hold this one.
  *
  * Inside the transaction (`tx`), call it after staging the member row and before reading the
  * balance or shares: when such a P exists it stages a guard write on the group's row first, which
@@ -270,12 +271,20 @@ export async function requireNoOpenMerge(
   if (listing.length === 0) return
   // Step 2 always leaves their row joined: a placeholder row of theirs isn't P's place (D-016).
   // Where they left on their own, step 3 leaves P's rows on P, so the group isn't open (#349).
+  // Account deletion's keep writes their member.left too, but a merge into them stopped where it
+  // was, so that kept row still holds P's place, and P's shares need it (I-3, #362).
   const own = await findFirst<Members>(db, TABLES.members, [
     Query.equal('groupId', groupId),
     Query.equal('personId', personId),
   ])
   if (!own || own.status === 'placeholder') return
-  if (own.status === 'left' && (await leftOnTheirOwn(db, groupId, personId, own.$createdAt))) return
+  if (
+    own.status === 'left' &&
+    (await leftOnTheirOwn(db, groupId, personId, own.$createdAt)) &&
+    !(await getRowOrNull<Persons>(db, TABLES.persons, personId))?.deletedAt
+  ) {
+    return
+  }
   await tx?.write({
     action: 'update',
     tableId: TABLES.groups,

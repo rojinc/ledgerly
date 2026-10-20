@@ -1025,6 +1025,34 @@ describe('POST /claim, merging a placeholder', () => {
     expect(events(log)).toContainEqual(expect.objectContaining({ event: 'merge_finished' }))
   })
 
+  // A Sam who moved out of g3 (`left` with `leftOn`, but no member.left of their own) is still
+  // joined there (`joinedHere`), so Sammy is renamed in g3 as anywhere else.
+  it('renames Sammy where Sam moved out but didn’t leave on their own', async () => {
+    const services = await sammyInG3({
+      members: [
+        placeholderRow('m9', 'g3', 'pSam', BEFORE, {
+          status: 'left',
+          role: 'viewer',
+          displayName: 'Sam Lee',
+          leftOn: '2026-10-05',
+        }),
+      ],
+      activity: [],
+    })
+    await claim(services)
+    expect(namingSammy(services)).toEqual({
+      identities: [],
+      members: [],
+      shares: [],
+      transactions: [],
+      schedules: [],
+      reminders: [],
+      activity: [],
+    })
+    expect(events(warn)).not.toContainEqual(expect.objectContaining({ event: 'merge_left_inputs' }))
+    expect(events(log)).toContainEqual(expect.objectContaining({ event: 'merge_finished' }))
+  })
+
   // The self-review's race on #347: Sam's placeholder row in g3 (added after Sam signed up, so
   // the claim doesn't join it) becomes joined from the app just after the claim checked g3.
   // Nothing in g3 moves this run, shares included, and the next run renames the input before it

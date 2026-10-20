@@ -175,29 +175,30 @@ describe('while a merge is open in the row’s group', () => {
     expect(ledgerOf(db)).toEqual(before)
   })
 
+  // Bob left the house on their own after step 2: their own member.left is their newest there.
+  const bobQuit: Write[] = [
+    {
+      action: 'update',
+      tableId: 'members',
+      rowId: 'm-bob',
+      data: { status: 'left', role: 'viewer', leftOn: '2026-10-05' },
+    },
+    {
+      action: 'create',
+      tableId: 'activity',
+      rowId: 'a-bob-left',
+      data: {
+        groupId: 'house',
+        actorPersonId: 'bob',
+        action: 'member.left',
+        subjectPersonId: 'bob',
+        summary: 'left',
+        at: '2026-10-05T00:00:00.000Z',
+      },
+    },
+  ]
+
   it('lets an edit through where U left on their own: step 3 leaves the row on P (#349)', async () => {
-    // Bob left the house on their own after step 2: their own member.left is their newest there.
-    const bobQuit: Write[] = [
-      {
-        action: 'update',
-        tableId: 'members',
-        rowId: 'm-bob',
-        data: { status: 'left', role: 'viewer', leftOn: '2026-10-05' },
-      },
-      {
-        action: 'create',
-        tableId: 'activity',
-        rowId: 'a-bob-left',
-        data: {
-          groupId: 'house',
-          actorPersonId: 'bob',
-          action: 'member.left',
-          subjectPersonId: 'bob',
-          summary: 'left',
-          at: '2026-10-05T00:00:00.000Z',
-        },
-      },
-    ]
     const due = { ...byDays, split: withPat, bill: { status: 'due', dueOn: '2026-10-25' } }
     const db = await written(due, marked(), ...stepTwo, ...bobQuit)
     // Still naming Pat, an edit or a post answers as for any non-member, not `merging`.
@@ -210,6 +211,21 @@ describe('while a merge is open in the row’s group', () => {
     // An edit must name someone else instead of Pat.
     const alone = { ...due, split: { mode: 'equal', personIds: ['alice'] } }
     expect((await call(db, 'PATCH', '/transactions/b1', alone)).status).toBe(200)
+  })
+
+  it('holds the row where U’s account was deleted, though U’s member.left is newest (#362)', async () => {
+    // Bob deleted their account after step 2, which stops the merge where it was. The deletion
+    // kept the house, with Bob's row `left` and a member.left by Bob, and Pat's shares are Pat's.
+    const bobDeleted: Write = {
+      action: 'update',
+      tableId: 'persons',
+      rowId: 'bob',
+      data: { deletedAt: '2026-10-05T00:00:00.000Z' },
+    }
+    const db = await written(byDays, marked(), ...stepTwo, ...bobQuit, bobDeleted)
+    const before = ledgerOf(db)
+    expectMerging(await call(db, 'PATCH', '/transactions/b1', { ...byDays, description: 'Power' }))
+    expect(ledgerOf(db)).toEqual(before)
   })
 
   it('/post refuses a due bill whose stored split names the person', async () => {

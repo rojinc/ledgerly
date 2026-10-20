@@ -65,10 +65,11 @@ export async function finishMerges(
 
 /**
  * Steps 2 and 3 for P, one group at a time: P's member row there, then, where U is joined, the
- * group's templates, inputs, activity subjects and shares, before the next group. A cut-off then leaves at most one
- * group part done, and a group that can't go on now (a statement being finalized) waits whole.
- * One whose finalize starts after its member row moved waits part done, and a later claim
- * finishes it first. Then reminders, and P's identities once nothing else names P (step 4).
+ * group's templates, inputs, activity subjects and shares, before the next group. A cut-off then
+ * leaves at most one group part done, and a group that can't go on now (a statement being
+ * finalized) waits whole. One whose finalize starts after its member row moved waits part done,
+ * and a later claim finishes it first. Then reminders, and P's identities once nothing else names
+ * P (step 4).
  */
 async function runSteps(
   services: Services,
