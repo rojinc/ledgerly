@@ -7,11 +7,13 @@ import { Query } from 'node-appwrite'
 import { findIdentity, getRowOrNull, isAppwriteError } from '../rows'
 import { clearResume, finishMerges, MERGE_BUDGET_MS } from '../run-merge'
 import type { Services } from '../services'
+import { type NoticeCounts, retryNotices } from './change-notice'
 import { markVerified, verifiedIdentities } from './claim'
 
 // identity-and-invites.md#finishing-merges: the hourly run carries on the merges a claim left
-// unfinished, so one finishes within about an hour even if U never calls /claim again. Logs and
-// the result hold IDs and counts only (security-and-privacy.md).
+// unfinished, so one finishes within about an hour even if U never calls /claim again. Then it
+// tries again the change notices that didn't go out (#email-and-phone-change-notice, step 8).
+// Logs and the result hold IDs and counts only (security-and-privacy.md).
 
 const PAGE = 100
 
@@ -26,6 +28,8 @@ export type RunResult = {
   skipped: number
   cutOff: number
   stopped: number
+  /** The change notices tried again after the merges. */
+  notices: NoticeCounts
 }
 
 /** `identity POST /`, the hourly run (`interval: 60`), sent with the `schedule` trigger. */
@@ -33,8 +37,9 @@ export async function run(scheduled: boolean, services: () => Services): Promise
   // Before the services, which need the execution's API key.
   if (!scheduled) throw new AppError('FORBIDDEN', 'Only identity’s own hourly run runs this.')
   const built = services()
-  const deadline = Date.now() + MERGE_BUDGET_MS
-  const result: RunResult = { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0 }
+  const started = Date.now()
+  const deadline = started + MERGE_BUDGET_MS
+  const result = { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0 }
   const { merges, read, complete } = await unfinishedMerges(built.db, deadline)
   // Merged persons are kept for good, so a walk that outgrows the budget would hide every merge
   // past it: this says so (scaling.md).
@@ -88,7 +93,8 @@ export async function run(scheduled: boolean, services: () => Services): Promise
   }
   // With how many merged persons the walk read, to see its cost (scaling.md).
   logProblem('merge_run', { counts: { ...result, personsRead: read } })
-  return result
+  // In what's left of the change notice's own limits, counted from the run's start.
+  return { ...result, notices: await retryNotices(built, started) }
 }
 
 /**

@@ -3,6 +3,9 @@ import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { account, BEFORE, call, type Fakes, fakes, placeholderRow } from './harness'
 
+// With no change notice to try again (change-notice.test.ts tests the retries).
+const NO_NOTICES = { retried: 0, failed: 0, expired: 0, gone: 0 }
+
 // The hourly run (identity-and-invites.md#finishing-merges). Sammy (pP), a placeholder, was
 // merged into Sam (pSam) by a claim that was cut off: Sammy's row in g1 and the phone wait.
 const SAM = {
@@ -142,7 +145,7 @@ describe('POST / (the hourly run)', () => {
     expect(status).toBe(200)
     expect(body).toEqual({
       ok: true,
-      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
+      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, stopped: 0, notices: NO_NOTICES },
     })
     expect(services.db.rows('members')[0]).toMatchObject({ personId: 'pSam', status: 'active' })
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
@@ -155,7 +158,7 @@ describe('POST / (the hourly run)', () => {
     // Finished: the next run finds nothing.
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0 },
+      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0, notices: NO_NOTICES },
     })
   })
 
@@ -164,7 +167,7 @@ describe('POST / (the hourly run)', () => {
     const services = fakes({ persons: [SAM] } as Parameters<typeof fakes>[0])
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0 },
+      data: { unfinished: 0, finished: 0, skipped: 0, cutOff: 0, stopped: 0, notices: NO_NOTICES },
     })
   })
 
@@ -202,7 +205,14 @@ describe('POST / (the hourly run)', () => {
       )
       expect((await hourly(services)).body).toEqual({
         ok: true,
-        data: { unfinished: 2, finished: 0, skipped: 2, cutOff: 0, stopped: 0 },
+        data: {
+          unfinished: 2,
+          finished: 0,
+          skipped: 2,
+          cutOff: 0,
+          stopped: 0,
+          notices: NO_NOTICES,
+        },
       })
       expect(identity(services, 'iPhone')?.personId).toBe('pP')
       expect(identity(services, 'iP2')?.personId).toBe('pP2')
@@ -258,7 +268,7 @@ describe('POST / (the hourly run)', () => {
     const reads = vi.spyOn(services.db, 'getRow')
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 1, finished: 0, skipped: 0, cutOff: 1, stopped: 0 },
+      data: { unfinished: 1, finished: 0, skipped: 0, cutOff: 1, stopped: 0, notices: NO_NOTICES },
     })
     // Past the budget, a U costs nothing more: not even its person row is read.
     expect(reads.mock.calls.filter(([params]) => params.tableId === 'persons')).toEqual([])
@@ -287,7 +297,14 @@ describe('POST / (the hourly run)', () => {
     // The first page: pM000 to pM099 (pP sorts after them). The walk stops before the second.
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 100, finished: 0, skipped: 0, cutOff: 100, stopped: 0 },
+      data: {
+        unfinished: 100,
+        finished: 0,
+        skipped: 0,
+        cutOff: 100,
+        stopped: 0,
+        notices: NO_NOTICES,
+      },
     })
     expect(events(log, 'merge_run')).toEqual([
       {
@@ -312,7 +329,7 @@ describe('POST / (the hourly run)', () => {
     const services = seeded(PUT_OFF)
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0, stopped: 0, notices: NO_NOTICES },
     })
     // Sammy's merge finished and moved the phone; Sam's other merge is still open, and the
     // phone is verified all the same, as /claim does (the co-lead on #330).
@@ -332,7 +349,7 @@ describe('POST / (the hourly run)', () => {
     })
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 1, stopped: 0 },
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 1, stopped: 0, notices: NO_NOTICES },
     })
   })
 
@@ -360,7 +377,7 @@ describe('POST / (the hourly run)', () => {
     // The walk found Sammy's merge, which finished, and pP2's, put off; pNew's isn't counted.
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
+      data: { unfinished: 2, finished: 1, skipped: 0, cutOff: 0, stopped: 0, notices: NO_NOTICES },
     })
     expect(identity(services, 'iNew')?.personId).toBe('pSam')
   })
@@ -378,7 +395,7 @@ describe('POST / (the hourly run)', () => {
     })
     expect((await hourly(services)).body).toEqual({
       ok: true,
-      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, stopped: 0 },
+      data: { unfinished: 1, finished: 1, skipped: 0, cutOff: 0, stopped: 0, notices: NO_NOTICES },
     })
     // So Sam's merges count as finished, and the moved phone is verified.
     expect(identity(services, 'iPhone')).toMatchObject({ personId: 'pSam', verified: true })
@@ -502,7 +519,7 @@ describe('POST / (the hourly run)', () => {
     // Sam's merge had finished, so nothing counts as stopped; the keys wait for the next login.
     expect((await hourly(services)).body).toMatchObject({
       ok: true,
-      data: { unfinished: 2, finished: 2, stopped: 0 },
+      data: { unfinished: 2, finished: 2, stopped: 0, notices: NO_NOTICES },
     })
     expect(events(error, 'merge_run_failed')).toEqual([
       {

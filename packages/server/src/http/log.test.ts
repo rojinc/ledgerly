@@ -224,6 +224,13 @@ group('logProblem', () => {
     })
   })
 
+  it('writes a change notice’s retry as a log, and an expired or unkept one as a warning', () => {
+    for (const outcome of ['retried', 'expired', 'dropped'] as const) {
+      logProblem('change_notice', { userId: 'u1', identityType: 'email', outcome })
+    }
+    expect(levels()).toEqual(['log', 'warn', 'warn'])
+  })
+
   it('writes counts by name, each a whole number, and no other key', () => {
     logProblem('merge_finished', {
       personId: 'pP',

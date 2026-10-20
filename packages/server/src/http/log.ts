@@ -60,7 +60,8 @@ export type LogEvent =
  * How each event is written. Most are problems, written with `console.error`: until alerting
  * exists, the error lines are the alert (scheduling.md#step-6-nightly-check). These aren't: `log`
  * for what went as it should, `warn` for something to look at that isn't a failure. A password or
- * change notice is an error only when a send failed, and a change notice's `mismatch` a warning.
+ * change notice is an error only when a send failed, and a change notice's `mismatch`, `expired`
+ * or `dropped` a warning.
  */
 const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   typed_keys_deleted: 'log',
@@ -99,12 +100,16 @@ export type ChangeNoticeOutcome =
   | 'unverified'
   | 'mismatch'
   | 'failed'
+  | 'retried'
+  | 'expired'
+  | 'dropped'
 
 /**
  * What a merge moved or left (identity-and-invites.md#merging-two-persons); what the hourly run
  * found (#finishing-merges): merges, and the merged persons it read; what receipt clean-up did
- * (scheduling.md#step-5-receipt-clean-up); and what step 5c did with the persons it found
- * (scheduling.md#step-5c-placeholder-clean-up). Each a count.
+ * (scheduling.md#step-5-receipt-clean-up); what step 5c did with the persons it found
+ * (scheduling.md#step-5c-placeholder-clean-up); and a change notice's failed tries so far
+ * (identity-and-invites.md#email-and-phone-change-notice, step 8). Each a count.
  */
 const COUNTS = [
   'groupsJoined',
@@ -126,6 +131,7 @@ const COUNTS = [
   'cleared',
   'kept',
   'failed',
+  'attempts',
 ] as const
 export type LogCount = (typeof COUNTS)[number]
 
@@ -168,9 +174,9 @@ export type LogFields = {
   error?: unknown
   /**
    * A fixed cause, for a failure with no error behind it: `budget`, a change notice's addresses
-   * left when its time ran out. `error` wins over it.
+   * left when its time ran out, or `queue`, its rows not written. `error` wins over it.
    */
-  cause?: 'budget'
+  cause?: 'budget' | 'queue'
 }
 
 /**
@@ -216,13 +222,17 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
       ),
     // Pinned at run time too, as a cast could pass any text.
     cause:
-      'error' in fields ? describe(fields.error) : fields.cause === 'budget' ? 'budget' : undefined,
+      'error' in fields
+        ? describe(fields.error)
+        : fields.cause === 'budget' || fields.cause === 'queue'
+          ? fields.cause
+          : undefined,
   }
   const level =
     event === 'password_notice' || event === 'change_notice'
       ? outcome === 'failed'
         ? 'error'
-        : outcome === 'mismatch'
+        : outcome === 'mismatch' || outcome === 'expired' || outcome === 'dropped'
           ? 'warn'
           : 'log'
       : (LEVELS[event] ?? 'error')
