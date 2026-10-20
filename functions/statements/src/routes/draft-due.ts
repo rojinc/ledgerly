@@ -19,6 +19,7 @@ import {
   listAll,
 } from '../shared'
 import { computeSnapshot, statementTypeOf } from '../snapshot'
+import { sendDueInvoices } from './auto-send'
 import { finalizeStatement, isOldestUnfinished } from './finalize'
 
 // Inside the function's 300 s timeout (environments-and-deploys.md), with room for one more
@@ -32,6 +33,7 @@ class AlreadyDrafted extends Error {}
  * The statements job (every 60 minutes, statements.md#1-draft): drafts the statement of every
  * employer and house group whose `nextCloseAt` has passed: an invoice or a divide. The due
  * groups are listed first, so a group that fails every time never keeps the others waiting.
+ * Then, in the same time budget, it emails the invoices it auto-finalized (statements.md#auto-send).
  */
 export async function draftDueStatements(
   services: Services,
@@ -52,6 +54,13 @@ export async function draftDueStatements(
       failed += 1
       logProblem('draft_failed', { groupId: group.$id, error })
     }
+  }
+  const outOfTime = () => Date.now() - started > BUDGET_MS
+  try {
+    await sendDueInvoices(services, outOfTime)
+  } catch (error) {
+    // Listing them failed: the next run tries again. The drafts above are made.
+    logProblem('auto_send_failed', { error })
   }
   return { drafted, failed }
 }
@@ -110,28 +119,43 @@ async function draftFor(
     throw error
   }
   if (reached || empty) return false
+  // With autoSend on, an invoice the job finalized with lines is on its way: the "ready" email
+  // goes only when the admin is needed (statements.md#auto-send).
+  if (await autoFinalize(services, group, statementId)) return true
   try {
     await emailAdmins(services, group, statementId, period)
   } catch (error) {
     // The draft is made; the email is a courtesy, even when it can't be built at all.
     logProblem('ready_email_failed', { statementId, error })
   }
-  // An admin may have discarded the new draft already. While an earlier one is unfinished (an
-  // early close's draft, statements.md#6), rule 5 would refuse it: it waits for an admin, as one
-  // whose finalize fails does, with nothing to log (#420).
-  const draft = autoFinalizes(group)
-    ? await getRowOrNull<Statements>(db, TABLES.statements, statementId)
-    : null
-  if (draft && (await isOldestUnfinished(db, draft))) {
-    try {
-      // No actor: the job finalizes it. Sending stays the admin's call.
-      await finalizeStatement(services, group, draft, null, false)
-    } catch (error) {
-      // The draft stays for an admin to finalize.
-      logProblem('auto_finalize_failed', { statementId, error })
-    }
-  }
   return true
+}
+
+/**
+ * Finalizes the new draft when the group's `autoFinalize` is on, with no actor and without
+ * sending (statements.md#1-draft). True when step 8 opened its window to be emailed.
+ */
+async function autoFinalize(
+  services: Services,
+  group: Groups,
+  statementId: string,
+): Promise<boolean> {
+  if (!autoFinalizes(group)) return false
+  const { db } = services
+  try {
+    // An admin may have discarded the new draft already. While an earlier one is unfinished (an
+    // early close's draft, statements.md#6), rule 5 would refuse it: it waits for an admin, as
+    // one whose finalize fails does, with nothing to log (#420).
+    const draft = await getRowOrNull<Statements>(db, TABLES.statements, statementId)
+    if (!draft || !(await isOldestUnfinished(db, draft))) return false
+    // No actor: the job finalizes it. With autoSend on, step 8 opens its window to be emailed.
+    const final = await finalizeStatement(services, group, draft, null, false)
+    return Boolean(final.autoSendUntil)
+  } catch (error) {
+    // The draft stays for an admin to finalize.
+    logProblem('auto_finalize_failed', { statementId, error })
+    return false
+  }
 }
 
 /** Whether a statement of the group that isn't void ends on or after `end` (`idx_group_period`). */

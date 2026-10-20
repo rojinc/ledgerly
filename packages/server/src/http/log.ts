@@ -9,6 +9,8 @@ export type LogEvent =
   | 'draft_failed'
   | 'ready_email_failed'
   | 'auto_finalize_failed'
+  | 'auto_send_failed'
+  | 'auto_send_notice_failed'
   | 'snapshot_check_failed'
   | 'claim_identity_unusable'
   | 'reminder_failed'

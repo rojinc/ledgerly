@@ -1,6 +1,7 @@
 import { type LocalDate, parseLocalDate } from '@ledgerly/core/dates/local-date'
 import { describe, expect, it } from 'vitest'
 import {
+  autoSendFailedEmail,
   billDueSoonEmail,
   divideEmail,
   type EmailContent,
@@ -46,6 +47,24 @@ function expectProfileLink(content: EmailContent) {
     '<a href="https://app.example/profile">Change your email settings</a>',
   )
 }
+
+describe('autoSendFailedEmail (#432)', () => {
+  it('names the invoice and the group, on one line each, and links to it', () => {
+    const content = autoSendFailedEmail({
+      displayNumber: 'INV-0010',
+      groupName: 'Acme\nPty Ltd',
+      url: 'https://app.example/statements/stmt-1',
+    })
+    expectWellFormed(content)
+    expect(content.subject).toBe("Invoice INV-0010 for Acme Pty Ltd couldn't be emailed")
+    expect(content.text).toContain(
+      'It may be tried again for up to a day, or you can send it from the app now.',
+    )
+    expect(content.html).toContain(
+      '<a href="https://app.example/statements/stmt-1">Open the invoice</a>',
+    )
+  })
+})
 
 describe('statementReadyEmail', () => {
   const ready = (type: 'invoice' | 'divide', start: string, end: string) =>
