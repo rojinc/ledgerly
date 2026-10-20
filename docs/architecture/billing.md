@@ -40,7 +40,7 @@ Two plans: **Free** and **Pro**. The rules:
 2. **Viewers, placeholders and invitees never pay or meet a gate.** Viewers can't make these writes anyway; placeholders and people who never sign up make no writes at all ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). Accepting an invite, claiming and joining are never gated.
 3. **The payer is the account making the gated write,** never the other members of its groups. A house's free members aren't affected by one member's plan.
 4. **A downgrade deletes nothing and changes no closed period.** Groups, schedules, statements and PDFs stay as they are, and final statements never change ([D-010](decisions.md#d-010-closed-periods-never-change)). Only new gated writes are refused. Anything already set up keeps working: a second employer group made on Pro still takes shifts, and its schedules still run.
-5. **Scheduled jobs are never gated.** They write as the system with no caller ([permissions](permissions.md#function-side-checks)), so there is no payer. `autoFinalize` doesn't send ([statements](statements.md)), so no job emails on a user's behalf.
+5. **Scheduled jobs are never gated.** They write as the system with no caller ([permissions](permissions.md#function-side-checks)), so there is no payer. The one job that emails on a user's behalf, auto-send, sends only for a group whose admin turned `autoSend` on ([auto-send](statements.md#auto-send), [#432](https://github.com/rojinc/ledgerly/issues/432)). When billing is built, turning it on is what's gated, never the job.
 
 The proposed gates. They target the gig worker, who bills for work, and the actions that cost us per use. The owner may move rows; the rules above don't change.
 

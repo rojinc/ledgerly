@@ -111,7 +111,7 @@ Each route parses its body with its schema from `packages/core/src/schemas/` bef
 - **Bills:** a one-off `due` bill needs `dueOn`, and a `days` split needs `periodStart` and `periodEnd`. A schedule's bill template has status `due` and no `dueOn`, `periodStart`, `periodEnd` or `days` split ([scheduling](scheduling.md#what-a-schedule-is)).
 - **Dates** must be real calendar dates, and a range (`periodStart`–`periodEnd`, `startsOn`–`endsOn`, `joinedOn`–`leftOn`, `POST /statements/reissue`) must not end before it starts. "At most 1 year in the future" needs today's date, so the function checks it, and so is a schedule's `startsOn` at most 31 days before today on `POST /schedules` and on a `PATCH` that changes it, so a mistyped year can't make years of past occurrences.
 - **Lists:** at most 10 `receiptFileIds`, each at most once (the ledger function checks each file), and 366 `exdates`. Schedule templates have no `receiptFileIds`.
-- **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365. `region` must be a country or state the public holiday library knows (`publicHolidayChecker`), checked by the function on create and `PATCH`.
+- **Groups:** `counterpart` is only for employer and pair groups. On `POST /groups`, `settings.type` must match the group's `type`. A `weekly` or `fortnightly` cycle needs `cycleAnchor` (on `PATCH`, the function checks it against the stored group). Employer `recipients` has at most 10 addresses (each is emailed every invoice); `paymentTermsDays` is 0–365; `autoSend` needs `autoFinalize` and at least one recipient ([auto-send](statements.md#auto-send)). `region` must be a country or state the public holiday library knows (`publicHolidayChecker`), checked by the function on create and `PATCH`.
 - **Business details:** `abn` (11), `bsb` (6) and `accountNumber` (up to 12) are stored as digits only. Spaces and dashes are dropped.
 - **Schedules:** `rrule` is one of the shapes in [Rules the UI builds](scheduling.md#rules-the-ui-builds): weekly on plain `BYDAY` codes with an optional `INTERVAL` of 1–4, or monthly on a `BYMONTHDAY` of 1–28 or `-1`, either with an optional `COUNT` (1–500) or `UNTIL=YYYYMMDD`, not both. `UNTIL` is not before `startsOn`, and an unknown rule part gets the fixed message "Unsupported rule part". `startsOn`, `endsOn` and `exdates` are on or after 2000-01-01. The preview `count` is 1–100.
 - **Invites:** `POST /invites/accept` takes any token text up to 128 characters. A malformed token is just an unknown one, so it returns `INVITE_INVALID`.
@@ -292,7 +292,7 @@ Details: [Scheduling](scheduling.md).
 
 ## statements
 
-Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). HTTP routes:
+Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). Each run drafts the periods that are due, then emails the invoices it auto-finalized in groups with `autoSend` on ([auto-send](statements.md#auto-send)). HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |

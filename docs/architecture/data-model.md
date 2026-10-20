@@ -135,6 +135,7 @@ Permissions: `read("team:<groupId>")`.
 ```ts
 type GroupSettings =
   | { type: 'employer'; defaultRateCents: number; paymentTermsDays: number; autoFinalize: boolean;
+      autoSend?: boolean /* needs autoFinalize and a recipient; missing = off (statements.md#auto-send) */;
       recipients: string[] /* billing emails */ }   // auto-posting is per schedule (schedules.autoPost)
   | { type: 'house'; autoFinalize: boolean; defaultBillSplit: 'days' | 'equal' }
   | { type: 'personal' }
@@ -322,8 +323,9 @@ Permissions: `read("team:<groupId>")`.
 | `pdfFileId` | varchar(36)? | In the `statements` bucket |
 | `sentAt` | datetime? | |
 | `finalizedBy` | varchar(36)? | personId |
+| `autoSendUntil` | datetime? | Until when the statements job emails this invoice ([auto-send](statements.md#auto-send)): set by the job's finalize in a group with `autoSend` on, and set to now when a send fails for good. Empty otherwise |
 
-Indexes: `idx_group_period (groupId, periodStart)`, `idx_status (status)`.
+Indexes: `idx_group_period (groupId, periodStart)`, `idx_status (status)`, `idx_autoSendUntil (autoSendUntil)` (the job finds invoices to send).
 Permissions: `read("team:<groupId>")`.
 
 ## activity

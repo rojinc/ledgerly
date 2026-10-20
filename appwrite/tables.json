@@ -1212,6 +1212,13 @@
         "required": false,
         "array": false,
         "default": null
+      },
+      {
+        "key": "autoSendUntil",
+        "type": "datetime",
+        "required": false,
+        "array": false,
+        "default": null
       }
     ],
     "indexes": [
@@ -1225,6 +1232,12 @@
         "key": "idx_status",
         "type": "key",
         "columns": ["status"],
+        "orders": ["ASC"]
+      },
+      {
+        "key": "idx_autoSendUntil",
+        "type": "key",
+        "columns": ["autoSendUntil"],
         "orders": ["ASC"]
       }
     ]
