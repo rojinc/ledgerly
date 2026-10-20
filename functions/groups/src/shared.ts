@@ -10,8 +10,12 @@ import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tab
 import type { Tx, Write } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { countCheck, takeBack } from '@ledgerly/server/identity/address-misses'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import {
+  bothKeysFindOne,
+  findPerson,
+  keysOf,
   type PersonInput,
   type ResolvedPerson,
   resolvePerson,
@@ -75,6 +79,52 @@ export async function resolveGuarded(
   if (again.personId !== resolved.personId) throw tryAgain()
   return resolved
 }
+
+/**
+ * #378 (identity-and-invites.md#adding-someone-to-a-group, step 2): an add with both an email and
+ * a phone counts as an address check on the caller's own `persons` row, before either key is
+ * looked up, against the limit invites and reminders share. The window it was counted in, or
+ * undefined for an add with one key or none, which isn't counted. Both keys are checked first
+ * (step 1), so a typo is a RangeError, as resolvePerson throws, and never costs a count.
+ */
+export async function countTwoKeys(
+  db: Db,
+  callerId: string,
+  input: PersonInput,
+  region: string,
+  now: Date,
+): Promise<string | undefined> {
+  if (input.email === undefined || input.phone === undefined) return undefined
+  keysOf(input, region)
+  return countCheck(db, callerId, now, () => new AppError('RATE_LIMITED', TOO_MANY_CHECKS))
+}
+
+/**
+ * Step 3: in the add's transaction, the count back, only when both keys found the same existing
+ * person. Then the add told the caller nothing about either key. A guard on the caller's row
+ * first, then the row as stored, so a count that commits after it fails this commit.
+ */
+export async function takeBackTwoKeys(
+  tx: Tx,
+  db: Db,
+  callerId: string,
+  input: PersonInput,
+  region: string,
+  window: string | undefined,
+): Promise<void> {
+  if (window === undefined || !(await bothKeysFindOne(db, input, region, tx.id))) return
+  await tx.write({
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: callerId,
+    data: { rev: randomId() },
+  })
+  const stored = (await findPerson(db, callerId)) ?? null
+  const back = takeBack(callerId, stored, window)
+  if (back.length > 0) await tx.write(...back)
+}
+
+const TOO_MANY_CHECKS = 'Too many email and phone checks. Try again later.'
 
 export function isAppwriteError(error: unknown, code: number): boolean {
   return error instanceof AppwriteException && error.code === code

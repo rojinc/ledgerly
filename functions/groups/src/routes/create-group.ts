@@ -23,6 +23,7 @@ import {
   aRole,
   checkRegion,
   conflictAsTryAgain,
+  countTwoKeys,
   findFirst,
   getRowOrNull,
   invalid,
@@ -30,6 +31,7 @@ import {
   nextCloseAtFor,
   parseBody,
   resolveGuarded,
+  takeBackTwoKeys,
   teamRead,
   today,
 } from '../shared'
@@ -85,6 +87,12 @@ export async function createGroup(
   // The schema requires a counterpart exactly for employer and pair groups.
   const counterpartInput = input.type === 'house' ? undefined : input.counterpart
   const counterpartRole = input.type === 'house' ? undefined : COUNTERPART_ROLE[input.type]
+  // A counterpart with both an email and a phone is counted first, before even the check that
+  // it isn't the creator: that check answers only for an unknown email, so a guess pays either
+  // way (#378).
+  const window = counterpartInput
+    ? await countTwoKeys(db, creator.$id, counterpartInput, region, now).catch(invalidKeys)
+    : undefined
   // Validated before the team exists, so a refusal leaves no team behind. The transaction
   // resolves again, to stage what it finds then.
   if (counterpartInput) await resolveCounterpart(db, counterpartInput, region, creator.$id)
@@ -152,6 +160,7 @@ export async function createGroup(
             creator.$id,
             tx,
           )
+          await takeBackTwoKeys(tx, db, creator.$id, counterpartInput, region, window)
           writes.push(
             ...counterpart.writes,
             {
@@ -270,11 +279,16 @@ async function resolveCounterpart(
       ? await resolveGuarded(tx, db, input, region)
       : await resolvePerson(db, input, region)
   } catch (error) {
-    if (error instanceof RangeError) throw invalid('The email or phone number is not valid.')
-    throw error
+    invalidKeys(error)
   }
   if (resolved.personId === creatorId) throw invalid("You can't be your own counterpart.")
   return resolved
+}
+
+// resolvePerson and countTwoKeys throw a RangeError for an email or phone they can't use.
+function invalidKeys(error: unknown): never {
+  if (error instanceof RangeError) throw invalid('The email or phone number is not valid.')
+  throw error
 }
 
 function defaultSettings(type: 'house' | 'employer' | 'pair'): GroupSettings {

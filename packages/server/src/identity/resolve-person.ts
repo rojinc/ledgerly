@@ -79,31 +79,14 @@ export async function resolvePerson(
   region: string,
   transactionId?: string,
 ): Promise<ResolvedPerson> {
-  const identities: Array<{ type: IdentitiesType; key: string }> = []
-  if (input.email !== undefined) {
-    identities.push({ type: 'email', key: identityKey('email', input.email) })
-  }
-  if (input.phone !== undefined) {
-    identities.push({
-      type: 'phone',
-      key: identityKey('phone', normalizePhone(input.phone, region)),
-    })
-  }
+  const identities = keysOf(input, region)
   // Email first, so it decides when the email and phone belong to two different persons
   // (D-016). A found person is used as it is (or the person it was merged into): never merged
   // here, and an unknown key is never attached to it, so a stranger's typo can't land on
   // someone else.
   for (const { key } of identities) {
-    const { rows } = await db.listRows<Identities>({
-      databaseId: DATABASE_ID,
-      tableId: TABLES.identities,
-      queries: [Query.equal('key', key), Query.limit(1)],
-      transactionId,
-      total: false,
-    })
-    if (rows[0]) {
-      return { personId: await mergedTarget(db, rows[0].personId, transactionId), writes: [] }
-    }
+    const personId = await personOfKey(db, key, transactionId)
+    if (personId) return { personId, writes: [] }
   }
   // A placeholder has no permissions (server only) and a random ID (data-model.md#persons). It
   // keeps one key, the email if there is one: whoever verifies a placeholder's key claims it,
@@ -128,6 +111,58 @@ export async function resolvePerson(
     ),
   ]
   return { personId, writes }
+}
+
+/**
+ * Whether an add's email and phone both belong to one existing person (or the person it was
+ * merged into): the only add with both whose address check takes its count back (#378,
+ * identity-and-invites.md#adding-someone-to-a-group, step 2). Only reads, as resolvePerson does.
+ */
+export async function bothKeysFindOne(
+  db: Db,
+  input: PersonInput,
+  region: string,
+  transactionId?: string,
+): Promise<boolean> {
+  const identities = keysOf(input, region)
+  if (identities.length < 2) return false
+  const found: Array<string | undefined> = []
+  for (const { key } of identities) found.push(await personOfKey(db, key, transactionId))
+  return found[0] !== undefined && found.every((personId) => personId === found[0])
+}
+
+/** The keys an add names, email first. A RangeError, with a fixed message, for an invalid one. */
+export function keysOf(
+  input: PersonInput,
+  region: string,
+): Array<{ type: IdentitiesType; key: string }> {
+  const identities: Array<{ type: IdentitiesType; key: string }> = []
+  if (input.email !== undefined) {
+    identities.push({ type: 'email', key: identityKey('email', input.email) })
+  }
+  if (input.phone !== undefined) {
+    identities.push({
+      type: 'phone',
+      key: identityKey('phone', normalizePhone(input.phone, region)),
+    })
+  }
+  return identities
+}
+
+// The person a key belongs to, or the one it was merged into; undefined for an unknown key.
+async function personOfKey(
+  db: Db,
+  key: string,
+  transactionId?: string,
+): Promise<string | undefined> {
+  const { rows } = await db.listRows<Identities>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.identities,
+    queries: [Query.equal('key', key), Query.limit(1)],
+    transactionId,
+    total: false,
+  })
+  return rows[0] ? mergedTarget(db, rows[0].personId, transactionId) : undefined
 }
 
 // Merges only ever go from a placeholder into a person with an account, so a chain is short.

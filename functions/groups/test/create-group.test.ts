@@ -483,3 +483,108 @@ describe('POST /groups', () => {
     })
   })
 })
+
+// #378 (identity-and-invites.md#adding-someone-to-a-group, step 2): a counterpart with both an
+// email and a phone is counted on the creator's row first, before even the check that it isn't
+// the creator, and the count comes back only when both keys find the same existing person.
+describe('POST /groups with a counterpart’s email and phone (#378)', () => {
+  const OWN_PHONE = identity('iOwn', 'phone:+61412345678', 'p1')
+  const BOSS = [
+    identity('i9e', 'email:boss@example.com', 'p9'),
+    identity('i9p', 'phone:+61498765432', 'p9'),
+  ]
+
+  function setUpWith(identities: ReturnType<typeof identity>[], misses = 0) {
+    const counted =
+      misses > 0 ? { addressMisses: misses, addressMissesFrom: NOW.toISOString() } : {}
+    return fakes({
+      persons: [person(1, counted), person(9)],
+      profiles: [profile(1)],
+      identities,
+    })
+  }
+  const employer = (counterpart: object) => ({
+    ...EMPLOYER,
+    counterpart: { displayName: 'Boss', ...counterpart },
+  })
+  const misses = (services: ReturnType<typeof setUp>) =>
+    services.db.rows('persons').find((row) => row.$id === 'p1')?.addressMisses ?? 0
+
+  it('counts a counterpart with both keys, and not one with an email alone', async () => {
+    const both = setUpWith([])
+    await ok(both, 'POST', '/groups', employer({ email: 'new@example.com', phone: '0400 000 001' }))
+    expect(misses(both)).toBe(1)
+    const one = setUpWith([])
+    await ok(one, 'POST', '/groups', EMPLOYER)
+    expect(misses(one)).toBe(0)
+  })
+
+  // Which answer it gets still says whether the guess is known (accepted, at 10 a day): the
+  // email is looked up first. Both cost the count.
+  it('counts a guess beside the creator’s own phone, known or not', async () => {
+    const body = employer({ email: 'boss@example.com', phone: '0412 345 678' })
+    const known = setUpWith([OWN_PHONE, ...BOSS])
+    await ok(known, 'POST', '/groups', body)
+    expect(misses(known)).toBe(1)
+    const unknown = setUpWith([OWN_PHONE])
+    expect(await failure(unknown, 'POST', '/groups', body)).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      message: "You can't be your own counterpart.",
+    })
+    expect(misses(unknown)).toBe(1)
+  })
+
+  it('answers RATE_LIMITED at the limit, before the own-counterpart check, with no team', async () => {
+    const services = setUpWith([OWN_PHONE], 10)
+    const body = employer({ email: 'boss@example.com', phone: '0412 345 678' })
+    expect(await failure(services, 'POST', '/groups', body)).toMatchObject({ code: 'RATE_LIMITED' })
+    expect(services.teams.members('g1')).toBeUndefined()
+    expect(services.db.rows('groups')).toEqual([])
+  })
+
+  it('takes the count back when both keys find the same existing person', async () => {
+    const services = setUpWith(BOSS, 3)
+    const body = employer({ email: 'boss@example.com', phone: '0498 765 432' })
+    const { members } = await ok<CreateGroupResult>(services, 'POST', '/groups', body)
+    expect(members.map((row) => row.personId).sort()).toEqual(['p1', 'p9'])
+    expect(misses(services)).toBe(3)
+  })
+
+  it('keeps the count when both keys are the creator’s own', async () => {
+    const services = setUpWith([OWN_PHONE, identity('iOwnE', 'email:me@example.com', 'p1')])
+    const body = employer({ email: 'me@example.com', phone: '0412 345 678' })
+    expect(await failure(services, 'POST', '/groups', body)).toMatchObject({
+      message: "You can't be your own counterpart.",
+    })
+    expect(misses(services)).toBe(1)
+  })
+
+  it('counts a repeat of the same request once', async () => {
+    const services = setUpWith([])
+    const body = employer({ email: 'new@example.com', phone: '0400 000 001' })
+    await ok(services, 'POST', '/groups', body)
+    await ok(services, 'POST', '/groups', body)
+    expect(misses(services)).toBe(1)
+  })
+
+  it('refuses an invalid phone beside a valid email, without counting it', async () => {
+    const services = setUpWith([])
+    const body = employer({ email: 'new@example.com', phone: '12' })
+    expect(await failure(services, 'POST', '/groups', body)).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      message: 'The email or phone number is not valid.',
+    })
+    expect(misses(services)).toBe(0)
+  })
+
+  it('keeps the count when the keys find two different persons', async () => {
+    const services = setUpWith([identity('i9e', 'email:boss@example.com', 'p9')], 3)
+    await ok(
+      services,
+      'POST',
+      '/groups',
+      employer({ email: 'boss@example.com', phone: '0400 000 001' }),
+    )
+    expect(misses(services)).toBe(4)
+  })
+})

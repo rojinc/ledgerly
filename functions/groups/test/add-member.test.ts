@@ -1,6 +1,6 @@
 import type { Members } from '@ledgerly/core/generated/rows'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   beforeCommit,
   beforeStaging,
@@ -451,3 +451,208 @@ describe('POST /groups/{id}/members', () => {
     expect(services.db.rows('identities')).toHaveLength(0)
   })
 })
+
+// #378 (identity-and-invites.md#adding-someone-to-a-group, step 2): an add with both an email and
+// a phone is counted on the caller's own persons row before either key is looked up, with invites'
+// and reminders' address checks (ADDRESS_MISS_LIMIT, 10 in 24 hours), and the count comes back
+// only when both keys find the same existing person.
+describe('POST /groups/{id}/members with both an email and a phone (#378)', () => {
+  const HOUR = 60 * 60 * 1000
+  const ago = (ms: number) => new Date(NOW.getTime() - ms).toISOString()
+  // p9's phone, beside REGISTERED_EMAIL.
+  const REGISTERED_PHONE = {
+    $id: 'iPhone9',
+    key: 'phone:+61412345678',
+    type: 'phone',
+    personId: 'p9',
+    verified: true,
+    verifiedAt: NOW.toISOString(),
+  }
+  // Another registered person's phone (p8).
+  const OTHER_PHONE = {
+    ...REGISTERED_PHONE,
+    $id: 'iPhone8',
+    key: 'phone:+61498765432',
+    personId: 'p8',
+  }
+
+  /** House g1 with u1 as admin, whose row holds `counted` checks in a window from an hour ago. */
+  function counted(counted = 0) {
+    const misses = counted > 0 ? { addressMisses: counted, addressMissesFrom: ago(HOUR) } : {}
+    return fakes(
+      {
+        groups: [group('g1', 'house')],
+        persons: [person(1, misses), person(8), person(9)],
+        identities: [REGISTERED_EMAIL, REGISTERED_PHONE, OTHER_PHONE],
+        members: [member('m1', 'g1', 'p1', 'admin', 'active')],
+      },
+      { g1: ['u1'] },
+    )
+  }
+  const caller = (services: Fakes) => services.db.rows('persons').find((row) => row.$id === 'p1')
+  const misses = (services: Fakes) => caller(services)?.addressMisses ?? 0
+
+  it('counts the check before looking either key up', async () => {
+    const services = counted()
+    await add(services, { displayName: 'New', email: 'new@example.com', phone: '0400 000 001' })
+    expect(caller(services)).toMatchObject({
+      addressMisses: 1,
+      addressMissesFrom: NOW.toISOString(),
+    })
+  })
+
+  it.each([
+    ['an email alone', { email: 'new@example.com' }],
+    ['a phone alone', { phone: '0400 000 001' }],
+    ['a name alone', {}],
+  ])('doesn’t count %s', async (_case, keys) => {
+    const services = counted()
+    await add(services, { displayName: 'New', ...keys })
+    expect(misses(services)).toBe(0)
+  })
+
+  it('takes the count back when both keys find the same existing person', async () => {
+    const services = counted(3)
+    const row = await add(services, {
+      displayName: 'Reg',
+      email: 'reg@example.com',
+      phone: '0412 345 678',
+    })
+    expect(row).toMatchObject({ status: 'placeholder' })
+    expect(caller(services)).toMatchObject({ addressMisses: 3, addressMissesFrom: ago(HOUR) })
+  })
+
+  it.each([
+    ['both keys find nobody', { email: 'new@example.com', phone: '0400 000 001' }],
+    [
+      'the email finds someone and the phone nobody',
+      { email: 'reg@example.com', phone: '0400 000 001' },
+    ],
+    [
+      'the phone finds someone and the email nobody',
+      { email: 'new@example.com', phone: '0412 345 678' },
+    ],
+    ['they find two different persons', { email: 'reg@example.com', phone: '0498 765 432' }],
+  ])('keeps the count when %s', async (_case, keys) => {
+    const services = counted(3)
+    await add(services, { displayName: 'Someone', ...keys })
+    expect(misses(services)).toBe(4)
+  })
+
+  it('keeps the count when the add is refused after it, even for the same existing person', async () => {
+    const services = counted(3)
+    const keys = { email: 'reg@example.com', phone: '0412 345 678' }
+    await add(services, { displayName: 'Reg', ...keys })
+    // p9 is in the group now: CONFLICT, after the count.
+    expect(await addFails(services, { displayName: 'Reg again', ...keys })).toMatchObject({
+      code: 'CONFLICT',
+    })
+    expect(misses(services)).toBe(4)
+  })
+
+  it.each([
+    ['a known email', 'reg@example.com'],
+    ['an unknown one', 'new@example.com'],
+  ])(
+    'answers RATE_LIMITED at the limit for %s, before any lookup, writing nothing',
+    async (_case, email) => {
+      const services = counted(10)
+      const list = vi.spyOn(services.db, 'listRows')
+      const before = structuredClone([
+        services.db.rows('members'),
+        services.db.rows('persons'),
+        services.db.rows('identities'),
+      ])
+      expect(
+        await addFails(services, { displayName: 'Guess', email, phone: '0412 345 678' }),
+      ).toMatchObject({ code: 'RATE_LIMITED' })
+      // Neither key was looked up.
+      expect(list.mock.calls.map(([params]) => params.tableId)).not.toContain('identities')
+      expect([
+        services.db.rows('members'),
+        services.db.rows('persons'),
+        services.db.rows('identities'),
+      ]).toEqual(before)
+    },
+  )
+
+  it('still adds with one key at the limit', async () => {
+    const services = counted(10)
+    await add(services, { displayName: 'New', email: 'new@example.com' })
+    expect(misses(services)).toBe(10)
+  })
+
+  it('fails, keeping the count, when another check commits after its guard', async () => {
+    const services = counted(3)
+    const commit = services.db.updateTransaction.bind(services.db)
+    let commits = 0
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      // The first commit is the count's; the second is the add's.
+      if (params.commit && ++commits === 2) {
+        await updateRow(services.db, 'persons', 'p1', { addressMisses: 5 })
+      }
+      return commit(params)
+    })
+    const keys = { email: 'reg@example.com', phone: '0412 345 678' }
+    expect(await addFails(services, { displayName: 'Reg', ...keys })).toMatchObject({
+      code: 'CONFLICT',
+    })
+    expect(misses(services)).toBe(5)
+  })
+
+  it('answers CONFLICT after the count clashes twice, with no key looked up', async () => {
+    const services = counted(3)
+    const commit = services.db.updateTransaction.bind(services.db)
+    const list = vi.spyOn(services.db, 'listRows')
+    let clashes = 0
+    let busy = false
+    vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+      // Another write to the caller's row lands before each of the count's two tries commits.
+      if (params.commit && !busy && clashes < 2) {
+        clashes += 1
+        busy = true
+        await updateRow(services.db, 'persons', 'p1', { displayName: `Renamed ${clashes}` })
+        busy = false
+      }
+      return commit(params)
+    })
+    const keys = { email: 'reg@example.com', phone: '0412 345 678' }
+    expect(await addFails(services, { displayName: 'Reg', ...keys })).toMatchObject({
+      code: 'CONFLICT',
+    })
+    expect(list.mock.calls.map(([params]) => params.tableId)).not.toContain('identities')
+    expect(misses(services)).toBe(3)
+  })
+
+  it('refuses an invalid phone beside a valid email, without counting it', async () => {
+    const services = counted(3)
+    expect(
+      await addFails(services, { displayName: 'Typo', email: 'reg@example.com', phone: '12' }),
+    ).toMatchObject({ code: 'VALIDATION_FAILED' })
+    expect(misses(services)).toBe(3)
+  })
+
+  it('takes back from the count as stored after its guard, not one read before', async () => {
+    const services = counted(3)
+    // Another check commits just before the add's guard on the caller's row: stagings 1–2 are
+    // the count's, 3 is p9's guard, 4 the caller's.
+    beforeStaging(services.db, 4, () =>
+      updateRow(services.db, 'persons', 'p1', { addressMisses: 5 }),
+    )
+    await add(services, { displayName: 'Reg', email: 'reg@example.com', phone: '0412 345 678' })
+    expect(misses(services)).toBe(4)
+  })
+
+  it('gives nothing back once a new window has started since the count', async () => {
+    const services = counted(3)
+    // A check that starts a new window commits after this add's count (two stagings), before
+    // its transaction stages anything.
+    beforeStaging(services.db, 3, () =>
+      updateRow(services.db, 'persons', 'p1', { addressMisses: 1, addressMissesFrom: AFTER_COUNT }),
+    )
+    await add(services, { displayName: 'Reg', email: 'reg@example.com', phone: '0412 345 678' })
+    expect(caller(services)).toMatchObject({ addressMisses: 1, addressMissesFrom: AFTER_COUNT })
+  })
+})
+
+const AFTER_COUNT = '2026-10-18T20:00:01.000Z'
