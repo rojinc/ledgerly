@@ -1,6 +1,6 @@
 import type { Groups, Members, Schedules } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
@@ -772,5 +772,37 @@ describe('SchedulesPage: pause and resume (#430)', () => {
     await screen.findByRole('button', { name: 'Resuming…' })
     fireEvent.click(screen.getByRole('button', { name: 'End' }))
     expect(screen.queryByLabelText('Last date')).toBeNull()
+  })
+
+  it('sends one resume however often Resume is pressed while it’s on its way', async () => {
+    mockGroup(acme)
+    mockSchedules([paused])
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Resume' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Resuming…' }))
+    // Long enough for a second request to have gone out.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 50)))
+    expect(call).toHaveBeenCalledTimes(1)
+  })
+
+  it('shows a pause at once, before the list reloads, and says the date it was given', async () => {
+    mockGroup(acme)
+    mockSchedules([running])
+    call.mockResolvedValue({
+      ok: true,
+      data: { schedule: { ...running, pausedFrom: '2026-11-09' }, removed: 0 },
+    })
+    renderAt('/schedules?groupId=g1')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    fireEvent.change(screen.getByLabelText('Pause from'), { target: { value: '2026-11-09' } })
+    // Every reload from here never answers: what shows is the pause's own answer.
+    listRows.mockReturnValue(new Promise(() => {}))
+    fireEvent.click(screen.getByRole('button', { name: 'Pause schedule' }))
+    expect(await screen.findByRole('button', { name: 'Resume' })).toBeTruthy()
+    expect(screen.getByText(/· Paused from Mon, (9 Nov|Nov 9),? 2026$/)).toBeTruthy()
+    expect(screen.getByRole('status').textContent).toMatch(
+      /^Paused from Mon, (9 Nov|Nov 9),? 2026\.$/,
+    )
   })
 })

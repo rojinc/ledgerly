@@ -504,6 +504,34 @@ describe('BillsPage: recurring', () => {
     expect(screen.queryByRole('group')).toBeNull()
   })
 
+  it('shows a pause at once, before the lists reload, then reads the bills again (#430)', async () => {
+    mockLists([schedule('s1')])
+    call.mockResolvedValue(
+      ok({ schedule: schedule('s1', { pausedFrom: '2026-10-19' }), removed: 1 }),
+    )
+    const { queryClient } = renderAt('/bills')
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause Rent' }))
+    // Every reload from here never answers: what shows is the pause's own answer.
+    listRows.mockReturnValue(new Promise(() => {}))
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    fireEvent.click(screen.getByRole('button', { name: 'Pause it' }))
+    await screen.findByText('Paused Rent from today. Resume it to carry on.')
+    const region = within(screen.getByRole('region', { name: 'Recurring' }))
+    expect(region.getByRole('button', { name: 'Resume Rent' })).toBeTruthy()
+    const keys = invalidate.mock.calls.map(([filters]) => filters?.queryKey)
+    // The bills it removed from today go from the due list.
+    expect(keys).toContainEqual(billKeys.all('g1'))
+  })
+
+  it('shows a paused bill that has ended as ended, not paused (#430)', async () => {
+    mockLists([schedule('s1', { endsOn: '2026-10-12', pausedFrom: '2026-10-05' })])
+    renderAt('/bills')
+    const region = within(await screen.findByRole('region', { name: 'Recurring' }))
+    const item = await region.findByRole('listitem')
+    expect(item.textContent).toMatch(/· Ended$/)
+    expect(item.textContent).not.toMatch(/Paused/)
+  })
+
   it('links to New recurring bill', async () => {
     renderAt('/bills')
     expect(
