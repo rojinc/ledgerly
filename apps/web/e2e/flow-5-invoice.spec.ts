@@ -57,12 +57,10 @@ test.afterEach(async ({ page }, testInfo) => {
   }
 })
 
-// Skipped until the flows have a project of their own (#386): each run would leave a final
-// invoice in dev, which is production, and a final statement is never changed or deleted
-// (D-010). The lead's call on #389.
-test.skip('invoices last month: the draft, finalize and send, its number and PDF', async ({
-  page,
-}) => {
+// Its final invoice never changes (D-010), but it doesn't stay in dev, which is production: the
+// employer never joined, so when the `account` job deletes the run's users, Max's deletion
+// purges the group with its statements and PDFs (#386, identity-and-invites.md#purging-a-group).
+test('invoices last month: the draft, finalize and send, its number and PDF', async ({ page }) => {
   await logIn(page, setupUser('max'))
   // Last month, in the group's time zone, worked out before the group is made: after it, across
   // midnight at a month's end, it would be the group's first month, which reissue refuses (#406).

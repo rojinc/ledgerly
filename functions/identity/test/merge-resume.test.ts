@@ -405,16 +405,16 @@ describe('a later join carries a merge on in that group (#358)', () => {
   })
 
   it('logs a clear that fails for a deleted U’s merge, and reads an unmarked one only once', async () => {
-    // Sammy is marked and Pat isn't; Pat still holds a key, so the walk finds both.
+    // Sammy is marked and Amy isn't; Amy still holds a key, so the walk finds both, Amy first.
     const services = seeded(
       {
-        persons: [{ ...SAMMY, $id: 'pPat' }],
+        persons: [{ ...SAMMY, $id: 'pAmy' }],
         identities: [
           {
-            $id: 'iPat',
-            key: 'email:pat@example.com',
+            $id: 'iAmy',
+            key: 'email:amy@example.com',
             type: 'email',
-            personId: 'pPat',
+            personId: 'pAmy',
             verified: true,
           },
         ],
@@ -427,7 +427,7 @@ describe('a later join carries a merge on in that group (#358)', () => {
     vi.spyOn(services.db, 'updateTransaction').mockRejectedValue(new Error('Appwrite is down'))
     expect(await hourly(services)).toMatchObject({ ok: true, data: { unfinished: 2, skipped: 2 } })
     const reads = (id: string) => getRow.mock.calls.filter(([params]) => params.rowId === id)
-    expect(reads('pPat')).toHaveLength(1)
+    expect(reads('pAmy')).toHaveLength(1)
     const lines = vi.mocked(console.error).mock.calls.map(([line]) => JSON.parse(String(line)))
     expect(lines).toContainEqual(
       expect.objectContaining({ event: 'merge_run_failed', personId: 'pP', intoPersonId: 'pSam' }),
