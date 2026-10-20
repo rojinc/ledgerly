@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { z } from 'zod'
 import {
+  closeStatementBodySchema,
   finalizeStatementBodySchema,
   previewStatementBodySchema,
   reissueStatementBodySchema,
@@ -131,6 +132,22 @@ describe('previewStatementBodySchema', () => {
       [],
     )
     expect(paths(previewStatementBodySchema, { periodEnd: '2026-10-31' })).toEqual(['groupId'])
+  })
+})
+
+describe('closeStatementBodySchema', () => {
+  it('needs a group, and takes an optional real end date and nothing else', () => {
+    expect(paths(closeStatementBodySchema, { groupId: 'acme' })).toEqual([])
+    expect(paths(closeStatementBodySchema, { groupId: 'acme', periodEnd: '2026-10-20' })).toEqual(
+      [],
+    )
+    expect(paths(closeStatementBodySchema, { periodEnd: '2026-10-20' })).toEqual(['groupId'])
+    expect(paths(closeStatementBodySchema, { groupId: 'acme', periodEnd: '2026-02-30' })).toEqual([
+      'periodEnd',
+    ])
+    expect(paths(closeStatementBodySchema, { groupId: 'acme', periodStart: '2026-10-01' })).toEqual(
+      [''],
+    )
   })
 })
 
