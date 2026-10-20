@@ -288,6 +288,38 @@ describe('transactionChanges', () => {
     expect(transactionChanges([voided], current, personOf).get('bob')?.[0]?.voided).toBe(true)
   })
 
+  it('tells them about an edit then a void in the same window as a void, from the first before', () => {
+    const rows = [
+      edit(),
+      edit({
+        actorPersonId: 'cara',
+        voided: true,
+        nets: { before: split(12000), after: [] },
+        totalCents: undefined,
+      }),
+    ]
+    expect(transactionChanges(rows, current, samePerson).get('alice')?.[0]).toMatchObject({
+      changedBy: ['bob', 'cara'],
+      voided: true,
+      totalCents: { before: 9000, after: 12000 },
+      netCents: { before: 4500, after: 0 },
+    })
+  })
+
+  it('names everyone else who changed it, in the order they first did', () => {
+    const rows = [
+      edit({ actorPersonId: 'cara' }),
+      edit({ actorPersonId: 'bob' }),
+      edit({ actorPersonId: 'cara' }),
+      edit({ actorPersonId: 'dan' }),
+    ]
+    expect(transactionChanges(rows, current, samePerson).get('alice')?.[0]?.changedBy).toEqual([
+      'cara',
+      'bob',
+      'dan',
+    ])
+  })
+
   it('lists each person’s transactions, in the window’s order', () => {
     const rows = [edit({ transactionId: 't2' }), edit(), edit({ transactionId: 't2' })]
     const told = transactionChanges(rows, current, samePerson)

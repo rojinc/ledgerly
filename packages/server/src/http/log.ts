@@ -53,6 +53,8 @@ export type LogEvent =
   | 'receipt_cleanup_behind'
   | 'receipt_cleanup_failed'
   | 'receipt_row_listed'
+  | 'transaction_changes_failed'
+  | 'transaction_changes_skipped'
 
 /**
  * How each event is written. Most are problems, written with `console.error`: until alerting
@@ -80,6 +82,7 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   merge_stopped: 'warn',
   merge_walk_cut_off: 'warn',
   receipt_cleanup_behind: 'warn',
+  transaction_changes_skipped: 'warn',
 }
 
 /** What the password notice did (identity-and-invites.md#password-notice). */

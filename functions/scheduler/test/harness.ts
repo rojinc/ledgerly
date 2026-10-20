@@ -22,6 +22,7 @@ export type Fakes = Services & {
   teams: FakeTeams
   files: FakeBucket
   sendEmail: ReturnType<typeof vi.fn<(email: Email) => Promise<unknown>>>
+  wait: ReturnType<typeof vi.fn<(ms: number) => Promise<void>>>
 }
 
 /** Accounts by user ID; any other user ID is a deleted account (404). Teams by team ID. */
@@ -37,8 +38,14 @@ export function fakes(
     u1: { email: 'sam@example.com', emailVerification: true },
     u2: { email: 'alex@example.com', emailVerification: true },
   }
+  // Unless a test seeds checkpoints, step 3b's is at the start of this hour, so a run has no
+  // change emails to look at (scheduling.md#step-3b-transaction-change-emails).
+  const hour = new Date(Math.floor((options.now ?? NOW).getTime() / 3_600_000) * 3_600_000)
+  const checkpoints = seed.checkpoints ?? [
+    { $id: 'transaction-changes', through: hour.toISOString() },
+  ]
   return {
-    db: new FakeDb(seed),
+    db: new FakeDb({ ...seed, checkpoints }),
     teams: new FakeTeams(options.teams),
     users: {
       get: async ({ userId }) => {
@@ -52,6 +59,7 @@ export function fakes(
     now: options.now ?? NOW,
     appUrl: APP_URL,
     outOfTime: () => false,
+    wait: vi.fn(async (_ms: number) => {}),
   }
 }
 
