@@ -13,7 +13,7 @@ import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { readGroupNets } from '@ledgerly/server/ledger/balances'
 import { ID, Permission, Query, Role } from 'node-appwrite'
-import { atMissLimit, countCheck, takeBack, takeBackAlone } from '../address-misses'
+import { atMissLimit, countCheck, takeBack } from '../address-misses'
 import { parseBody } from '../parse-body'
 import { getRowOrNull, isAppwriteError, tryAgain } from '../rows'
 import type { Services } from '../services'
@@ -73,13 +73,12 @@ export async function sendReminder(
     checkSender(stored, person.$id, groupId)
     const live = now.getTime() - Date.parse(stored.sentAt) < KEY_LIVE_MS
     if (!live || owedCents <= 0 || atMissLimit(person, now)) return { sentAt: stored.sentAt }
-    const window = await countedRetry(db, person.$id, now)
-    if (window === null) return { sentAt: stored.sentAt }
-    // A wrong address or a deleted recipient keeps the count; a send takes it back first.
-    if (await stillReachable(db, groupId, person.$id, email)) {
-      await takeBackAlone(db, person.$id, window)
-      await send()
-    }
+    if (!(await countedRetry(db, person.$id, now))) return { sentAt: stored.sentAt }
+    // A retry never takes its count back, whether or not its address matches or it sends. Under
+    // the reused key, Resend refuses a send to a different address and replays one to the same
+    // address, so a retry's send doesn't show that anything was delivered. A take-back here would
+    // let the sender test the recipient's other addresses for free, read off their own row.
+    if (await stillReachable(db, groupId, person.$id, email)) await send()
     return { sentAt: stored.sentAt }
   }
   if (owedCents <= 0) throw new AppError('VALIDATION_FAILED', NOTHING_OWED)
@@ -100,17 +99,18 @@ export async function sendReminder(
 }
 
 /**
- * A retry's count (step 3): the window it was taken in. Null when the limit was reached
+ * A retry's count (step 3), which it keeps: whether it was taken. Not when the limit was reached
  * meanwhile, or counting conflicted twice: either answers as at the limit, with the stored time
- * and no address check.
+ * and no address check. Any other failure is thrown.
  */
-async function countedRetry(db: Db, senderId: string, now: Date): Promise<string | null> {
+async function countedRetry(db: Db, senderId: string, now: Date): Promise<boolean> {
   try {
-    return await countCheck(db, senderId, now, tooMany)
+    await countCheck(db, senderId, now, tooMany)
+    return true
   } catch (error) {
     const refused =
       error instanceof AppError && (error.code === 'RATE_LIMITED' || error.code === 'CONFLICT')
-    if (refused) return null
+    if (refused) return false
     throw error
   }
 }

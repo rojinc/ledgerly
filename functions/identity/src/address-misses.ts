@@ -64,45 +64,30 @@ export async function countCheck(
 }
 
 /**
- * Taking the count back: the write that gives a sent check its 1 back, for a transaction that
- * guards the sender's row and read it as stored after that: `addressMisses − 1`, never below 0,
- * `addressMissesFrom` unchanged. None once another check has started a new window since
- * `window`, the one the count was taken in, so it can't cancel a check counted there.
+ * Taking the count back: the write that gives the check of a new invite or reminder that's sent
+ * its 1 back, for the transaction that commits it, which guards the sender's row and read it as
+ * stored after that: `addressMisses − 1`, never below 0, `addressMissesFrom` unchanged. None once
+ * another check has started a new window since `window`, the one the count was taken in, so it
+ * can't cancel a check counted there. A reminder retry never takes its count back
+ * (identity-and-invites.md#reminders, step 3).
  */
 export function takeBack(senderId: string, stored: Counted | null, window: string): Write[] {
-  const data = takenBack(stored, window)
-  return data ? [{ action: 'update', tableId: TABLES.persons, rowId: senderId, data }] : []
-}
-
-/**
- * A reminder retry's take-back, in a transaction of its own (identity-and-invites.md#reminders,
- * step 3): the same guard, then `takeBack`'s count. A 409 runs it once more; a second leaves the
- * count up, which only over-counts.
- */
-export async function takeBackAlone(db: Db, senderId: string, window: string): Promise<void> {
-  try {
-    await onceMore(() => onSenderRow(db, senderId, (stored) => takenBack(stored, window)))
-  } catch (error) {
-    if (!isAppwriteError(error, 409)) throw error
-  }
-}
-
-// As instants: Appwrite may give back a datetime in another form than the one written.
-function takenBack(stored: Counted | null, window: string): Partial<Persons> | undefined {
+  // As instants: Appwrite may give back a datetime in another form than the one written.
   const from = stored?.addressMissesFrom
-  if (!from || Date.parse(from) !== Date.parse(window)) return undefined
-  return { addressMisses: Math.max(0, (stored?.addressMisses ?? 0) - 1) }
+  if (!from || Date.parse(from) !== Date.parse(window)) return []
+  const data = { addressMisses: Math.max(0, (stored?.addressMisses ?? 0) - 1) }
+  return [{ action: 'update', tableId: TABLES.persons, rowId: senderId, data }]
 }
 
 /**
  * One transaction on the sender's row: a guard write, the row read again as committed
- * (ledger.md#concurrency), then `change`'s data for it, if any. A write to the row committed
- * after the guard fails this commit.
+ * (ledger.md#concurrency), then `change`'s data for it. A write to the row committed after the
+ * guard fails this commit.
  */
 function onSenderRow(
   db: Db,
   senderId: string,
-  change: (stored: Persons | null) => Partial<Persons> | undefined,
+  change: (stored: Persons | null) => Partial<Persons>,
 ): Promise<void> {
   return withTransaction(db, async (tx) => {
     await tx.write({
@@ -113,7 +98,7 @@ function onSenderRow(
     })
     const stored = await getRowOrNull<Persons>(db, TABLES.persons, senderId)
     const data = change(stored)
-    if (data) await tx.write({ action: 'update', tableId: TABLES.persons, rowId: senderId, data })
+    await tx.write({ action: 'update', tableId: TABLES.persons, rowId: senderId, data })
   })
 }
 

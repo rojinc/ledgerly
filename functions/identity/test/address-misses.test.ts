@@ -1,5 +1,8 @@
+import { type Email, EmailError } from '@ledgerly/server/email/send-email'
+import { AppError } from '@ledgerly/server/http/app-error'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { countCheck } from '../src/address-misses'
 import {
   beforeCommit,
   beforeStaging,
@@ -15,7 +18,8 @@ import {
 
 // #274 (identity-and-invites.md#invites, step 2; #reminders, steps 3, 5 and 6.2): address checks
 // typed for invites and reminders, counted together on the sender's persons row before they run,
-// with a sent one's count taken back.
+// with the count of a new invite or reminder that's sent taken back. A reminder retry never takes
+// its count back.
 
 type Row = Record<string, unknown> & { $id: string }
 
@@ -70,7 +74,7 @@ function share(personId: string, givenCents: number, receivedCents: number) {
  */
 function fixture(
   sam: object = {},
-  seed: Partial<Record<'persons' | 'members' | 'shares' | 'reminders', Row[]>> = {},
+  seed: Partial<Record<'persons' | 'members' | 'shares' | 'identities' | 'reminders', Row[]>> = {},
 ): Fakes {
   return fakes(
     {
@@ -96,7 +100,7 @@ function fixture(
         member('m2', 'pAlex', 'Alex', { status: 'placeholder', role: 'member' }),
       ],
       shares: seed.shares ?? [share('pSam', 5000, 0), share('pAlex', 0, 5000)],
-      identities: [
+      identities: seed.identities ?? [
         identity('iAlex', 'email:alex@example.com', 'pAlex'),
         identity('iJo', 'email:jo@example.com', 'pJo'),
       ],
@@ -245,6 +249,35 @@ function flood(services: Fakes) {
 /** The code of each answer, or `ok`. */
 function codes(answers: Awaited<ReturnType<typeof call>>[]): string[] {
   return answers.map(({ body }) => (body.ok ? 'ok' : body.error.code))
+}
+
+/**
+ * `sendEmail` as Resend answers under an idempotency key it already holds (for 24 hours): the
+ * same request again gets the first answer replayed, with no new delivery, and any other payload,
+ * such as another `to`, is refused with `invalid_idempotent_request`. `used` maps each key already
+ * sent under to its address (a reminder's content doesn't change in these tests). Returns the
+ * emails delivered from now on.
+ */
+function resendHolding(services: Fakes, used: Record<string, string>): Email[] {
+  const sentTo = new Map(Object.entries(used))
+  const delivered: Email[] = []
+  vi.mocked(services.sendEmail).mockImplementation(async (email) => {
+    const key = email.idempotencyKey ?? ''
+    const first = sentTo.get(key)
+    if (first !== undefined && first !== email.to) {
+      throw new EmailError(
+        'Resend answered 409 invalid_idempotent_request',
+        'invalid_idempotent_request',
+        409,
+      )
+    }
+    if (first === undefined) {
+      sentTo.set(key, String(email.to))
+      delivered.push(email)
+    }
+    return { id: `email-${key}` }
+  })
+  return delivered
 }
 
 afterEach(() => {
@@ -430,6 +463,25 @@ describe('address misses (#274)', () => {
       expect(services.sendEmail).toHaveBeenCalledTimes(1)
       // The new window keeps the other's count.
       expect(missesOf(services)).toEqual(misses(1, later.now.toISOString()))
+    })
+
+    it('takes its count back from the window its rerun counted in, which a parallel check started', async () => {
+      // The sender's window has ended, so this check starts a new one at NOW. Before it commits, a
+      // parallel check commits one started 1 ms earlier, so this one reruns and counts in that.
+      const services = fixture(misses(5, ago(25 * HOUR)))
+      const parallel = new Date(NOW.getTime() - 1)
+      const raced = beforeCommit(services.db, () =>
+        countCheck(services.db, 'pSam', parallel, () => new AppError('RATE_LIMITED', 'Too many')),
+      )
+      await ok(services, 'POST', route.path, route.body(RIGHT, 1))
+      const commits = raced.mock.calls.flatMap(([params], index) =>
+        params.commit ? [raced.mock.settledResults[index]?.type] : [],
+      )
+      // This count (409), the parallel one, this count's rerun, then the send's commit.
+      expect(commits).toEqual(['rejected', 'fulfilled', 'fulfilled', 'fulfilled'])
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      // The parallel check's 1: this one's was taken back from the window it was counted in.
+      expect(missesOf(services)).toEqual(misses(1, parallel.toISOString()))
     })
 
     describe('parallel requests', () => {
@@ -750,15 +802,17 @@ describe('address misses (#274)', () => {
     const retry = (services: Fakes, email: string) =>
       ok(services, 'POST', '/reminders', REMINDER.body(email))
     const retried = { ok: true, data: { sentAt: SENT_AT } }
+    // r0 went to the right address under its key, which Resend still holds.
+    const USED = { 'person-reminder-r0': RIGHT }
 
-    it('sends again for the right address, counting it first and taking it back', async () => {
+    it('sends again for the right address, counting it first and keeping the count', async () => {
       const services = fixture({}, { reminders: [stored] })
       const staged = countsStaged(services)
       expect(await retry(services, RIGHT)).toEqual({ sentAt: SENT_AT })
       expect(services.sendEmail).toHaveBeenCalledTimes(1)
-      // +1 in a new window, then −1 in a transaction of its own.
-      expect(staged()).toEqual([1, 0])
-      expect(missesOf(services)).toEqual(misses(0))
+      // +1 in a new window, and nothing taken back: a retry's send shows nothing was delivered.
+      expect(staged()).toEqual([1])
+      expect(missesOf(services)).toEqual(misses(1))
     })
 
     it.each([
@@ -780,7 +834,10 @@ describe('address misses (#274)', () => {
         const services = fixture(misses(10, ago(HOUR)), { reminders: [stored] })
         const before = sam(services)
         const checks = addressChecks(services)
+        const transactions = vi.spyOn(services.db, 'createTransaction')
         expect(await retry(services, email)).toEqual({ sentAt: SENT_AT })
+        // The cheap check before counting: no transaction, and no identity is looked up.
+        expect(transactions).not.toHaveBeenCalled()
         expect(checks()).toBe(0)
         expect(services.sendEmail).not.toHaveBeenCalled()
         expect(sam(services)).toEqual(before)
@@ -821,30 +878,100 @@ describe('address misses (#274)', () => {
       },
     )
 
-    it('leaves the count up when its take-back conflicts twice, and still sends', async () => {
+    it('answers INTERNAL, not the stored time, when counting fails for another reason', async () => {
       const services = fixture(misses(3, ago(HOUR)), { reminders: [stored] })
-      // The count commits; the take-back and its rerun conflict.
+      const before = sam(services)
+      const checks = addressChecks(services)
+      // The count's commit: Appwrite fails, not with a conflict.
+      vi.spyOn(services.db, 'updateTransaction').mockRejectedValueOnce(
+        new AppwriteException('Server Error', 500, 'general_unknown'),
+      )
+      expect(await failure(services, 'POST', '/reminders', REMINDER.body(RIGHT))).toEqual({
+        status: 500,
+        code: 'INTERNAL',
+        message: 'Something went wrong on our side. Try again.',
+      })
+      expect(checks()).toBe(0)
+      expect(services.sendEmail).not.toHaveBeenCalled()
+      expect(sam(services)).toEqual(before)
+    })
+
+    it('commits its count and nothing more, and still sends', async () => {
+      const services = fixture(misses(3, ago(HOUR)), { reminders: [stored] })
+      // The count commits; any other commit would conflict.
       const commits = conflictsAfter(services, 1)
       expect(await retry(services, RIGHT)).toEqual({ sentAt: SENT_AT })
-      expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(3)
+      expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(1)
       expect(services.sendEmail).toHaveBeenCalledTimes(1)
       expect(missesOf(services)).toEqual(misses(4, ago(HOUR)))
     })
 
-    it('takes nothing back once another check has started a new window', async () => {
+    it('keeps its count in the window it was taken in, after another check starts a new one', async () => {
+      // The window ends 1 ms after NOW: the retry counts in it, and another check, 1 ms later,
+      // starts the next one before the retry's send.
       const services = fixture(misses(5, ago(24 * HOUR - 1)), { reminders: [stored] })
       const later = { ...services, now: new Date(NOW.getTime() + 1) }
-      // The take-back's commit: the first is the retry's count. It reruns, and finds the new
-      // window.
-      const raced = beforeCommit(
-        services.db,
-        () => failure(later, 'POST', '/invites', INVITE.body(WRONG)),
-        2,
-      )
+      const staged = countsStaged(services)
+      vi.mocked(services.sendEmail).mockImplementationOnce(async () => {
+        await failure(later, 'POST', '/invites', INVITE.body(WRONG))
+        return { id: 'email-1' }
+      })
       expect(await retry(services, RIGHT)).toEqual({ sentAt: SENT_AT })
-      expect(raced).toHaveBeenCalled()
       expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      // The retry's 6 stays in the window that ended; the new one holds only the other's 1.
+      expect(staged()).toEqual([6, 1])
       expect(missesOf(services)).toEqual(misses(1, later.now.toISOString()))
+    })
+
+    it('keeps the count of a right address whose send meets a parallel one, as of a wrong one', async () => {
+      const services = fixture(misses(3, ago(HOUR)), { reminders: [stored] })
+      vi.spyOn(console, 'error').mockImplementation(() => {})
+      vi.mocked(services.sendEmail).mockRejectedValueOnce(
+        new EmailError('Resend 409', 'concurrent_idempotent_requests', 409),
+      )
+      expect((await failure(services, 'POST', '/reminders', REMINDER.body(RIGHT))).code).toBe(
+        'INTERNAL',
+      )
+      expect(missesOf(services)).toEqual(misses(4, ago(HOUR)))
+      expect(await retry(services, WRONG)).toEqual({ sentAt: SENT_AT })
+      expect(missesOf(services)).toEqual(misses(5, ago(HOUR)))
+    })
+
+    // The self-review's repro: under r0's key, a retry to another of Alex's addresses delivers
+    // nothing, so a take-back would only tell Sam, from their own row, that the guess was right.
+    it('takes nothing back from a retry to another of the recipient’s addresses, so it tests no more of them', async () => {
+      const alexKey = (id: string, key: string) => ({
+        ...identity(id, key, 'pAlex'),
+        verified: true,
+        verifiedAt: ago(48 * HOUR),
+      })
+      const services = fixture(
+        {},
+        {
+          persons: [{ ...SAM, ...misses(9, ago(HOUR)) }, { ...ALEX, userId: 'u2' }, JO],
+          members: [member('m1', 'pSam', 'Sam'), member('m2', 'pAlex', 'Alex', { role: 'member' })],
+          identities: [
+            alexKey('iAlex', 'email:alex@example.com'),
+            alexKey('iWork', 'email:alex.work@example.com'),
+            alexKey('iHome', 'email:alex.home@example.com'),
+            identity('iJo', 'email:jo@example.com', 'pJo'),
+          ],
+          reminders: [stored],
+        },
+      )
+      const delivered = resendHolding(services, USED)
+      const checks = addressChecks(services)
+      const counts = []
+      for (const email of ['alex.work@example.com', 'alex.home@example.com', 'guess@example.com']) {
+        expect(await retry(services, email)).toEqual({ sentAt: SENT_AT })
+        counts.push(sam(services).addressMisses)
+      }
+      // 10 after the first, which kept its count; the second and third found the limit.
+      expect(counts).toEqual([10, 10, 10])
+      expect(checks()).toBe(1)
+      // Resend refused the first's send, to another address under r0's key.
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      expect(delivered).toEqual([])
     })
 
     it.each([
@@ -862,9 +989,10 @@ describe('address misses (#274)', () => {
       ['0, 12 wrong and the right one', {}, 12],
       ['9, 3 wrong and the right one', misses(9, NOW.toISOString()), 3],
     ])(
-      'answers a burst of retries from %s with the stored time, checking at most 10 unsent addresses',
+      'answers a burst of retries from %s with the stored time, checking at most 10 addresses',
       async (_case, start, wrong) => {
         const services = fixture(start, { reminders: [stored] })
+        const delivered = resendHolding(services, USED)
         const checks = addressChecks(services)
         const emails = [...Array.from({ length: wrong }, (_, n) => guess(n)), RIGHT]
         const answers = await Promise.all(
@@ -875,10 +1003,13 @@ describe('address misses (#274)', () => {
         }
         // No CONFLICT to tell a wrong address by: the stored time, every time.
         for (const { body } of answers) expect(body).toEqual(retried)
-        const sent = vi.mocked(services.sendEmail).mock.calls.length
+        // Every address checked kept its count, right or wrong, so the window's 10 bound them;
+        // from the 11th on, the stored time with no identity read.
         const before = (start as { addressMisses?: number }).addressMisses ?? 0
-        expect(checks() - sent).toBeLessThanOrEqual(10 - before)
+        expect(checks()).toBe(10 - before)
         expect(missesOf(services)).toEqual(misses(10))
+        // Any retry to the right address that sent was replayed under r0's key: no new delivery.
+        expect(delivered).toEqual([])
       },
     )
 
