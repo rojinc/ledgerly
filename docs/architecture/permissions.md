@@ -39,6 +39,7 @@ Table-level permissions: **none** on every table. Row security is on everywhere.
 | Remove members, change roles, change settings | ✓ | — | — |
 | Close a period now; finalize, send, void, reissue or discard statements | ✓ | — | — |
 | Archive or unarchive the group | ✓ | — | — |
+| Delete the group, once it's archived and nobody else is in its team ([deleting a group](identity-and-invites.md#deleting-a-group)) | ✓ | — | — |
 
 Nobody can edit or void a **locked** transaction, admins included ([I-7](ledger.md#invariants)).
 

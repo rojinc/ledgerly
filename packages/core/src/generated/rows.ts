@@ -174,6 +174,8 @@ export type Groups = Models.Row & {
     settingsJson: string;
     archivedAt: string | null;
     rev: string | null;
+    deletingAt: string | null;
+    deletingBy: string | null;
 }
 
 export type Members = Models.Row & {
