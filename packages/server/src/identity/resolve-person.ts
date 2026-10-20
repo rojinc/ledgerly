@@ -8,6 +8,13 @@ import { randomId } from './random-id'
 
 export type PersonInput = { displayName: string; email?: string; phone?: string }
 
+/**
+ * What a deleted account's person, its member rows in the groups that keep them, and a placeholder
+ * step 5c has cleared are called (identity-and-invites.md#deleting-an-account-m4,
+ * scheduling.md#step-5c-placeholder-clean-up).
+ */
+export const FORMER_MEMBER = 'Former member'
+
 /** No account, not being merged, not a deleted account: a person a new user may adopt. */
 export function isPlaceholder(person: Persons): boolean {
   return !person.userId && !person.mergedInto && !person.deletedAt
@@ -25,16 +32,18 @@ export async function isLonePlaceholder(
   exceptMemberId?: string,
 ): Promise<boolean> {
   const person = await findPerson(db, personId)
-  if (!person || !isPlaceholder(person)) return false
   // idx_person_status. A person has one row per group (uniq_group_person): two are enough to
-  // see one besides `exceptMemberId`.
+  // see one besides `exceptMemberId`. Read for every person, so a removal makes the same calls,
+  // and takes as long, whether or not a placeholder row's person has an account.
   const { rows } = await db.listRows<Members>({
     databaseId: DATABASE_ID,
     tableId: TABLES.members,
     queries: [Query.equal('personId', personId), Query.limit(2)],
     total: false,
   })
-  return rows.every((row) => row.$id === exceptMemberId)
+  return (
+    person !== undefined && isPlaceholder(person) && rows.every((row) => row.$id === exceptMemberId)
+  )
 }
 
 /** The person as stored, or undefined when there's none. */

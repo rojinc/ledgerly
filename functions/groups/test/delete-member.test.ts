@@ -581,6 +581,49 @@ describe('DELETE /groups/{id}/members/{memberId}: what goes with the row', () =>
     expect(ids(services, 'invites')).toEqual(['v3', 'v2', 'v8', 'v4'])
   })
 
+  // The database calls a request makes, in order: each read's table, each staging's size, each
+  // commit or rollback.
+  function callsOf(services: Fakes): string[] {
+    const db = services.db
+    const log: string[] = []
+    const getRow = db.getRow.bind(db)
+    vi.spyOn(db, 'getRow').mockImplementation((params) => {
+      log.push(`getRow ${params.tableId}`)
+      return getRow(params)
+    })
+    const listRows = db.listRows.bind(db)
+    vi.spyOn(db, 'listRows').mockImplementation((params) => {
+      log.push(`listRows ${params.tableId}`)
+      return listRows(params)
+    })
+    const createOperations = db.createOperations.bind(db)
+    vi.spyOn(db, 'createOperations').mockImplementation((params) => {
+      log.push(`createOperations ${params.operations?.length}`)
+      return createOperations(params)
+    })
+    const updateTransaction = db.updateTransaction.bind(db)
+    vi.spyOn(db, 'updateTransaction').mockImplementation((params) => {
+      log.push(`updateTransaction ${params.commit ? 'commit' : 'rollback'}`)
+      return updateTransaction(params)
+    })
+    return log
+  }
+
+  it("makes the same database calls whether or not a placeholder row's person has an account", async () => {
+    // m3: pX, a placeholder with no account and no other row, so it gets orphanedAt.
+    const unregistered = withDetails()
+    const unregisteredCalls = callsOf(unregistered)
+    await remove(unregistered, 'm3')
+    expect(orphanedAt(unregistered, 'pX')).toBe(NOW.toISOString())
+    // m4: a placeholder row in g1 whose person, p9, has an account (and its row in g2).
+    const registered = withDetails([member('m4', 'g1', 'p9', 'member', 'placeholder')])
+    const registeredCalls = callsOf(registered)
+    await remove(registered, 'm4')
+    expect(orphanedAt(registered, 'p9')).toBeNull()
+    expect(registeredCalls).toEqual(unregisteredCalls)
+    expect(unregisteredCalls.length).toBeGreaterThan(0)
+  })
+
   it('writes a fresh rev each time, and orphanedAt with the last row', async () => {
     const services = withDetails([
       member('m8', 'g2', 'pX', 'member', 'placeholder'),

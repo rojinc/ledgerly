@@ -17,6 +17,7 @@ import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
+import { FORMER_MEMBER } from '@ledgerly/server/identity/resolve-person'
 import { guardGroup, Raced } from '@ledgerly/server/ledger/transactions'
 import {
   deleteScheduleRows,
@@ -26,7 +27,7 @@ import {
 } from '@ledgerly/server/scheduler/end-schedule'
 import { ID, Permission, Query, Role } from 'node-appwrite'
 import { purge } from './purge'
-import { FORMER_MEMBER, getRowOrNull, isAppwriteError } from './rows'
+import { getRowOrNull, isAppwriteError } from './rows'
 import type { Services } from './services'
 
 /** A person past the point of no return (step 2). */

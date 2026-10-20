@@ -2,9 +2,9 @@ import type { Members } from '@ledgerly/core/generated/rows'
 import type { DeleteAccountResult } from '@ledgerly/core/schemas/identity'
 import { TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { FORMER_MEMBER } from '@ledgerly/server/identity/resolve-person'
 import { describe, expect, it, vi } from 'vitest'
 import { purge } from '../src/purge'
-import { FORMER_MEMBER } from '../src/rows'
 import {
   beforeStaging,
   call,

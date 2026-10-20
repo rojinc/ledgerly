@@ -6,9 +6,6 @@ import { AppwriteException, type Models, Query } from 'node-appwrite'
 
 // Small helpers like those of identity (functions/identity/src/rows.ts) and groups.
 
-/** What a deleted person, and their member rows in the groups that keep them, are called. */
-export const FORMER_MEMBER = 'Former member'
-
 export function isAppwriteError(error: unknown, code: number): boolean {
   return error instanceof AppwriteException && error.code === code
 }

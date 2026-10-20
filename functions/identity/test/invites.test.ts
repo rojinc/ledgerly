@@ -564,9 +564,12 @@ describe('POST /invites', () => {
     const atGuards = (services: Fakes, change: () => Promise<unknown>) =>
       beforeStaging(services.db, (operations) => operations.includes('"tableId":"persons"'), change)
 
+    // Each refusal keeps the count its check took, as any refusal after the check does
+    // (identity-and-invites.md#invites, step 2: "a removed or joined target row").
     function expectNothingSent(services: Fakes) {
       expect(services.db.rows('invites')).toEqual([])
       expect(services.sent).toEqual([])
+      expect(missesOf(services, 'pAnn')).toEqual(ONE_MISS)
     }
 
     it('answers NOT_FOUND when the row is removed just before the guards', async () => {

@@ -5,7 +5,11 @@ import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
-import { findPerson, isLonePlaceholder } from '@ledgerly/server/identity/resolve-person'
+import {
+  FORMER_MEMBER,
+  findPerson,
+  isLonePlaceholder,
+} from '@ledgerly/server/identity/resolve-person'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, Query } from 'node-appwrite'
 import type { Services } from '../services'
@@ -17,8 +21,6 @@ export type PlaceholderCounts = { cleared: number; kept: number; skipped: number
 const KEPT_FOR_MS = 30 * 24 * 60 * 60 * 1000
 // The step's own share of the run, so step 6 gets the rest.
 const STEP_BUDGET_MS = 60_000
-// What a cleared placeholder is called, as a deleted account's person is (account's rows.ts).
-const FORMER_MEMBER = 'Former member'
 
 /**
  * Step 5c (scheduling.md#step-5c-placeholder-clean-up): each person whose `orphanedAt` is 30 days

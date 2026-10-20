@@ -15,7 +15,11 @@ import { allRows, pages } from '@ledgerly/server/appwrite/pages'
 import { TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { randomId } from '@ledgerly/server/identity/random-id'
-import { isLonePlaceholder, isPlaceholder } from '@ledgerly/server/identity/resolve-person'
+import {
+  FORMER_MEMBER,
+  isLonePlaceholder,
+  isPlaceholder,
+} from '@ledgerly/server/identity/resolve-person'
 import {
   type ReceiptChange,
   receiptRows,
@@ -23,7 +27,7 @@ import {
 } from '@ledgerly/server/ledger/receipt-files'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { AppwriteException, type Models, Permission, Query, Role } from 'node-appwrite'
-import { FORMER_MEMBER, getRowOrNull } from './rows'
+import { getRowOrNull } from './rows'
 import type { FilesApi, Services } from './services'
 
 // data-model.md#storage-buckets
