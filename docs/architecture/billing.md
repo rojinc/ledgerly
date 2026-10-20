@@ -46,7 +46,7 @@ The proposed gates. They target the gig worker, who bills for work, and the acti
 
 | Gated write (Pro) | Route that refuses it | Free allows |
 | --- | --- | --- |
-| A second (or later) employer group | `groups POST /groups` with `type: 'employer'` | One employer group that the caller owns (`ownerPersonId`) and that isn't archived |
+| A second (or later) employer group | `groups POST /groups` with `type: 'employer'`, or `POST /groups/{id}/unarchive` of an `employer` group ([#428](https://github.com/rojinc/ledgerly/issues/428)) | One employer group per owner (`ownerPersonId`: the caller, on a create) that isn't archived |
 | Emailing an invoice | `statements POST /statements/{id}/finalize` with `send: true`, and `POST /statements/{id}/send`, only for a statement with `type: 'invoice'` | Emailing a house's `divide`, on either route. Finalizing an invoice without sending, and downloading the PDF to send yourself. A statement left `finalizing` can always be finished with `send: false`, so a downgrade never leaves a period blocked |
 | An SMS invite, once [#40](https://github.com/rojinc/ledgerly/issues/40) ships | `identity POST /invites` with `phone` | Email invites |
 | An SMS reminder, once SMS reminders ship | `identity POST /reminders` with a future `channel: 'sms'` | Email reminders |
@@ -143,7 +143,7 @@ The rules live in `packages/core/src/billing/` as pure functions with full branc
 - `planOf(row, now)`: **Pro** when `status` is `active` or `trialing` and `now` is before `currentPeriodEnd` plus a 3-day grace, or `status` is `past_due` and `now` is before `pastDueSince` plus the same grace; otherwise **Free**. No row is Free. (Stripe moves the period on even when a renewal fails, so `currentPeriodEnd` alone would give a whole unpaid period.)
 - `GATES`: each gate's `feature` name and its Free allowance (the table above).
 
-`packages/server` gets `requirePlan(services, personId, feature)`: one `getRow` on `subscriptions` (a missing row is Free), then `planOf`; it throws `PLAN_REQUIRED`. The gated routes call it after their other checks. The employer-group count is the one gate needing more: only when the plan is Free, it counts the caller's non-archived employer groups by `ownerPersonId`, leaving out the group being created, and stages a guard write on the caller's `persons` row (a fresh `rev`, as invite limits do), so two creates at once can't both count 0.
+`packages/server` gets `requirePlan(services, personId, feature)`: one `getRow` on `subscriptions` (a missing row is Free), then `planOf`; it throws `PLAN_REQUIRED`. The gated routes call it after their other checks. The employer-group count is the one gate needing more: only when the plan is Free, it counts the owner's non-archived employer groups by `ownerPersonId` (the caller's on a create, the group's owner's on an unarchive, whose plan it reads), leaving out the group being created or unarchived, and stages a guard write on that owner's `persons` row (a fresh `rev`, as invite limits do), so two creates or unarchives at once can't both count 0.
 
 The web app uses the same `planOf` on the row it reads, to show the plan and hide or label gated buttons. The function check is the one that counts.
 

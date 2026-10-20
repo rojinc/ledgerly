@@ -46,7 +46,7 @@ export async function reissueStatement(
       await tx.write(groupGuard(group))
       // Another request made this draft meanwhile: the retry gets it back.
       if (await unfinishedFor(db, groupId, periodStart, periodEnd)) throw tryAgain()
-      await requireFinalizable(db, groupId, periodEnd)
+      await requireFinalizable(db, groupId, periodStart, periodEnd)
       await tx.write(
         draftWrite(group, statementId, period, snapshot),
         activityWrite(
@@ -70,7 +70,12 @@ export async function reissueStatement(
  * Refuses a range whose draft could never be finalized, and so would block every later
  * statement (statements.md#4-void). Reads the stored rows, after the group row is staged.
  */
-async function requireFinalizable(db: Db, groupId: string, periodEnd: string): Promise<void> {
+async function requireFinalizable(
+  db: Db,
+  groupId: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<void> {
   // The finalizing one's partial locks would break this draft's check, and this draft, being
   // earlier, would stop that one from finishing. Read before the latest final: finalize's last
   // step doesn't write the group row, so a statement turning final between the two reads is
@@ -87,6 +92,13 @@ async function requireFinalizable(db: Db, groupId: string, periodEnd: string): P
   // counts that statement's locks.
   if (await endsOn(db, groupId, periodEnd)) {
     throw invalid('Another statement of this group already ends on this day.')
+  }
+  // Rule 5 would finalize the two in order, so no amount would be wrong, but both would cover the
+  // same days (#420). A draft of exactly this range was returned before staging.
+  if (await overlapsDraft(db, groupId, periodStart, periodEnd)) {
+    throw invalid(
+      'Another draft of this group covers some of these days. Finalize or discard it first.',
+    )
   }
   // The job would draft that period again when it ends, on top of this one.
   const group = await getRowOrNull<Groups>(db, TABLES.groups, groupId)
@@ -115,6 +127,28 @@ async function endsOn(db: Db, groupId: string, periodEnd: string): Promise<boole
       Query.equal('groupId', groupId),
       Query.equal('periodEnd', periodEnd),
       Query.notEqual('status', 'void'),
+      Query.limit(1),
+    ],
+    total: false,
+  })
+  return rows.length > 0
+}
+
+/** Whether a draft of the group shares a day with `periodStart`–`periodEnd`. */
+async function overlapsDraft(
+  db: Db,
+  groupId: string,
+  periodStart: string,
+  periodEnd: string,
+): Promise<boolean> {
+  const { rows } = await db.listRows<Statements>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.statements,
+    queries: [
+      Query.equal('groupId', groupId),
+      Query.equal('status', 'draft'),
+      Query.lessThanEqual('periodStart', periodEnd),
+      Query.greaterThanEqual('periodEnd', periodStart),
       Query.limit(1),
     ],
     total: false,

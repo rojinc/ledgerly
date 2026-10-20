@@ -604,6 +604,7 @@ const SCHEDULE_COLUMNS = [
   'rrule',
   'startsOn',
   'endsOn',
+  'pausedFrom',
   'exdates',
   'skipPublicHolidays',
   'autoPost',

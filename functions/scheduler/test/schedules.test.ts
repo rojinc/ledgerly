@@ -2,6 +2,8 @@ import { type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
 import type { Schedules, Transactions } from '@ledgerly/core/generated/rows'
 import type {
   EndedSchedule,
+  PausedSchedule,
+  ResumedSchedule,
   ScheduleResult,
   UpdatedSchedule,
 } from '@ledgerly/core/schemas/scheduler'
@@ -1088,8 +1090,26 @@ describe('rules with their own end', () => {
     [{ rrule: 'FREQ=MONTHLY;BYMONTHDAY=-1;COUNT=2', endsOn: null }, '2026-11-30'],
     // Every other week from the week of 1 October: 13 and 27 October.
     [{ rrule: 'FREQ=WEEKLY;INTERVAL=2;BYDAY=TU;COUNT=2', endsOn: null }, '2026-10-27'],
+    // A pause ends it the day before, unless something else ends it first.
+    [{ rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: null, pausedFrom: '2026-11-01' }, '2026-10-31'],
+    [
+      { rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: '2026-10-20', pausedFrom: '2026-11-01' },
+      '2026-10-20',
+    ],
+    [
+      { rrule: 'FREQ=WEEKLY;BYDAY=TH', endsOn: '2026-12-31', pausedFrom: '2026-11-01' },
+      '2026-10-31',
+    ],
+    [
+      { rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2', endsOn: null, pausedFrom: '2026-11-01' },
+      '2026-10-08',
+    ],
+    [
+      { rrule: 'FREQ=WEEKLY;BYDAY=TH;UNTIL=20261231', endsOn: null, pausedFrom: '2026-10-08' },
+      '2026-10-07',
+    ],
   ])('scheduleEnd(%o) is %s', (rule, end) => {
-    expect(scheduleEnd({ ...rule, startsOn: '2026-10-01' })).toBe(end)
+    expect(scheduleEnd({ pausedFrom: null, ...rule, startsOn: '2026-10-01' })).toBe(end)
   })
 })
 
@@ -1238,6 +1258,388 @@ describe('POST /schedules/{id}/end', () => {
     expect(
       await failure(services, 'POST', `/schedules/${ID}/end`, { body: { endsOn: '2026-09-30' } }),
     ).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
+  })
+})
+
+describe('POST /schedules/{id}/pause and /resume', () => {
+  function pause(services: Fakes, pausedFrom: string, id = ID) {
+    return ok<PausedSchedule>(services, 'POST', `/schedules/${id}/pause`, { body: { pausedFrom } })
+  }
+
+  function resume(services: Fakes, id = ID) {
+    return ok<ResumedSchedule>(services, 'POST', `/schedules/${id}/resume`)
+  }
+
+  function end(services: Fakes, endsOn: string) {
+    return ok<EndedSchedule>(services, 'POST', `/schedules/${ID}/end`, { body: { endsOn } })
+  }
+
+  const dates = (services: Fakes, id = ID) => occurrences(services, id).map((row) => row.date)
+
+  it('deletes the occurrences from its date that aren’t edited, and makes no more', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await setRow(services, 'transactions', `${ID}_20261203`, { overridden: true })
+    const { schedule, removed } = await pause(services, '2026-11-10')
+    // 12, 19 and 26 November and 10 December go; the edited 3 December stays.
+    expect(removed).toBe(4)
+    expect(schedule).toMatchObject({
+      pausedFrom: '2026-11-10',
+      endsOn: null,
+      generatedThrough: '2026-11-09',
+      nextRunAt: services.now.toISOString(),
+    })
+    // The next cron run finds nothing to do and stops it, and later ones never pick it up.
+    expect((await runCron(services)).expanded).toEqual({ schedules: 1, created: 0, failed: 0 })
+    expect(scheduleRow(services)?.nextRunAt).toBeNull()
+    services.now = new Date('2026-12-20T20:00:00.000Z')
+    expect((await runCron(services)).expanded).toEqual({ schedules: 0, created: 0, failed: 0 })
+    expect(dates(services)).toEqual([
+      '2026-10-01',
+      '2026-10-08',
+      '2026-10-15',
+      '2026-10-22',
+      '2026-10-29',
+      '2026-11-05',
+      '2026-12-03',
+    ])
+  })
+
+  it('resumes from today, and fills in none of the dates it skipped', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    expect((await pause(services, '2026-10-19')).removed).toBe(8)
+    await runCron(services)
+    // Monday 9 November in Sydney.
+    services.now = new Date('2026-11-08T20:00:00.000Z')
+    const { schedule, created } = await resume(services)
+    // Nothing on 22 and 29 October or 5 November; the Thursdays from 12 November to the
+    // horizon, 4 January.
+    expect(created).toBe(8)
+    expect(dates(services)).toEqual([
+      '2026-10-01',
+      '2026-10-08',
+      '2026-10-15',
+      '2026-11-12',
+      '2026-11-19',
+      '2026-11-26',
+      '2026-12-03',
+      '2026-12-10',
+      '2026-12-17',
+      '2026-12-24',
+      '2026-12-31',
+    ])
+    expect(schedule).toMatchObject({
+      pausedFrom: null,
+      generatedThrough: '2027-01-04',
+      nextRunAt: '2026-11-09T13:05:00.000Z',
+    })
+  })
+
+  it('brings today’s occurrence back when it resumes on the day the pause starts', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // Thursday 22 October in Sydney.
+    services.now = new Date('2026-10-21T20:00:00.000Z')
+    expect((await pause(services, '2026-10-22')).removed).toBe(8)
+    // 22 October to the horizon, 17 December.
+    expect((await resume(services)).created).toBe(9)
+    expect(dates(services).filter((date) => date >= '2026-10-22')).toEqual([
+      '2026-10-22',
+      '2026-10-29',
+      '2026-11-05',
+      '2026-11-12',
+      '2026-11-19',
+      '2026-11-26',
+      '2026-12-03',
+      '2026-12-10',
+      '2026-12-17',
+    ])
+  })
+
+  it('puts back what it deleted when it resumes before the pause starts', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    expect((await pause(services, '2026-11-10')).removed).toBe(5)
+    const { schedule, created } = await resume(services)
+    expect(created).toBe(5)
+    expect(occurrences(services)).toHaveLength(11)
+    expect(schedule).toMatchObject({ pausedFrom: null, generatedThrough: '2026-12-14' })
+  })
+
+  it('moves the date when it pauses again', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await pause(services, '2026-11-10')
+    await runCron(services)
+    // Later: the next run makes the Thursdays up to it.
+    await pause(services, '2026-11-24')
+    await runCron(services)
+    expect(dates(services).at(-1)).toBe('2026-11-19')
+    // Earlier: it deletes what's after it.
+    expect((await pause(services, '2026-10-26')).removed).toBe(4)
+    expect(dates(services).at(-1)).toBe('2026-10-22')
+  })
+
+  it('leaves a schedule that isn’t paused as it is', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    const before = scheduleRow(services)
+    expect(await resume(services)).toEqual({ schedule: before, created: 0 })
+    expect(scheduleRow(services)).toEqual(before)
+  })
+
+  it('pauses and resumes a schedule that hasn’t started yet', async () => {
+    const services = seeded()
+    // Rent from 1 November: 1 November and 1 December so far.
+    await create(services, rent)
+    expect((await pause(services, '2026-10-25', rent.id)).removed).toBe(2)
+    await runCron(services)
+    expect(dates(services, rent.id)).toEqual([])
+    expect((await resume(services, rent.id)).created).toBe(2)
+  })
+
+  it('pauses a schedule that never expanded, which then expands up to the pause', async () => {
+    const services = seeded()
+    // The expansion after the schedule is saved times out.
+    const timeout = failCommit(services, 2)
+    await failure(services, 'POST', '/schedules', { body: thursdays })
+    timeout.mockRestore()
+    expect(scheduleRow(services)?.generatedThrough).toBeNull()
+    const { schedule, removed } = await pause(services, '2026-10-26')
+    expect(removed).toBe(0)
+    expect(schedule.generatedThrough).toBeNull()
+    await runCron(services)
+    expect(dates(services)).toEqual(['2026-10-01', '2026-10-08', '2026-10-15', '2026-10-22'])
+    expect(scheduleRow(services)?.nextRunAt).toBeNull()
+  })
+
+  it.each([
+    // 07:00 on Monday 19 October in Sydney.
+    [NOW.toISOString(), '2026-10-18', '2026-10-19'],
+    // 00:30 on Monday 19 October in Sydney: still the 18th in UTC.
+    ['2026-10-18T13:30:00.000Z', '2026-10-18', '2026-10-19'],
+    // 23:30 on Sunday 18 October in Sydney.
+    ['2026-10-18T12:30:00.000Z', '2026-10-17', '2026-10-18'],
+    // 01:30 on Sunday 4 October, the day Sydney's clocks go forward.
+    ['2026-10-03T15:30:00.000Z', '2026-10-03', '2026-10-04'],
+  ])(
+    'at %s, refuses %s and pauses from %s, today in the group’s time zone',
+    async (at, before, today) => {
+      const services = seeded()
+      services.now = new Date(at)
+      await create(services, thursdays)
+      expect(
+        await failure(services, 'POST', `/schedules/${ID}/pause`, { body: { pausedFrom: before } }),
+      ).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
+      expect((await pause(services, today)).schedule.pausedFrom).toBe(today)
+    },
+  )
+
+  it('stays paused through an edit, which expands only up to the pause', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await pause(services, '2026-11-10')
+    const { schedule, created } = await ok<UpdatedSchedule>(services, 'PATCH', `/schedules/${ID}`, {
+      body: { ...thursdays, rrule: 'FREQ=WEEKLY;BYDAY=FR' },
+    })
+    expect(created).toBe(3)
+    expect(schedule).toMatchObject({ pausedFrom: '2026-11-10', nextRunAt: null })
+    expect(dates(services).filter((date) => date >= '2026-10-19')).toEqual([
+      '2026-10-23',
+      '2026-10-30',
+      '2026-11-06',
+    ])
+  })
+
+  it('stays paused through a later end, and resumes up to it', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await pause(services, '2026-11-10')
+    expect((await end(services, '2026-11-26')).schedule).toMatchObject({
+      pausedFrom: '2026-11-10',
+      endsOn: '2026-11-26',
+    })
+    await runCron(services)
+    expect(dates(services).at(-1)).toBe('2026-11-05')
+    expect((await resume(services)).created).toBe(3)
+    expect(dates(services).at(-1)).toBe('2026-11-26')
+  })
+
+  it('stays ended when an earlier end comes before the pause, and after a resume', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await pause(services, '2026-11-10')
+    expect((await end(services, '2026-10-29')).removed).toBe(1)
+    expect((await resume(services)).created).toBe(0)
+    expect(dates(services).at(-1)).toBe('2026-10-29')
+  })
+
+  it.each([
+    // The last day of each month, paused on 31 October and resumed on Monday 2 November.
+    ['FREQ=MONTHLY;BYMONTHDAY=-1', '2026-10-31', ['2026-11-30']],
+    // Every other Tuesday from the week of 1 October keeps its weeks: 10 November, not 3.
+    ['FREQ=WEEKLY;INTERVAL=2;BYDAY=TU', '2026-10-20', ['2026-11-10', '2026-11-24', '2026-12-08']],
+    // The dates it skipped count towards COUNT: only the 6th Thursday is left.
+    ['FREQ=WEEKLY;BYDAY=TH;COUNT=6', '2026-10-19', ['2026-11-05']],
+  ])('resumes %s in step with its rule', async (rrule, pausedFrom, after) => {
+    const services = seeded()
+    await create(services, { ...thursdays, rrule, horizonDays: 45 })
+    await pause(services, pausedFrom)
+    await runCron(services)
+    services.now = new Date('2026-11-01T20:00:00.000Z')
+    await resume(services)
+    expect(dates(services).filter((date) => date >= pausedFrom)).toEqual(after)
+  })
+
+  it('auto-posts nothing dated inside the pause but what was edited', async () => {
+    // FakeDb stamps $createdAt from the real clock: these are made on 19 October.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(NOW)
+    const services = seeded()
+    const cleaner = {
+      id: 'cleanerElmSam0000001',
+      groupId: 'elm',
+      kind: 'expense',
+      description: 'Cleaner',
+      template: { totalCents: 10_000, split: { mode: 'equal', personIds: ['pSam', 'pAlex'] } },
+      rrule: 'FREQ=WEEKLY;BYDAY=TH',
+      startsOn: '2026-10-22',
+      skipPublicHolidays: false,
+      autoPost: true,
+    }
+    await create(services, cleaner)
+    await setRow(services, 'transactions', `${cleaner.id}_20261029`, { overridden: true })
+    await pause(services, '2026-10-19', cleaner.id)
+    // 07:00 on Friday 6 November in Sydney.
+    services.now = new Date('2026-11-05T20:00:00.000Z')
+    vi.setSystemTime(services.now)
+    await runCron(services)
+    vi.useRealTimers()
+    expect(occurrences(services, cleaner.id).map((row) => [row.date, row.status])).toEqual([
+      ['2026-10-29', 'posted'],
+    ])
+  })
+
+  it('is for its creator or an admin, and not in an archived group', async () => {
+    const services = seeded()
+    await create(services, rent, 'u2')
+    const water = { ...rent, id: 'waterElmSam000000001', description: 'Water' }
+    await create(services, water)
+    const send = (action: string, userId: string, id = rent.id) =>
+      call(services, 'POST', `/schedules/${id}/${action}`, {
+        body: action === 'pause' ? { pausedFrom: '2026-11-15' } : undefined,
+        userId,
+      }).then(({ status, body }) => (body.ok ? status : { status, code: body.error.code }))
+    for (const action of ['pause', 'resume']) {
+      // Alex, a member, made rent; Sam is an admin; Kim is a viewer.
+      expect(await send(action, 'u2')).toBe(200)
+      expect(await send(action, 'u1')).toBe(200)
+      expect(await send(action, 'u3')).toEqual({ status: 403, code: 'FORBIDDEN' })
+      // Alex can't change one Sam made.
+      expect(await send(action, 'u2', water.id)).toEqual({ status: 403, code: 'FORBIDDEN' })
+      expect(await send(action, 'u1', 'missingSchedule00001')).toEqual({
+        status: 404,
+        code: 'NOT_FOUND',
+      })
+    }
+    await archive(services, 'elm')
+    for (const action of ['pause', 'resume']) {
+      expect(await send(action, 'u1')).toEqual({ status: 409, code: 'ARCHIVED' })
+    }
+  })
+
+  it('changes nothing when the group is archived while it commits', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    beforeCommit(services.db, () => archive(services))
+    expect(
+      await failure(services, 'POST', `/schedules/${ID}/pause`, {
+        body: { pausedFrom: '2026-11-10' },
+      }),
+    ).toEqual({ status: 409, code: 'ARCHIVED' })
+    expect(scheduleRow(services)?.pausedFrom).toBeUndefined()
+    expect(occurrences(services)).toHaveLength(11)
+  })
+
+  it('leaves the rest of a pause that stops partway to the next cron run', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // The pause is saved, then its deletes time out.
+    const timeout = failCommit(services, 2)
+    expect(
+      await failure(services, 'POST', `/schedules/${ID}/pause`, {
+        body: { pausedFrom: '2026-11-10' },
+      }),
+    ).toMatchObject({ status: 500 })
+    timeout.mockRestore()
+    expect(dates(services).at(-1)).toBe('2026-12-10')
+    await runCron(services)
+    expect(dates(services).at(-1)).toBe('2026-11-05')
+    expect(scheduleRow(services)?.nextRunAt).toBeNull()
+  })
+
+  it('leaves the rest of a resume that stops partway to the next cron run', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await pause(services, '2026-10-19')
+    await runCron(services)
+    // The resume is saved, then its expansion times out.
+    const timeout = failCommit(services, 2)
+    expect(await failure(services, 'POST', `/schedules/${ID}/resume`)).toMatchObject({
+      status: 500,
+    })
+    timeout.mockRestore()
+    expect(scheduleRow(services)?.pausedFrom).toBeNull()
+    expect(occurrences(services)).toHaveLength(3)
+    await runCron(services)
+    expect(occurrences(services)).toHaveLength(11)
+  })
+
+  it('runs again when it loses a race, with nothing made twice', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // The pause's save loses, and its rerun wins.
+    failCommit(services, 1, lostRace)
+    expect((await pause(services, '2026-11-10')).removed).toBe(5)
+    vi.restoreAllMocks()
+    failCommit(services, 2, lostRace)
+    // The expansion loses: the rerun finds it resumed, and the cron run makes the rest.
+    expect((await resume(services)).created).toBe(0)
+    vi.restoreAllMocks()
+    await runCron(services)
+    expect(occurrences(services)).toHaveLength(11)
+    expect(new Set(dates(services)).size).toBe(11)
+  })
+
+  it('makes a cron run that read the schedule just before a pause run again', async () => {
+    const services = seeded()
+    // Saved, but its expansion times out: due now, and never expanded, so the pause changes
+    // only pausedFrom.
+    const timeout = failCommit(services, 2)
+    await failure(services, 'POST', '/schedules', { body: thursdays })
+    timeout.mockRestore()
+    // The pause lands after the run reads the schedule, before it stages its first batch.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"schedules"'),
+      () => pause(services, '2026-10-19'),
+    )
+    await runCron(services)
+    vi.restoreAllMocks()
+    expect(dates(services)).toEqual(['2026-10-01', '2026-10-08', '2026-10-15'])
+  })
+
+  it('makes a cron run that read the schedule before a pause run again', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    // A week later, the run would make 17 December; a pause commits first.
+    services.now = new Date('2026-10-25T20:00:00.000Z')
+    beforeCommit(services.db, () => pause(services, '2026-10-26'))
+    await runCron(services)
+    vi.restoreAllMocks()
+    expect(dates(services).at(-1)).toBe('2026-10-22')
+    expect(scheduleRow(services)).toMatchObject({ pausedFrom: '2026-10-26', nextRunAt: null })
   })
 })
 
@@ -1565,6 +1967,26 @@ describe('a person who deleted their account, in a group they had joined', () =>
     await deleteAccount(services)
     const renamed = { ...fromNovember, description: 'Rent and water' }
     await ok(services, 'PATCH', `/schedules/${rent.id}`, { body: renamed })
+  })
+
+  it('can’t reopen a paused schedule they created, or one that names them, by a resume', async () => {
+    const services = seeded()
+    const forSam = {
+      ...rent,
+      template: { ...rent.template, split: { mode: 'equal', personIds: ['pSam'] } },
+    }
+    await ok(services, 'POST', '/schedules', { body: forSam, userId: 'u2' })
+    const water = { ...rent, id: 'waterElmSam000000001', description: 'Water' }
+    await ok(services, 'POST', '/schedules', { body: water })
+    for (const id of [rent.id, water.id]) {
+      await ok(services, 'POST', `/schedules/${id}/pause`, { body: { pausedFrom: '2026-10-19' } })
+    }
+    await deleteAccount(services)
+    for (const id of [rent.id, water.id]) {
+      expect(await failure(services, 'POST', `/schedules/${id}/resume`)).toEqual(refused)
+      expect(scheduleRow(services, id)?.pausedFrom).toBe('2026-10-19')
+      expect(occurrences(services, id)).toEqual([])
+    }
   })
 
   it('can’t be kept in a template’s default split by an edit', async () => {
