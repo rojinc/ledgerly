@@ -296,8 +296,8 @@ async function emailFor(
       // A pair is named by its other member, as the app names it (#145).
       groupName:
         group.type === 'pair'
-          ? ([...members.values()].find((one) => one.personId !== personId)?.displayName ??
-            group.name)
+          ? [...members.values()].find((one) => one.personId !== personId)?.displayName ||
+            group.name
           : group.name,
       description: transaction.description,
       changedBy: change.changedBy.map((actor) => members.get(actor)?.displayName ?? 'someone'),

@@ -193,6 +193,47 @@ describe('step 3b: transaction change emails', () => {
     expect(alice?.text).toContain('“Power” in Pine Rd, changed by Bobby:')
   })
 
+  it('tells each reader only of the groups they can open', async () => {
+    const services = seeded({
+      activity: [
+        edit(),
+        edit({ groupId: 'pine', transactionId: 't2', at: '2026-10-18T18:40:00.000Z' }),
+      ],
+      // Alice left Pine Rd on her own, so she's no longer in its team.
+      teams: { pine: ['uBob'] },
+      extra: {
+        groups: [
+          group('elm', 'pAlice', house('Elm St')),
+          group('pine', 'pAlice', house('Pine Rd')),
+        ],
+        members: [
+          member('elm', 'pAlice', { displayName: 'Alice' }),
+          member('elm', 'pBob', { displayName: 'Bob' }),
+          member('elm', 'pCara', { displayName: 'Cara' }),
+          member('pine', 'pAlice', { displayName: 'Alice', status: 'left', role: 'viewer' }),
+          member('pine', 'pBob', { displayName: 'Bobby' }),
+          member('pine', 'pCara', { displayName: 'Cara', status: 'placeholder' }),
+        ],
+        transactions: [transaction('t1', 'elm', 'Groceries'), transaction('t2', 'pine', 'Power')],
+      },
+    })
+    expect(await sendTransactionChanges(services)).toEqual({ sent: 2, failed: 0, skipped: 0 })
+    for (const email of sent(services)) {
+      expect(email.text).toContain('Someone changed a transaction you’re in.')
+      expect(email.text).toContain('“Groceries” in Elm St, changed by Bob:')
+      for (const shown of [email.text, email.html]) {
+        expect(shown).not.toMatch(/Pine|Power|Bobby/)
+      }
+    }
+  })
+
+  it('names a changer with no member row in the group as someone', async () => {
+    // Dan, a placeholder with no row in Elm St, changed it.
+    const services = seeded({ activity: [edit({ actorPersonId: 'pDan' })] })
+    await sendTransactionChanges(services)
+    expect(sent(services)[0]?.text).toContain('“Groceries” in Elm St, changed by someone:')
+  })
+
   it('emails only joined people with a verified account that isn’t blocked or deleted', async () => {
     const services = seeded({
       activity: [
@@ -329,10 +370,70 @@ describe('step 3b: transaction change emails', () => {
     ])
   })
 
+  it('follows a merge two hops on', async () => {
+    const services = seeded({
+      extra: {
+        persons: [
+          person('pAlice', 'uAlice'),
+          person('pBob', 'uBob'),
+          { ...person('pCara', null), mergedInto: 'pCaz' },
+          { ...person('pCaz', null), mergedInto: 'pCarol' },
+          person('pCarol', 'uCarol'),
+        ],
+        members: [
+          member('elm', 'pAlice', { displayName: 'Alice' }),
+          member('elm', 'pBob', { displayName: 'Bob' }),
+          member('elm', 'pCarol', { displayName: 'Carol' }),
+        ],
+      },
+      accounts: {
+        uAlice: { email: 'alice@example.com', emailVerification: true },
+        uCarol: { email: 'carol@example.com', emailVerification: true },
+      },
+    })
+    await sendTransactionChanges(services)
+    expect(sent(services).map((email) => email.to)).toEqual([
+      'alice@example.com',
+      'carol@example.com',
+    ])
+  })
+
+  it.each([
+    ['a placeholder row there', [member('elm', 'pCarol', { status: 'placeholder' })]],
+    ['no row there', []],
+  ])('tells the person merged into nothing of a group where they have %s', async (_, rows) => {
+    const services = seeded({
+      extra: {
+        persons: [
+          person('pAlice', 'uAlice'),
+          person('pBob', 'uBob'),
+          { ...person('pCara', null), mergedInto: 'pCarol' },
+          person('pCarol', 'uCarol'),
+        ],
+        members: [
+          member('elm', 'pAlice', { displayName: 'Alice' }),
+          member('elm', 'pBob', { displayName: 'Bob' }),
+          member('elm', 'pCara', { displayName: 'Cara' }),
+          ...rows,
+        ],
+      },
+      accounts: {
+        uAlice: { email: 'alice@example.com', emailVerification: true },
+        uCarol: { email: 'carol@example.com', emailVerification: true },
+      },
+    })
+    await sendTransactionChanges(services)
+    // Carol never joined Elm St, so Cara's row there isn't hers to read through (D-016).
+    expect(sent(services).map((email) => email.to)).toEqual(['alice@example.com'])
+  })
+
   it('leaves a row on the hour to the next window', async () => {
     const services = seeded({ activity: [edit({ at: NEXT })] })
     expect(await sendTransactionChanges(services)).toEqual({ sent: 0, failed: 0, skipped: 0 })
     expect(Date.parse(through(services) as string)).toBe(Date.parse(NEXT))
+    // The window it starts is the one that sends it.
+    const onTheHour = seeded({ activity: [edit({ at: WINDOW })] })
+    expect(await sendTransactionChanges(onTheHour)).toEqual({ sent: 2, failed: 0, skipped: 0 })
   })
 
   it('stops when another run moved the checkpoint meanwhile', async () => {
@@ -361,10 +462,18 @@ describe('step 3b: transaction change emails', () => {
     const services = seeded({ now: new Date('2026-10-18T19:00:30.000Z') })
     expect(await sendTransactionChanges(services)).toEqual({ sent: 0, failed: 0, skipped: 0 })
     expect(through(services)).toBe(WINDOW)
+    // A minute on, to the millisecond, it's settled.
+    const settled = seeded({ now: new Date('2026-10-18T19:01:00.000Z') })
+    expect(await sendTransactionChanges(settled)).toEqual({ sent: 2, failed: 0, skipped: 0 })
   })
 
   it('makes a missing checkpoint at the start of this hour, so no backlog goes out', async () => {
-    const services = seeded({ checkpoint: null, now: new Date('2026-10-18T20:35:00.000Z') })
+    // An edit in the hour before, which a checkpoint made an hour early would send.
+    const services = seeded({
+      checkpoint: null,
+      now: new Date('2026-10-18T20:35:00.000Z'),
+      activity: [edit({ at: '2026-10-18T19:10:00.000Z' })],
+    })
     expect(await sendTransactionChanges(services)).toEqual({ sent: 0, failed: 0, skipped: 0 })
     expect(Date.parse(through(services) as string)).toBe(Date.parse(NOW.toISOString()))
   })
@@ -396,6 +505,17 @@ describe('step 3b: transaction change emails', () => {
     // and only 18 Oct 18:00's has edits.
     expect(counts).toEqual({ sent: 2, failed: 0, skipped: 2 })
     expect(Date.parse(through(services) as string)).toBe(Date.parse(NEXT))
+  })
+
+  it('skips a window that ended 23 hours and 35 minutes ago, but not the next', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const services = seeded({
+      checkpoint: '2026-10-17T20:00:00.000Z',
+      now: new Date('2026-10-18T20:35:00.000Z'),
+    })
+    // 17 Oct 20:00–21:00 ended over 23 hours ago; 21:00–22:00 ended 22 hours 35 minutes ago.
+    expect(await sendTransactionChanges(services)).toEqual({ sent: 2, failed: 0, skipped: 1 })
+    expect(Date.parse(through(services) as string)).toBe(Date.parse(NOW.toISOString()))
   })
 
   it('tries a 429 once more after Resend’s wait, then stops, leaving the window', async () => {
@@ -435,6 +555,24 @@ describe('step 3b: transaction change emails', () => {
     await sendTransactionChanges(services)
     expect(services.sendEmail).toHaveBeenCalledTimes(1)
     expect(through(services)).toBe(WINDOW)
+  })
+
+  it('stops at its own 4 minutes, though the run has time left', async () => {
+    // Five windows due, each with an edit, and every clock read 30 seconds on.
+    const hours = ['14', '15', '16', '17', '18']
+    const services = seeded({
+      checkpoint: '2026-10-18T14:00:00.000Z',
+      activity: hours.map((hour) => edit({ at: `2026-10-18T${hour}:10:00.000Z` })),
+    })
+    let clock = 0
+    const now = vi.spyOn(performance, 'now').mockImplementation(() => (clock += 30_000))
+    try {
+      await sendTransactionChanges(services)
+    } finally {
+      now.mockRestore()
+    }
+    expect(services.sendEmail.mock.calls.length).toBeLessThan(2 * hours.length)
+    expect(Date.parse(through(services) as string)).toBeLessThan(Date.parse(NEXT))
   })
 
   it('stops rather than wait past its time for a 429', async () => {
