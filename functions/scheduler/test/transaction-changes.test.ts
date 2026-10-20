@@ -549,6 +549,16 @@ describe('step 3b: transaction change emails', () => {
     expect(Date.parse(through(services) as string)).toBe(Date.parse(NEXT))
   })
 
+  it('stops on a validation_error with 403, a fault in our domain, leaving the window (#469)', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    const services = seeded()
+    services.sendEmail.mockRejectedValueOnce(
+      new EmailError('Domain not verified', 'validation_error', 403),
+    )
+    expect(await sendTransactionChanges(services)).toEqual({ sent: 0, failed: 0, skipped: 0 })
+    expect(through(services)).toBe(WINDOW)
+  })
+
   it('stops when out of time, leaving the window for the next run', async () => {
     const services = seeded()
     services.outOfTime = () => services.sendEmail.mock.calls.length > 0

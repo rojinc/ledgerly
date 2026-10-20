@@ -413,6 +413,16 @@ describe('step 4: summary emails', () => {
     expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 0 })
   })
 
+  it('tries again after a validation_error with 403, a fault in our domain (#469)', async () => {
+    const services = seeded()
+    services.sendEmail.mockRejectedValueOnce(
+      new EmailError('Domain not verified', 'validation_error', 403),
+    )
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(storedProfile(services).nextSummaryAt).toBe(DUE)
+    expect((await runCron(services)).summaries).toEqual({ sent: 1, skipped: 0, failed: 0 })
+  })
+
   it.each([
     ['moves on from one Appwrite refuses to build', 400, NEXT_WEEK],
     ['tries one again when a table is missing', 404, DUE],

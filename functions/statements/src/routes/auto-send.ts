@@ -1,7 +1,7 @@
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
-import { EmailError } from '@ledgerly/server/email/send-email'
+import { EmailError, refusedForGood } from '@ledgerly/server/email/send-email'
 import { autoSendFailedEmail } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
@@ -15,8 +15,8 @@ import { sendInvoice } from './send'
 // keys and the employer gets the invoice once (statements.md#auto-send).
 const WINDOW_MS = 23 * 60 * 60 * 1000
 
-// Resend's answers that a retry with the same keys can't change.
-const PERMANENT = ['validation_error', 'invalid_idempotent_request']
+// Resend's answers that a retry with the same keys can't change: a refusal of the email itself,
+// and the same key with different content. A 401 or 403 is our key or domain, and passes (#469).
 
 /** When the job's window to email an invoice it finalizes ends (finalize step 8). */
 export function autoSendUntil(now: Date): string {
@@ -93,7 +93,10 @@ async function sendOne(services: Services, statementId: string): Promise<boolean
 
 function isPermanent(error: unknown): boolean {
   if (error instanceof AppError) return error.code === 'VALIDATION_FAILED'
-  return error instanceof EmailError && PERMANENT.includes(error.type)
+  return (
+    refusedForGood(error) ||
+    (error instanceof EmailError && error.type === 'invalid_idempotent_request')
+  )
 }
 
 // "Invoice INV-0010 for Acme couldn't be emailed", to every joined admin. One key per admin,

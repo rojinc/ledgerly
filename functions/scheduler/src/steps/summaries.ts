@@ -8,12 +8,11 @@ import { allRows, pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { isInTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { EmailError } from '@ledgerly/server/email/send-email'
 import { type EmailContent, summaryEmail } from '@ledgerly/server/email/templates'
 import { logProblem } from '@ledgerly/server/http/log'
 import { AppwriteException, Query } from 'node-appwrite'
 import { appBase, type Services } from '../services'
-import { NEVER_SENT } from './reminders'
+import { neverSent } from './reminders'
 
 export type SummaryCounts = { sent: number; skipped: number; failed: number }
 
@@ -124,7 +123,7 @@ async function moveOn(
         await sendEmail({ to: email.to, ...email.content, idempotencyKey: email.key })
         outcome = 'sent'
       } catch (error) {
-        if (!(error instanceof EmailError && NEVER_SENT.has(error.type))) throw error
+        if (!neverSent(error)) throw error
         outcome = 'failed'
       }
     })

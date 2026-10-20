@@ -12,7 +12,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { EmailError } from '@ledgerly/server/email/send-email'
+import { EmailError, refusedForGood } from '@ledgerly/server/email/send-email'
 import {
   billDueSoonEmail,
   type EmailContent,
@@ -255,7 +255,7 @@ async function remind(
           sent += 1
         } catch (error) {
           // An email Resend will never take is marked too, so it isn't tried every hour.
-          if (!(error instanceof EmailError && NEVER_SENT.has(error.type))) throw error
+          if (!neverSent(error)) throw error
         }
       }
       outcome = sent > 0 ? 'sent' : 'failed'
@@ -273,12 +273,14 @@ async function remind(
   if (outcome) counts[outcome] += 1
 }
 
-// Resend's errors for an email it will never send as asked: a bad address, or the same key
-// with different content (the group was renamed after a send whose mark failed).
-export const NEVER_SENT: ReadonlySet<string> = new Set([
-  'validation_error',
-  'invalid_idempotent_request',
-])
+// Resend's answers for an email it will never send as asked: a bad address (refusedForGood), or
+// the same key with different content (the group was renamed after a send whose mark failed).
+export function neverSent(error: unknown): boolean {
+  return (
+    refusedForGood(error) ||
+    (error instanceof EmailError && error.type === 'invalid_idempotent_request')
+  )
+}
 
 // It still needs the reminder the page read it for.
 function stillDue(seen: Transactions, stored: Transactions | undefined): boolean {

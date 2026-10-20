@@ -286,6 +286,20 @@ describe('the statements job, with autoSend on', () => {
     expect(keys(services)).toEqual([`auto-send-failed/${invoice?.$id}/sam`])
   })
 
+  it.each([401, 403])(
+    'keeps the window open on a validation_error with %i, a fault in our key or domain (#469)',
+    async (status) => {
+      const services = octoberDue()
+      failing(services, (email) =>
+        isInvoice(email)
+          ? new EmailError(`Resend answered ${status} validation_error`, 'validation_error', status)
+          : undefined,
+      )
+      await runJob(services)
+      expect(invoices(services)[0]).toMatchObject({ sentAt: null, autoSendUntil: WINDOW_END })
+    },
+  )
+
   it('takes concurrent_idempotent_requests, an admin’s Send at the same moment, as transient', async () => {
     const services = octoberDue()
     const send = services.sendEmail

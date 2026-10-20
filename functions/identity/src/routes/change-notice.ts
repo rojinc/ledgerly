@@ -5,7 +5,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { type Email, EmailError } from '@ledgerly/server/email/send-email'
+import { type Email, EmailError, refusedForGood } from '@ledgerly/server/email/send-email'
 import { emailChangedEmail, phoneChangedEmail } from '@ledgerly/server/email/templates'
 import { type ChangeNoticeOutcome, logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
@@ -465,9 +465,10 @@ async function deliver(pace: Pacer, email: Email): Promise<Line> {
   }
 }
 
-// Resend refused the email itself (`validation_error`), so no later try would send it.
+// Resend refused the email itself (`validation_error` with 400 or 422), so no later try would
+// send it. A 401 or 403 is our key or domain: the row stays for the next run (#469).
 function refused(error: unknown): boolean {
-  return error instanceof EmailError && error.type === 'validation_error'
+  return refusedForGood(error)
 }
 
 function sha256(text: string): string {

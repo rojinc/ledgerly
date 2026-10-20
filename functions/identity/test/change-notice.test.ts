@@ -899,6 +899,18 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(rows(services)).toEqual([expect.objectContaining({ identityId: 'iB' })])
     })
 
+    it('keeps the row of an email refused with 401 or 403, a fault in our key or domain (#469)', async () => {
+      const services = seeded([A, B])
+      answered(services, (call) =>
+        call === 0 ? failure('validation_error', 403) : failure('validation_error', 401),
+      )
+      expect((await event(services)).status).toBe(500)
+      expect(rows(services)).toEqual([
+        expect.objectContaining({ identityId: 'iA' }),
+        expect.objectContaining({ identityId: 'iB' }),
+      ])
+    })
+
     it('lists the rows after its guard, so a run that commits in between makes it list again', async () => {
       const services = seeded([A, B])
       answered(services, () => failure('timeout'))

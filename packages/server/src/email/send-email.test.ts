@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
-import { type Email, EmailError, sendEmail } from './send-email'
+import { type Email, EmailError, refusedForGood, sendEmail } from './send-email'
 
 const email: Email = {
   to: 'boss@acme.example',
@@ -203,5 +203,19 @@ describe('sendEmail', () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout')
     await sendEmail(email, { timeoutMs })
     expect(timeout).toHaveBeenCalledWith(applied)
+  })
+})
+
+describe('refusedForGood (#469)', () => {
+  it.each([
+    ['a field Resend refused (400)', new EmailError('x', 'validation_error', 400), true],
+    ['a bad address (422)', new EmailError('x', 'validation_error', 422), true],
+    ['an invalid key (401)', new EmailError('x', 'validation_error', 401), false],
+    ['an unverified domain (403)', new EmailError('x', 'validation_error', 403), false],
+    ['no status', new EmailError('x', 'validation_error'), false],
+    ['another type at 422', new EmailError('x', 'missing_required_field', 422), false],
+    ['not an EmailError', new TypeError('validation_error'), false],
+  ])('is %s: %s', (_case, error, refused) => {
+    expect(refusedForGood(error)).toBe(refused)
   })
 })

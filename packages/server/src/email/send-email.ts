@@ -38,6 +38,20 @@ export class EmailError extends Error {
 }
 
 /**
+ * Whether Resend refused this email for good (#469): a `validation_error` with 400 or 422 is
+ * about the request itself, such as a bad address, so no retry of it would send. With 401 or 403
+ * the same type is a fault in our key or sending domain, which every send meets until it's fixed,
+ * so a later run should try again.
+ */
+export function refusedForGood(error: unknown): boolean {
+  return (
+    error instanceof EmailError &&
+    error.type === 'validation_error' &&
+    (error.status === 400 || error.status === 422)
+  )
+}
+
+/**
  * Sends one email through Resend's HTTP API (D-011), from `EMAIL_FROM`. Logs nothing.
  * Returns Resend's email ID, which is safe to log. `timeoutMs` shortens the 10 s timeout, for a
  * run with less time left; it never lengthens it.
