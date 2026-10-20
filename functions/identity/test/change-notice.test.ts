@@ -748,6 +748,33 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(noticeLines().filter((line) => line.cause === 'queue')).toEqual([])
     })
 
+    it('deletes the row a replayed event sends, keeping no other', async () => {
+      const services = seeded([A])
+      answered(services, (call) => (call === 0 ? failure('timeout') : undefined))
+      await event(services)
+      expect(rows(services)).toHaveLength(1)
+      expect((await event(services)).body).toEqual({ ok: true, data: {} })
+      expect(rows(services)).toEqual([])
+    })
+
+    it('tries every address when a sent one’s row can’t be deleted', async () => {
+      const services = seeded([A, B])
+      const calls = answered(services)
+      const commit = services.db.updateTransaction.bind(services.db)
+      let commits = 0
+      vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+        // The first commit writes the rows, and the second deletes A's.
+        if (params.commit && ++commits === 2) {
+          throw new AppwriteException('Server Error', 500, 'general_unknown')
+        }
+        return commit(params)
+      })
+      expect((await event(services)).body).toEqual({ ok: true, data: {} })
+      expect(calls.map(({ to }) => to)).toEqual(['a@example.com', 'b@example.com'])
+      // A's row stays, for a retry Resend answers as seen.
+      expect(rows(services)).toEqual([expect.objectContaining({ identityId: 'iA' })])
+    })
+
     it('sends anyway when the rows can’t be written, and says so', async () => {
       const services = seeded([A])
       answered(services)
@@ -959,25 +986,82 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(rows(services).map(({ $id }) => $id)).toEqual(['n2'])
     })
 
-    it('touches no row once 12 s of the run have gone, not even one to drop', async () => {
-      const services = withRows([pending('n1')])
-      // The merges' walk takes 12.1 s, and the row is past its 23 hours.
+    // The merges' walk, the run's first read of persons, takes `ms`.
+    function slowMerges(services: Fakes, ms: number) {
       const list = services.db.listRows.bind(services.db)
       let walked = false
-      vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      return vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
         if (params.tableId === 'persons' && !walked) {
           walked = true
-          await new Promise((resolve) => setTimeout(resolve, 12_100))
+          await new Promise((resolve) => setTimeout(resolve, ms))
         }
         return list(params)
       })
+    }
+
+    it('lists no rows when the merges ran past 12 s', async () => {
+      const services = withRows([pending('n1')])
+      const list = slowMerges(services, 12_100)
       answered(services)
       expect(counted(await hourly(services, 23 * HOUR))).toEqual({
         retried: 0,
         failed: 0,
         dropped: 0,
       })
-      expect(rows(services).map(({ $id }) => $id)).toEqual(['n1'])
+      const tables = list.mock.calls.map(([params]) => params.tableId)
+      expect(tables).not.toContain('changeNotices')
+      expect(rows(services)).toHaveLength(1)
+    })
+
+    it('starts no row after 12 s, not even one to drop', async () => {
+      const services = withRows([
+        pending('n1', { $createdAt: '2026-10-18T18:00:00.000Z' }),
+        pending('n2', { $createdAt: '2026-10-18T19:00:00.000Z' }),
+      ])
+      slowMerges(services, 11_900)
+      // Each user read takes 300 ms and finds the user gone.
+      services.users = {
+        get: async () => {
+          await new Promise((resolve) => setTimeout(resolve, 300))
+          throw new AppwriteException('User not found', 404, 'user_not_found')
+        },
+      }
+      answered(services)
+      expect(counted(await hourly(services))).toEqual({ retried: 0, failed: 0, dropped: 1 })
+      expect(rows(services).map(({ $id }) => $id)).toEqual(['n2'])
+    })
+
+    it('leaves a row written in the last 15 s to the event run that may still be sending it', async () => {
+      const at = (msAgo: number) => new Date(T0 + HOUR - msAgo).toISOString()
+      const services = withRows([
+        pending('n1', { $createdAt: at(15_001) }),
+        pending('n2', { $createdAt: at(15_000) }),
+      ])
+      const calls = answered(services)
+      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(calls.map(({ key }) => key)).toEqual(['email-change-notice-key-n1'])
+      expect(rows(services).map(({ $id }) => $id)).toEqual(['n2'])
+    })
+
+    it('still answers when a failed try’s count can’t be written', async () => {
+      const services = withRows([
+        pending('n1', { $createdAt: '2026-10-18T18:00:00.000Z' }),
+        pending('n2', { $createdAt: '2026-10-18T19:00:00.000Z', identityId: 'iB' }),
+      ])
+      answered(services, (call) => (call === 0 ? failure('timeout') : undefined))
+      const commit = services.db.updateTransaction.bind(services.db)
+      let commits = 0
+      vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+        // The first commit is n1's count.
+        if (params.commit && ++commits === 1) {
+          throw new AppwriteException('Server Error', 500, 'general_unknown')
+        }
+        return commit(params)
+      })
+      const result = await hourly(services)
+      expect(result.status).toBe(200)
+      expect(counted(result)).toEqual({ retried: 1, failed: 1, dropped: 0 })
+      expect(rows(services)).toEqual([expect.objectContaining({ $id: 'n1', attempts: 0 })])
     })
 
     it('answers with the merges’ counts when the rows can’t be listed', async () => {

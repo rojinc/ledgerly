@@ -29,6 +29,8 @@ const ALREADY_SENT: ReadonlySet<string> = new Set([
 const KEEP_MS = 23 * 60 * 60 * 1000
 // Step 8: the rows one hourly run looks at, oldest first. Its time allows far fewer sends.
 const PAGE = 100
+// Step 8: identity's timeout. A row younger than this may still be its event run's to send.
+const RUN_MS = 15_000
 const EMAIL_KEY = 'email:'
 
 type Notice = 'email' | 'phone'
@@ -102,19 +104,26 @@ export async function changeNotice(
 
 /**
  * Step 8: tries the `changeNotices` rows again, oldest first, in identity's hourly run, after its
- * merges. Step 6's limits count from the run's start (`started`), so the merges' time comes off
+ * merges, leaving rows an event run may still be sending (RUN_MS). Step 6's limits count from the run's start (`started`), so the merges' time comes off
  * them. A row is deleted once its email is sent, or can never be (refused, gone, or 23 hours
  * old). A 429 ends the retries for the run, since Resend's limit is shared; any other failure
  * adds 1 to `attempts`. Rows it doesn't reach wait for the next hour.
  */
 export async function retryNotices(services: Services, started: number): Promise<NoticeCounts> {
   const counts: NoticeCounts = { retried: 0, failed: 0, dropped: 0 }
+  // Merges that ran long leave no time for even the listing.
+  if (Date.now() - started > LAST_START_MS) return counts
+  const written = new Date(services.now.getTime() - RUN_MS).toISOString()
   let rows: ChangeNotices[]
   try {
     ;({ rows } = await services.db.listRows<ChangeNotices>({
       databaseId: DATABASE_ID,
       tableId: TABLES.changeNotices,
-      queries: [Query.orderAsc('$createdAt'), Query.limit(PAGE)],
+      queries: [
+        Query.lessThan('$createdAt', written),
+        Query.orderAsc('$createdAt'),
+        Query.limit(PAGE),
+      ],
       total: false,
     }))
   } catch (error) {
