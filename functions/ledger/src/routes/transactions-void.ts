@@ -6,6 +6,7 @@ import { route } from '@ledgerly/server/http/create-handler'
 import { balanceWrite } from '@ledgerly/server/ledger/balances'
 import {
   activityWrite,
+  changeNets,
   getTransaction,
   guardGroup,
   guardTransaction,
@@ -88,6 +89,8 @@ export const voidTransaction = (services: ServicesFor) =>
               {
                 status: { before: existing.status, after: 'void' },
                 voidReason: { before: null, after: reason },
+                // Who was in it, for the hourly change email (ledger.md#editing-and-voiding).
+                ...(existing.status === 'posted' ? { nets: changeNets(shares, []) } : {}),
               },
               new Date(),
             ),

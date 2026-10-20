@@ -271,7 +271,24 @@ describe('POST /transactions/{id}/void', () => {
     expect(JSON.parse(voided?.changesJson ?? '')).toEqual({
       status: { before: 'posted', after: 'void' },
       voidReason: { before: null, after: 'Duplicate' },
+      nets: {
+        before: [
+          { personId: 'alice', netCents: 300 },
+          { personId: 'bob', netCents: -300 },
+        ],
+        after: [],
+      },
     })
+  })
+
+  it('records no nets for a void of a bill not posted yet (#433)', async () => {
+    const db = seed()
+    await call(db, 'POST', '/transactions', dueBill)
+    expect((await call(db, 'POST', '/transactions/b1/void', { reason: 'Paid twice' })).status).toBe(
+      200,
+    )
+    const voided = rows.activity(db).find((row) => row.action === 'transaction.voided')
+    expect(JSON.parse(voided?.changesJson ?? '')).not.toHaveProperty('nets')
   })
 
   it('gives a retried void the voided transaction back, writing nothing', async () => {
