@@ -92,6 +92,7 @@ Row ID = the Appwrite user ID. One per user.
 | `hoursCapMinutes` | integer? | The user's own work-hours limit (F-82): 60 to 10080 for a week, 60 to 20160 for a fortnight. All three `hoursCap*` columns are set together, or all empty for no limit. |
 | `hoursCapPeriod` | enum(week, fortnight)? | A week runs Monday to Sunday in the profile's `timezone` |
 | `hoursCapStartsOn` | varchar(10)? | A fortnight's first Monday (YYYY-MM-DD); fortnights count from it, before and after. Empty for a week. |
+| `emailOptOuts` | varchar(32)[]? | The emails the user turned off on Profile ([#431](https://github.com/rojinc/ledgerly/issues/431)): any of `billDue`, `shiftToConfirm` ([scheduler step 3](scheduling.md#step-3-reminders)) and `statementReady` ([the statements job](statements.md#1-draft-statements-job-hourly)), each at most once. Null or `[]` means every email is on, so existing rows need no backfill. Per person, not per group: profiles are readable only by their user, while member rows are readable by the whole team and guard ledger writes. Security emails, the timer email and emails someone sends on purpose have no setting. |
 
 Indexes: `idx_nextSummaryAt (nextSummaryAt)`.
 Permissions: `read("user:<userId>")`. Writes go through `identity PATCH /profile`, except `lastInvoiceNumber` (`statements`) and `nextSummaryAt` (also `scheduler`). `account` deletes it with the account.

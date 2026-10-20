@@ -55,7 +55,7 @@ The period is the one that ended the day before the stored `nextCloseAt`, so a c
 
 **Empty divides:** when a house's period has no lines and every opening is 0, the job drafts nothing and sends no "ready" email. It still moves `nextCloseAt`, so the empty period merges into the next one (before the group's first statement, it's simply skipped).
 
-Then email the group admins at their verified addresses: "Your October invoice for Acme is ready to review", linking to `/groups/<groupId>/statements/<statementId>` in the web app. A failed email, even one that can't be built, doesn't undo the draft or stop what follows. If the group setting `autoFinalize` is on, finalize straight away, without sending.
+Then email the group admins at their verified addresses: "Your October invoice for Acme is ready to review", linking to `/groups/<groupId>/statements/<statementId>` in the web app, and to `/profile`, where this email can be turned off. An admin whose profile's [`emailOptOuts`](data-model.md#profiles) lists `statementReady` gets none ([#431](https://github.com/rojinc/ledgerly/issues/431)). When every admin has turned it off, nothing is sent, but the draft, its activity row and the auto-finalize below all go ahead, and the draft is still listed under Statements. A failed email, even one that can't be built, doesn't undo the draft or stop what follows. If the group setting `autoFinalize` is on, finalize straight away, without sending.
 
 An admin can also draft the period so far without waiting for it to end ([§6](#6-close-a-period-now-post-statementsclose)).
 
