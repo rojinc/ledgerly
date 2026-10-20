@@ -11,6 +11,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { mergedTarget } from '@ledgerly/server/identity/resolve-person'
 import { ID, type Models, Query } from 'node-appwrite'
+import { atMissLimit, countingMisses } from '../address-misses'
 import { parseBody } from '../parse-body'
 import { conflictAsTryAgain, findIdentity, getRowOrNull, isAppwriteError } from '../rows'
 import type { Services } from '../services'
@@ -25,6 +26,7 @@ const PER_IDENTITY = { column: 'identityKey', max: 3, windowMs: 7 * DAY_MS } as 
 // One message for an address nobody has and for someone else's, so the answer never shows
 // which addresses exist (identity-and-invites.md#adding-someone-to-a-group, accepted risks).
 const NOT_THEIR_EMAIL = "This email address isn't one this person was added with."
+const TOO_MANY = 'Too many invites have been sent. Try again later.'
 
 type InviteRow = Omit<Invites, keyof Models.Row>
 
@@ -64,9 +66,15 @@ export async function createInvite(
   if (target.status !== 'placeholder') {
     throw invalid('Only someone who has not joined the group yet can be invited.')
   }
+  // Wrong addresses are counted per sender, with reminders' (#274): at the limit, RATE_LIMITED
+  // before the address is checked, so a right one gets the same answer as a wrong one.
+  const misses = { db, senderId: person.$id, now, wrongAddress: NOT_THEIR_EMAIL, tooMany }
+  if (atMissLimit(person, now)) throw tooMany()
   const address = normalizeEmail(email)
   const key = identityKey('email', address)
-  if ((await findIdentity(db, key))?.personId !== target.personId) throw invalid(NOT_THEIR_EMAIL)
+  await countingMisses(misses, async () => {
+    if ((await findIdentity(db, key))?.personId !== target.personId) throw invalid(NOT_THEIR_EMAIL)
+  })
 
   // Step 4: a random token, stored only as its hash. The email (step 5) is built before anything
   // is committed, so a missing APP_URL (the template refuses a link that isn't http(s)) writes
@@ -94,15 +102,19 @@ export async function createInvite(
     acceptedAt: null,
   }
   const commit = () => commitWithinLimits(db, inviteId, row, target.personId, now)
-  try {
-    await commit()
-  } catch (error) {
-    if (!isAppwriteError(error, 409)) throw error
-    // Another invite by this inviter, or to this person, or a deletion of one it guarded,
-    // committed after this one's guard was staged: check again, once, so it is refused if that
-    // invite took the last place or that deletion has started.
-    await conflictAsTryAgain(commit)
-  }
+  // A deleted target or end person answers as a wrong address, so it's a miss too (step 3.1).
+  await countingMisses(misses, async () => {
+    try {
+      await commit()
+    } catch (error) {
+      if (!isAppwriteError(error, 409)) throw error
+      // Another invite by this inviter, or to this person, a miss of the inviter's, or a deletion
+      // of one it guarded, committed after this one's guard was staged: check again, once, so it
+      // is refused if that invite took the last place, that miss reached the limit or that
+      // deletion has started.
+      await conflictAsTryAgain(commit)
+    }
+  })
 
   // Step 5, after the commit, so a failed send (INTERNAL) still counts toward the limits.
   await services.sendEmail({ to: address, ...content, idempotencyKey: `invite/${inviteId}` })
@@ -111,11 +123,12 @@ export async function createInvite(
 
 /**
  * Step 3: commits the invite row unless the account deletion of the inviter, the target, or the
- * person the target ends at after merges has started, or a limit is reached, with nothing
- * committed otherwise. A guard write (a fresh `rev`) on each of their persons rows is staged
- * before reading them and counting (conventions.md#functions), so an invite by the same inviter,
- * or to the same person, or a deletion of any of them, that commits after that fails this
- * commit: a burst can't pass the count together, and the retry sees the deletion.
+ * person the target ends at after merges has started, or a limit (the inviter's address misses
+ * included) is reached, with nothing committed otherwise. A guard write (a fresh `rev`) on each
+ * of their persons rows is staged before reading them and counting (conventions.md#functions), so
+ * an invite by the same inviter, or to the same person, a miss of the inviter's, or a deletion of
+ * any of them, that commits after that fails this commit: a burst can't pass the count together,
+ * and the retry sees the miss or the deletion.
  */
 async function commitWithinLimits(
   db: Db,
@@ -136,10 +149,14 @@ async function commitWithinLimits(
       invited.push(end)
     }
     // The stored rows, not this transaction's view: an account deletion may have started.
-    if (await isDeleted(db, row.invitedBy)) {
+    const inviter = await getRowOrNull<Persons>(db, TABLES.persons, row.invitedBy)
+    if (inviter?.deletedAt !== null) {
       throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
     }
-    // As a wrong address, so the answer doesn't show the deletion.
+    // So once the 10th miss has committed, a right address sent in a burst of wrong ones gets no
+    // answer (#274).
+    if (atMissLimit(inviter, now)) throw tooMany()
+    // As a wrong address, so the answer doesn't show the deletion, and counted as one.
     for (const personId of invited) {
       if (await isDeleted(db, personId)) throw invalid(NOT_THEIR_EMAIL)
     }
@@ -147,7 +164,7 @@ async function commitWithinLimits(
       (await reached(db, PER_INVITER, row.invitedBy, now)) ||
       (await reached(db, PER_IDENTITY, row.identityKey, now))
     ) {
-      throw new AppError('RATE_LIMITED', 'Too many invites have been sent. Try again later.')
+      throw tooMany()
     }
     await tx.write({
       action: 'create',
@@ -191,4 +208,8 @@ async function reached(
 
 function invalid(message: string): AppError {
   return new AppError('VALIDATION_FAILED', message)
+}
+
+function tooMany(): AppError {
+  return new AppError('RATE_LIMITED', TOO_MANY)
 }

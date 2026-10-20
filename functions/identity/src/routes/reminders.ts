@@ -13,6 +13,7 @@ import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { readGroupNets } from '@ledgerly/server/ledger/balances'
 import { ID, Permission, Query, Role } from 'node-appwrite'
+import { atMissLimit, countingMisses, type Misses, recordMiss } from '../address-misses'
 import { parseBody } from '../parse-body'
 import { getRowOrNull, isAppwriteError, tryAgain } from '../rows'
 import type { Services } from '../services'
@@ -63,20 +64,30 @@ export async function sendReminder(
   const url = appLink(services.appUrl)
   const send = () =>
     deliver(services, { id, email, senderName: member.displayName, owedCents, group, url })
+  // Wrong addresses are counted per sender, with invites' (#274).
+  const misses: Misses = { db, senderId: person.$id, now, wrongAddress: WRONG_ADDRESS, tooMany }
 
   if (stored) {
     // Step 3: a retry. It sends again only while the Resend key is live and every check still
-    // passes for the address typed now; otherwise it just answers.
+    // passes for the address typed now; otherwise it just answers. At the address-miss limit it
+    // checks no address. A match sends again and so takes longer, so a retry's miss is counted
+    // too, and it still answers the stored time.
     checkSender(stored, person.$id, groupId)
     const live = now.getTime() - Date.parse(stored.sentAt) < KEY_LIVE_MS
-    if (live && owedCents > 0 && (await stillReachable(db, groupId, person.$id, email))) {
-      await send()
+    if (live && owedCents > 0 && !atMissLimit(person, now)) {
+      if (await stillReachable(db, groupId, person.$id, email)) await send()
+      else await recordRetryMiss(misses)
     }
     return { sentAt: stored.sentAt }
   }
   if (owedCents <= 0) throw new AppError('VALIDATION_FAILED', NOTHING_OWED)
-  const recipient = await recipientOf(db, groupId, person.$id, email)
-  const committed = await commitReminder(db, { id, groupId, sender: person.$id, recipient }, now)
+  // Step 5: at the limit, RATE_LIMITED before the address is checked, right or wrong. Every
+  // wrong-address answer from here on is a miss, a deleted recipient's (6.2) included.
+  if (atMissLimit(person, now)) throw tooMany()
+  const committed = await countingMisses(misses, async () => {
+    const recipient = await recipientOf(db, groupId, person.$id, email)
+    return commitReminder(db, { id, groupId, sender: person.$id, recipient }, now)
+  })
   await send()
   return { sentAt: committed.sentAt }
 }
@@ -112,6 +123,15 @@ async function deliver(
     // Resend's type and status, never its message, which can quote the address.
     logProblem('person_reminder_failed', { reminderId: input.id, error })
     throw new AppError('INTERNAL', NOT_SENT)
+  }
+}
+
+/** A retry's miss. The limit reached meanwhile answers as at the limit: the stored time. */
+async function recordRetryMiss(misses: Misses): Promise<void> {
+  try {
+    await recordMiss(misses)
+  } catch (error) {
+    if (!(error instanceof AppError && error.code === 'RATE_LIMITED')) throw error
   }
 }
 
@@ -154,9 +174,14 @@ async function commitReminder(
         { action: 'update', tableId: TABLES.persons, rowId: recipient, data: { rev: randomId() } },
       )
       // The stored rows, not this transaction's view: an account deletion may have started.
-      if ((await getRowOrNull<Persons>(db, TABLES.persons, sender))?.deletedAt !== null) {
+      const from = await getRowOrNull<Persons>(db, TABLES.persons, sender)
+      if (from?.deletedAt !== null) {
         throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
       }
+      // So once the 10th miss has committed, a right address sent in a burst of wrong ones gets
+      // no answer (#274).
+      if (atMissLimit(from, now)) throw tooMany()
+      // Rolled back, then counted as a miss in its own transaction (countingMisses).
       const to = await getRowOrNull<Persons>(db, TABLES.persons, recipient)
       if (to?.deletedAt !== null) throw new AppError('VALIDATION_FAILED', WRONG_ADDRESS)
       // A merge's step 1 marked the recipient meanwhile: the retry resolves to who they became,
@@ -305,8 +330,12 @@ async function checkLimits(
       queries: [...queries, Query.limit(limit)],
       total: false,
     })
-    if (rows.length >= limit) throw new AppError('RATE_LIMITED', TOO_MANY)
+    if (rows.length >= limit) throw tooMany()
   }
+}
+
+function tooMany(): AppError {
+  return new AppError('RATE_LIMITED', TOO_MANY)
 }
 
 // Resend's answer for a key it has already sent, with other content (the balance changed). A

@@ -167,6 +167,15 @@ function revs(services: Fakes): Record<string, unknown> {
   return Object.fromEntries(services.db.rows('persons').map((row) => [row.$id, row.rev]))
 }
 
+/** The address-miss count on a person's row (#274). */
+function missesOf(services: Fakes, personId: string) {
+  const row = services.db.rows('persons').find((person) => person.$id === personId)
+  return { addressMisses: row?.addressMisses, addressMissesFrom: row?.addressMissesFrom }
+}
+
+const GUARDED = expect.stringMatching(/^[a-z0-9]{20}$/)
+const ONE_MISS = { addressMisses: 1, addressMissesFrom: NOW.toISOString() }
+
 const UNTOUCHED = {
   pAnn: null,
   pBen: null,
@@ -405,29 +414,29 @@ describe('POST /invites', () => {
           message: 'Only someone who has not joined the group yet can be invited.',
         },
       ],
-      [
-        'an address nobody has',
-        { ...BODY, email: 'nobody@example.com' },
-        'u1',
-        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
-      ],
-      [
-        "someone else's address",
-        { ...BODY, email: 'jo@example.com' },
-        'u1',
-        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
-      ],
-      [
-        "another member's address in the same group",
-        { ...BODY, email: 'kim@example.com' },
-        'u1',
-        { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
-      ],
     ])('%s', async (_name, body, userId, expected) => {
       const services = fixture()
       expect(await refused(services, body, userId)).toMatchObject(expected)
       expect(services.db.rows('invites')).toEqual([])
       expect(revs(services)).toEqual(UNTOUCHED)
+      expect(services.sent).toEqual([])
+    })
+
+    // #274: each is a miss, recorded on the inviter's row before the answer.
+    it.each([
+      ['an address nobody has', 'nobody@example.com'],
+      ["someone else's address", 'jo@example.com'],
+      ["another member's address in the same group", 'kim@example.com'],
+    ])('%s, as a wrong address, recording a miss', async (_name, email) => {
+      const services = fixture()
+      expect(await refused(services, { ...BODY, email })).toEqual({
+        status: 400,
+        code: 'VALIDATION_FAILED',
+        message: NOT_THEIR_EMAIL,
+      })
+      expect(services.db.rows('invites')).toEqual([])
+      expect(revs(services)).toEqual({ ...UNTOUCHED, pAnn: GUARDED })
+      expect(missesOf(services, 'pAnn')).toEqual(ONE_MISS)
       expect(services.sent).toEqual([])
     })
 
@@ -451,15 +460,18 @@ describe('POST /invites', () => {
       // a deletion that starts meanwhile is caught by the guards.
       { status: 403, code: 'NOT_A_MEMBER', message: "You're not a member of this group." },
       { status: 401, code: 'UNAUTHENTICATED', message: 'Log in to continue.' },
+      false,
     ],
-    // The same answer as a wrong address, so it doesn't show the deletion.
+    // The same answer as a wrong address, so it doesn't show the deletion, and a miss the same
+    // way (step 3.1, #274).
     [
       'the person invited',
       'pSam',
       { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
       { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL },
+      true,
     ],
-  ])('when %s has started deleting their account', (_who, personId, before, expected) => {
+  ])('when %s has started deleting their account', (_who, personId, before, expected, miss) => {
     // Deletion step 2 (identity-and-invites.md#order): deletedAt and a fresh rev, the identities
     // kept until step 5. Sam has an account, as anyone deleting one does.
     const deleting = (services: Fakes) => () =>
@@ -467,8 +479,15 @@ describe('POST /invites', () => {
 
     function expectNothingDone(services: Fakes) {
       expect(services.db.rows('invites')).toEqual([])
-      // The deletion's write only: this request's guards were rolled back.
-      expect(revs(services)).toEqual({ ...UNTOUCHED, [personId]: 'deleting' })
+      // The deletion's write, and a miss's: this request's guards were rolled back.
+      expect(revs(services)).toEqual({
+        ...UNTOUCHED,
+        [personId]: 'deleting',
+        ...(miss ? { pAnn: GUARDED } : {}),
+      })
+      expect(missesOf(services, 'pAnn')).toEqual(
+        miss ? ONE_MISS : { addressMisses: undefined, addressMissesFrom: undefined },
+      )
       expect(services.sent).toEqual([])
     }
 
@@ -498,11 +517,11 @@ describe('POST /invites', () => {
       const raced = beforeCommit(services.db, deleting(services))
       expect(await refused(services)).toEqual(expected)
       // This request's first commit fails (409), then the deletion's own; the retry refuses
-      // before committing.
+      // before committing, and a miss commits in its own transaction.
       const commits = raced.mock.calls.flatMap(([params], index) =>
         params.commit ? [raced.mock.settledResults[index]?.type] : [],
       )
-      expect(commits).toEqual(['rejected', 'fulfilled'])
+      expect(commits).toEqual(['rejected', 'fulfilled', ...(miss ? ['fulfilled'] : [])])
       expectNothingDone(services)
     })
   })
@@ -522,9 +541,11 @@ describe('POST /invites', () => {
 
     const wrongAddress = { status: 400, code: 'VALIDATION_FAILED', message: NOT_THEIR_EMAIL }
 
+    // The deletion's write, and the inviter's miss (step 3.1, #274).
     function expectNothingDone(services: Fakes) {
       expect(services.db.rows('invites')).toEqual([])
-      expect(revs(services)).toEqual({ ...UNTOUCHED, pSam: 'deleting' })
+      expect(revs(services)).toEqual({ ...UNTOUCHED, pSam: 'deleting', pAnn: GUARDED })
+      expect(missesOf(services, 'pAnn')).toEqual(ONE_MISS)
       expect(services.sent).toEqual([])
     }
 
@@ -588,7 +609,7 @@ describe('POST /invites', () => {
       const commits = raced.mock.calls.flatMap(([params], index) =>
         params.commit ? [raced.mock.settledResults[index]?.type] : [],
       )
-      expect(commits).toEqual(['rejected', 'fulfilled'])
+      expect(commits).toEqual(['rejected', 'fulfilled', 'fulfilled'])
       expectNothingDone(services)
     })
   })
