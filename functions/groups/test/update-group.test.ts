@@ -165,6 +165,57 @@ describe('PATCH /groups/{id}', () => {
     expect(back).toMatchObject({ nextCloseAt: SYDNEY_OCTOBER })
   })
 
+  it('keeps October through a move west, then a cycle change (#126)', async () => {
+    const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
+    services.now = new Date('2026-10-31T19:05:00.000Z')
+    const west = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Brisbane' })
+    expect(west).toMatchObject({ nextCloseAt: '2026-10-31T20:00:00.000Z' })
+    // October has ended in Brisbane, though its close there is 50 minutes away.
+    services.now = new Date('2026-10-31T19:10:00.000Z')
+    const weekly = await ok(services, 'PATCH', '/groups/g1', {
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    expect(weekly).toMatchObject({ nextCloseAt: '2026-10-31T20:00:00.000Z' })
+  })
+
+  it('keeps a period that has ended, before its close, when the cycle changes', async () => {
+    const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
+    // 01:00 on 1 November in Sydney: October has ended, and closes at 06:00.
+    services.now = new Date('2026-10-31T14:00:00.000Z')
+    const weekly = await ok(services, 'PATCH', '/groups/g1', {
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    expect(weekly).toMatchObject({ nextCloseAt: SYDNEY_OCTOBER })
+  })
+
+  it('takes the new cycle from today on the last day of a period', async () => {
+    const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
+    // 23:00 on 31 October in Sydney: October hasn't ended.
+    services.now = new Date('2026-10-31T12:00:00.000Z')
+    const weekly = await ok(services, 'PATCH', '/groups/g1', {
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    // Worked out from today: the first week, from the anchor, closes at 06:00 on 9 November.
+    expect(weekly).toMatchObject({ nextCloseAt: '2026-11-08T19:00:00.000Z' })
+  })
+
+  it('reads whether a period has ended in the time zone it was closed in', async () => {
+    const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
+    // 22:00 on 31 October in Sydney, so October hasn't ended there; 01:00 in Honolulu.
+    services.now = new Date('2026-10-31T11:00:00.000Z')
+    const moved = await ok(services, 'PATCH', '/groups/g1', {
+      timezone: 'Pacific/Honolulu',
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    // Worked out from today: the first week, from the anchor, closes at 06:00 on 9 November in
+    // Honolulu; not October's close there.
+    expect(moved).toMatchObject({ nextCloseAt: '2026-11-09T16:00:00.000Z' })
+  })
+
   it('closes the current period in the new time zone when nothing is due', async () => {
     // November closes at 06:00 on 1 December in Sydney.
     const services = setUp('employer', { nextCloseAt: '2026-11-30T19:00:00.000Z' })
@@ -185,6 +236,29 @@ describe('PATCH /groups/{id}', () => {
     expect(weekly).toMatchObject({ nextCloseAt: '2026-11-15T22:00:00.000Z' })
   })
 
+  it.each([
+    // The week 4–10 November closes at 06:00 on 11 November in Perth.
+    ['anchor', { cycleAnchor: '2026-11-04' }, '2026-11-10T22:00:00.000Z'],
+    // November closes at 06:00 on 1 December in Perth.
+    ['cycle', { statementCycle: 'monthly' }, '2026-11-30T22:00:00.000Z'],
+  ])(
+    'takes a new %s from today when the time zone changes with it and nothing is due',
+    async (_, change, closeAt) => {
+      // The week 9–15 November closes at 06:00 on 16 November in Sydney.
+      const services = setUp('employer', {
+        statementCycle: 'weekly',
+        cycleAnchor: '2026-11-02',
+        nextCloseAt: '2026-11-15T19:00:00.000Z',
+      })
+      services.now = new Date('2026-11-10T00:00:00.000Z')
+      const moved = await ok(services, 'PATCH', '/groups/g1', {
+        timezone: 'Australia/Perth',
+        ...change,
+      })
+      expect(moved).toMatchObject({ nextCloseAt: closeAt })
+    },
+  )
+
   it('closes a due October in the new time zone when the cycle changes too', async () => {
     const services = setUp('employer', { nextCloseAt: SYDNEY_OCTOBER })
     services.now = new Date('2026-10-31T19:05:00.000Z')
@@ -198,10 +272,11 @@ describe('PATCH /groups/{id}', () => {
   })
 
   it('keeps a due nextCloseAt exactly as stored when the time zone stays the same', async () => {
-    // Stored before #126: New York's October close, after a move to Sydney.
+    // Stored before #126: New York's October close, after a move to Sydney. Read in Sydney, its
+    // period ends on 1 November, which hasn't ended there; but it's due at its close.
     const due = '2026-11-01T11:00:00.000Z'
     const services = setUp('employer', { nextCloseAt: due })
-    services.now = new Date('2026-11-01T12:00:00.000Z')
+    services.now = new Date(due)
     const weekly = await ok(services, 'PATCH', '/groups/g1', {
       statementCycle: 'weekly',
       cycleAnchor: '2026-11-02',
@@ -210,14 +285,28 @@ describe('PATCH /groups/{id}', () => {
     expect(weekly).toMatchObject({ nextCloseAt: due })
   })
 
-  it('compares a due nextCloseAt as an instant, whatever its offset', async () => {
-    // 19:00 UTC on 31 October, written with Sydney's offset: later as text, earlier in time.
+  it('reads the period of a close written with an offset', async () => {
+    // 19:00 UTC on 31 October, written with Sydney's offset.
     const due = '2026-11-01T06:00:00.000+11:00'
     const services = setUp('employer', { nextCloseAt: due })
     services.now = new Date('2026-10-31T20:00:00.000Z')
-    // Due, so October is closed again in Perth: 06:00 on 1 November there.
+    // October is closed again in Perth: 06:00 on 1 November there.
     const perth = await ok(services, 'PATCH', '/groups/g1', { timezone: 'Australia/Perth' })
     expect(perth).toMatchObject({ nextCloseAt: '2026-10-31T22:00:00.000Z' })
+  })
+
+  it('compares a due nextCloseAt as an instant, whatever its offset', async () => {
+    // Stored before #126: New York's October close, 11:00 UTC on 1 November, after a move to
+    // Sydney, written with Sydney's offset. Later than now as text, earlier in time; and read in
+    // Sydney, its period ends on 1 November, which hasn't ended there yet.
+    const due = '2026-11-01T22:00:00.000+11:00'
+    const services = setUp('employer', { nextCloseAt: due })
+    services.now = new Date('2026-11-01T12:00:00.000Z')
+    const weekly = await ok(services, 'PATCH', '/groups/g1', {
+      statementCycle: 'weekly',
+      cycleAnchor: '2026-11-02',
+    })
+    expect(weekly).toMatchObject({ nextCloseAt: due })
   })
 
   it('keeps nextCloseAt when nothing it depends on changes', async () => {
