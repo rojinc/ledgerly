@@ -265,7 +265,6 @@ function Details({ row }: { row: Transactions }) {
   )
 }
 
-/** `Alice, Bob and Cara`. */
 /** An adjustment's share as the change to that person's balance (ledger.md#concepts-in-one-minute). */
 function adjustmentText(
   share: { givenCents: number; receivedCents: number },
@@ -276,6 +275,7 @@ function adjustmentText(
   return `${net > 0 ? 'is owed' : 'owes'} ${formatNet(Math.abs(net), currency)} more`
 }
 
+/** `Alice, Bob and Cara`. */
 function namesText(names: string[]): string {
   return names.length < 2
     ? (names[0] ?? '')
