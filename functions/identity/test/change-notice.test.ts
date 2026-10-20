@@ -792,6 +792,18 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(noticeLines()[0]).toEqual(dropped(1))
     })
 
+    it('counts only the user’s own rows towards the cap', async () => {
+      const others = ['o1', 'o2', 'o3'].map((id) => pending(id, { userId: 'u2' }))
+      const services = fakes(
+        { persons: [SAM], identities: [A, B], changeNotices: others },
+        { account: account(CHANGED_EMAIL) },
+      )
+      answered(services, () => failure('timeout'))
+      await event(services)
+      expect(rows(services).filter((row) => row.userId === 'u1')).toHaveLength(2)
+      expect(noticeLines().filter((line) => line.outcome === 'dropped')).toEqual([])
+    })
+
     it('counts a replayed event’s row once, at the cap', async () => {
       const services = fakes(
         { persons: [SAM], identities: [A], changeNotices: [pending('n1'), pending('n2')] },
