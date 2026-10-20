@@ -31,7 +31,7 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 ## CI/CD (GitHub Actions)
 
-`ci.yml`, on every pull request and every push to `main`: `npm ci` → lint → typecheck → test (`TZ=UTC`) → `@ledgerly/core` coverage (`TZ=Australia/Sydney`, 100% required) → test again (`TZ=Australia/Sydney`) → build.
+`ci.yml`, on a pull request when it's opened, pushed to, reopened or marked ready, but never while it's a draft, and not for one that changes only `docs/**` or Markdown, so Actions minutes last. `main` itself isn't run: the lead runs the gates locally on `main` with each PR merged in, and Deploy builds it again. Steps: `npm ci` → lint → typecheck → test (`TZ=UTC`) → `@ledgerly/core` coverage (`TZ=Australia/Sydney`, 100% required) → test again (`TZ=Australia/Sydney`) → build.
 
 `e2e.yml`: after each successful Deploy of `main`, and on **Run workflow**, the [user flows](testing.md#end-to-end) in Chromium against dev.
 
