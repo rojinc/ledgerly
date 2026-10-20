@@ -789,6 +789,55 @@ describe('address misses (#274)', () => {
     })
   })
 
+  // A new reminder refused after its check keeps its count (AI C's review of 49741be): each
+  // take-back is in step 7's commit and rolls back with it. A free CONFLICT here would say
+  // "right address", which is #274's attack on the reminder route.
+  describe('a new reminder refused after its check keeps its count', () => {
+    it('loses step 7 to a parallel call with the same id: answers its time, keeps its count', async () => {
+      const services = fixture()
+      const raced = beforeCommit(
+        services.db,
+        () => ok(services, 'POST', '/reminders', REMINDER.body(RIGHT, 1)),
+        2,
+      )
+      expect(await ok(services, 'POST', '/reminders', REMINDER.body(RIGHT, 1))).toHaveProperty(
+        'sentAt',
+      )
+      expect(raced).toHaveBeenCalled()
+      expect(services.db.rows('reminders')).toHaveLength(1)
+      // The parallel call's count was taken back with its reminder; this one's stays.
+      expect(missesOf(services)).toEqual(misses(1))
+    })
+
+    it('conflicts in step 7 with the sender’s own profile edit: CONFLICT, keeps its count', async () => {
+      const services = fixture()
+      beforeCommit(
+        services.db,
+        () => ok(services, 'PATCH', '/profile', { displayName: 'Sam 2' }),
+        2,
+      )
+      expect(await failure(services, 'POST', '/reminders', REMINDER.body(RIGHT, 1))).toEqual(
+        CONFLICT,
+      )
+      expect(missesOf(services)).toEqual(misses(1))
+      expectNothingSent(services)
+    })
+
+    it('has a recipient marked mergedInto before the guards: CONFLICT, keeps its count', async () => {
+      const services = fixture()
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"pAlex"'),
+        () => updateRow(services.db, 'persons', 'pAlex', { mergedInto: 'pJo' }),
+      )
+      expect(await failure(services, 'POST', '/reminders', REMINDER.body(RIGHT, 1))).toEqual(
+        CONFLICT,
+      )
+      expect(missesOf(services)).toEqual(misses(1))
+      expectNothingSent(services)
+    })
+  })
+
   describe('a reminder retry with the same id (step 3)', () => {
     const SENT_AT = ago(HOUR)
     const stored = {
