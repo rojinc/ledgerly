@@ -29,6 +29,7 @@ import { z } from 'zod'
 import type { Db } from '../appwrite/client'
 import { DATABASE_ID, TABLES, type TableId } from '../appwrite/tables'
 import type { Tx, Write } from '../appwrite/transaction'
+import { leftOnTheirOwn } from '../auth/left-on-their-own'
 import type { Membership } from '../auth/require-member'
 import { AppError } from '../http/app-error'
 import { randomId } from '../identity/random-id'
@@ -175,7 +176,8 @@ export async function requireNotFinalizing(
  * CONFLICT, with `merging`, when the row names a person whose merge is still open in its group
  * (identity-and-invites.md#while-a-merge-is-open-in-a-group): its shares, stored input or item
  * splits name a P with `mergedInto` set who lists the group in `mergeGroupIds` and has no member
- * row there, while U (P's `mergedInto`) has a joined one (not `placeholder`). Per group, so it
+ * row there, while U (P's `mergedInto`) has a joined one (not `placeholder`, and not one U left
+ * on their own before any deletion of U's, where step 3 leaves P's rows on P). Per group, so it
  * holds whether or not the merge finishes elsewhere. Planning the row again with today's members
  * would count P's part as someone else's before the merge writes it out. Routes call it before
  * planning, and again after staging the group row, so a merge's step 2 that lands meanwhile fails
@@ -217,10 +219,23 @@ export async function requireNoOpenMerge(
       total: false,
     })
     const has = (personId: string) => members.find((member) => member.personId === personId)
-    // Step 2 always leaves U's row joined; a placeholder row of U's isn't P's place (D-016).
+    const into = has(person.mergedInto as string)
+    // Step 2 always leaves U's row joined; a placeholder row of U's isn't P's place (D-016). Where
+    // U left on their own, step 3 leaves P's rows on P, so the group isn't open either (#349). Not
+    // account deletion's keep, though: a merge into a deleted U stopped where it was, so only a
+    // leave of U's own from before the deletion counts (#370).
     if (
       has(person.$id) ||
-      (has(person.mergedInto as string)?.status ?? 'placeholder') === 'placeholder'
+      !into ||
+      into.status === 'placeholder' ||
+      (into.status === 'left' &&
+        (await leftOnTheirOwn(
+          db,
+          row.groupId,
+          into.personId,
+          into.$createdAt,
+          await deletedAtOf(db, into.personId),
+        )))
     ) {
       continue
     }
@@ -231,6 +246,17 @@ export async function requireNoOpenMerge(
       details,
     )
   }
+}
+
+/** When the person's account deletion started, if it has. */
+async function deletedAtOf(db: Db, personId: string): Promise<string | null> {
+  const { rows } = await db.listRows<Persons>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.persons,
+    queries: [Query.equal('$id', personId), Query.limit(1)],
+    total: false,
+  })
+  return rows[0]?.deletedAt ?? null
 }
 
 /** Whether `error` is requireNoOpenMerge's refusal. */

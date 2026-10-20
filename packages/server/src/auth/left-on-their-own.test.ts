@@ -19,8 +19,8 @@ function activity(id: string, action: string, at: string, extra: object = {}) {
   }
 }
 
-function check(rows: ReturnType<typeof activity>[]) {
-  return leftOnTheirOwn(new FakeDb({ activity: rows }), 'g1', 'p2', MEMBER_CREATED)
+function check(rows: ReturnType<typeof activity>[], before?: string | null) {
+  return leftOnTheirOwn(new FakeDb({ activity: rows }), 'g1', 'p2', MEMBER_CREATED, before)
 }
 
 describe('leftOnTheirOwn', () => {
@@ -52,5 +52,26 @@ describe('leftOnTheirOwn', () => {
         activity('a3', 'member.left', '2026-10-01T00:00:00.000Z', { groupId: 'g2' }),
       ]),
     ).toBe(false)
+  })
+
+  // Account deletion's keep writes a member.left of theirs, on or after deletedAt (#370).
+  it('with `before`, counts only rows written before it', async () => {
+    const DELETED_AT = '2026-10-15T00:00:00.000Z'
+    const kept = activity('a9', 'member.left', '2026-10-15T00:00:01.000Z')
+    expect(await check([kept], DELETED_AT)).toBe(false)
+    expect(
+      await check([activity('a1', 'member.left', '2026-10-01T00:00:00.000Z'), kept], DELETED_AT),
+    ).toBe(true)
+    expect(
+      await check(
+        [
+          activity('a1', 'member.left', '2026-09-10T00:00:00.000Z'),
+          activity('a2', 'member.joined', '2026-09-20T00:00:00.000Z'),
+          kept,
+        ],
+        DELETED_AT,
+      ),
+    ).toBe(false)
+    expect(await check([kept], null)).toBe(true)
   })
 })

@@ -77,6 +77,14 @@ export async function claim(
   if (!person || person.deletedAt) throw setUpFirst()
   const deadline = Date.now() + MERGE_BUDGET_MS
   await claimIdentities(services, person.$id, identities)
+  // Step 3 before the merges carry on, so a merge finds the caller joined where their own row
+  // was still a placeholder, and renames P there too (#349).
+  const linked = new Set<string>()
+  for (const member of await rowsToJoin(services.db, person)) {
+    if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
+      linked.add(member.groupId)
+    }
+  }
   // Every merge into this person that isn't finished: one just marked, or one cut off before.
   // A merge that fails is left for the next claim, so it never stops a login.
   const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
@@ -85,12 +93,7 @@ export async function claim(
   })
   // A finished merge moved P's identities here, the claimed one too: it's verified now.
   if (merges.finished.length > 0) await claimIdentities(services, person.$id, identities)
-  const linked = new Set(merges.joined)
-  for (const member of await rowsToJoin(services.db, person)) {
-    if (await joinGroup(services, userId, person.$id, member, setUpFirst)) {
-      linked.add(member.groupId)
-    }
-  }
+  for (const groupId of merges.joined) linked.add(groupId)
   return [...linked]
 }
 

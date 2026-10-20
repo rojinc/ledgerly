@@ -700,7 +700,8 @@ describe('moveInputs (step 3)', () => {
 
   it('leaves a row it can’t rename as it is, says so by ID, and isn’t done', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    // P's and U's weights would add up past MAX_WEIGHT; the other input isn't JSON.
+    // Posted, with no shares to go by: P's and U's weights would add up past MAX_WEIGHT. The
+    // other input isn't JSON.
     const heavy = transaction('t1', {
       payers: [{ personId: 'pX', cents: 9000 }],
       split: {
@@ -729,6 +730,138 @@ describe('moveInputs (step 3)', () => {
       { event: 'merge_left_transaction', personId: 'pP', intoPersonId: 'pU', transactionId: 't1' },
       { event: 'merge_left_transaction', personId: 'pP', intoPersonId: 'pU', transactionId: 't2' },
     ])
+  })
+
+  it('writes out as exact an unposted row’s weights the rename takes past MAX_WEIGHT (#348)', async () => {
+    // P's and U's weights would add up past MAX_WEIGHT. With no shares to go by, the split is
+    // written out from the row's total, or the item's amount, by the weights as they were.
+    const weights = (...entries: [string, number][]) => ({
+      mode: 'weights',
+      weights: entries.map(([personId, weight]) => ({ personId, weight })),
+    })
+    const due = transaction(
+      't1',
+      {
+        payers: [{ personId: 'pX', cents: 9000 }],
+        split: weights(['pP', 6000], ['pU', 6000], ['pX', 1]),
+      },
+      { status: 'due' },
+    )
+    const store = seed([due, transaction('t2', {}, { status: 'scheduled', totalCents: 500 })], {
+      items: [
+        {
+          $id: 'i1',
+          transactionId: 't2',
+          position: 0,
+          name: 'Milk',
+          quantity: 1,
+          amountCents: 500,
+          category: null,
+          splitJson: JSON.stringify(weights(['pP', 6000], ['pU', 6000])),
+        },
+      ],
+    })
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toEqual({
+      rewritten: 2,
+      voided: 0,
+      skipped: 0,
+      putOff: [],
+      cutOff: false,
+      done: true,
+    })
+    // 90.00 by 6000, 6000 and 1 gave P 45.00, U 44.99 and X 0.01.
+    expect(input(store, 't1').split).toEqual({
+      mode: 'exact',
+      amounts: [
+        { personId: 'pU', cents: 8999 },
+        { personId: 'pX', cents: 1 },
+      ],
+    })
+    expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual({
+      mode: 'exact',
+      amounts: [{ personId: 'pU', cents: 500 }],
+    })
+    // Nothing names P now: a second run writes nothing.
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 0,
+      skipped: 0,
+      done: true,
+    })
+  })
+
+  // #348: the split is written out from the total, so a total changed meanwhile is a race.
+  const overCap = {
+    mode: 'weights',
+    weights: [
+      { personId: 'pP', weight: 6000 },
+      { personId: 'pU', weight: 6000 },
+      { personId: 'pX', weight: 1 },
+    ],
+  }
+  // 60.00 by 6000, 6000 and 1 gives P 30.00, U 30.00 and X 0.
+  const fromSixty = {
+    mode: 'exact',
+    amounts: [
+      { personId: 'pU', cents: 6000 },
+      { personId: 'pX', cents: 0 },
+    ],
+  }
+
+  it('runs again on an unposted row whose total changed after it was read', async () => {
+    const store = seed([transaction('t1', { split: overCap }, { status: 'due' })])
+    beforeStaging(
+      store,
+      (operations) => operations.includes('inputJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'transactions',
+            rowId: 't1',
+            data: { totalCents: 6000 },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+      done: true,
+    })
+    expect(input(store, 't1').split).toEqual(fromSixty)
+  })
+
+  it('runs again on an unposted row whose item amount changed after it was read', async () => {
+    const store = seed([transaction('t2', {}, { status: 'scheduled', totalCents: 9000 })], {
+      items: [
+        {
+          $id: 'i1',
+          transactionId: 't2',
+          position: 0,
+          name: 'Rent',
+          quantity: 1,
+          amountCents: 9000,
+          category: null,
+          splitJson: JSON.stringify(overCap),
+        },
+      ],
+    })
+    beforeStaging(
+      store,
+      (operations) => operations.includes('splitJson'),
+      () =>
+        withTransaction(store, (tx) =>
+          tx.write({
+            action: 'update',
+            tableId: 'items',
+            rowId: 'i1',
+            data: { amountCents: 6000 },
+          }),
+        ),
+    )
+    expect(await moveInputs(store, merge, ['g1'], NOW, FAR, DATES, [])).toMatchObject({
+      rewritten: 1,
+      done: true,
+    })
+    expect(JSON.parse(store.rows('items')[0]?.splitJson as string)).toEqual(fromSixty)
   })
 
   it('keeps the stored input’s key order, and voids as the void route does', async () => {
@@ -1606,6 +1739,31 @@ describe('moveTemplates (step 3)', () => {
     })
     expect(store.rows('schedules')[1]?.templateJson).toBe(other.templateJson)
     expect(store.rows('groups')[0]?.rev).not.toBe('r0')
+  })
+
+  it('writes out as exact a template’s weights the rename takes past MAX_WEIGHT (#348)', async () => {
+    const heavy = {
+      ...RENT,
+      split: {
+        mode: 'weights',
+        weights: [
+          { personId: 'pP', weight: 6000 },
+          { personId: 'pU', weight: 6000 },
+        ],
+      },
+    }
+    const store = seed([], { schedules: [schedule('sc1', heavy)] })
+    expect(await moveTemplates(store, merge, ['g1'], FAR)).toMatchObject({
+      rewritten: 1,
+      skipped: 0,
+      done: true,
+    })
+    expect(template(store, 'sc1')).toEqual({
+      ...RENT,
+      split: { mode: 'exact', amounts: [{ personId: 'pU', cents: 90000 }] },
+    })
+    // Nothing names P now: a second run writes nothing.
+    expect(await moveTemplates(store, merge, ['g1'], FAR)).toMatchObject({ rewritten: 0 })
   })
 
   it('renames no template into a person whose account is being deleted (#246)', async () => {

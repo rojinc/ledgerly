@@ -8,6 +8,7 @@
 * [Features](product/features.md)
 * [User flows](product/user-flows.md)
 * [Glossary](product/glossary.md)
+* [Legal review pack](product/legal-review.md)
 
 ## Architecture
 
