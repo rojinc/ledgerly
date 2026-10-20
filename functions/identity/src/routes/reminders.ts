@@ -13,7 +13,7 @@ import { logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { readGroupNets } from '@ledgerly/server/ledger/balances'
 import { ID, Permission, Query, Role } from 'node-appwrite'
-import { atMissLimit, countingMisses, type Misses, recordMiss } from '../address-misses'
+import { atMissLimit, countCheck, takeBack, takeBackAlone } from '../address-misses'
 import { parseBody } from '../parse-body'
 import { getRowOrNull, isAppwriteError, tryAgain } from '../rows'
 import type { Services } from '../services'
@@ -64,32 +64,55 @@ export async function sendReminder(
   const url = appLink(services.appUrl)
   const send = () =>
     deliver(services, { id, email, senderName: member.displayName, owedCents, group, url })
-  // Wrong addresses are counted per sender, with invites' (#274).
-  const misses: Misses = { db, senderId: person.$id, now, wrongAddress: WRONG_ADDRESS, tooMany }
 
   if (stored) {
     // Step 3: a retry. It sends again only while the Resend key is live and every check still
-    // passes for the address typed now; otherwise it just answers. At the address-miss limit it
-    // checks no address. A match sends again and so takes longer, so a retry's miss is counted
-    // too, and it still answers the stored time.
+    // passes for the address typed now; otherwise it just answers the stored time. A match sends
+    // again and so takes longer, so its address check is counted first too (#274). At the limit,
+    // or when counting conflicts twice, it checks no address and sends nothing.
     checkSender(stored, person.$id, groupId)
     const live = now.getTime() - Date.parse(stored.sentAt) < KEY_LIVE_MS
-    if (live && owedCents > 0 && !atMissLimit(person, now)) {
-      if (await stillReachable(db, groupId, person.$id, email)) await send()
-      else await recordRetryMiss(misses)
+    if (!live || owedCents <= 0 || atMissLimit(person, now)) return { sentAt: stored.sentAt }
+    const window = await countedRetry(db, person.$id, now)
+    if (window === null) return { sentAt: stored.sentAt }
+    // A wrong address or a deleted recipient keeps the count; a send takes it back first.
+    if (await stillReachable(db, groupId, person.$id, email)) {
+      await takeBackAlone(db, person.$id, window)
+      await send()
     }
     return { sentAt: stored.sentAt }
   }
   if (owedCents <= 0) throw new AppError('VALIDATION_FAILED', NOTHING_OWED)
-  // Step 5: at the limit, RATE_LIMITED before the address is checked, right or wrong. Every
-  // wrong-address answer from here on is a miss, a deleted recipient's (6.2) included.
+  // Step 5's address check, counted first, per sender, with invites' (#274): at the limit,
+  // RATE_LIMITED with nothing written, right or wrong. Otherwise the count commits before the
+  // address is looked at, so a conflict there (CONFLICT) tells the sender nothing, and a reminder
+  // that's sent takes it back in step 7's transaction.
   if (atMissLimit(person, now)) throw tooMany()
-  const committed = await countingMisses(misses, async () => {
-    const recipient = await recipientOf(db, groupId, person.$id, email)
-    return commitReminder(db, { id, groupId, sender: person.$id, recipient }, now)
-  })
+  const window = await countCheck(db, person.$id, now, tooMany)
+  const recipient = await recipientOf(db, groupId, person.$id, email)
+  const committed = await commitReminder(
+    db,
+    { id, groupId, sender: person.$id, recipient, window },
+    now,
+  )
   await send()
   return { sentAt: committed.sentAt }
+}
+
+/**
+ * A retry's count (step 3): the window it was taken in. Null when the limit was reached
+ * meanwhile, or counting conflicted twice: either answers as at the limit, with the stored time
+ * and no address check.
+ */
+async function countedRetry(db: Db, senderId: string, now: Date): Promise<string | null> {
+  try {
+    return await countCheck(db, senderId, now, tooMany)
+  } catch (error) {
+    const refused =
+      error instanceof AppError && (error.code === 'RATE_LIMITED' || error.code === 'CONFLICT')
+    if (refused) return null
+    throw error
+  }
 }
 
 /** Step 8: the email, under the reminder's own key. INTERNAL if it may not have gone out. */
@@ -126,15 +149,6 @@ async function deliver(
   }
 }
 
-/** A retry's miss. The limit reached meanwhile answers as at the limit: the stored time. */
-async function recordRetryMiss(misses: Misses): Promise<void> {
-  try {
-    await recordMiss(misses)
-  } catch (error) {
-    if (!(error instanceof AppError && error.code === 'RATE_LIMITED')) throw error
-  }
-}
-
 /** Whether step 5 and the recipient's deletedAt check pass again, for a retry. */
 async function stillReachable(
   db: Db,
@@ -153,8 +167,9 @@ async function stillReachable(
 
 /**
  * Steps 6 and 7: guards on both persons, a fresh look at them, the limits, then the reminder
- * and its activity row, committed. A commit lost to a parallel call with this `id`, or a limit
- * reached by that call's row, answers from its row instead.
+ * and its activity row, committed with the count the sender's address check took in `window`
+ * taken back (#274). A commit lost to a parallel call with this `id`, or a limit reached by that
+ * call's row, answers from its row instead.
  */
 async function commitReminder(
   db: Db,
@@ -163,7 +178,8 @@ async function commitReminder(
     groupId,
     sender,
     recipient,
-  }: { id: string; groupId: string; sender: string; recipient: string },
+    window,
+  }: { id: string; groupId: string; sender: string; recipient: string; window: string },
   now: Date,
 ): Promise<Reminders> {
   const sentAt = now.toISOString()
@@ -178,10 +194,8 @@ async function commitReminder(
       if (from?.deletedAt !== null) {
         throw new AppError('UNAUTHENTICATED', 'Log in to continue.')
       }
-      // So once the 10th miss has committed, a right address sent in a burst of wrong ones gets
-      // no answer (#274).
-      if (atMissLimit(from, now)) throw tooMany()
-      // Rolled back, then counted as a miss in its own transaction (countingMisses).
+      // No second address-miss limit check: the address check paid its count before it ran
+      // (#274). A deleted recipient answers as a wrong address, and keeps that count.
       const to = await getRowOrNull<Persons>(db, TABLES.persons, recipient)
       if (to?.deletedAt !== null) throw new AppError('VALIDATION_FAILED', WRONG_ADDRESS)
       // A merge's step 1 marked the recipient meanwhile: the retry resolves to who they became,
@@ -213,6 +227,9 @@ async function commitReminder(
           },
           permissions: [Permission.read(Role.team(groupId))],
         },
+        // Sent to, so the check takes its count back, from the sender's row as stored after its
+        // guard, if it's still the window the count was taken in (step 5).
+        ...takeBack(sender, from, window),
       )
     })
   } catch (error) {

@@ -153,17 +153,14 @@ export function beforeStaging(
 }
 
 /**
- * Runs `change` just before the first commit, after the request staged its writes, so the
- * commit fails with Appwrite's 409 as it would on a real conflict.
+ * Runs `change` just before the `nth` commit (the first by default), after the request staged
+ * its writes, so the commit fails with Appwrite's 409 as it would on a real conflict.
  */
-export function beforeCommit(db: FakeDb, change: () => Promise<unknown>) {
+export function beforeCommit(db: FakeDb, change: () => Promise<unknown>, nth = 1) {
   const commit = db.updateTransaction.bind(db)
-  let done = false
+  let commits = 0
   return vi.spyOn(db, 'updateTransaction').mockImplementation(async (params) => {
-    if (!done && params.commit) {
-      done = true
-      await change()
-    }
+    if (params.commit && ++commits === nth) await change()
     return commit(params)
   })
 }

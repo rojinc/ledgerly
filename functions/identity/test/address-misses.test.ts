@@ -1,7 +1,5 @@
-import { AppError } from '@ledgerly/server/http/app-error'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { countingMisses } from '../src/address-misses'
 import {
   beforeCommit,
   beforeStaging,
@@ -15,8 +13,9 @@ import {
   updateRow,
 } from './harness'
 
-// #274 (identity-and-invites.md#invites, step 2; #reminders, steps 3, 5 and 6.2): wrong addresses
-// typed for invites and reminders, counted together on the sender's persons row.
+// #274 (identity-and-invites.md#invites, step 2; #reminders, steps 3, 5 and 6.2): address checks
+// typed for invites and reminders, counted together on the sender's persons row before they run,
+// with a sent one's count taken back.
 
 type Row = Record<string, unknown> & { $id: string }
 
@@ -66,7 +65,8 @@ function share(personId: string, givenCents: number, receivedCents: number) {
 
 /**
  * Pair g1: Sam (u1, an admin) and Alex, a placeholder at alex@example.com who owes Sam $50.00, so
- * Sam can both invite and remind Alex. Jo holds jo@example.com. `sam` sets Sam's miss columns.
+ * Sam can both invite and remind Alex. Jo holds jo@example.com. `sam` sets Sam's count columns.
+ * Sam has a profile, so Sam can edit their own name (PATCH /profile writes persons.displayName).
  */
 function fixture(
   sam: object = {},
@@ -101,6 +101,20 @@ function fixture(
         identity('iJo', 'email:jo@example.com', 'pJo'),
       ],
       reminders: seed.reminders ?? [],
+      profiles: [
+        {
+          $id: 'u1',
+          personId: 'pSam',
+          timezone: 'Australia/Sydney',
+          region: 'AU-NSW',
+          currency: 'AUD',
+          businessJson: null,
+          invoicePrefix: 'INV-',
+          lastInvoiceNumber: 7,
+          summaryFrequency: 'none',
+          nextSummaryAt: null,
+        },
+      ],
     },
     { teams: { g1: ['u1'] } },
   )
@@ -108,6 +122,7 @@ function fixture(
 
 const RIGHT = 'alex@example.com'
 const WRONG = 'stranger@example.com'
+const guess = (n: number) => `guess${n}@example.com`
 
 type Route = {
   name: string
@@ -115,8 +130,6 @@ type Route = {
   body: (email: string, n?: number) => object
   wrongAddress: string
   tooMany: string
-  /** The rows a send writes: nothing in them means nothing was sent. */
-  table: 'invites' | 'reminders'
 }
 
 const INVITE: Route = {
@@ -125,7 +138,6 @@ const INVITE: Route = {
   body: (email) => ({ groupId: 'g1', memberId: 'm2', email }),
   wrongAddress: "This email address isn't one this person was added with.",
   tooMany: 'Too many invites have been sent. Try again later.',
-  table: 'invites',
 }
 const REMINDER: Route = {
   name: 'a reminder',
@@ -134,7 +146,6 @@ const REMINDER: Route = {
   body: (email, n = 0) => ({ id: `r${n}`, groupId: 'g1', email }),
   wrongAddress: "That isn't an address this group has for them. Use one you added them with.",
   tooMany: 'Too many reminders. Try again in a few days.',
-  table: 'reminders',
 }
 const ROUTES = [
   [INVITE.name, INVITE],
@@ -164,6 +175,8 @@ function limitAnswer(route: Route) {
   return { status: 429, code: 'RATE_LIMITED', message: route.tooMany }
 }
 
+const CONFLICT = { status: 409, code: 'CONFLICT', message: TRY_AGAIN }
+
 function expectNothingSent(services: Fakes) {
   expect(services.sendEmail).not.toHaveBeenCalled()
   expect(services.db.rows('invites')).toEqual([])
@@ -171,11 +184,68 @@ function expectNothingSent(services: Fakes) {
   expect(services.db.rows('activity')).toEqual([])
 }
 
-/** The misses `count` wrong addresses leave, in a window that started at `from`. */
+/** The count `count` checks leave, in a window that started at `from`. */
 const misses = (count: number, from = NOW.toISOString()) => ({
   addressMisses: count,
   addressMissesFrom: from,
 })
+const NO_MISSES = { addressMisses: undefined, addressMissesFrom: undefined }
+
+/** How many addresses were looked up (identities read) from now on. */
+function addressChecks(services: Fakes): () => number {
+  const reads = vi.spyOn(services.db, 'listRows')
+  return () => reads.mock.calls.filter(([params]) => params.tableId === 'identities').length
+}
+
+/** The `addressMisses` values staged on Sam's row from now on, in order. */
+function countsStaged(services: Fakes): () => unknown[] {
+  const staged = vi.spyOn(services.db, 'createOperations')
+  return () =>
+    staged.mock.calls
+      .flatMap(([params]) => (params.operations ?? []) as { rowId: string; data?: Row }[])
+      .filter(
+        (operation) => operation.rowId === 'pSam' && operation.data?.addressMisses !== undefined,
+      )
+      .map((operation) => operation.data?.addressMisses)
+}
+
+/** Every commit fails with 409 after the first `passing` ones. */
+function conflictsAfter(services: Fakes, passing: number) {
+  const commit = services.db.updateTransaction.bind(services.db)
+  let commits = 0
+  return vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+    if (params.commit && commits++ >= passing) {
+      throw new AppwriteException('Conflict', 409, 'transaction_conflict')
+    }
+    return commit(params)
+  })
+}
+
+/**
+ * The sender floods their own row: a PATCH /profile (persons.displayName) commits just before
+ * every commit of the request under test, so each of those fails with a 409.
+ */
+function flood(services: Fakes) {
+  const commit = services.db.updateTransaction.bind(services.db)
+  let edits = 0
+  let editing = false
+  return vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+    if (params.commit && !editing) {
+      editing = true
+      try {
+        await ok(services, 'PATCH', '/profile', { displayName: `Sam ${edits++}` })
+      } finally {
+        editing = false
+      }
+    }
+    return commit(params)
+  })
+}
+
+/** The code of each answer, or `ok`. */
+function codes(answers: Awaited<ReturnType<typeof call>>[]): string[] {
+  return answers.map(({ body }) => (body.ok ? 'ok' : body.error.code))
+}
 
 afterEach(() => {
   vi.restoreAllMocks()
@@ -183,7 +253,7 @@ afterEach(() => {
 
 describe('address misses (#274)', () => {
   describe.each(ROUTES)('for %s', (_name, route) => {
-    it('answers a wrong address as before, and records one miss on the sender’s row only', async () => {
+    it('answers a wrong address as before, and keeps its count on the sender’s row only', async () => {
       const services = fixture()
       const before = services.db.rows('persons')
       const { status, body } = await send(services, route, WRONG)
@@ -202,6 +272,21 @@ describe('address misses (#274)', () => {
       expectNothingSent(services)
     })
 
+    it('counts a right address before its check and takes it back when it’s sent; a wrong one adds 1', async () => {
+      const services = fixture(misses(3, ago(HOUR)))
+      const staged = countsStaged(services)
+      await ok(services, 'POST', route.path, route.body(RIGHT, 1))
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      // +1 under the count's guard, then −1 with the send.
+      expect(staged()).toEqual([4, 3])
+      expect(missesOf(services)).toEqual(misses(3, ago(HOUR)))
+      expect(await failure(services, 'POST', route.path, route.body(WRONG, 2))).toEqual(
+        wrongAnswer(route),
+      )
+      expect(staged()).toEqual([4, 3, 4])
+      expect(missesOf(services)).toEqual(misses(4, ago(HOUR)))
+    })
+
     it('answers the 11th RATE_LIMITED, right or wrong, without checking the address or writing', async () => {
       const services = fixture()
       for (let n = 1; n <= 10; n++) {
@@ -210,22 +295,31 @@ describe('address misses (#274)', () => {
       }
       expect(missesOf(services)).toEqual(misses(10))
       const before = sam(services)
-      const reads = vi.spyOn(services.db, 'listRows')
+      const checks = addressChecks(services)
       const transactions = vi.spyOn(services.db, 'createTransaction')
       for (const email of [WRONG, RIGHT]) {
         expect(await failure(services, 'POST', route.path, route.body(email, 11))).toEqual(
           limitAnswer(route),
         )
       }
-      // Before the address check: no identity is looked up, and nothing is staged.
-      const tables = reads.mock.calls.map(([params]) => params.tableId)
-      expect(tables).not.toContain('identities')
+      // The cheap check before counting: no identity is looked up, and nothing is staged.
+      expect(checks()).toBe(0)
       expect(transactions).not.toHaveBeenCalled()
       expect(sam(services)).toEqual(before)
       expectNothingSent(services)
     })
 
-    it('starts a new window at 1 with a miss exactly 24 hours after the last one started', async () => {
+    it('takes the count back in the send’s own commit, so no conflict after it leaves it up', async () => {
+      const services = fixture(misses(3, ago(HOUR)))
+      // The count and the send commit; any other commit would conflict.
+      const commits = conflictsAfter(services, 2)
+      await ok(services, 'POST', route.path, route.body(RIGHT, 1))
+      expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(2)
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      expect(missesOf(services)).toEqual(misses(3, ago(HOUR)))
+    })
+
+    it('starts a new window at 1 with a check exactly 24 hours after the last one started', async () => {
       const services = fixture(misses(10, ago(24 * HOUR)))
       expect(await failure(services, 'POST', route.path, route.body(WRONG))).toEqual(
         wrongAnswer(route),
@@ -245,15 +339,15 @@ describe('address misses (#274)', () => {
       )
     })
 
-    it('lets a right address through once the window has ended', async () => {
+    it('lets a right address through once the window has ended, in a new window it leaves at 0', async () => {
       const services = fixture(misses(10, ago(24 * HOUR)))
       await ok(services, 'POST', route.path, route.body(RIGHT))
       expect(services.sendEmail).toHaveBeenCalledTimes(1)
-      // A send doesn't touch the count.
-      expect(missesOf(services)).toEqual(misses(10, ago(24 * HOUR)))
+      // Its check started a new window at 1, and the send took that back.
+      expect(missesOf(services)).toEqual(misses(0))
     })
 
-    it('reads a row without the columns, or with nulls, as no misses', async () => {
+    it('reads a row without the columns, or with nulls, as no count', async () => {
       for (const columns of [{}, { addressMisses: null, addressMissesFrom: null }]) {
         const services = fixture(columns)
         expect((await failure(services, 'POST', route.path, route.body(WRONG))).code).toBe(
@@ -263,7 +357,7 @@ describe('address misses (#274)', () => {
       }
     })
 
-    it('doesn’t reset the count on a successful send', async () => {
+    it('takes back only its own count on a successful send, never earlier misses', async () => {
       const services = fixture(misses(9, ago(HOUR)))
       await ok(services, 'POST', route.path, route.body(RIGHT, 1))
       expect(missesOf(services)).toEqual(misses(9, ago(HOUR)))
@@ -277,8 +371,69 @@ describe('address misses (#274)', () => {
       expect(services.sendEmail).toHaveBeenCalledTimes(1)
     })
 
+    it('takes its count back in its window, whatever else was counted there meanwhile', async () => {
+      const services = fixture(misses(5, ago(HOUR)))
+      // Another check commits in the same window after this one's count, before its send.
+      const raced = beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"pAlex"'),
+        () => failure(services, 'POST', route.path, route.body(WRONG, 2)),
+      )
+      await ok(services, 'POST', route.path, route.body(RIGHT, 1))
+      expect(raced).toHaveBeenCalled()
+      // 5, this one's +1, the other's +1, this one's −1.
+      expect(missesOf(services)).toEqual(misses(6, ago(HOUR)))
+    })
+
+    it('never takes the count below 0', async () => {
+      const services = fixture()
+      // The count already at 0 when the send takes its 1 back (a reset, say).
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"pAlex"'),
+        () => updateRow(services.db, 'persons', 'pSam', { addressMisses: 0 }),
+      )
+      await ok(services, 'POST', route.path, route.body(RIGHT, 1))
+      expect(missesOf(services)).toEqual(misses(0))
+    })
+
+    it('knows its window as stored in another form, as Appwrite gives a datetime back', async () => {
+      const services = fixture()
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"pAlex"'),
+        () =>
+          updateRow(services.db, 'persons', 'pSam', {
+            addressMissesFrom: NOW.toISOString().replace('Z', '+00:00'),
+          }),
+      )
+      await ok(services, 'POST', route.path, route.body(RIGHT, 1))
+      expect(sam(services).addressMisses).toBe(0)
+    })
+
+    it('takes nothing back once another check has started a new window', async () => {
+      // The window ends 1 ms after NOW: this request counts in it, and another, 1 ms later,
+      // starts the next one before this one's send commits.
+      const services = fixture(misses(5, ago(24 * HOUR - 1)))
+      const later = { ...services, now: new Date(NOW.getTime() + 1) }
+      let other: unknown
+      const raced = beforeStaging(
+        services.db,
+        (operations) => operations.includes('"rowId":"pAlex"'),
+        async () => {
+          other = await failure(later, 'POST', route.path, route.body(WRONG, 2))
+        },
+      )
+      await ok(services, 'POST', route.path, route.body(RIGHT, 1))
+      expect(raced).toHaveBeenCalled()
+      expect(other).toEqual(wrongAnswer(route))
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      // The new window keeps the other's count.
+      expect(missesOf(services)).toEqual(misses(1, later.now.toISOString()))
+    })
+
     describe('parallel requests', () => {
-      it('counts a miss committed just before the guard: at the limit, RATE_LIMITED', async () => {
+      it('counts a check committed just before the guard: at the limit, RATE_LIMITED', async () => {
         const services = fixture(misses(9, ago(HOUR)))
         let other: unknown
         const raced = beforeStaging(
@@ -296,7 +451,7 @@ describe('address misses (#274)', () => {
         expect(missesOf(services)).toEqual(misses(10, ago(HOUR)))
       })
 
-      it('records a miss once more when another commits after the guard', async () => {
+      it('counts once more when another commits after the guard', async () => {
         const services = fixture(misses(8, ago(HOUR)))
         let other: unknown
         const raced = beforeCommit(services.db, async () => {
@@ -308,34 +463,31 @@ describe('address misses (#274)', () => {
         const commits = raced.mock.calls.flatMap(([params], index) =>
           params.commit ? [raced.mock.settledResults[index]?.type] : [],
         )
-        // This request's first commit fails (409), the other's commits, then this one's again.
+        // This request's first count fails (409), the other's commits, then this one's again.
         expect(commits).toEqual(['rejected', 'fulfilled', 'fulfilled'])
         expect(other).toEqual(wrongAnswer(route))
         expect(missesOf(services)).toEqual(misses(10, ago(HOUR)))
       })
 
-      it('answers CONFLICT, writing nothing, when recording a miss conflicts twice', async () => {
-        const services = fixture(misses(3, ago(HOUR)))
-        const before = sam(services)
-        const commit = services.db.updateTransaction.bind(services.db)
-        const commits = vi
-          .spyOn(services.db, 'updateTransaction')
-          .mockImplementation(async (params) => {
-            if (params.commit) throw new AppwriteException('Conflict', 409, 'transaction_conflict')
-            return commit(params)
-          })
-        expect(await failure(services, 'POST', route.path, route.body(WRONG))).toEqual({
-          status: 409,
-          code: 'CONFLICT',
-          message: TRY_AGAIN,
-        })
-        expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(2)
-        expect(sam(services)).toEqual(before)
-      })
+      it.each([WRONG, RIGHT])(
+        'answers CONFLICT before any address is looked at when counting conflicts twice (%s)',
+        async (email) => {
+          const services = fixture(misses(3, ago(HOUR)))
+          const before = sam(services)
+          const checks = addressChecks(services)
+          const commits = conflictsAfter(services, 0)
+          expect(await failure(services, 'POST', route.path, route.body(email))).toEqual(CONFLICT)
+          expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(2)
+          expect(checks()).toBe(0)
+          expect(sam(services)).toEqual(before)
+          expectNothingSent(services)
+        },
+      )
 
-      it('refuses a right address once the 10th miss commits before its guards', async () => {
+      it('refuses a right address once the 10th miss commits before its count', async () => {
         const services = fixture(misses(9, ago(HOUR)))
-        // After the pre-check read 9, before the send path stages its guards.
+        const checks = addressChecks(services)
+        // After the cheap check read 9, before the count's guard.
         const raced = beforeStaging(
           services.db,
           (operations) => operations.includes('"tableId":"persons"'),
@@ -345,23 +497,48 @@ describe('address misses (#274)', () => {
           limitAnswer(route),
         )
         expect(raced).toHaveBeenCalled()
+        // The other's check only.
+        expect(checks()).toBe(1)
         expect(missesOf(services)).toEqual(misses(10, ago(HOUR)))
         expectNothingSent(services)
       })
 
-      it('answers a deletion started meanwhile before the limit, after the guards', async () => {
-        const services = fixture(misses(9, ago(HOUR)))
-        beforeStaging(
+      // S2: no second limit check after the guards; the count answers first.
+      it('answers RATE_LIMITED, not as a wrong address, for a deleted target at the limit', async () => {
+        const services = fixture(
+          {},
+          {
+            persons: [{ ...SAM, ...misses(9, ago(HOUR)) }, { ...ALEX, deletedAt: ago(HOUR) }, JO],
+          },
+        )
+        const checks = addressChecks(services)
+        const raced = beforeStaging(
           services.db,
           (operations) => operations.includes('"tableId":"persons"'),
-          () =>
-            updateRow(services.db, 'persons', 'pSam', { addressMisses: 10, deletedAt: ago(1000) }),
+          () => failure(services, 'POST', route.path, route.body(WRONG, 2)),
+        )
+        expect(await failure(services, 'POST', route.path, route.body(RIGHT, 1))).toEqual(
+          limitAnswer(route),
+        )
+        expect(raced).toHaveBeenCalled()
+        expect(checks()).toBe(1)
+        expect(missesOf(services)).toEqual(misses(10, ago(HOUR)))
+      })
+
+      it('keeps the count of a sender whose deletion starts after it, answering UNAUTHENTICATED', async () => {
+        const services = fixture()
+        // After the count, before the send's guards.
+        beforeStaging(
+          services.db,
+          (operations) => operations.includes('"rowId":"pAlex"'),
+          () => updateRow(services.db, 'persons', 'pSam', { deletedAt: ago(1000) }),
         )
         expect(await failure(services, 'POST', route.path, route.body(RIGHT))).toEqual({
           status: 401,
           code: 'UNAUTHENTICATED',
           message: 'Log in to continue.',
         })
+        expect(missesOf(services)).toEqual(misses(1))
         expectNothingSent(services)
       })
 
@@ -370,14 +547,59 @@ describe('address misses (#274)', () => {
         const answers = await Promise.all(
           Array.from({ length: 12 }, (_, n) => send(services, route, WRONG, n)),
         )
-        const codes = answers.map(({ body }) => (body.ok ? 'ok' : body.error.code))
-        // FakeDb runs them interleaved: the first commits, the rest conflict or meet the limit.
-        expect(codes.filter((code) => code === 'VALIDATION_FAILED')).toEqual(['VALIDATION_FAILED'])
-        expect(codes).toContain('RATE_LIMITED')
+        const answered = codes(answers)
+        // FakeDb runs them interleaved: one count commits, the rest conflict or meet the limit.
+        expect(answered.filter((code) => code === 'VALIDATION_FAILED')).toEqual([
+          'VALIDATION_FAILED',
+        ])
+        expect(answered).toContain('RATE_LIMITED')
         expect(missesOf(services)).toEqual(misses(10, ago(HOUR)))
-        for (const code of codes) {
+        for (const code of answered) {
           expect(['VALIDATION_FAILED', 'RATE_LIMITED', 'CONFLICT']).toContain(code)
         }
+      })
+
+      // S3 and the burst from 0: then wrong guesses one by one until the limit answers.
+      it.each([
+        ['0, 12 wrong and 1 right', {}, 12],
+        ['9, 3 wrong and 1 right', misses(9, NOW.toISOString()), 3],
+      ])(
+        'checks at most 10 unsent addresses in the window, from %s at once',
+        async (_case, start, wrong) => {
+          const services = fixture(start)
+          const checks = addressChecks(services)
+          const emails = [...Array.from({ length: wrong }, (_, n) => guess(n)), RIGHT]
+          const answers = await Promise.all(
+            emails.map((email, n) => send(services, route, email, n)),
+          )
+          for (let n = 0; n < 12; n++)
+            answers.push(await send(services, route, guess(100 + n), 100 + n))
+          for (const code of codes(answers)) {
+            expect(['ok', 'VALIDATION_FAILED', 'RATE_LIMITED', 'CONFLICT']).toContain(code)
+          }
+          const sent = vi.mocked(services.sendEmail).mock.calls.length
+          const before = (start as { addressMisses?: number }).addressMisses ?? 0
+          // Every check took its count before it ran; only a sent one gave it back.
+          expect(checks() - sent).toBe(10 - before)
+          expect(missesOf(services)).toEqual(misses(10))
+        },
+      )
+    })
+
+    // A sender editing their own profile (or any write to their row) before every commit.
+    describe('under a flood of the sender’s own profile edits', () => {
+      it('answers CONFLICT for right and wrong addresses alike, checking none', async () => {
+        const services = fixture()
+        const checks = addressChecks(services)
+        flood(services)
+        for (const [n, email] of [guess(1), guess(2), WRONG, RIGHT].entries()) {
+          expect(await failure(services, 'POST', route.path, route.body(email, n))).toEqual(
+            CONFLICT,
+          )
+        }
+        expect(checks()).toBe(0)
+        expect(missesOf(services)).toEqual(NO_MISSES)
+        expectNothingSent(services)
       })
     })
   })
@@ -396,32 +618,24 @@ describe('address misses (#274)', () => {
     expectNothingSent(services)
   })
 
-  it('refuses an invite whose 10th miss commits after its guards, on the retry', async () => {
-    const services = fixture(misses(9, ago(HOUR)))
-    const raced = beforeCommit(services.db, () =>
-      failure(services, 'POST', '/reminders', REMINDER.body(WRONG)),
-    )
-    expect(await failure(services, 'POST', '/invites', INVITE.body(RIGHT))).toEqual(
-      limitAnswer(INVITE),
-    )
-    expect(raced).toHaveBeenCalled()
-    expectNothingSent(services)
-  })
-
-  it('asks for a retry of a reminder whose 10th miss commits after its guards, then refuses it', async () => {
-    const services = fixture(misses(9, ago(HOUR)))
-    beforeCommit(services.db, () => failure(services, 'POST', '/invites', INVITE.body(WRONG)))
-    expect(await failure(services, 'POST', '/reminders', REMINDER.body(RIGHT))).toEqual({
-      status: 409,
-      code: 'CONFLICT',
-      message: TRY_AGAIN,
-    })
-    // The app's retry, with the same id, meets the limit before the address check.
-    expect(await failure(services, 'POST', '/reminders', REMINDER.body(RIGHT))).toEqual(
-      limitAnswer(REMINDER),
-    )
-    expectNothingSent(services)
-  })
+  it.each([
+    [INVITE.name, INVITE, REMINDER],
+    [REMINDER.name, REMINDER, INVITE],
+  ])(
+    'refuses %s whose count meets a 10th miss of the other route on its rerun',
+    async (_name, route, other) => {
+      const services = fixture(misses(9, ago(HOUR)))
+      const raced = beforeCommit(services.db, () =>
+        failure(services, 'POST', other.path, other.body(WRONG, 2)),
+      )
+      expect(await failure(services, 'POST', route.path, route.body(RIGHT, 1))).toEqual(
+        limitAnswer(route),
+      )
+      expect(raced).toHaveBeenCalled()
+      expect(missesOf(services)).toEqual(misses(10, ago(HOUR)))
+      expectNothingSent(services)
+    },
+  )
 
   describe('what counts', () => {
     it.each([
@@ -435,7 +649,7 @@ describe('address misses (#274)', () => {
         RIGHT,
         () => fixture({}, { members: [member('m1', 'pSam', 'Sam')] }),
       ],
-      // Found by the address, then refused after the guards (6.2), and counted on its own.
+      // Found by the address, then refused after the guards (6.2), keeping its count.
       [
         'a recipient whose deletion has started',
         REMINDER,
@@ -449,7 +663,7 @@ describe('address misses (#274)', () => {
         RIGHT,
         () => fixture({}, { persons: [SAM, { ...ALEX, deletedAt: ago(HOUR) }, JO] }),
       ],
-    ])('%s, for %s', async (_case, route, email, make) => {
+    ])('%s, for %s, as a wrong address', async (_case, route, email, make) => {
       const services = make()
       expect(await failure(services, 'POST', route.path, route.body(email))).toEqual(
         wrongAnswer(route),
@@ -475,6 +689,28 @@ describe('address misses (#274)', () => {
       },
     )
 
+    it('a right address the reminder limits refuse after its check', async () => {
+      const services = fixture(
+        {},
+        {
+          reminders: [
+            {
+              $id: 'old',
+              groupId: 'g1',
+              sentBy: 'pSam',
+              toPersonId: 'pAlex',
+              channel: 'email',
+              sentAt: ago(HOUR),
+            },
+          ],
+        },
+      )
+      expect(await failure(services, 'POST', '/reminders', REMINDER.body(RIGHT))).toEqual(
+        limitAnswer(REMINDER),
+      )
+      expect(missesOf(services)).toEqual(misses(1))
+    })
+
     it.each([
       [
         'a member who isn’t in the group',
@@ -489,54 +725,16 @@ describe('address misses (#274)', () => {
         REMINDER.body(WRONG),
         () => fixture({}, { shares: [share('pSam', 0, 0), share('pAlex', 0, 0)] }),
       ],
-      [
-        'the reminder limits',
-        REMINDER,
-        REMINDER.body(RIGHT),
-        () =>
-          fixture(
-            {},
-            {
-              reminders: [
-                {
-                  $id: 'old',
-                  groupId: 'g1',
-                  sentBy: 'pSam',
-                  toPersonId: 'pAlex',
-                  channel: 'email',
-                  sentAt: ago(HOUR),
-                },
-              ],
-            },
-          ),
-      ],
-    ])('not %s, for %s', async (_case, route, body, make) => {
+    ])('not %s, for %s: no address is checked', async (_case, route, body, make) => {
       const services = make()
       const before = sam(services)
+      const checks = addressChecks(services)
       expect((await failure(services, 'POST', route.path, body)).message).not.toBe(
         route.wrongAddress,
       )
+      expect(checks()).toBe(0)
       expect(sam(services)).toEqual(before)
     })
-  })
-
-  it('counts only the route’s wrong-address answer, not another with its code or message', async () => {
-    const services = fixture()
-    const misses = {
-      db: services.db,
-      senderId: 'pSam',
-      now: NOW,
-      wrongAddress: REMINDER.wrongAddress,
-      tooMany: () => new AppError('RATE_LIMITED', REMINDER.tooMany),
-    }
-    for (const error of [
-      new AppError('VALIDATION_FAILED', 'Nothing is owed to you in this group.'),
-      new AppError('CONFLICT', REMINDER.wrongAddress),
-    ]) {
-      await expect(countingMisses(misses, () => Promise.reject(error))).rejects.toBe(error)
-    }
-    expect(await countingMisses(misses, async () => 'sent')).toBe('sent')
-    expect(missesOf(services)).toEqual({ addressMisses: undefined, addressMissesFrom: undefined })
   })
 
   describe('a reminder retry with the same id (step 3)', () => {
@@ -551,54 +749,152 @@ describe('address misses (#274)', () => {
     }
     const retry = (services: Fakes, email: string) =>
       ok(services, 'POST', '/reminders', REMINDER.body(email))
+    const retried = { ok: true, data: { sentAt: SENT_AT } }
 
-    it('sends again for the right address, and counts nothing', async () => {
+    it('sends again for the right address, counting it first and taking it back', async () => {
       const services = fixture({}, { reminders: [stored] })
+      const staged = countsStaged(services)
       expect(await retry(services, RIGHT)).toEqual({ sentAt: SENT_AT })
       expect(services.sendEmail).toHaveBeenCalledTimes(1)
-      expect(missesOf(services)).toEqual({ addressMisses: undefined, addressMissesFrom: undefined })
+      // +1 in a new window, then −1 in a transaction of its own.
+      expect(staged()).toEqual([1, 0])
+      expect(missesOf(services)).toEqual(misses(0))
     })
 
     it.each([
       ['a wrong address', WRONG, [SAM, ALEX, JO]],
       ['a recipient whose deletion has started', RIGHT, [SAM, { ...ALEX, deletedAt: ago(1) }, JO]],
-    ])('counts %s, and still answers the stored time', async (_case, email, persons) => {
-      const services = fixture({}, { persons, reminders: [stored] })
-      expect(await retry(services, email)).toEqual({ sentAt: SENT_AT })
-      expect(services.sendEmail).not.toHaveBeenCalled()
-      expect(missesOf(services)).toEqual(misses(1))
-    })
+    ])(
+      'keeps the count of %s, and still answers the stored time',
+      async (_case, email, persons) => {
+        const services = fixture({}, { persons, reminders: [stored] })
+        expect(await retry(services, email)).toEqual({ sentAt: SENT_AT })
+        expect(services.sendEmail).not.toHaveBeenCalled()
+        expect(missesOf(services)).toEqual(misses(1))
+      },
+    )
 
     it.each([RIGHT, WRONG])(
       'answers the stored time at the limit, checking no address and sending nothing (%s)',
       async (email) => {
         const services = fixture(misses(10, ago(HOUR)), { reminders: [stored] })
         const before = sam(services)
-        const reads = vi.spyOn(services.db, 'listRows')
+        const checks = addressChecks(services)
         expect(await retry(services, email)).toEqual({ sentAt: SENT_AT })
-        expect(reads.mock.calls.map(([params]) => params.tableId)).not.toContain('identities')
+        expect(checks()).toBe(0)
         expect(services.sendEmail).not.toHaveBeenCalled()
         expect(sam(services)).toEqual(before)
       },
     )
 
-    it('answers the stored time when its miss meets the limit reached meanwhile', async () => {
-      const services = fixture(misses(9, ago(HOUR)), { reminders: [stored] })
-      beforeStaging(
-        services.db,
-        (operations) => operations.includes('"tableId":"persons"'),
-        () => failure(services, 'POST', '/invites', INVITE.body(WRONG)),
-      )
-      expect(await retry(services, WRONG)).toEqual({ sentAt: SENT_AT })
-      expect(missesOf(services)).toEqual(misses(10, ago(HOUR)))
-      expect(services.sendEmail).not.toHaveBeenCalled()
+    it.each([RIGHT, WRONG])(
+      'answers the stored time when its count meets the limit reached meanwhile, checking no address (%s)',
+      async (email) => {
+        const services = fixture(misses(9, ago(HOUR)), { reminders: [stored] })
+        const checks = addressChecks(services)
+        beforeStaging(
+          services.db,
+          (operations) => operations.includes('"tableId":"persons"'),
+          () => failure(services, 'POST', '/invites', INVITE.body(WRONG)),
+        )
+        expect(await retry(services, email)).toEqual({ sentAt: SENT_AT })
+        // The invite's check only.
+        expect(checks()).toBe(1)
+        expect(missesOf(services)).toEqual(misses(10, ago(HOUR)))
+        expect(services.sendEmail).not.toHaveBeenCalled()
+      },
+    )
+
+    // S1.
+    it.each([RIGHT, WRONG])(
+      'answers the stored time when counting conflicts twice, checking no address and sending nothing (%s)',
+      async (email) => {
+        const services = fixture(misses(3, ago(HOUR)), { reminders: [stored] })
+        const before = sam(services)
+        const checks = addressChecks(services)
+        const commits = conflictsAfter(services, 0)
+        expect(await retry(services, email)).toEqual({ sentAt: SENT_AT })
+        expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(2)
+        expect(checks()).toBe(0)
+        expect(services.sendEmail).not.toHaveBeenCalled()
+        expect(sam(services)).toEqual(before)
+      },
+    )
+
+    it('leaves the count up when its take-back conflicts twice, and still sends', async () => {
+      const services = fixture(misses(3, ago(HOUR)), { reminders: [stored] })
+      // The count commits; the take-back and its rerun conflict.
+      const commits = conflictsAfter(services, 1)
+      expect(await retry(services, RIGHT)).toEqual({ sentAt: SENT_AT })
+      expect(commits.mock.calls.filter(([params]) => params.commit)).toHaveLength(3)
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      expect(missesOf(services)).toEqual(misses(4, ago(HOUR)))
     })
 
-    it('checks no address once its key has expired, so counts nothing', async () => {
-      const services = fixture({}, { reminders: [{ ...stored, sentAt: ago(23 * HOUR) }] })
-      expect(await retry(services, WRONG)).toEqual({ sentAt: ago(23 * HOUR) })
-      expect(missesOf(services)).toEqual({ addressMisses: undefined, addressMissesFrom: undefined })
+    it('takes nothing back once another check has started a new window', async () => {
+      const services = fixture(misses(5, ago(24 * HOUR - 1)), { reminders: [stored] })
+      const later = { ...services, now: new Date(NOW.getTime() + 1) }
+      // The take-back's commit: the first is the retry's count. It reruns, and finds the new
+      // window.
+      const raced = beforeCommit(
+        services.db,
+        () => failure(later, 'POST', '/invites', INVITE.body(WRONG)),
+        2,
+      )
+      expect(await retry(services, RIGHT)).toEqual({ sentAt: SENT_AT })
+      expect(raced).toHaveBeenCalled()
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      expect(missesOf(services)).toEqual(misses(1, later.now.toISOString()))
     })
+
+    it.each([
+      ['its key has expired', [{ ...stored, sentAt: ago(23 * HOUR) }], undefined],
+      ['nothing is owed', [stored], [share('pSam', 0, 0), share('pAlex', 0, 0)]],
+    ])('checks no address when %s, so counts nothing', async (_case, reminders, shares) => {
+      const services = fixture({}, { reminders, shares })
+      const checks = addressChecks(services)
+      expect(await retry(services, WRONG)).toEqual({ sentAt: reminders[0]?.sentAt })
+      expect(checks()).toBe(0)
+      expect(missesOf(services)).toEqual(NO_MISSES)
+    })
+
+    it.each([
+      ['0, 12 wrong and the right one', {}, 12],
+      ['9, 3 wrong and the right one', misses(9, NOW.toISOString()), 3],
+    ])(
+      'answers a burst of retries from %s with the stored time, checking at most 10 unsent addresses',
+      async (_case, start, wrong) => {
+        const services = fixture(start, { reminders: [stored] })
+        const checks = addressChecks(services)
+        const emails = [...Array.from({ length: wrong }, (_, n) => guess(n)), RIGHT]
+        const answers = await Promise.all(
+          emails.map((email) => call(services, 'POST', '/reminders', REMINDER.body(email))),
+        )
+        for (let n = 0; n < 12; n++) {
+          answers.push(await call(services, 'POST', '/reminders', REMINDER.body(guess(100 + n))))
+        }
+        // No CONFLICT to tell a wrong address by: the stored time, every time.
+        for (const { body } of answers) expect(body).toEqual(retried)
+        const sent = vi.mocked(services.sendEmail).mock.calls.length
+        const before = (start as { addressMisses?: number }).addressMisses ?? 0
+        expect(checks() - sent).toBeLessThanOrEqual(10 - before)
+        expect(missesOf(services)).toEqual(misses(10))
+      },
+    )
+
+    it.each([RIGHT, WRONG])(
+      'answers the stored time under a flood of the sender’s profile edits, checking no address and sending nothing (%s)',
+      async (email) => {
+        const services = fixture({}, { reminders: [stored] })
+        const checks = addressChecks(services)
+        flood(services)
+        for (let n = 0; n < 3; n++)
+          expect(await retry(services, email)).toEqual({ sentAt: SENT_AT })
+        expect(checks()).toBe(0)
+        expect(services.sendEmail).not.toHaveBeenCalled()
+        expect(missesOf(services)).toEqual(NO_MISSES)
+      },
+    )
   })
 
   it('logs no address, and no answer repeats one', async () => {

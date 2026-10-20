@@ -491,14 +491,19 @@ describe('identity POST /reminders', () => {
 
   it('lets only one of two parallel reminders with different ids through: the guards', async () => {
     const services = fixture()
-    // The other request commits its reminder, and its guard, after this one counted.
+    // The other request commits its reminder, and its guard, after this one counted. The second
+    // commit: the first is this request's address check count (#274).
     const { $id: _id, ...data } = reminder('r2')
-    beforeCommit(services.db, async () => {
-      await withTransaction(services.db, (tx) =>
-        tx.write({ action: 'create', tableId: 'reminders', rowId: 'r2', data }),
-      )
-      await updateRow(services.db, 'persons', 'pSam', { rev: 'other' })
-    })
+    beforeCommit(
+      services.db,
+      async () => {
+        await withTransaction(services.db, (tx) =>
+          tx.write({ action: 'create', tableId: 'reminders', rowId: 'r2', data }),
+        )
+        await updateRow(services.db, 'persons', 'pSam', { rev: 'other' })
+      },
+      2,
+    )
     expect((await failure(services, 'POST', '/reminders', BODY)).code).toBe('CONFLICT')
     expect(services.sendEmail).not.toHaveBeenCalled()
     expect(services.db.rows('reminders').map((row) => row.$id)).toEqual(['r2'])
@@ -531,9 +536,10 @@ describe('identity POST /reminders', () => {
         )
         await finishMerges(services, 'u2', 'pAlexU', Date.now() + 9_000)
       }
+      // At step 6's guards and step 7's commit, after the address check's count (#274).
       if (at === 'staging')
-        beforeStaging(services.db, (operations) => operations.includes('persons'), merge)
-      else beforeCommit(services.db, merge)
+        beforeStaging(services.db, (operations) => operations.includes('"rowId":"pAlex"'), merge)
+      else beforeCommit(services.db, merge, 2)
       expect((await failure(services, 'POST', '/reminders', BODY)).code).toBe('CONFLICT')
       expect(services.sendEmail).not.toHaveBeenCalled()
       expect(services.db.rows('reminders')).toEqual([])
