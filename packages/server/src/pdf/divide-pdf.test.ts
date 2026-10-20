@@ -474,6 +474,21 @@ describe('renderDividePdf', () => {
     expect(count(table, 'x')).toBe(100)
   })
 
+  // A carriage return starts a new line in pdfmake, as a line feed does.
+  it('never drops a row whose description has carriage returns', async () => {
+    const table = await tableOf(Array(50).fill('x').join('\r'), ['A', 'B'])
+    expect(count(table, 'x')).toBe(50)
+  })
+
+  // Each name is one word across fonts (⸻ and no-break spaces), which pdfmake cuts between
+  // characters, leaving up to a ⸻'s width empty on each line.
+  it('never drops a row of words that run across fonts', async () => {
+    const name = ['⸻'.repeat(4), '⸻'.repeat(5), '⸻'.repeat(5), '⸻'.repeat(5)].join('\u00A0')
+    const others = ['Ann', 'Bob', 'Cat', 'Dan', 'Eve', 'Fay', 'Gus']
+    const table = await tableOf('Rent', [...Array(8).fill(name), ...others])
+    expect(count(table, '⸻')).toBe(8 * 19)
+  })
+
   it('refuses an invoice snapshot', async () => {
     const snapshot = buildStatementSnapshot(goldenInput())
     const employer = { ...snapshot, group: { ...snapshot.group, type: 'employer' as const } }
@@ -491,8 +506,9 @@ describe('wrappedLines', () => {
     ['14 of the widest', 'W'.repeat(14), 1],
     ['15 of the widest, wrapped', 'W'.repeat(15), 2],
     // Each word and its space is 94.3 pt, so two don't fit.
-    ['three words that fit one a line', 'abcdefg abcdefg abcdefg', 3],
+    ['three words that fit one to a line', 'abcdefg abcdefg abcdefg', 3],
     ['a line feed', 'a\nb', 2],
+    ['a carriage return', 'a\rb', 2],
     // Noto Emoji's characters are 12.7 pt: 13 fit.
     ['13 emoji', '😀'.repeat(13), 1],
     ['14 emoji', '😀'.repeat(14), 2],
@@ -509,5 +525,13 @@ describe('wrappedLines', () => {
     // 7 of 24.59 pt fill 172 pt, more than the cell.
     expect(lines('一'.repeat(6))).toBe(1.25)
     expect(lines('一'.repeat(7))).toBe(2.5)
+  })
+
+  // pdfmake can't break around a no-break space, so this is one word across fonts, which it cuts
+  // between characters, 6, 6, 6 and 1 ⸻ a line: a new line, then a character at a time.
+  it('counts a word wider than the cell a character at a time', () => {
+    const word = ['⸻'.repeat(4), '⸻'.repeat(5), '⸻'.repeat(5), '⸻'.repeat(5)].join('\u00A0')
+    expect(lines(word)).toBe(4 * 1.25)
+    expect(lines(`Hi ${word}`)).toBe(5 * 1.25)
   })
 })
