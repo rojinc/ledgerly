@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { account, BEFORE, call, type Fakes, fakes, placeholderRow } from './harness'
 
 // With no change notice to try again (change-notice.test.ts tests the retries).
-const NO_NOTICES = { retried: 0, failed: 0, dropped: 0 }
+const NO_NOTICES = { retried: 0, failed: 0, expired: 0, gone: 0 }
 
 // The hourly run (identity-and-invites.md#finishing-merges). Sammy (pP), a placeholder, was
 // merged into Sam (pSam) by a claim that was cut off: Sammy's row in g1 and the phone wait.

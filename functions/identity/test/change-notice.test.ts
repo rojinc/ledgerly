@@ -715,7 +715,7 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       const columns = Object.keys(rows(services)[0] ?? {}).filter((name) => !name.startsWith('$'))
       expect(columns.sort()).toEqual(['attempts', 'idempotencyKey', 'identityId', 'kind', 'userId'])
       const result = await hourly(services)
-      expect(counted(result)).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(counted(result)).toEqual({ retried: 1, failed: 0, expired: 0, gone: 0 })
       expect(calls.map(({ to, key }) => [to, key])).toEqual([
         ['a@example.com', key],
         ['a@example.com', key],
@@ -732,7 +732,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       )
       await event(services)
       expect(rows(services)).toHaveLength(1)
-      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 1,
+        failed: 0,
+        expired: 0,
+        gone: 0,
+      })
       expect(calls.map(({ key }) => key)).toEqual([calls[0]?.key, calls[0]?.key])
       expect(rows(services)).toEqual([])
     })
@@ -1058,7 +1063,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       )
       services.account.$updatedAt = '2026-10-18T20:30:00.000+00:00'
       const calls = answered(services)
-      expect(counted(await hourly(services))).toEqual({ retried: 3, failed: 0, dropped: 0 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 3,
+        failed: 0,
+        expired: 0,
+        gone: 0,
+      })
       expect(calls.map(({ to, key, at }) => [to, key, at - HOUR])).toEqual([
         ['a@example.com', 'email-change-notice-key-n1', 0],
         ['b@example.com', 'email-change-notice-key-n2', 500],
@@ -1079,8 +1089,8 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
     })
 
     it.each([
-      [23 * HOUR - 1, { retried: 1, failed: 0, dropped: 0 }, 'retried', 1],
-      [23 * HOUR, { retried: 0, failed: 0, dropped: 1 }, 'expired', 0],
+      [23 * HOUR - 1, { retried: 1, failed: 0, expired: 0, gone: 0 }, 'retried', 1],
+      [23 * HOUR, { retried: 0, failed: 0, expired: 1, gone: 0 }, 'expired', 0],
     ])('tries a row %i ms old, and drops it at 23 hours', async (age, counts, outcome, sends) => {
       const services = withRows([pending('n1')])
       answered(services)
@@ -1170,7 +1180,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       const services = withRows([pending('n1', { kind })], [A])
       await change(services)
       answered(services)
-      expect(counted(await hourly(services))).toEqual({ retried: 0, failed: 0, dropped: 1 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 0,
+        failed: 0,
+        expired: 0,
+        gone: 1,
+      })
       expect(services.sendEmail).not.toHaveBeenCalled()
       expect(rows(services)).toEqual([])
       expect(noticeLines()).toEqual([retryLine(kind, outcome, 0)])
@@ -1182,7 +1197,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
         phone: '+61412345678',
       })
       const calls = answered(services)
-      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 1,
+        failed: 0,
+        expired: 0,
+        gone: 0,
+      })
       expect(calls.map(({ to }) => to)).toEqual(['a@example.com'])
       expect(sent(services)[0]?.subject).toBe('Your Ledgerly phone number was changed')
     })
@@ -1196,7 +1216,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       const calls = answered(services, (call) =>
         call === 0 ? failure('timeout') : failure('rate_limit_exceeded', 429),
       )
-      expect(counted(await hourly(services))).toEqual({ retried: 0, failed: 2, dropped: 0 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 0,
+        failed: 2,
+        expired: 0,
+        gone: 0,
+      })
       expect(calls).toHaveLength(2)
       expect(rows(services).map(({ $id, attempts }) => [$id, attempts])).toEqual([
         ['n1', 3],
@@ -1214,7 +1239,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
     it('deletes a row Resend refuses, and counts it failed', async () => {
       const services = withRows([pending('n1')])
       answered(services, () => failure('validation_error', 422))
-      expect(counted(await hourly(services))).toEqual({ retried: 0, failed: 1, dropped: 0 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 0,
+        failed: 1,
+        expired: 0,
+        gone: 0,
+      })
       expect(rows(services)).toEqual([])
     })
 
@@ -1230,7 +1260,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
           ++reads === 1 ? Promise.reject(new AppwriteException('Server Error', 500)) : get(params),
       }
       answered(services)
-      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 1, dropped: 0 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 1,
+        failed: 1,
+        expired: 0,
+        gone: 0,
+      })
       expect(rows(services)).toEqual([expect.objectContaining({ $id: 'n1', attempts: 1 })])
     })
 
@@ -1250,7 +1285,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
         return list(params)
       })
       const calls = answered(services)
-      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 1,
+        failed: 0,
+        expired: 0,
+        gone: 0,
+      })
       expect(calls.map(({ at, timeoutMs }) => [at - HOUR, timeoutMs])).toEqual([[11_800, 2_200]])
       expect(rows(services).map(({ $id }) => $id)).toEqual(['n2'])
     })
@@ -1275,7 +1315,8 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(counted(await hourly(services, 23 * HOUR))).toEqual({
         retried: 0,
         failed: 0,
-        dropped: 0,
+        expired: 0,
+        gone: 0,
       })
       const tables = list.mock.calls.map(([params]) => params.tableId)
       expect(tables).not.toContain('changeNotices')
@@ -1296,7 +1337,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
         },
       }
       answered(services)
-      expect(counted(await hourly(services))).toEqual({ retried: 0, failed: 0, dropped: 1 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 0,
+        failed: 0,
+        expired: 0,
+        gone: 1,
+      })
       expect(rows(services).map(({ $id }) => $id)).toEqual(['n2'])
     })
 
@@ -1307,7 +1353,12 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
         pending('n2', { $createdAt: at(15_000) }),
       ])
       const calls = answered(services)
-      expect(counted(await hourly(services))).toEqual({ retried: 1, failed: 0, dropped: 0 })
+      expect(counted(await hourly(services))).toEqual({
+        retried: 1,
+        failed: 0,
+        expired: 0,
+        gone: 0,
+      })
       expect(calls.map(({ key }) => key)).toEqual(['email-change-notice-key-n1'])
       expect(rows(services).map(({ $id }) => $id)).toEqual(['n2'])
     })
@@ -1329,7 +1380,7 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       })
       const result = await hourly(services)
       expect(result.status).toBe(200)
-      expect(counted(result)).toEqual({ retried: 1, failed: 1, dropped: 0 })
+      expect(counted(result)).toEqual({ retried: 1, failed: 1, expired: 0, gone: 0 })
       expect(rows(services)).toEqual([expect.objectContaining({ $id: 'n1', attempts: 0 })])
     })
 
@@ -1342,7 +1393,7 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       })
       const result = await hourly(services)
       expect(result.body).toMatchObject({ ok: true, data: { unfinished: 0 } })
-      expect(counted(result)).toEqual({ retried: 0, failed: 0, dropped: 0 })
+      expect(counted(result)).toEqual({ retried: 0, failed: 0, expired: 0, gone: 0 })
       expect(noticeLines()).toEqual([
         { event: 'change_notice', outcome: 'failed', cause: 'AppwriteException 500' },
       ])

@@ -304,7 +304,7 @@ When an account's email or phone number changes, a notice goes out by email, so 
      - A `rate_limit_exceeded`: logged `failed`, with `attempts` left as it is, and the retries end for that run, since the limit is shared. Unlike step 6, it isn't tried again after `retry-after`.
      - Anything else: `attempts` + 1, logged `failed`, and the next row is tried.
 
-   The run's answer counts them: `notices: { retried, failed, dropped }`, where `dropped` is expired or gone.
+   The run's answer counts them by outcome: `notices: { retried, failed, expired, gone }` (the lead on [#462](https://github.com/rojinc/ledgerly/pull/462)). `dropped` is only the event run's (step 6).
 
 **With the password notice:** an account with no password that changes its email or phone may get a first password from Appwrite. If that fires only this event, this notice is the one that covers it ([accepted](#password-notice)). If it fires `update.password` too, after an email change the password notice finds the new email unverified and sends nothing; after a phone change the email is still verified, so the user gets both notices. Accepted.
 

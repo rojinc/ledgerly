@@ -64,7 +64,7 @@ type Pending = { email: Keyed; identityId: string | null }
 type Notices = { personId: string | undefined; pending: Pending[] }
 
 /** What identity's hourly run did with the notices it tried (step 8). */
-export type NoticeCounts = { retried: number; failed: number; dropped: number }
+export type NoticeCounts = { retried: number; failed: number; expired: number; gone: number }
 
 /**
  * The email and phone change notice (identity-and-invites.md#email-and-phone-change-notice), for
@@ -130,7 +130,7 @@ export async function changeNotice(
  * adds 1 to `attempts`. Rows it doesn't reach wait for the next hour.
  */
 export async function retryNotices(services: Services, started: number): Promise<NoticeCounts> {
-  const counts: NoticeCounts = { retried: 0, failed: 0, dropped: 0 }
+  const counts: NoticeCounts = { retried: 0, failed: 0, expired: 0, gone: 0 }
   // Merges that ran long leave no time for even the listing.
   if (Date.now() - started > LAST_START_MS) return counts
   const written = new Date(services.now.getTime() - RUN_MS).toISOString()
@@ -168,7 +168,7 @@ export async function retryNotices(services: Services, started: number): Promise
           ? 'expired'
           : await rebuilt(services, row)
       if (typeof email === 'string') {
-        counts.dropped += 1
+        counts[email] += 1
         log({ outcome: email })
         await forget(services.db, row.$id)
         continue
@@ -238,7 +238,7 @@ async function noticesFor(
 // Step 8: a row's email built again as steps 2–5 build it, to the row's identity and with the
 // row's own key, since the user's `$updatedAt` may have changed since; or why there's none to
 // send now.
-async function rebuilt(services: Services, row: ChangeNotices): Promise<Keyed | Outcome> {
+async function rebuilt(services: Services, row: ChangeNotices): Promise<Keyed | 'gone'> {
   const found = await accountOf(services, row.userId)
   if (found === 'gone') return found
   const { user, person } = found
