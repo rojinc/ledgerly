@@ -1,7 +1,7 @@
 import { useMutation } from '@tanstack/react-query'
 import { ID } from 'appwrite'
 import { type FormEvent, useState } from 'react'
-import { Link, useSearchParams } from 'react-router'
+import { Link, useLocation, useSearchParams } from 'react-router'
 import { account } from '../../lib/appwrite'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
@@ -17,6 +17,8 @@ type Mode = 'password' | 'code'
 export function LoginPage() {
   const [mode, setMode] = useState<Mode>('password')
   const reset = useSearchParams()[0].get('reset') === '1'
+  // Passed on to sign-up, so signing up there still goes back where they were going.
+  const from = (useLocation().state as { from?: string } | null)?.from
   const signedIn = useSignedIn()
   // After a password reset (#290), signing in signs out every other session: the reset leaves
   // them signed in, so this is what locks out anyone else who had one.
@@ -75,7 +77,11 @@ export function LoginPage() {
       )}
       <p className="text-center text-sm text-muted-foreground">
         New here?{' '}
-        <Link to="/signup" className="font-medium text-foreground underline underline-offset-4">
+        <Link
+          to="/signup"
+          state={{ from }}
+          className="font-medium text-foreground underline underline-offset-4"
+        >
           Create an account
         </Link>
       </p>

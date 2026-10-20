@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { account } from '../../lib/appwrite'
 import { LoginPage } from './login-page'
 import { signOutOtherSessions } from './sign-out-other-sessions'
+import { SignupPage } from './signup-page'
 
 vi.mock('../../lib/appwrite', () => ({
   account: {
@@ -18,12 +19,14 @@ vi.mock('./sign-out-other-sessions', () => ({ signOutOtherSessions: vi.fn() }))
 const signIn = vi.mocked(account.createEmailPasswordSession)
 const others = vi.mocked(signOutOtherSessions)
 
-function renderAt(path: string) {
+function renderAt(path: string | { pathname: string; state: unknown }) {
   const router = createMemoryRouter(
     [
       { path: '/login', element: <LoginPage /> },
+      { path: '/signup', element: <SignupPage /> },
       { path: '/', element: <p>Home page</p> },
       { path: '/recover', element: <p>Recover page</p> },
+      { path: '/invite', element: <p>Invite page</p> },
     ],
     { initialEntries: [path] },
   )
@@ -50,6 +53,16 @@ describe('LoginPage', () => {
     renderAt('/login')
     fireEvent.click(screen.getByRole('link', { name: 'Forgot your password?' }))
     expect(await screen.findByText('Recover page')).toBeTruthy()
+  })
+
+  it('still goes where they were going after a detour to sign-up and back', async () => {
+    signIn.mockResolvedValue({} as never)
+    renderAt({ pathname: '/login', state: { from: '/invite' } })
+    fireEvent.click(screen.getByRole('link', { name: 'Create an account' }))
+    fireEvent.click(await screen.findByRole('link', { name: 'Log in' }))
+    await screen.findByRole('link', { name: 'Create an account' })
+    logIn()
+    expect(await screen.findByText('Invite page')).toBeTruthy()
   })
 
   it('leaves other sessions alone on an ordinary sign-in', async () => {
