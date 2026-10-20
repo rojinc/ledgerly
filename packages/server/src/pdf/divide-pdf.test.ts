@@ -1,11 +1,12 @@
 import { readFileSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { parseLocalDate } from '@ledgerly/core/dates/local-date'
+import { fontRuns } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { buildStatementSnapshot, type SnapshotInput } from '@ledgerly/core/statements/snapshot'
 import { extractText, getDocumentProxy } from 'unpdf'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { renderDividePdf } from './divide-pdf'
+import { renderDividePdf, wrappedLines } from './divide-pdf'
 import { useFontReader } from './fonts'
 
 type Line = StatementSnapshot['lines'][number]
@@ -394,10 +395,11 @@ describe('renderDividePdf', () => {
     expect(reads).toEqual([])
   })
 
-  // statements.md#monthly-divide-pdf-layout-house: a line in Noto Sans CJK is about 24% taller
-  // than one in Roboto, so a row kept whole by Roboto's count can be taller than pdfmake can
-  // place, and it drops the row, heading and all, without an error (#300). This one counted 44
-  // of 45 lines: 15 names of 20 characters and a description of 140, each character different.
+  // A row pdfmake keeps whole but can't place on a page loses the whole table, heading and all,
+  // without an error (#300). Counting 10 characters a line, this one counted 45 of 45 lines (15
+  // names of 20 characters, and a description of 140 with breakable()'s zero-width spaces), but
+  // Noto Sans CJK's lines are about 24% taller than Roboto's. Every character is different, so
+  // each one is checked wherever the names wrap between the amounts.
   it('prints a row of Chinese names and description whole, or across pages, never dropped', async () => {
     const chars = (from: number, count: number) =>
       Array.from({ length: count }, (_, i) => String.fromCodePoint(from + i)).join('')
@@ -425,9 +427,87 @@ describe('renderDividePdf', () => {
     for (const char of names.join('') + description) expect(table).toContain(char)
   })
 
+  // A divide of one line between `names`: its text from the transactions table's heading on.
+  async function tableOf(description: string, names: string[]): Promise<string> {
+    const input = goldenInput([
+      line(
+        '2026-10-10',
+        'bill',
+        1000 * names.length,
+        names.map((_, i) => share(`p${i}`, i === 0 ? 1000 * names.length : 0, 1000)),
+        { description },
+      ),
+    ])
+    const snapshot = buildStatementSnapshot({
+      ...input,
+      people: names.map((name, i) => ({ personId: `p${i}`, name })),
+      previousClosing: [],
+    })
+    const text = (await pageTexts(await renderDividePdf(snapshot))).join(' ')
+    const heading = text.indexOf('Transactions Date Description')
+    expect(heading).toBeGreaterThanOrEqual(0)
+    return text.slice(heading)
+  }
+  const count = (text: string, char: string) => text.split(char).length - 1
+
+  // U+FB2C is 1 character as typed and 3 as printed (NFC, then a � for each part no font has):
+  // the row is counted as printed, so it breaks across pages rather than vanish.
+  it('counts a row as printed, so characters that print as several � are never dropped', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const table = await tableOf(Array(50).fill('\uFB2C'.repeat(3)).join(' '), ['A', 'B'])
+    expect(count(table, '\uFFFD')).toBe(450)
+    expect(logged(warn)).toEqual([{ fn: 'unknown', event: 'pdf_characters_replaced', count: 450 }])
+  })
+
+  // ⏩ is 1 unit, 1.27 em wide in Noto Emoji, and pdfmake can't break between two of them, so two
+  // words of 7 don't fit on one line.
+  it('never drops a row of emoji words that leave each line part empty', async () => {
+    const name = Array(12).fill('⏩'.repeat(7)).join(' ')
+    const table = await tableOf(Array(4).fill('⏩'.repeat(8)).join(' '), Array(4).fill(name))
+    expect(count(table, '⏩')).toBe(4 * 84 + 32)
+  })
+
+  // pdfmake starts a new line at each line feed: a description stored with them (#346) still
+  // counts each one as a line.
+  it('never drops a row whose description has line feeds', async () => {
+    const table = await tableOf(Array(100).fill('x').join('\n'), ['A', 'B'])
+    expect(count(table, 'x')).toBe(100)
+  })
+
   it('refuses an invoice snapshot', async () => {
     const snapshot = buildStatementSnapshot(goldenInput())
     const employer = { ...snapshot, group: { ...snapshot.group, type: 'employer' as const } }
     await expect(renderDividePdf(employer)).rejects.toThrow('needs a house snapshot')
+  })
+})
+
+describe('wrappedLines', () => {
+  const lines = (text: string) => wrappedLines(fontRuns(text))
+
+  it.each([
+    ['nothing', '', 1],
+    ['a word', 'Electricity', 1],
+    // Roboto's widest is 11.79 pt, in a 171 pt cell.
+    ['14 of the widest', 'W'.repeat(14), 1],
+    ['15 of the widest, wrapped', 'W'.repeat(15), 2],
+    // Each word and its space is 94.3 pt, so two don't fit.
+    ['three words that fit one a line', 'abcdefg abcdefg abcdefg', 3],
+    ['a line feed', 'a\nb', 2],
+    // Noto Emoji's characters are 12.7 pt: 13 fit.
+    ['13 emoji', '😀'.repeat(13), 1],
+    ['14 emoji', '😀'.repeat(14), 2],
+    // As printed: ร้าน is 4 �.
+    ['Thai', 'ร้าน', 1],
+    // A line with Noto Sans CJK is 1.25 of Roboto's.
+    ['Chinese', '张三', 1.25],
+    ['Chinese with Latin', '张三 Pty Ltd', 1.25],
+  ])('counts %s', (_, text, expected) => {
+    expect(lines(text)).toBe(expected)
+  })
+
+  it('counts each Noto Sans CJK character as wide as its widest, ⸻', () => {
+    // 7 of 24.59 pt fill 172 pt, more than the cell.
+    expect(lines('一'.repeat(6))).toBe(1.25)
+    expect(lines('一'.repeat(7))).toBe(2.5)
   })
 })

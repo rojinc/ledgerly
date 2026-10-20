@@ -1,5 +1,5 @@
 import { formatMoney } from '@ledgerly/core/money/format'
-import { fontRuns, missingGlyphs } from '@ledgerly/core/pdf/pdf-glyphs'
+import { fontRuns, missingGlyphs, type PdfFont } from '@ledgerly/core/pdf/pdf-glyphs'
 import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import type {
   Content,
@@ -15,7 +15,6 @@ import {
   footer,
   formatDate,
   heading,
-  type Line,
   LOCALE,
   lineText,
   MUTED,
@@ -23,6 +22,8 @@ import {
   pdfmake,
   table,
 } from './layout'
+
+type FontRun = ReturnType<typeof fontRuns>[number]
 
 // Wide enough for -$1,234,567.89 on one line.
 const AMOUNT = 70
@@ -42,7 +43,7 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   // splits it, each run in its own font, and a character no font has as �. A font's file is read
   // the first time a run needs it.
   let replaced = 0
-  const print = (text: string): ContentText[] => {
+  const print = (text: string): FontRun[] => {
     replaced += missingGlyphs(text).length
     const runs = fontRuns(text)
     loadFonts(runs.map((run) => run.font))
@@ -117,26 +118,55 @@ export async function renderDividePdf(snapshot: StatementSnapshot): Promise<Buff
   return pdfmake.createPdf(doc).getBuffer()
 }
 
-// pdfmake drops the part of a row it may not break that doesn't fit on one page, so rows are
-// kept whole only while every one surely fits: at most this many wrapped lines of Roboto's
-// height (about 700 pt of a page), counting a line per 10 characters, which no name or
-// description at 10 pt beats in any of the PDF's fonts (Noto Sans CJK, the widest, fits about
-// 17 a line). Near a page's height pdfmake can drop such a row, heading and all, without an
-// error, so a taller line has to count for more (#300).
+// pdfmake keeps only the first page of a row it may not break, so a row taller than a page
+// loses the rest, and near a page's height the whole table can go, heading and all, without an
+// error (#300). So rows are kept whole only while every one surely fits: at most this many lines
+// of Roboto's height (13.48 pt), which with 15 people's row padding (64 pt) leaves about 25 pt of
+// the 696 pt under the table's headers.
 const MAX_ROW_LINES = 45
-const CHARS_PER_LINE = 10
-// A line with Chinese, Japanese or Korean is Noto Sans CJK's 1.448 em tall, against 1.172 for
-// Roboto and Noto Emoji: 1.24 times, rounded up.
+// The narrowest cell a row's text wraps in: a person's name, set 10 pt into the description's.
+const CELL_WIDTH = 171
+// Each font's widest character at 10 pt (Roboto's medium Ѹ, Noto Sans CJK's ⸻, and any of Noto
+// Emoji's), read from the files: no word pdfmake measures is wider than these say.
+const WIDEST: Record<PdfFont, number> = { Roboto: 11.79, NotoSansCJK: 24.59, NotoEmoji: 12.7 }
+// A line with any Noto Sans CJK is its 1.448 em tall, against 1.172 for Roboto and Noto Emoji:
+// 1.24 times, rounded up.
 const CJK_LINE = 1.25
 
-function wrappedLines(line: Line, nameOf: (personId: string) => string): number {
-  const lines = (text: string) =>
-    Math.max(1, Math.ceil(text.length / CHARS_PER_LINE)) *
-    (fontRuns(text).some((run) => run.font === 'NotoSansCJK') ? CJK_LINE : 1)
-  return line.shares.reduce(
-    (sum, share) => sum + lines(nameOf(share.personId)),
-    lines(lineText(line)),
-  )
+/**
+ * The most lines of Roboto's height that `runs`, as printed, can take in a cell CELL_WIDTH wide.
+ * It wraps greedily, as pdfmake does, with every character as wide as its font's widest, and
+ * breaks only after a space or a zero-width space, or at a line feed. pdfmake may break more often
+ * and its characters are no wider, and neither ever adds a line.
+ */
+export function wrappedLines(runs: readonly FontRun[]): number {
+  let lines = 1
+  let x = 0
+  let word = 0
+  const place = () => {
+    if (x > 0 && x + word > CELL_WIDTH) {
+      lines++
+      x = 0
+    }
+    x += word
+    word = 0
+    // A word wider than the cell, as breakable() can leave one, wraps in it.
+    for (; x > CELL_WIDTH; x -= CELL_WIDTH) lines++
+  }
+  for (const { font, text } of runs) {
+    for (const char of text) {
+      if (char === '\n') {
+        place()
+        lines++
+        x = 0
+        continue
+      }
+      word += WIDEST[font]
+      if (char === ' ' || char === '\u200B') place()
+    }
+  }
+  place()
+  return runs.some((run) => run.font === 'NotoSansCJK') ? lines * CJK_LINE : lines
 }
 
 // The outer table's padding, so the amounts under a line sit under the Paid and Share headers.
@@ -157,10 +187,19 @@ function transactions(
   snapshot: StatementSnapshot,
   money: (cents: number) => ContentText,
   nameOf: (personId: string) => string,
-  print: (text: string) => ContentText[],
+  print: (text: string) => FontRun[],
 ): Content {
+  const rows = snapshot.lines.map((line) => ({
+    line,
+    description: print(lineText(line)),
+    names: line.shares.map((share) => print(nameOf(share.personId))),
+  }))
   // A row too tall for a page breaks across pages rather than vanish, heading and all.
-  const whole = snapshot.lines.every((line) => wrappedLines(line, nameOf) <= MAX_ROW_LINES)
+  const whole = rows.every(
+    ({ description, names }) =>
+      names.reduce((sum, name) => sum + wrappedLines(name), wrappedLines(description)) <=
+      MAX_ROW_LINES,
+  )
   const right = (cell: ContentText): ContentText => ({ ...cell, alignment: 'right' })
   const header = ['Date', 'Description', 'Paid', 'Share', 'Total'].map((text, index) => ({
     text,
@@ -178,7 +217,7 @@ function transactions(
       body: [
         [{ text: 'Transactions', style: 'heading', colSpan: 5 }, {}, {}, {}, {}],
         header,
-        ...snapshot.lines.map((line) => [
+        ...rows.map(({ line, description, names }) => [
           formatDate(line.date),
           {
             colSpan: 3,
@@ -186,9 +225,9 @@ function transactions(
             table: {
               widths: ['*', AMOUNT, AMOUNT],
               body: [
-                [{ text: print(lineText(line)), bold: true }, '', ''],
-                ...line.shares.map((share) => [
-                  { text: print(nameOf(share.personId)), color: MUTED, margin: [10, 0, 0, 0] },
+                [{ text: description, bold: true }, '', ''],
+                ...line.shares.map((share, index) => [
+                  { text: names[index], color: MUTED, margin: [10, 0, 0, 0] },
                   right(money(share.givenCents)),
                   right(money(share.receivedCents)),
                 ]),
