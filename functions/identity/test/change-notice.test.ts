@@ -959,6 +959,27 @@ describe('keeping a notice that didn’t go out, and trying it again hourly (#34
       expect(rows(services).map(({ $id }) => $id)).toEqual(['n2'])
     })
 
+    it('touches no row once 12 s of the run have gone, not even one to drop', async () => {
+      const services = withRows([pending('n1')])
+      // The merges' walk takes 12.1 s, and the row is past its 23 hours.
+      const list = services.db.listRows.bind(services.db)
+      let walked = false
+      vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+        if (params.tableId === 'persons' && !walked) {
+          walked = true
+          await new Promise((resolve) => setTimeout(resolve, 12_100))
+        }
+        return list(params)
+      })
+      answered(services)
+      expect(counted(await hourly(services, 23 * HOUR))).toEqual({
+        retried: 0,
+        failed: 0,
+        dropped: 0,
+      })
+      expect(rows(services).map(({ $id }) => $id)).toEqual(['n1'])
+    })
+
     it('answers with the merges’ counts when the rows can’t be listed', async () => {
       const services = withRows([pending('n1')])
       const list = services.db.listRows.bind(services.db)
