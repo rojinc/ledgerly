@@ -285,7 +285,6 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
   )
 }
 
-/** The day it was sent, in the group's time zone. */
 /**
  * An invoice the job finalized with autoSend on, not sent yet: being emailed while its window is
  * open, and not after (statements.md#auto-send). Send stays either way.
@@ -297,6 +296,7 @@ export function autoSendNote(row: Statements, now: Date): string {
     : ' · Couldn’t be emailed automatically'
 }
 
+/** The day it was sent, in the group's time zone. */
 function sentOn(sentAt: string, group: Groups): string {
   return formatDate(localToday(group.timezone, new Date(sentAt)))
 }

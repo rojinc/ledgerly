@@ -830,10 +830,20 @@ describe('StatementPage: a final invoice', () => {
     },
   )
 
-  it('says nothing about auto-send once sent, or for an invoice an admin finalized (#432)', async () => {
+  it('says nothing about auto-send once sent, voided, or for an invoice an admin finalized (#432)', async () => {
     const later = new Date(Date.now() + 60 * 60 * 1000).toISOString()
     store(
       statement('s1', { ...FINAL, sentAt: '2026-11-02T00:00:00.000Z', autoSendUntil: later }),
+      // Voided inside its window: a void leaves `autoSendUntil` as it was.
+      statement('s2', {
+        ...FINAL,
+        status: 'void',
+        displayNumber: 'INV-0008',
+        periodStart: '2026-11-01',
+        periodEnd: '2026-11-30',
+        sentAt: null,
+        autoSendUntil: later,
+      }),
       statement('s0', {
         ...FINAL,
         displayNumber: 'INV-0006',
@@ -843,7 +853,7 @@ describe('StatementPage: a final invoice', () => {
         autoSendUntil: null,
       }),
     )
-    for (const id of ['s1', 's0']) {
+    for (const id of ['s1', 's2', 's0']) {
       renderAt(`/groups/g1/statements/${id}`)
       await screen.findByRole('button', { name: 'Download PDF' })
       expect(screen.queryByText(/emailed automatically/)).toBeNull()
