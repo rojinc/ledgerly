@@ -54,6 +54,18 @@ describe('groupSettingsSchema', () => {
     ])
   })
 
+  it('takes autoSend only with autoFinalize and a billing email, and reads it as off when missing (#432)', () => {
+    const employer = (part: object) => ({ ...employerSettings, ...part })
+    expect(groupSettingsSchema.parse(employerSettings)).not.toHaveProperty('autoSend')
+    expect(paths(groupSettingsSchema, employer({ autoFinalize: true, autoSend: true }))).toEqual([])
+    expect(paths(groupSettingsSchema, employer({ autoSend: false }))).toEqual([])
+    expect(paths(groupSettingsSchema, employer({ autoSend: true }))).toEqual(['autoSend'])
+    expect(
+      paths(groupSettingsSchema, employer({ autoFinalize: true, autoSend: true, recipients: [] })),
+    ).toEqual(['autoSend'])
+    expect(paths(groupSettingsSchema, { ...houseSettings, autoSend: true })).toEqual([''])
+  })
+
   it('checks house settings', () => {
     expect(paths(groupSettingsSchema, { ...houseSettings, defaultBillSplit: 'weights' })).toEqual([
       'defaultBillSplit',
