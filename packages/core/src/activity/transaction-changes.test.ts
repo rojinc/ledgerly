@@ -162,20 +162,42 @@ describe('transactionChanges', () => {
   })
 
   it('doesn’t count who changed only what the email doesn’t show as having changed it', () => {
-    // Bob changes the total, then Alice edits only the note, and adds Cara at 0.
-    const withCara = [...split(12000), { personId: 'cara', netCents: 0 }]
+    // Bob changes the total, then Alice edits only the note, and swaps Dan at 0 for Cara at 0.
+    const dan = { personId: 'dan', netCents: 0 }
     const rows = [
-      edit(),
+      edit({ nets: { before: [...split(9000), dan], after: [...split(12000), dan] } }),
       edit({
         actorPersonId: 'alice',
-        nets: { before: split(12000), after: withCara },
+        nets: {
+          before: [...split(12000), dan],
+          after: [...split(12000), { personId: 'cara', netCents: 0 }],
+        },
         totalCents: undefined,
       }),
     ]
     // Bob hears nothing: the change he's told of would be only his own.
     const told = transactionChanges(rows, current, samePerson)
-    expect([...told.keys()]).toEqual(['alice', 'cara'])
+    expect([...told.keys()]).toEqual(['alice', 'dan', 'cara'])
     expect(told.get('alice')?.[0]?.changedBy).toEqual(['bob'])
+  })
+
+  it('counts who added people whose parts cancel out, though nobody else’s part changed', () => {
+    // Dan paid $5.00 of Alice's $90.00 for Cara's share, and Alice owes $5.00 less.
+    const row = edit({
+      actorPersonId: 'alice',
+      nets: {
+        before: split(9000),
+        after: [
+          ...split(9000),
+          { personId: 'cara', netCents: -500 },
+          { personId: 'dan', netCents: 500 },
+        ],
+      },
+      totalCents: undefined,
+    })
+    const told = transactionChanges([row], current, samePerson)
+    expect([...told.keys()]).toEqual(['cara', 'dan'])
+    expect(told.get('cara')?.[0]?.changedBy).toEqual(['alice'])
   })
 
   it('tells someone added or taken off it, from 0 or to 0', () => {
@@ -211,6 +233,23 @@ describe('transactionChanges', () => {
       before: -4500,
       after: -6000,
     })
+    // Bob changes the total, then Alice moves P's part onto Bob: still Bob's own part.
+    const byBob = edit({
+      nets: {
+        before,
+        after: [
+          { personId: 'alice', netCents: 6000 },
+          { personId: 'bob', netCents: -4500 },
+          { personId: 'p', netCents: -1500 },
+        ],
+      },
+    })
+    const moved = edit({
+      actorPersonId: 'alice',
+      nets: { before: byBob.nets.after, after: split(12000) },
+      totalCents: undefined,
+    })
+    expect(transactionChanges([byBob, moved], current, personOf).has('bob')).toBe(false)
   })
 
   it('lists each person’s transactions, in the window’s order', () => {
