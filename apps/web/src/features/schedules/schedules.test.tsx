@@ -1043,6 +1043,38 @@ describe('SchedulesPage: pause and resume (#430)', () => {
     expect(screen.queryByRole('button', { name: 'Resume' })).toBeNull()
   })
 
+  it('shows one whose last shift by count has passed as ended, paused or not (#523)', async () => {
+    mockGroup(acme)
+    mockSchedules([
+      // Thursdays 1 and 8 October, and Saturdays 3 and 10 October: all before today.
+      { ...running, description: 'Two Thursdays', rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2' },
+      {
+        ...paused,
+        $id: 'klmnopqrst0123456789',
+        description: 'Two Saturdays',
+        rrule: 'FREQ=WEEKLY;BYDAY=SA;COUNT=2',
+      },
+      // A pause that started before today isn't an end.
+      {
+        ...running,
+        $id: 'uvwxyzabcd0123456789',
+        description: 'Paused earlier',
+        pausedFrom: '2026-10-08',
+      },
+    ])
+    renderAt('/schedules?groupId=g1')
+    const row = async (name: string) => (await screen.findByText(name)).closest('li') as HTMLElement
+    for (const name of ['Two Thursdays', 'Two Saturdays']) {
+      const ended = await row(name)
+      expect(within(ended).getByText(/· Ended$/)).toBeTruthy()
+      expect(within(ended).queryByText(/Paused from/)).toBeNull()
+      expect(within(ended).queryByRole('button')).toBeNull()
+    }
+    const earlier = await row('Paused earlier')
+    expect(within(earlier).getByText(/· Paused from Thu, (8 Oct|Oct 8),? 2026$/)).toBeTruthy()
+    expect(within(earlier).getByRole('button', { name: 'Resume' })).toBeTruthy()
+  })
+
   it('lets a member pause and resume a schedule they set up', async () => {
     mockGroup(acme, 'member')
     mockSchedules([running, { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays' }])

@@ -183,16 +183,17 @@ function GroupSchedules({ group }: { group: Groups }) {
 }
 
 /**
- * Whether a schedule has ended by `today`: its end date, or its rule's own last date, has
- * passed. Stored dates are plain YYYY-MM-DD strings, which sort as text. A rule that ends after
- * a number of shifts can't be told from here.
+ * Whether a schedule has ended by `today`: its end date, or its rule's own last date (`UNTIL`,
+ * or the `COUNT`th date), has passed, as core's `scheduleEnd` works it out. A pause isn't an
+ * end, so it's left out: a paused schedule can be resumed. Stored dates are plain YYYY-MM-DD
+ * strings, which sort as text.
  */
-export function hasEnded(schedule: Pick<Schedules, 'endsOn' | 'rrule'>, today: string): boolean {
-  const repeat = fromRrule(schedule.rrule)
-  const until = repeat?.end === 'until' ? repeat.until : undefined
-  return (
-    (schedule.endsOn !== null && schedule.endsOn < today) || (until !== undefined && until < today)
-  )
+export function hasEnded(
+  schedule: Pick<Schedules, 'rrule' | 'startsOn' | 'endsOn'>,
+  today: string,
+): boolean {
+  const end = scheduleEnd({ ...schedule, pausedFrom: null })
+  return end !== null && end < today
 }
 
 /**

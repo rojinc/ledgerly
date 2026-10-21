@@ -105,8 +105,9 @@ describe('the statements job, with autoSend on', () => {
     await runJob(off)
     expect(invoices(off)[0]).toMatchObject({ status: 'final', sentAt: null })
     expect(invoices(off)[0]?.autoSendUntil ?? null).toBeNull()
-    // Without autoSend, the "ready" email goes as before.
+    // Without autoSend, the "ready" email goes, and says the invoice is final (#523).
     expect(keys(off)).toEqual([`ready/${invoices(off)[0]?.$id}/sam`])
+    expect(off.sent[0]?.text).toContain('Your October invoice for Acme has been finalized.')
     expect(services.sent).toEqual([])
   })
 
@@ -118,6 +119,9 @@ describe('the statements job, with autoSend on', () => {
     expect(invoice?.status).toBe('final')
     expect(invoice?.autoSendUntil ?? null).toBeNull()
     expect(keys(services)).toEqual([`ready/${invoice?.$id}/sam`])
+    // It's final: the admins can void it or send it (#523).
+    expect(services.sent[0]?.text).toContain('has been finalized.')
+    expect(services.sent[0]?.text).toContain('void it; otherwise you can send it.')
     services.now = new Date(NOW.getTime() + HOUR_MS)
     await runJob(services)
     expect(keys(services)).toEqual([`ready/${invoice?.$id}/sam`])
@@ -132,6 +136,8 @@ describe('the statements job, with autoSend on', () => {
     const [draft] = invoices(services)
     expect(draft).toMatchObject({ status: 'finalizing', sentAt: null })
     expect(keys(services)).toEqual([`ready/${draft?.$id}/sam`])
+    // Not final: the email still asks an admin to finalize it (#523).
+    expect(services.sent[0]?.text).toContain('Check it before you finalize it.')
   })
 
   it('lets an admin who turned the "ready" email off go without it, autoSend or not (#431)', async () => {

@@ -5,7 +5,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
 import { Query } from 'node-appwrite'
 import { findIdentity, getRowOrNull, isAppwriteError } from '../rows'
-import { clearResume, finishMerges, MERGE_BUDGET_MS } from '../run-merge'
+import { clearResume, finishMerges, isMergeRace, MERGE_BUDGET_MS } from '../run-merge'
 import type { Services } from '../services'
 import { type NoticeCounts, retryNotices } from './change-notice'
 import { markVerified, verifiedIdentities } from './claim'
@@ -98,7 +98,7 @@ export async function run(scheduled: boolean, services: () => Services): Promise
       // (`CONFLICT`) or a deletion (`NOT_FOUND`) is expected; anything else is an error line,
       // since a merge that fails every hour is otherwise never seen (conventions.md).
       result.stopped += count - done
-      const raced = error instanceof AppError && ['CONFLICT', 'NOT_FOUND'].includes(error.code)
+      const raced = isMergeRace(error)
       logProblem(raced ? 'merge_stopped' : 'merge_run_failed', { intoPersonId: intoId, error })
     }
   }

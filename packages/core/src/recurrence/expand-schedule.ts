@@ -20,8 +20,8 @@ const fromFloating = (date: Date) => date.toISOString().slice(0, 10) as LocalDat
  * counted from `startsOn`, without `exdates`, anything outside
  * `startsOn`–`endsOn` and, when `skipPublicHolidays` is on, days `isHoliday`
  * names. rrule searches until it finds a date after `to`, so a rule that
- * rarely or never matches can be slow; #86 will limit the schema to the rule
- * shapes scheduling.md lists for that reason.
+ * rarely or never matches can be slow; for that reason the schema limits
+ * rules to the shapes scheduling.md lists.
  */
 export function expandSchedule(
   schedule: ScheduleDates,

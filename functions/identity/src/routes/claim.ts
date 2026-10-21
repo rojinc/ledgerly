@@ -19,7 +19,7 @@ import {
   isAppwriteError,
   SET_UP_FIRST,
 } from '../rows'
-import { finishMerges, MERGE_BUDGET_MS } from '../run-merge'
+import { finishMerges, isMergeRace, MERGE_BUDGET_MS } from '../run-merge'
 import type { AccountUser, Services } from '../services'
 
 export type VerifiedIdentity = { type: IdentitiesType; key: string }
@@ -86,9 +86,11 @@ export async function claim(
     }
   }
   // Every merge into this person that isn't finished: one just marked, or one cut off before.
-  // A merge that fails is left for the next claim, so it never stops a login.
+  // A merge that fails is left for the next claim, so it never stops a login. It's logged as
+  // the hourly run logs it: a race is a warning, anything else an error line.
   const merges = await finishMerges(services, userId, person.$id, deadline).catch((error) => {
-    logProblem('merge_stopped', { intoPersonId: person.$id, error })
+    const raced = isMergeRace(error)
+    logProblem(raced ? 'merge_stopped' : 'merge_run_failed', { intoPersonId: person.$id, error })
     return { joined: [], finished: [] }
   })
   // A finished merge moved P's identities here, the claimed one too: it's verified now.
