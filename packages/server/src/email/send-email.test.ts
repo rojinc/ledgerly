@@ -148,6 +148,19 @@ describe('sendEmail', () => {
     },
   )
 
+  // The lead's call on #475: the exact text, and nothing near it. Reworded, a bad key's 400 is
+  // refused for good again, as before #469.
+  it.each(['api key is invalid', 'API key is invalid.', ' API key is invalid', 'Invalid API key'])(
+    'keeps validation_error for any other message, such as %j',
+    async (message) => {
+      answer(400, { statusCode: 400, name: 'validation_error', message })
+      const error = await failure(sendEmail(email))
+      expect(error).toMatchObject({ status: 400, type: 'validation_error' })
+      expect(refusedForGood(error)).toBe(true)
+      expect(sendingBlocked(error)).toBe(false)
+    },
+  )
+
   it.each([
     ['a body that is not JSON', 502, '<html>Bad gateway</html>'],
     ['an error name that is not an identifier', 400, { name: 'bad boss@acme.example' }],

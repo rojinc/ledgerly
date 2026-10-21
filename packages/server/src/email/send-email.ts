@@ -142,8 +142,8 @@ export async function sendEmail(
 }
 
 // Resend answers "API key is invalid" with 400 too, as a `validation_error` like a refused field,
-// when the Authorization header isn't a valid key (#469). Only that fixed text is compared, so the
-// message itself is never kept.
+// when the Authorization header isn't a valid key (#469). Only that exact text is compared, so the
+// message itself is never kept. Reworded, a bad key's 400 is refused for good, as before #469.
 function errorType(body: { name?: unknown; message?: unknown } | null): string {
   if (body?.message === 'API key is invalid') return 'invalid_api_key'
   return typeof body?.name === 'string' && ERROR_NAME.test(body.name) ? body.name : 'unknown'
