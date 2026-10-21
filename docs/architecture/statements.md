@@ -182,8 +182,8 @@ It reads the period's start again after staging, and answers `CONFLICT` (try aga
 
 **The issuer's business details** ([#543](https://github.com/rojinc/ledgerly/issues/543)) come from their profile's `businessJson`, read field by field each time a snapshot is built: drafting, refresh, preview, reissue and finalize.
 - A field goes in only if it passes today's rule for it (`businessDetailsSchema`). The bank goes in only if all three of its parts do, since an invoice prints them together.
-- JSON that doesn't parse gives no details. A field left out never stops a snapshot from being built.
-- A finalize whose snapshot leaves a field out logs one `invoice_business_dropped` warning, with the group and statement IDs and the field names, never their values. Every other build (drafting, refresh, preview and reissue) leaves it out without logging, so a preview someone opens again and again doesn't repeat it.
+- JSON that doesn't parse, or isn't an object, gives no details. A field left out never stops a snapshot from being built.
+- A finalize whose snapshot leaves a field out logs one `invoice_business_dropped` warning, with the group and statement IDs and the field names, never their values: `json` when the stored JSON doesn't parse, or isn't an object. Every other build (drafting, refresh, preview and reissue) leaves it out without logging, so a preview someone opens again and again doesn't repeat it.
 - The snapshot keeps each field as plain text (`snapshotBusinessSchema`), so a stored snapshot still parses whatever the Profile's rules later become: send, resend, auto-send and the next statement's opening balances all read it.
 
 ```ts
