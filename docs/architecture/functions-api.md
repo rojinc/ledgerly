@@ -35,7 +35,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
-| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, discarding a statement that's being finalized, closing a period while another draft of the group is unfinished (`details: { draftId }`), another request changed the same rows at the same time (try again), a merge into one of the people is still open in the group (`details: { reason: 'merging' }`; try again shortly, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)) |
+| `CONFLICT` | 409 | Same ID with different content, duplicate member, timer already running, archiving a group with a timer running, finalizing a draft that isn't the oldest, finalizing an invoice whose issuer has deleted their account, discarding a statement that's being finalized, closing a period while another draft of the group is unfinished (`details: { draftId }`), another request changed the same rows at the same time (try again), a merge into one of the people is still open in the group (`details: { reason: 'merging' }`; try again shortly, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)) |
 | `LOCKED` | 409 | Transaction is locked, or its period is being finalized |
 | `ARCHIVED` | 409 | Group is archived |
 | `INVITE_INVALID` | 400 | Invite token unknown, expired, or the invite isn't the caller's (used by someone else, or its address is another account's) |
@@ -318,7 +318,7 @@ Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled 
 | `POST /statements/preview` | `{ groupId, periodEnd?: LocalDate }` | `{ snapshot }` (not saved; the period is a close's) | any member |
 | `POST /statements/close` | `{ groupId, periodEnd?: LocalDate }` | `statement` (the new draft, or the unfinished one a retry asks for) | admin; employer and house only |
 | `POST /statements/{id}/refresh` | none | `statement` | any member; drafts only |
-| `POST /statements/{id}/finalize` | `{ send: boolean }` | `statement` (call **async**) | admin |
+| `POST /statements/{id}/finalize` | `{ send: boolean }` | `statement` (call **async**) | admin; an invoice whose issuer has deleted their account is refused (`CONFLICT`), on a resume too ([finalize](statements.md#2-finalize-post-statementsidfinalize)) |
 | `POST /statements/{id}/send` | none | `{ sentAt }` | admin; final only |
 | `POST /statements/{id}/void` | `{ reason }` | `statement` | admin; latest final only |
 | `POST /statements/{id}/discard` | none (`emptyBodySchema`) | `{}` | admin; drafts only |
