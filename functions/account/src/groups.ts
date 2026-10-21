@@ -268,8 +268,9 @@ function namedIn(schedule: Schedules): string[] {
 }
 
 // Whether the group still has a joined admin. A kept group without one (an employer or pair
-// group where they were the only one, or a house where nobody else could be one) is archived.
-async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
+// group where they were the only one, or a house where nobody else could be one) is archived,
+// and its last person may delete it (#486).
+export async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
   const { rows } = await db.listRows<Members>({
     databaseId: DATABASE_ID,
     tableId: TABLES.members,

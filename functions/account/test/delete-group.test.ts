@@ -266,9 +266,11 @@ describe('POST /groups/{id}/delete: refusals, which change nothing', () => {
     expect(state(services)).toEqual(deletingSam)
   })
 
-  it.each(['member', 'viewer'])('refuses a %s: only an admin deletes', async (role) => {
+  it.each(['member', 'viewer'])('refuses a %s while the group has a joined admin', async (role) => {
     const services = world()
     await setRow(services, 'members', 'h2-p1', { role })
+    // Alex, a joined admin: only a group with none lets anyone else delete it (#486).
+    await insert(services, 'members', [member('h2', 'p2')])
     const before = state(services)
     expect(await refused(services)).toMatchObject({ status: 403, code: 'FORBIDDEN' })
     expect(state(services)).toEqual(before)
@@ -348,6 +350,8 @@ describe('POST /groups/{id}/delete: refusals, which change nothing', () => {
     const services = world()
     await setRow(services, 'members', 'h2-p1', { role: 'member' })
     await setRow(services, 'groups', 'h2', { archivedAt: null })
+    // Alex joined as an admin, so Sam's role still counts (#486).
+    await insert(services, 'members', [member('h2', 'p2')])
     await services.teams.createMembership({ teamId: 'h2', roles: [], userId: 'u2' })
     services.users = new FakeUsers([
       account({
@@ -532,6 +536,110 @@ describe('POST /groups/{id}/delete: deleting', () => {
     expect((await runJob(services)).groups).toBe(0)
     services.now = new Date(NOW.getTime() + 2 * 60_000)
     expect(await runJob(services)).toEqual({ finished: 0, users: 0, groups: 1, e2e: 0, failed: 0 })
+    expectPurged(services)
+  })
+})
+
+// #486: once nobody in the group is a joined admin (an `active` row with the role `admin`), its
+// last person can delete it, whatever their role. Everything else is as for an admin.
+describe('POST /groups/{id}/delete: a group with no joined admin', () => {
+  const MOVED_OUT = { role: 'viewer', status: 'left', leftOn: '2026-09-30' } as const
+
+  it.each([
+    ['an active viewer', { role: 'viewer' }],
+    ['a member', { role: 'member' }],
+    ['someone who moved out, still in the team', MOVED_OUT],
+  ] as const)('lets %s delete it, as its deletingBy', async (_case, row) => {
+    const services = world()
+    await setRow(services, 'members', 'h2-p1', row)
+    crashOnCall(services.teams, 'delete')
+    expect((await call(services, { path: PATH })).status).toBe(500)
+    expect(rowOf(services, 'groups', 'h2')).toMatchObject({
+      deletingAt: NOW.toISOString(),
+      deletingBy: 'p1',
+    })
+    vi.restoreAllMocks()
+    expect(await remove(services)).toEqual({ finished: true })
+    expectPurged(services)
+  })
+
+  it.each([
+    ['a placeholder', 'pKim', { role: 'admin' }],
+    ['someone who left on their own', 'p3', { role: 'admin' }],
+  ] as const)('doesn’t count the admin row of %s as a joined admin', async (_case, other, row) => {
+    const services = world()
+    await setRow(services, 'members', 'h2-p1', { role: 'viewer' })
+    await setRow(services, 'members', `h2-${other}`, row)
+    expect(await remove(services)).toEqual({ finished: true })
+    expectPurged(services)
+  })
+
+  // AI E's S1 on #508: the route now opens to non-admins, so its sign-in rules are pinned for them.
+  it.each([
+    ['an active viewer', { role: 'viewer' }],
+    ['someone who moved out, still in the team', MOVED_OUT],
+  ] as const)('asks %s to sign in again, as it asks an admin', async (_case, row) => {
+    const services = world()
+    await setRow(services, 'members', 'h2-p1', row)
+    services.users = new FakeUsers([
+      account({ sessions: [{ $id: 's1', $createdAt: minutesAgo(10.001) }] }),
+    ])
+    const before = state(services)
+    expect(await refused(services, { sessionId: 's1' })).toEqual({
+      status: 403,
+      code: 'FORBIDDEN',
+      details: { reason: 'reauth' },
+    })
+    services.users = new FakeUsers([account({ passwordUpdate: minutesAgo(1) })])
+    expect((await refused(services)).details).toEqual({ reason: 'recent_password_change' })
+    expect(state(services)).toEqual(before)
+  })
+
+  it('checks the role before the group: a viewer of an unarchived group with an admin gets FORBIDDEN', async () => {
+    const services = world()
+    await setRow(services, 'members', 'h2-p1', { role: 'viewer' })
+    await setRow(services, 'groups', 'h2', { archivedAt: null })
+    await insert(services, 'members', [member('h2', 'p2')])
+    expect((await refused(services)).code).toBe('FORBIDDEN')
+    // With no joined admin, the group checks answer as they do for an admin.
+    await setRow(services, 'members', 'h2-p2', { status: 'placeholder' })
+    expect(await refused(services)).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
+  })
+
+  it('refuses as shared, writing nothing, when a placeholder admin joins between steps 1 and 2', async () => {
+    const services = world()
+    await setRow(services, 'members', 'h2-p1', { role: 'viewer' })
+    await setRow(services, 'persons', 'pKim', { userId: 'u4' })
+    await setRow(services, 'members', 'h2-pKim', { role: 'admin' })
+    // Joining: the team first, then the row (identity-and-invites.md#joining-a-group).
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"deletingAt"'),
+      async () => {
+        await services.teams.createMembership({ teamId: 'h2', roles: [], userId: 'u4' })
+        await setRow(services, 'members', 'h2-pKim', { status: 'active' })
+      },
+    )
+    expect(await refused(services)).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      details: { reason: 'shared' },
+    })
+    expect(rowOf(services, 'groups', 'h2')?.deletingAt ?? null).toBeNull()
+    expect(teamOf(services, 'h2')).toEqual(['u1', 'u4'])
+  })
+
+  it('answers a moved-out caller NOT_A_MEMBER once its team is gone, and the group pass finishes', async () => {
+    const services = world()
+    await setRow(services, 'members', 'h2-p1', MOVED_OUT)
+    // The purge's first file read crashes, after step 3 deleted the team.
+    crashOnCall(services.files, 'getFile')
+    expect((await call(services, { path: PATH })).status).toBe(500)
+    vi.restoreAllMocks()
+    expect(teamOf(services, 'h2')).toBeUndefined()
+    expect(await refused(services)).toMatchObject({ status: 403, code: 'NOT_A_MEMBER' })
+    services.now = new Date(NOW.getTime() + 2 * 60_000)
+    expect((await runJob(services)).groups).toBe(1)
     expectPurged(services)
   })
 })

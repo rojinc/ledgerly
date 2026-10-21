@@ -10,6 +10,7 @@ import { useCurrentUser } from '../auth/use-current-user'
 import {
   ARCHIVED_NOTICE,
   ArchiveGroup,
+  DeleteWithoutAdmin,
   UNARCHIVED_NEWS,
   UnarchiveGroup,
   writeErrorMessage,
@@ -97,7 +98,7 @@ export function EmployerSettingsPage() {
     content = (
       <>
         <Message>{ARCHIVED_NOTICE}</Message>
-        {member.data?.role === 'admin' && (
+        {member.data?.role === 'admin' ? (
           <UnarchiveGroup
             group={group.data}
             onUnarchived={() => {
@@ -105,6 +106,8 @@ export function EmployerSettingsPage() {
               heading.current?.focus()
             }}
           />
+        ) : (
+          member.data && <DeleteWithoutAdmin group={group.data} personId={member.data.personId} />
         )}
       </>
     )

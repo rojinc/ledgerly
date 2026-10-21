@@ -33,6 +33,8 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 `ci.yml`, on a pull request when it's opened, pushed to, reopened or marked ready, but never while it's a draft, and not for one that changes only `docs/**` or Markdown, so Actions minutes last. `main` itself isn't run: the lead runs the gates locally on `main` with each PR merged in, and Deploy builds it again. Steps: `npm ci` → lint → typecheck → test (`TZ=UTC`) → `@ledgerly/core` coverage (`TZ=Australia/Sydney`, 100% required) → the function workspaces' and `@ledgerly/server`'s tests again (`TZ=Australia/Sydney`, `--project '@ledgerly/fn-*' --project '@ledgerly/server'`) → build.
 
+`docs.yml`, on every pull request when it's opened, pushed to, reopened or marked ready, but never while it's a draft. It has no paths filter, since a code PR can break a link by moving a file. Steps: the link checker's tests → `scripts/check-links.mjs`, which fails on a relative link to a file that doesn't exist, or to an anchor no heading has (by GitHub's rules for heading anchors). External links aren't checked. No `npm ci`, read-only, no secrets.
+
 `e2e.yml`: after each successful Deploy of `main`, and on **Run workflow**, the [user flows](testing.md#end-to-end) in Chromium against dev.
 
 `deploy.yml`:

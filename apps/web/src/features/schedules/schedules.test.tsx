@@ -1127,6 +1127,8 @@ describe('skipped dates on the schedule form (#487)', () => {
     fireEvent.click(screen.getByLabelText('Thursday'))
     fireEvent.change(screen.getByLabelText('Paid hours per shift'), { target: { value: '5' } })
     skip('2026-11-12')
+    // The input is cleared for the next date.
+    expect((screen.getByLabelText('Date to skip') as HTMLInputElement).value).toBe('')
     skip('2026-11-05')
     // In date order, each Remove named for its date, and the add read out.
     expect(skippedList()).toEqual([
@@ -1181,6 +1183,11 @@ describe('skipped dates on the schedule form (#487)', () => {
     expect(reason()).toMatch(/^Mon, (30 Nov|Nov 30),? 2026 is already skipped\.$/)
     skip('')
     expect(reason()).toBe('Pick a date.')
+    // The same refusal again is read out again: the live region's text changes.
+    const first = said()
+    skip('')
+    expect(said()).not.toBe(first)
+    expect(said()?.trim()).toBe('Pick a date.')
     expect(skippedList()).toHaveLength(2)
   })
 

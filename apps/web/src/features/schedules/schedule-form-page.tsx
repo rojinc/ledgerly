@@ -503,6 +503,8 @@ function SkippedDates({
   const [refused, setRefused] = useState<string>()
   // Read out on each add, remove or refusal: focus stays on the button.
   const [said, setSaid] = useState('')
+  // The same words twice change nothing a screen reader hears, so a repeat gets a no-break space.
+  const say = (text: string) => setSaid((last) => (last === text ? `${text}\u00a0` : text))
   const listed = skipped.filter((day) => day >= today).sort()
   // The API's limit counts every date, past ones too.
   const full = skipped.length >= MAX_SKIPPED
@@ -523,11 +525,11 @@ function SkippedDates({
                 : undefined
     setRefused(reason)
     if (reason) {
-      setSaid(reason)
+      say(reason)
       return
     }
     onChange([...skipped, date].sort())
-    setSaid(`${formatDate(date)} is skipped.`)
+    say(`${formatDate(date)} is skipped.`)
     setDate('')
   }
 
@@ -590,7 +592,7 @@ function SkippedDates({
                 aria-label={`Remove ${formatDate(day)}`}
                 onClick={() => {
                   onChange(skipped.filter((other) => other !== day))
-                  setSaid(`${formatDate(day)} is no longer skipped.`)
+                  say(`${formatDate(day)} is no longer skipped.`)
                   // This button goes with its date: the input is always there to take focus.
                   input.current?.focus()
                 }}

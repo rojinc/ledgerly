@@ -348,6 +348,56 @@ describe('POST /groups/{id}/leave', () => {
     expect(teamUsers(services, 'g1')).toEqual(['u1'])
   })
 
+  // #486: a house whose last joined admin deleted their account, with everyone else moved out.
+  function lastInArchived(activity: Row[] = []) {
+    return fakes(
+      {
+        persons: [person(1), person(2)],
+        groups: [group('g1', 'house', { archivedAt: '2026-10-01T00:00:00.000Z' })],
+        members: [
+          member('m1', 'g1', 'p1', 'viewer', 'left', { leftOn: '2026-10-05' }),
+          member('m2', 'g1', 'p2', 'viewer', 'left', {
+            leftOn: '2026-10-10',
+            $createdAt: '2026-09-01T00:00:00.000Z',
+          }),
+        ],
+        activity,
+      },
+      { g1: ['u2'] },
+    )
+  }
+
+  it('refuses the first leave of the last person in an archived group’s team, writing nothing (#486)', async () => {
+    const services = lastInArchived()
+    const before = JSON.stringify([services.db.rows('members'), services.db.rows('activity')])
+    expect(await leave(services, 'u2')).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+      message: "You're the last person in this group. Delete it instead, or stay.",
+    })
+    expect(JSON.stringify([services.db.rows('members'), services.db.rows('activity')])).toBe(before)
+    expect(teamUsers(services, 'g1')).toEqual(['u2'])
+  })
+
+  it('still finishes the last person’s own interrupted leave of an archived group (#486)', async () => {
+    // Their member.left row says their leave committed: only the team step is left.
+    const services = lastInArchived([
+      {
+        $id: 'a1',
+        $createdAt: '2026-10-10T00:00:00.000Z',
+        at: '2026-10-10T00:00:00.000Z',
+        groupId: 'g1',
+        actorPersonId: 'p2',
+        action: 'member.left',
+        transactionId: null,
+        summary: 'Member m2 left',
+        changesJson: null,
+      },
+    ])
+    expect(await ok(services, 'POST', '/groups/g1/leave', undefined, 'u2')).toEqual({})
+    expect(teamUsers(services, 'g1')).toEqual([])
+  })
+
   it('counts a share committed after the first read', async () => {
     const services = houseFixture()
     beforeStaging(services.db, 1, () =>

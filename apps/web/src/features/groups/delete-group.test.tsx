@@ -225,6 +225,24 @@ describe('DeleteGroupPage', () => {
     expect(router.state.location.pathname).toBe('/groups')
   })
 
+  it('says the rest may still be going when someone who moved out gets NOT_A_MEMBER (#486)', async () => {
+    // Their row needs the team, which goes first: the hourly job may still be removing the rest.
+    listRows.mockResolvedValue({
+      total: 1,
+      rows: [{ $id: 'm1', groupId: 'g1', personId: 'p1', role: 'viewer', status: 'left' }],
+    } as never)
+    answer(refused('NOT_A_MEMBER', 'You’re not a member of this group.'))
+    renderPage()
+    await loaded()
+    await waitFor(() => expect(listRows).toHaveBeenCalled())
+    await act(async () => {})
+    confirm()
+    submit()
+    expect(
+      await screen.findByText('Deleted Flat 2/14. The rest of it is removed within the hour.'),
+    ).toBeTruthy()
+  })
+
   it('sends once, and can’t be left while the delete is on its way', async () => {
     let settle!: (result: Result<unknown>) => void
     answer(new Promise((resolve) => (settle = resolve)))
