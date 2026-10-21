@@ -129,7 +129,7 @@ The app's own code sets no cookies; Appwrite sets its session cookie. There's **
 7. Does the CSV export answer an access request (section 5)?
 8. Terms: what limits does consumer law put on disclaimers? How do we state "we record money, we don't move it" ([D-014](../architecture/decisions.md#d-014-we-record-money-we-dont-move-it)), and that invoices and totals aren't tax or financial advice? Invoices don't calculate GST and aren't labelled "tax invoice" ([invoice PDF](../architecture/statements.md#invoice-pdf-layout-employer)): do they need anything else?
 9. What minimum age, governing law, business entity and privacy contact do the terms need (section 9)?
-10. Should we record which terms version each user accepted, and when? Today sign-up shows no terms and records nothing ([sign-up](https://github.com/rojinc/ledgerly/blob/adbe091848a3f275ec3151d11283402445564a58/apps/web/src/features/auth/signup-page.tsx)).
+10. Should we record which terms version each user accepted, and when? Today sign-up, and the email-code sign-in that can make an account, say "By creating an account, you agree to the Terms of use and the Privacy policy", with both pages linked, and record nothing ([#566](https://github.com/rojinc/ledgerly/issues/566)). The pages show a placeholder until the text is written. Is a notice enough, or do we need a checkbox?
 11. What changes if people outside Australia sign up (who it's for, at the top)?
 
 ## 9. For the owner to confirm

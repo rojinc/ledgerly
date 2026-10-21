@@ -53,6 +53,14 @@ describe('SignupPage', () => {
     expect(account.create).toHaveBeenCalledTimes(1)
   })
 
+  it('says what creating an account agrees to, with both pages linked (#566)', () => {
+    renderAt({ pathname: '/signup', state: null })
+    expect(screen.getByText(/^By creating an account, you agree to the/).textContent).toBe(
+      'By creating an account, you agree to the Terms of use and the Privacy policy.',
+    )
+    expect(screen.getByRole('link', { name: 'Terms of use' }).getAttribute('href')).toBe('/terms')
+  })
+
   it('keeps Create account focusable while creating it, and creates it once', async () => {
     vi.mocked(account.create).mockReturnValue(new Promise(() => {}) as never)
     renderAt({ pathname: '/signup', state: null })

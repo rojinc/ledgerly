@@ -55,6 +55,12 @@ export function ProfilePage() {
         <Link to="/account/delete" className="self-start text-sm underline underline-offset-4">
           Delete your account
         </Link>
+        <Link to="/terms" className="self-start text-sm underline underline-offset-4">
+          Terms of use
+        </Link>
+        <Link to="/privacy" className="self-start text-sm underline underline-offset-4">
+          Privacy policy
+        </Link>
       </section>
     </div>
   )

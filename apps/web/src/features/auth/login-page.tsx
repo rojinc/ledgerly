@@ -7,6 +7,7 @@ import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
+import { AgreeNotice, LegalLinks } from '../legal/legal-links'
 import { AuthCard, focusOnMount } from './auth-card'
 import { authErrorMessage } from './auth-error'
 import { signOutOtherSessions } from './sign-out-other-sessions'
@@ -85,6 +86,7 @@ export function LoginPage() {
           Create an account
         </Link>
       </p>
+      <LegalLinks className="text-center" />
     </AuthCard>
   )
 }
@@ -172,6 +174,8 @@ function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
         <Button type="submit" aria-disabled={sendCode.isPending}>
           {sendCode.isPending ? 'Sending…' : 'Email me a code'}
         </Button>
+        {/* A code to a new address makes an account (#566). */}
+        <AgreeNotice />
       </form>
     )
   }
