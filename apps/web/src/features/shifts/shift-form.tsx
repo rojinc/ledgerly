@@ -8,7 +8,8 @@ import { type FieldErrors, get, type Resolver, useForm } from 'react-hook-form'
 import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
-import { SelectField, TextField } from '../../ui/field'
+import { Field, SelectField, TextareaField, TextField } from '../../ui/field'
+import { Input } from '../../ui/input'
 import { ShiftCapLine } from './hours-cap'
 import { paidMinutes, parseHours, type ShiftValues, toShiftBody } from './shift-values'
 
@@ -226,14 +227,22 @@ export function ShiftForm({
             error={errors.startTime}
             {...form.register('startTime')}
           />
-          <TextField
-            id="endTime"
-            type="time"
-            label="End"
-            hint="Before the start means the next day."
-            error={errors.endTime}
-            {...form.register('endTime')}
-          />
+          <Field id="endTime" label="End" error={errors.endTime}>
+            {(aria) => (
+              <Input
+                type="time"
+                {...form.register('endTime')}
+                {...aria}
+                aria-describedby={['endTime-hint', aria['aria-describedby']]
+                  .filter(Boolean)
+                  .join(' ')}
+              />
+            )}
+          </Field>
+          {/* End's hint, under both fields, so Start's and End's errors line up (#502). */}
+          <p id="endTime-hint" className="col-span-2 text-sm text-muted-foreground">
+            An end before the start means the next day.
+          </p>
           <TextField
             id="breakMinutes"
             inputMode="numeric"
@@ -265,7 +274,12 @@ export function ShiftForm({
           : ' '}
       </p>
       <ShiftCapLine id={id} groupId={values.groupId} date={values.date} minutes={minutes} />
-      <TextField id="note" label="Note (optional)" error={errors.note} {...form.register('note')} />
+      <TextareaField
+        id="note"
+        label="Note (optional)"
+        error={errors.note}
+        {...form.register('note')}
+      />
       <div className="flex items-center gap-3">
         <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : submitLabel}

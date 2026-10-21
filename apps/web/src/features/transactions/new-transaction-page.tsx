@@ -9,7 +9,7 @@ import { Link, useNavigate, useSearchParams } from 'react-router'
 import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
-import { SelectField, TextField } from '../../ui/field'
+import { SelectField, TextareaField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { useGroups, useMyMember } from '../groups/use-groups'
@@ -340,7 +340,12 @@ export function EntryForm({
           ))}
         </SelectField>
       )}
-      <TextField id="note" label="Note (optional)" error={errors.note} {...form.register('note')} />
+      <TextareaField
+        id="note"
+        label="Note (optional)"
+        error={errors.note}
+        {...form.register('note')}
+      />
       <div className="flex flex-wrap gap-3">
         <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : edit ? 'Save' : 'Add'}

@@ -6,6 +6,7 @@ import { KINDS_BY_GROUP } from '@ledgerly/core/ledger/build-shares'
 import { formatMoney, formatNet } from '@ledgerly/core/money/format'
 import { type ReactNode, useState } from 'react'
 import { Link, useSearchParams } from 'react-router'
+import { cn } from '../../lib/utils'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
@@ -365,28 +366,32 @@ function History({
             const rowGroup = byId.get(row.groupId) as Groups
             return (
               <li key={row.$id}>
+                {/* As the house History's rows: the details run under the amount too (#502). */}
                 <Link
                   to={`/transactions/${row.$id}`}
-                  className="flex items-center justify-between gap-3 px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                 >
-                  <span className="min-w-0">
-                    <span
-                      className={`block truncate font-medium ${row.status === 'void' ? 'line-through' : ''}`}
-                    >
-                      {row.description}
-                    </span>
-                    <span className="block text-sm text-muted-foreground">
-                      {row.date} · {KIND_LABEL[row.kind]} · {STATUS_LABEL[row.status]}
-                    </span>
-                    {/* A line of its own, so the status still fits at 375 px. */}
-                    {!group && (
-                      <span className="block truncate text-sm text-muted-foreground">
-                        <GroupName group={rowGroup} />
-                      </span>
+                  {/* A running timer has no amount, so its description takes the whole row. */}
+                  <span
+                    className={cn(
+                      'truncate font-medium',
+                      row.status === 'running' && 'col-span-2',
+                      row.status === 'void' && 'line-through',
                     )}
+                  >
+                    {row.description}
                   </span>
+                  <span className="col-span-2 text-sm text-muted-foreground">
+                    {row.date} · {KIND_LABEL[row.kind]} · {STATUS_LABEL[row.status]}
+                  </span>
+                  {/* A line of its own, so the status still fits at 375 px. */}
+                  {!group && (
+                    <span className="col-span-2 truncate text-sm text-muted-foreground">
+                      <GroupName group={rowGroup} />
+                    </span>
+                  )}
                   {row.status !== 'running' && (
-                    <span className="shrink-0 tabular-nums">
+                    <span className="col-start-2 row-start-1 tabular-nums">
                       {formatMoney(row.totalCents, rowGroup.currency)}
                     </span>
                   )}

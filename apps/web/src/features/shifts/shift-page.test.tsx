@@ -261,17 +261,18 @@ describe('NewShiftPage', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/shifts/${body.id}`))
   })
 
-  it('sends a note when one is typed (#485)', async () => {
+  it('sends a note when one is typed, with its line breaks (#485, #502)', async () => {
     call.mockResolvedValue(view(shiftRow()))
     mockRow(shiftRow())
     await renderNew('/shifts/new')
     expect(input('Note (optional)').value).toBe('')
+    expect(input('Note (optional)').tagName).toBe('TEXTAREA')
     type('Start', '09:00')
     type('End', '17:00')
-    type('Note (optional)', ' Covered for Priya ')
+    type('Note (optional)', ' Covered for Priya\nfrom 3 pm ')
     fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
-    expect(sentBody().note).toBe('Covered for Priya')
+    expect(sentBody().note).toBe('Covered for Priya\nfrom 3 pm')
   })
 
   it.each([
@@ -366,6 +367,8 @@ describe('NewShiftPage', () => {
 
   it('shows Required on a missing start and end and sends nothing', async () => {
     await renderNew('/shifts/new')
+    // With no error, End is described by its hint alone.
+    expect(input('End').getAttribute('aria-describedby')).toBe('endTime-hint')
     fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
     expect((await screen.findAllByText('Required')).map((error) => error.id)).toEqual([
       'startTime-error',
@@ -374,6 +377,11 @@ describe('NewShiftPage', () => {
     expect(input('Start').getAttribute('aria-describedby')).toBe('startTime-error')
     expect(input('Start').getAttribute('aria-invalid')).toBe('true')
     expect(input('End').getAttribute('aria-describedby')).toBe('endTime-hint endTime-error')
+    expect(input('End').getAttribute('aria-invalid')).toBe('true')
+    // End's hint follows both fields, outside End's own, so the two errors line up (#502).
+    const hint = document.getElementById('endTime-hint') as HTMLElement
+    expect(hint.textContent).toBe('An end before the start means the next day.')
+    expect(hint.previousElementSibling).toBe(input('End').parentElement)
     expect(call).not.toHaveBeenCalled()
   })
 

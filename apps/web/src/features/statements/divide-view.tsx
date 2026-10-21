@@ -67,11 +67,11 @@ export function DivideView({
         </div>
       </div>
       <Section id="divide-people" title="Everyone’s balance">
-        {/* Scrolls inside the card at 375 px, rather than the page. Focusable, so a keyboard
-            can scroll it too (WCAG 2.1.1). */}
+        {/* Scrolls inside the card at 375 px, rather than the page, with a shadow at an edge
+            where columns are hidden. Focusable, so a keyboard can scroll it too (WCAG 2.1.1). */}
         <section
           aria-label="Balances table"
-          className="relative overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="scroll-shadow relative overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-ring"
           // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable by keyboard
           tabIndex={0}
         >

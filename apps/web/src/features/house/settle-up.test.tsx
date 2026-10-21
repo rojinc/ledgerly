@@ -235,13 +235,14 @@ describe('SettleUp', () => {
     fireEvent.click(first as HTMLElement)
     expect(input('Date').value).toBe('2026-10-18')
     fireEvent.change(input('Amount (AUD)'), { target: { value: '20' } })
-    fireEvent.change(input('Note (optional)'), { target: { value: ' Cash ' } })
+    expect(input('Note (optional)').tagName).toBe('TEXTAREA')
+    fireEvent.change(input('Note (optional)'), { target: { value: ' Cash\nat the door ' } })
     fireEvent.click(screen.getByRole('button', { name: 'Record payment' }))
     await screen.findByText('Payment recorded.')
     expect(payments()[0]?.body).toMatchObject({
       totalCents: 2000,
       date: '2026-10-18',
-      note: 'Cash',
+      note: 'Cash\nat the door',
     })
   })
 

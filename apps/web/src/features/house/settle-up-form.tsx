@@ -11,7 +11,7 @@ import { queryKeys } from '../../lib/query-keys'
 import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
-import { SelectField, TextField } from '../../ui/field'
+import { SelectField, TextareaField, TextField } from '../../ui/field'
 import { centsToText } from '../groups/employer-form'
 import { cents } from '../people/pair-values'
 import { LedgerError, useCreateTransaction } from '../transactions/use-transactions'
@@ -220,7 +220,7 @@ export function PaymentForm({
         error={errors.description}
         {...form.register('description')}
       />
-      <TextField
+      <TextareaField
         id="pay-note"
         label="Note (optional)"
         error={errors.note}

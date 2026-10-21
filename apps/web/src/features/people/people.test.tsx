@@ -290,7 +290,8 @@ describe('PairPage', () => {
       fireEvent.click(await screen.findByLabelText(label))
       expect(input('Date').value).toBe('2026-10-19')
       type('Amount (AUD)', '50')
-      type('Note (optional)', 'For the concert')
+      expect(input('Note (optional)').tagName).toBe('TEXTAREA')
+      type('Note (optional)', 'For the concert\nand the train')
       fireEvent.click(screen.getByRole('button', { name: 'Add' }))
       expect(await screen.findByText('Added.')).toBeTruthy()
       const body = sent()
@@ -300,7 +301,7 @@ describe('PairPage', () => {
         date: '2026-10-19',
         description: label.startsWith('I lent') ? 'Lent' : 'Borrowed',
         totalCents: 5000,
-        note: 'For the concert',
+        note: 'For the concert\nand the train',
         kind: 'loan',
         payers: [{ personId: lender, cents: 5000 }],
         split: { mode: 'equal', personIds: [borrower] },
