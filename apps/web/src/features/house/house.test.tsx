@@ -418,6 +418,18 @@ describe('HousePage', () => {
       expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
     })
 
+    it('offers it to someone who moved out, still in the team, once nobody has joined (#486)', async () => {
+      seed('viewer', { archivedAt: '2026-10-01T00:00:00.000Z' })
+      stored.members = stored.members.map((row) =>
+        row.$id === 'm1' ? { ...row, status: 'left', leftOn: '2026-09-30' } : row,
+      )
+      renderAt('/groups/g1')
+      expect(
+        await screen.findByText('This group has no admin any more, so you can delete it.'),
+      ).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Delete group' })).toBeTruthy()
+    })
+
     it.each([
       ['a joined admin', 'admin'],
       ['another housemate who has joined', 'viewer'],

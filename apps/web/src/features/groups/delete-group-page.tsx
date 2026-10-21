@@ -57,8 +57,9 @@ function refusalOf(error: Err['error'], passwordUpdate?: string): Refusal {
 /**
  * `/groups/:groupId/delete` (#429, identity-and-invites.md#deleting-a-group): what goes, then
  * `account POST /groups/{id}/delete` once DELETE is typed, as the account delete screen does.
- * Linked beside Unarchive (UnarchiveGroup); the function refuses anyone else. Once it's done,
- * on to the groups list, which says so.
+ * Linked beside Unarchive (UnarchiveGroup) for an admin, and on its own for the last person in a
+ * group with no joined admin (DeleteWithoutAdmin, #486); the function refuses anyone else. Once
+ * it's done, on to the groups list, which says so.
  */
 export function DeleteGroupPage() {
   const groupId = useParams().groupId ?? ''

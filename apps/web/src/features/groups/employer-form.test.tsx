@@ -1051,6 +1051,23 @@ describe('archiving a group (#37)', () => {
         expect(screen.queryByText(/no admin any more/)).toBeNull()
         cleanup()
       }
+      // Nor to someone whose own row isn't among the members, or hasn't joined.
+      for (const status of [null, 'placeholder'] as const) {
+        workerGone(status ? [{ personId: 'p9', role: 'viewer', status } as Members] : [])
+        memberHook.mockReturnValue({
+          data: { personId: 'p9', role: 'viewer' } as Members,
+          isError: false,
+        } as ReturnType<typeof useMyMember>)
+        membersHook.mockReturnValue({
+          data: [
+            { personId: 'p1', role: 'viewer', status: 'left' },
+            ...(status ? [{ personId: 'p9', role: 'viewer', status }] : []),
+          ] as Members[],
+        } as ReturnType<typeof useMembers>)
+        renderAt('/groups/g1/settings')
+        expect(deleteLink()).toBeNull()
+        cleanup()
+      }
     })
   })
 

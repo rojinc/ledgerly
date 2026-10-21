@@ -196,31 +196,36 @@ export function UnarchiveGroup({
  * with the role `admin`), whatever their role (#486): nobody can unarchive it, so it's the only
  * way out. The page shows it to anyone but an admin, who gets UnarchiveGroup instead. So, as for
  * the admin's, it's shown only while nobody else's row is `active`, which also means nobody else
- * is a joined admin.
+ * is a joined admin, and only to someone whose own row says they joined.
  */
 export function DeleteWithoutAdmin({ group, personId }: { group: Groups; personId: string }) {
   const members = useMembers(group.$id)
+  const why = useId()
   const rows = members.data
+  const mine = rows?.find((row) => row.personId === personId)
   if (
     rows === undefined ||
+    !mine ||
+    mine.status === 'placeholder' ||
     rows.some((row) => row.status === 'active' && row.personId !== personId)
   ) {
     return null
   }
   return (
     <div className="flex flex-col items-start gap-2">
-      <p className="text-sm text-muted-foreground">
+      <p id={why} className="text-sm text-muted-foreground">
         This group has no admin any more, so you can delete it.
       </p>
-      <DeleteLink group={group} />
+      <DeleteLink group={group} describedBy={why} />
     </div>
   )
 }
 
-function DeleteLink({ group }: { group: Groups }) {
+function DeleteLink({ group, describedBy }: { group: Groups; describedBy?: string }) {
   return (
     <Link
       to={`/groups/${group.$id}/delete`}
+      aria-describedby={describedBy}
       className={cn(buttonVariants({ variant: 'outline' }), 'self-start')}
     >
       Delete group
