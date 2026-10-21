@@ -75,6 +75,12 @@ export async function finalizeStatement(
 ): Promise<Statements> {
   const { db } = services
   if (statement.status === 'void') throw invalid('A void statement can’t be finalized.')
+  // Before step 1, on a resume too, for the job as for an admin: with its worker's account
+  // deleted, an invoice couldn't be numbered, and an issued one would lack their business
+  // details. It stays as it is (#503).
+  if (statement.type === 'invoice' && statement.status !== 'final') {
+    await requireIssuerAccount(db, group)
+  }
   let current = statement
   return conflictAsTryAgain(async () => {
     if (current.status !== 'final') {
@@ -93,6 +99,21 @@ export async function finalizeStatement(
     // The row as stored, with Appwrite's own fields up to date.
     return getStatement(db, current.$id)
   })
+}
+
+/** An invoice's issuer, the worker who owns the employer group, still has an account. */
+async function requireIssuerAccount(db: Db, group: Groups): Promise<void> {
+  const issuer = await db.getRow<Persons>({
+    databaseId: DATABASE_ID,
+    tableId: TABLES.persons,
+    rowId: group.ownerPersonId,
+  })
+  if (!issuer.userId) {
+    throw new AppError(
+      'CONFLICT',
+      'The worker has deleted their account, so this invoice can’t be finalized.',
+    )
+  }
 }
 
 /** statements.md#core-rules, rule 5: periods lock in order. */
