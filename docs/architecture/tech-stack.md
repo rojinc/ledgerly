@@ -39,7 +39,7 @@ Function libraries: `node-appwrite` (server SDK), `pdfmake` (PDFs), `date-holida
 | Service | Use |
 | --- | --- |
 | **Resend** | All outgoing email from functions (statements, invites, reminders, summaries). Also used as Appwrite Auth's custom SMTP server so verification emails come from our domain. |
-| **SMS provider** (e.g. Twilio) | Phone invites and phone OTP. Added in M3. |
+| **SMS provider** (e.g. Twilio) | Phone invites and phone OTP, after v1 ([#40](https://github.com/rojinc/ledgerly/issues/40), [#176](https://github.com/rojinc/ledgerly/issues/176)). |
 | **Sentry** | Error tracking for web and functions. Added in M4. |
 | **Stripe** | SaaS subscriptions. Added in M4. |
 
