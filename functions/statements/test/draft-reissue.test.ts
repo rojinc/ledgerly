@@ -72,6 +72,8 @@ describe('the statements job (POST /, cron)', () => {
     expect(services.sent[0]?.text).toContain(
       `https://app.example.com/groups/job/statements/${draft?.$id}`,
     )
+    expect(services.sent[0]?.text).toContain('Your October invoice for Acme has been drafted.')
+    expect(services.sent[0]?.text).toContain('Check it before you finalize it.')
     // Where to turn it off (#431).
     expect(services.sent[0]?.text).toContain('https://app.example.com/profile')
   })
@@ -214,6 +216,19 @@ describe('the statements job (POST /, cron)', () => {
         cause: 'RangeError',
       },
     ])
+  })
+
+  it('says in the ready email that the statement it auto-finalized is final (#523)', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-02', 60)),
+      groups: [job({ autoFinalize: true })],
+    })
+    expect(await runJob(services)).toEqual({ drafted: 1, failed: 0 })
+    expect(services.db.rows('statements')[0]?.status).toBe('final')
+    expect(services.sent).toHaveLength(1)
+    expect(services.sent[0]?.subject).toBe('Your October invoice for Acme is ready to review')
+    expect(services.sent[0]?.text).toContain('Your October invoice for Acme has been finalized.')
+    expect(services.sent[0]?.text).not.toContain('Check it before you finalize it.')
   })
 
   it('logs IDs only when the auto-finalize fails, and leaves it for an admin to resume', async () => {

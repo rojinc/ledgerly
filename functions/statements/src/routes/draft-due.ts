@@ -125,9 +125,11 @@ async function draftFor(
   if (reached || empty) return false
   // With autoSend on, an invoice the job finalized with lines is on its way: the "ready" email
   // goes only when the admin is needed (statements.md#auto-send).
-  if (await autoFinalize(services, group, statementId)) return true
+  const finalized = await autoFinalize(services, group, statementId)
+  if (finalized?.autoSendUntil) return true
   try {
-    await emailAdmins(services, group, statementId, period, ready)
+    // One the job finalized is locked: the email says it's final, not to finalize it.
+    await emailAdmins(services, group, statementId, period, finalized?.status === 'final', ready)
   } catch (error) {
     // The draft is made; the email is a courtesy, even when it can't be built at all.
     logProblem('ready_email_failed', { statementId, error })
@@ -137,28 +139,28 @@ async function draftFor(
 
 /**
  * Finalizes the new draft when the group's `autoFinalize` is on, with no actor and without
- * sending (statements.md#1-draft). True when step 8 opened its window to be emailed.
+ * sending (statements.md#1-draft). The statement as stored after it, or null when it wasn't
+ * finalized: then it waits for an admin.
  */
 async function autoFinalize(
   services: Services,
   group: Groups,
   statementId: string,
-): Promise<boolean> {
-  if (!autoFinalizes(group)) return false
+): Promise<Statements | null> {
+  if (!autoFinalizes(group)) return null
   const { db } = services
   try {
     // An admin may have discarded the new draft already. While an earlier one is unfinished (an
     // early close's draft, statements.md#6), rule 5 would refuse it: it waits for an admin, as
     // one whose finalize fails does, with nothing to log (#420).
     const draft = await getRowOrNull<Statements>(db, TABLES.statements, statementId)
-    if (!draft || !(await isOldestUnfinished(db, draft))) return false
+    if (!draft || !(await isOldestUnfinished(db, draft))) return null
     // No actor: the job finalizes it. With autoSend on, step 8 opens its window to be emailed.
-    const final = await finalizeStatement(services, group, draft, null, false)
-    return Boolean(final.autoSendUntil)
+    return await finalizeStatement(services, group, draft, null, false)
   } catch (error) {
     // The draft stays for an admin to finalize.
     logProblem('auto_finalize_failed', { statementId, error })
-    return false
+    return null
   }
 }
 
@@ -193,6 +195,7 @@ async function emailAdmins(
   group: Groups,
   statementId: string,
   period: { start: LocalDate; end: LocalDate },
+  final: boolean,
   ready: { blocked: boolean },
 ): Promise<void> {
   if (ready.blocked) return
@@ -212,6 +215,7 @@ async function emailAdmins(
     groupName: group.name,
     periodStart: period.start,
     periodEnd: period.end,
+    final,
     url: `${services.appUrl}/groups/${group.$id}/statements/${statementId}`,
     profileUrl: `${services.appUrl}/profile`,
   })

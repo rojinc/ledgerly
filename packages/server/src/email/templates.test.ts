@@ -69,12 +69,13 @@ describe('autoSendFailedEmail (#432)', () => {
 })
 
 describe('statementReadyEmail', () => {
-  const ready = (type: 'invoice' | 'divide', start: string, end: string) =>
+  const ready = (type: 'invoice' | 'divide', start: string, end: string, final = false) =>
     statementReadyEmail({
       type,
       groupName: 'Acme',
       periodStart: day(start),
       periodEnd: day(end),
+      final,
       url: 'https://app.example/statements/stmt-1',
       profileUrl: 'https://app.example/profile',
     })
@@ -84,10 +85,25 @@ describe('statementReadyEmail', () => {
     expectWellFormed(content)
     expect(content.subject).toBe('Your October invoice for Acme is ready to review')
     expect(content.text).toContain('Your October invoice for Acme has been drafted.')
+    expect(content.text).toContain('Check it before you finalize it.')
     expect(content.text).toContain('Review the invoice: https://app.example/statements/stmt-1')
     expect(content.html).toContain(
       '<a href="https://app.example/statements/stmt-1">Review the invoice</a>',
     )
+    expectProfileLink(content)
+  })
+
+  it('says one the job finalized is final, and that it can be voided or sent (#523)', () => {
+    const content = ready('divide', '2026-10-01', '2026-10-31', true)
+    expectWellFormed(content)
+    expect(content.subject).toBe('Your October divide for Acme is ready to review')
+    expect(content.text).toContain('Your October divide for Acme has been finalized.')
+    expect(content.text).toContain(
+      "Check it on its page: if something's wrong, void it; otherwise you can send it.",
+    )
+    expect(content.text).not.toContain('drafted')
+    expect(content.text).not.toContain('before you finalize')
+    expect(content.text).toContain('Review the divide: https://app.example/statements/stmt-1')
     expectProfileLink(content)
   })
 
@@ -722,6 +738,7 @@ describe('names someone typed, in the other templates', () => {
       groupName: TYPED,
       periodStart: day('2026-10-01'),
       periodEnd: day('2026-10-31'),
+      final: false,
       url: 'https://app.example/s',
       profileUrl: 'https://app.example/profile',
     })
@@ -808,6 +825,7 @@ describe('user-typed text', () => {
       groupName: `<b>Tom & Jo's</b>\r\nBcc: x@example.com "Ltd"`,
       periodStart: day('2026-10-01'),
       periodEnd: day('2026-10-31'),
+      final: false,
       url: 'https://app.example/s?a=1&b="2"',
       profileUrl: 'https://app.example/profile',
     })

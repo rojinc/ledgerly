@@ -61,8 +61,8 @@ export type LogEvent =
  * How each event is written. Most are problems, written with `console.error`: until alerting
  * exists, the error lines are the alert (scheduling.md#step-6-nightly-check). These aren't: `log`
  * for what went as it should, `warn` for something to look at that isn't a failure. A password or
- * change notice is an error only when a send failed, and a change notice's `mismatch`, `expired`
- * or `dropped` a warning.
+ * change notice is an error only when its outcome is `failed`, and a change notice's `mismatch`,
+ * `expired` or `dropped` a warning.
  */
 const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   typed_keys_deleted: 'log',
