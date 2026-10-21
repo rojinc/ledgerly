@@ -19,10 +19,10 @@ export type Email = {
 }
 
 /**
- * Every way a send fails. `type` is `missing_config`, `timeout`, `network` or Resend's error
- * name; `status` is Resend's HTTP status, when it answered, and `retryAfterMs` its `retry-after`
- * header, when it sent one (a 429). The message never holds addresses, subjects or bodies, so it
- * is safe to log.
+ * Every way a send fails. `type` is `missing_config`, `timeout`, `network`, `invalid_api_key` or
+ * Resend's error name; `status` is Resend's HTTP status, when it answered, and `retryAfterMs` its
+ * `retry-after` header, when it sent one (a 429). The message never holds addresses, subjects or
+ * bodies, so it is safe to log.
  */
 export class EmailError extends Error {
   override name = 'EmailError'
@@ -35,6 +35,48 @@ export class EmailError extends Error {
   ) {
     super(message)
   }
+}
+
+/**
+ * Whether Resend refused this email for good (#469): a `validation_error` with 400 or 422 is
+ * about the request itself, such as a bad address, so no retry of it would send. With 401 or 403
+ * the same type is a fault in our key or sending domain, which every send meets until it's fixed,
+ * so a later run should try again; so is a 400 "API key is invalid", which `sendEmail` reports
+ * as `invalid_api_key`.
+ */
+export function refusedForGood(error: unknown): boolean {
+  return (
+    error instanceof EmailError &&
+    error.type === 'validation_error' &&
+    (error.status === 400 || error.status === 422)
+  )
+}
+
+/**
+ * Whether every send fails for now (#469): a 401 or 403 is our API key, our account or our
+ * sending domain, as is `invalid_api_key` whatever its status, and `missing_config` is a setting
+ * not set, so the rest of a run's emails would fail the same way. A step stops at the first one,
+ * logs it once and changes nothing, so the next run tries again with the same keys.
+ */
+export function sendingBlocked(error: unknown): boolean {
+  return (
+    error instanceof EmailError &&
+    (error.status === 401 ||
+      error.status === 403 ||
+      error.type === 'invalid_api_key' ||
+      error.type === 'missing_config')
+  )
+}
+
+/**
+ * Whether Resend will never send this email as asked: refused for good, or the same key with
+ * different content (the email changed after a send whose mark failed), so it isn't tried again.
+ */
+export function neverSent(error: unknown): boolean {
+  return (
+    refusedForGood(error) ||
+    (error instanceof EmailError && error.type === 'invalid_idempotent_request')
+  )
 }
 
 /**
@@ -80,10 +122,13 @@ export async function sendEmail(
     const type = thrown instanceof Error && thrown.name === 'TimeoutError' ? 'timeout' : 'network'
     throw new EmailError(`Resend could not be reached: ${type}`, type)
   }
-  const body = (await response.json().catch(() => null)) as { id?: unknown; name?: unknown } | null
+  const body = (await response.json().catch(() => null)) as {
+    id?: unknown
+    name?: unknown
+    message?: unknown
+  } | null
   if (!response.ok) {
-    const type =
-      typeof body?.name === 'string' && ERROR_NAME.test(body.name) ? body.name : 'unknown'
+    const type = errorType(body)
     // Whole seconds, as Resend sends it; anything else is left out.
     const retryAfter = response.headers.get('retry-after')?.trim() ?? ''
     throw new EmailError(
@@ -94,6 +139,14 @@ export async function sendEmail(
     )
   }
   return { id: typeof body?.id === 'string' ? body.id : undefined }
+}
+
+// Resend answers "API key is invalid" with 400 too, as a `validation_error` like a refused field,
+// when the Authorization header isn't a valid key (#469). Only that exact text is compared, so the
+// message itself is never kept. Reworded, a bad key's 400 is refused for good, as before #469.
+function errorType(body: { name?: unknown; message?: unknown } | null): string {
+  if (body?.message === 'API key is invalid') return 'invalid_api_key'
+  return typeof body?.name === 'string' && ERROR_NAME.test(body.name) ? body.name : 'unknown'
 }
 
 function requireEnv(name: 'RESEND_API_KEY' | 'EMAIL_FROM'): string {
