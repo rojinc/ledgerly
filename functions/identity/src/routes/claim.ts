@@ -9,7 +9,7 @@ import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
 import { ID, Query } from 'node-appwrite'
 import { joinGroup } from '../join-group'
-import { markMerged } from '../merge'
+import { IntoDeleted, markMerged } from '../merge'
 import { parseBody } from '../parse-body'
 import {
   conflictAsTryAgain,
@@ -150,7 +150,12 @@ async function claimIdentity(
   // caller, so it's merged into the caller's person: step 1 marks it here, and the claim
   // carries the merge on (`finishMerges`). markMerged leaves alone a person with an account,
   // or one another adoption or merge got first. Only the keys the user verified move to them.
-  await markMerged(db, identity.personId, personId, verified)
+  // A deletion that passed step 2 since the lookup is refused as guardPerson refuses it (#550).
+  try {
+    await markMerged(db, identity.personId, personId, verified)
+  } catch (error) {
+    throw error instanceof IntoDeleted ? setUpFirst() : error
+  }
 }
 
 /**

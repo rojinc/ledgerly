@@ -70,8 +70,9 @@ class MarkedAlready extends Error {}
  * two adoptions or merges at once only one wins. In the same transaction it records P's groups
  * (`mergeGroupIds`) and deletes P's identities whose key isn't in `verified`, U's verified keys
  * (identity-and-invites.md#only-verified-keys-move), so `resolvePerson()` can never follow a
- * typed key to U. True when P is U's to merge: marked now, or already by an earlier call that
- * was cut off.
+ * typed key to U. It guards U's person row too (`guardInto`), and throws `IntoDeleted` if U's
+ * account is being deleted, at the check or after a failed commit. True when P is U's to merge:
+ * marked now, or already by an earlier call that was cut off.
  */
 export async function markMerged(
   db: Db,
@@ -104,6 +105,9 @@ export async function markMerged(
       // Another claim for U marked it first: its list and its deletes stand, and its step 2 may
       // already have moved rows, so listing them again here would lose those groups.
       if (current.mergedInto === intoId) throw new MarkedAlready()
+      // U's guard, as every later merge write stages it (#550): deletion step 5 finds P by
+      // `mergedInto` to delete U's keys on it, so no mark may land after deletion step 2.
+      await guardInto(tx, db, intoId)
       // P's groups, listed once P's row is staged: an add that found P stages a guard on P's
       // row (L2), so one that commits later fails and resolves again, to U. The list is final.
       const rows = await listAll<Members>(db, TABLES.members, [
@@ -135,8 +139,9 @@ export async function markMerged(
   } catch (error) {
     if (error instanceof NotOurs) return false
     if (error instanceof MarkedAlready) return true
-    // P changed after it was staged: whoever changed it decides.
+    // P or U changed after it was staged: whoever changed it decides, a deletion of U's first.
     if (isAppwriteError(error, 409)) {
+      if (await intoDeleted(db, intoId)) throw new IntoDeleted()
       const current = await getRowOrNull<Persons>(db, TABLES.persons, placeholderId)
       return current?.mergedInto === intoId && !current.userId
     }
