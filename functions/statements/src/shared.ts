@@ -162,6 +162,14 @@ export function snapshotOf(statement: Statements): StatementSnapshot {
 }
 
 /**
+ * The snapshot as stored, parsed first (statements.md#snapshot), so no write stores one that
+ * `snapshotOf` can't read back (#549).
+ */
+export function snapshotJson(snapshot: StatementSnapshot): string {
+  return JSON.stringify(statementSnapshotSchema.parse(snapshot))
+}
+
+/**
  * Writes `data` to the statement (with any `also` writes), then checks the stored row still has
  * the status and the values of every column being written that were read before, so a
  * finalize, void, send or refresh that got in first is never overwritten. `check` runs after
@@ -241,7 +249,7 @@ export function draftWrite(
       displayNumber: null,
       issuedOn: null,
       dueOn: null,
-      snapshotJson: JSON.stringify(snapshot),
+      snapshotJson: snapshotJson(snapshot),
       pdfFileId: null,
       sentAt: null,
       finalizedBy: null,

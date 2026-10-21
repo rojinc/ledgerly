@@ -12,6 +12,7 @@ import {
   invalid,
   NO_SUCH_STATEMENT,
   parseBody,
+  snapshotJson,
 } from '../shared'
 import { computeSnapshot } from '../snapshot'
 
@@ -42,7 +43,7 @@ export async function refreshStatement(
         action: 'update',
         tableId: TABLES.statements,
         rowId: statementId,
-        data: { snapshotJson: JSON.stringify(snapshot) },
+        data: { snapshotJson: snapshotJson(snapshot) },
       })
       // Stage, then check (conventions.md): a finalize that started meanwhile keeps its own
       // snapshot. Read the stored row, not this transaction's view.

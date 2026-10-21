@@ -304,6 +304,19 @@ describe('POST /statements/{id}/refresh', () => {
     expect(refreshed.snapshotJson).not.toBe('{}')
   })
 
+  it('stores nothing when the schema refuses the snapshot (#549)', async () => {
+    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    const services = fakes({
+      groups: [job({}, { currency: 'aud' })],
+      statements: [statement('st1')],
+    })
+    expect(await failure(services, 'POST', '/statements/st1/refresh')).toMatchObject({
+      status: 500,
+      code: 'INTERNAL',
+    })
+    expect(services.db.rows('statements')[0]?.snapshotJson).toBe('{}')
+  })
+
   it('refuses a statement that is no longer a draft', async () => {
     const services = fakes({ statements: [statement('st1', { status: 'final' })] })
     const response = await failure(services, 'POST', '/statements/st1/refresh')

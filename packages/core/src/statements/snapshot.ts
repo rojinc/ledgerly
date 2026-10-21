@@ -1,5 +1,5 @@
 import { LedgerError } from '../ledger/ledger-error'
-import type { StatementSnapshot } from '../schemas/statements'
+import { type StatementSnapshot, statementSnapshotSchema } from '../schemas/statements'
 import { type Net, netsFromShares } from '../settle/nets'
 import { suggestTransfers } from '../settle/suggest-transfers'
 
@@ -22,7 +22,7 @@ export type SnapshotInput = {
 }
 
 /** What finalize step 5 found wrong; empty means the snapshot can be locked. */
-export type SnapshotProblem = 'closing' | 'balanced' | 'fresh'
+export type SnapshotProblem = 'closing' | 'balanced' | 'fresh' | 'schema'
 
 // Dates are fixed-width, so date + ID orders by date, then ID.
 const lineKey = (line: Line) => line.date + line.transactionId
@@ -163,8 +163,9 @@ function ownerInGroup(
 
 /**
  * Finalize step 5 (statements.md#2-finalize): each closing is the opening plus
- * that person's nets over the lines, the closings add up to 0, and they equal
- * `freshBalances`, a fresh sum of every locked share in the group.
+ * that person's nets over the lines, the closings add up to 0, they equal
+ * `freshBalances`, a fresh sum of every locked share in the group, and the
+ * snapshot fits `statementSnapshotSchema`, so it can be read once stored (#549).
  */
 export function checkSnapshot(
   snapshot: StatementSnapshot,
@@ -191,5 +192,6 @@ export function checkSnapshot(
   if ([...ids].some((personId) => (closing.get(personId) ?? 0) !== (fresh.get(personId) ?? 0))) {
     problems.push('fresh')
   }
+  if (!statementSnapshotSchema.safeParse(snapshot).success) problems.push('schema')
   return problems
 }
