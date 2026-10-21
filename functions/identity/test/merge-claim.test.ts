@@ -1774,6 +1774,25 @@ describe('POST /claim, merging a placeholder', () => {
     },
   )
 
+  it('answers INTERNAL when step 1 fails for any other reason, so the outage logs (#556 P11)', async () => {
+    const services = house()
+    const sammy = () => services.db.rows('persons').find((row) => row.$id === 'pP')
+    const before = sammy()
+    // Appwrite fails as step 1 stages the mark: only a deletion is "Set up your account first."
+    const stage = services.db.createOperations.bind(services.db)
+    vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+      if (JSON.stringify(params.operations).includes('"mergedInto":"pSam"')) {
+        throw new AppwriteException('Server Error', 500, 'general_unknown')
+      }
+      return stage(params)
+    })
+    expect(await failure(services, 'POST', '/claim')).toMatchObject({
+      status: 500,
+      code: 'INTERNAL',
+    })
+    expect(sammy()).toEqual(before)
+  })
+
   it('never carries on a merge of a person who has an account now, or was deleted', async () => {
     for (const change of [{ userId: 'u9' }, { deletedAt: '2026-10-18T00:00:00.000Z' }]) {
       const services = house({ persons: [] })
