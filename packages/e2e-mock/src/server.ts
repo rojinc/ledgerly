@@ -453,10 +453,12 @@ function matchesQuery(row: Record<string, unknown>, query: Query): boolean {
       return value == null
     case 'isNotNull':
       return value != null
+    // As FakeDb does, and dev: on text, a substring of any case, every character literal (#424).
     case 'contains':
       if (Array.isArray(value)) return values.some((candidate) => value.includes(candidate))
       return (
-        typeof value === 'string' && values.some((candidate) => value.includes(String(candidate)))
+        typeof value === 'string' &&
+        values.some((candidate) => value.toLowerCase().includes(String(candidate).toLowerCase()))
       )
     case 'startsWith':
       return (

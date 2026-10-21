@@ -417,6 +417,17 @@ function matches(value: unknown, method: string, values: unknown[]): boolean {
       return value != null && compare(value, values[0]) >= 0
     case 'between':
       return value != null && compare(value, values[0]) >= 0 && compare(value, values[1]) <= 0
+    // On text, a substring of any case, every character literal (`%` and `_` too), as dev answers
+    // History's search (#424). On an array column, one of its values.
+    case 'contains':
+      if (Array.isArray(value)) return values.some((candidate) => value.includes(candidate))
+      return (
+        typeof value === 'string' &&
+        values.some(
+          (candidate) =>
+            typeof candidate === 'string' && value.toLowerCase().includes(candidate.toLowerCase()),
+        )
+      )
     default:
       throw new Error(`FakeDb does not support the "${method}" query`)
   }
