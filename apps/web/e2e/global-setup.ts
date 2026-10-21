@@ -48,6 +48,13 @@ export default async function globalSetup() {
       // house. Neither has a password, so neither is refused for 24 hours.
       fay: await createUser('fay', 'Fay', { password: false }),
       gil: await createUser('gil', 'Gil', { password: false }),
+      // Flows 6–10, one each (#526). Flow 9's claimer, Pat, is made in its flow, after Ivy adds
+      // Pat's address, and is swept by the run's address like the rest.
+      ida: await createUser('ida', 'Ida'),
+      gus: await createUser('gus', 'Gus'),
+      hal: await createUser('hal', 'Hal'),
+      ivy: await createUser('ivy', 'Ivy'),
+      jon: await createUser('jon', 'Jon'),
     }
     made = Object.values(users).map((user) => user.id)
     process.env.E2E_USERS = JSON.stringify(users)
