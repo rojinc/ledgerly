@@ -14,10 +14,11 @@ import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { TextField } from '../../ui/field'
 import { endSession, tryAgainAt } from '../account/delete-account-page'
+import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { groupPath } from './groups-page'
 import { useGroupName } from './use-group-name'
-import { useGroup } from './use-groups'
+import { useGroup, useMyMember } from './use-groups'
 
 /** The groups list's news once a group is deleted, sent in the navigation's state. */
 export type GroupDeleted = { name: string; finished: boolean }
@@ -80,6 +81,9 @@ export function DeleteGroupPage() {
 
 function DeleteGroup({ group }: { group: Groups }) {
   const user = useCurrentUser().data
+  // Their own row, as it was when the page opened (#486): see NOT_A_MEMBER below.
+  const personId = useBootstrap(user?.$id ?? '').data?.personId ?? ''
+  const mine = useMyMember(group.$id, personId).data
   const name = useGroupName(group)
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -114,13 +118,16 @@ function DeleteGroup({ group }: { group: Groups }) {
     const result = await callFunction<DeleteGroupResult>('account', 'POST', path, {
       confirm: 'DELETE',
     })
-    // NOT_A_MEMBER: a delete that already finished took their member row with the group.
+    // NOT_A_MEMBER is done too. An admin's row goes last, so for them the delete has finished.
+    // Someone who moved out needs the team, which goes first, so the hourly job may still be
+    // removing the rest (#486).
     if (!result.ok && result.error.code !== 'NOT_A_MEMBER') {
       setBusy(false)
       setRefusal(refusalOf(result.error, user?.passwordUpdate))
       return
     }
-    const deleted: GroupDeleted = { name, finished: !result.ok || result.data.finished }
+    const finished = result.ok ? result.data.finished : mine?.status !== 'left'
+    const deleted: GroupDeleted = { name, finished }
     const groups = queryKeys.groups(user?.$id ?? '')
     // Off the cached list first, which the groups list shows while it's read again.
     queryClient.setQueryData<Groups[]>(groups, (old) => old?.filter(({ $id }) => $id !== group.$id))
