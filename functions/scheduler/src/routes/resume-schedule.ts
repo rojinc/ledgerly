@@ -1,8 +1,10 @@
 import { addDays } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
+import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { ResumedSchedule } from '@ledgerly/core/schemas/scheduler'
 import { ledgerRoute } from '@ledgerly/server/ledger/transactions'
 import { generateOccurrences } from '../occurrences'
+import { parseBody } from '../parse-body'
 import { getSchedule, requireScheduleWriter, saveToExpand } from '../schedule-rows'
 import type { Services } from '../services'
 
@@ -16,8 +18,10 @@ export async function resumeSchedule(
   services: Services,
   userId: string | null,
   scheduleId: string,
+  body: unknown,
 ): Promise<ResumedSchedule> {
   const { db, now } = services
+  parseBody(emptyBodySchema, body ?? {})
   return ledgerRoute(async () => {
     const { schedule, membership } = await requireScheduleWriter(services, userId, scheduleId)
     if (!schedule.pausedFrom) return { schedule, created: 0 }

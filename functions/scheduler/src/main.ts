@@ -35,10 +35,10 @@ export function schedulerRoutes(
       pauseSchedule(services(ctx), ctx.userId, ctx.params.id, ctx.body),
     ),
     route('POST', '/schedules/:id/resume', async (ctx) =>
-      resumeSchedule(services(ctx), ctx.userId, ctx.params.id),
+      resumeSchedule(services(ctx), ctx.userId, ctx.params.id, ctx.body),
     ),
     route('DELETE', '/schedules/:id', async (ctx) =>
-      deleteSchedule(services(ctx), ctx.userId, ctx.params.id),
+      deleteSchedule(services(ctx), ctx.userId, ctx.params.id, ctx.body),
     ),
     route('POST', '/schedules/preview', async (ctx) =>
       previewSchedule(services(ctx), ctx.userId, ctx.body),

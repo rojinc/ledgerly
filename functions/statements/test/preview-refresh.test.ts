@@ -226,6 +226,21 @@ describe('POST /statements/{id}/refresh', () => {
     expect((await failure(archived, 'POST', '/statements/st1/refresh')).code).toBe('ARCHIVED')
   })
 
+  it('refuses a body with any field before it reads anything, and takes an empty one (#482)', async () => {
+    const services = fakes({ statements: [statement('st1')] })
+    const extra = { snapshot: 'mine' }
+    expect(await failure(services, 'POST', '/statements/st1/refresh', extra)).toMatchObject({
+      code: 'VALIDATION_FAILED',
+    })
+    // Not NOT_FOUND: the body is checked before the statement is looked up.
+    expect(await failure(services, 'POST', '/statements/nope/refresh', extra)).toMatchObject({
+      code: 'VALIDATION_FAILED',
+    })
+    expect(services.db.rows('statements')[0]?.snapshotJson).toBe('{}')
+    const refreshed = await ok<Statements>(services, 'POST', '/statements/st1/refresh', {})
+    expect(refreshed.snapshotJson).not.toBe('{}')
+  })
+
   it('refuses a statement that is no longer a draft', async () => {
     const services = fakes({ statements: [statement('st1', { status: 'final' })] })
     const response = await failure(services, 'POST', '/statements/st1/refresh')

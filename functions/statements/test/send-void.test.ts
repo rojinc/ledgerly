@@ -33,6 +33,25 @@ const locks = (services: Services) =>
   Object.fromEntries(services.db.rows('transactions').map((row) => [row.$id, row.statementId]))
 
 describe('POST /statements/{id}/send', () => {
+  it('refuses a body with any field before it reads anything, and takes an empty one (#482)', async () => {
+    const services = fakes(
+      rowsOf(shift('s1', '2026-10-02', 120), { statements: [statement('st1')] }),
+    )
+    await finalize(services, 'st1')
+    const extra = { to: 'someone@example.com' }
+    expect((await failure(services, 'POST', '/statements/st1/send', extra)).code).toBe(
+      'VALIDATION_FAILED',
+    )
+    // Not NOT_FOUND: the body is checked before the statement is looked up.
+    expect((await failure(services, 'POST', '/statements/nope/send', extra)).code).toBe(
+      'VALIDATION_FAILED',
+    )
+    expect(services.sent).toEqual([])
+    expect(stored(services, 'st1')?.sentAt).toBeNull()
+    const sent = await ok<{ sentAt: string }>(services, 'POST', '/statements/st1/send', {})
+    expect(sent.sentAt).toBe(NOW.toISOString())
+  })
+
   it('sends a final invoice, and a resend gets its own idempotency keys', async () => {
     const services = fakes(
       rowsOf(shift('s1', '2026-10-02', 120), { statements: [statement('st1')] }),
