@@ -54,10 +54,10 @@ export async function findSchedule(db: Db, scheduleId: string): Promise<Schedule
 }
 
 /**
- * The schedule and the caller's membership, for `PATCH`, `end` and `DELETE`: its creator or an
- * admin of its group (functions-api.md#scheduler). Viewers can't change schedules
- * (permissions.md#roles). Someone who isn't a member gets NOT_FOUND, the same as for an ID that
- * doesn't exist, so schedule IDs can't be probed (#121).
+ * The schedule and the caller's membership, for `PATCH`, `end`, `pause`, `resume` and `DELETE`:
+ * its creator or an admin of its group (functions-api.md#scheduler). Viewers can't change
+ * schedules (permissions.md#roles). Someone who isn't a member gets NOT_FOUND, the same as for an
+ * ID that doesn't exist, so schedule IDs can't be probed (#121).
  */
 export async function requireScheduleWriter(
   services: Services,

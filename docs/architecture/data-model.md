@@ -157,7 +157,7 @@ Defaults when `POST /groups` gives no `settings`: employer `{ defaultRateCents: 
 | `personId` | varchar(36) | |
 | `displayName` | varchar(100) | What this group calls the person |
 | `role` | enum(admin, member, viewer) | Authority inside the group ([permissions](permissions.md)) |
-| `status` | enum(placeholder, active, left) | `placeholder`: hasn't joined this group, with or without an account. `active`: joined. `left`: joined, then moved out. A member who moves out before joining stays `placeholder` ([D-016](decisions.md)). Written only by the `groups`, `identity` and `account` functions. |
+| `status` | enum(placeholder, active, left) | `placeholder`: hasn't joined this group, with or without an account. `active`: joined. `left`: joined and moved out, in either order (a placeholder who moved out is `left` once they join, [joining](identity-and-invites.md#joining-a-group)), left on their own, or kept by their account deletion ([leaving](permissions.md#leaving-a-group)). A member who moves out before joining stays `placeholder` ([D-016](decisions.md)). Written only by the `groups`, `identity` and `account` functions. |
 | `joinedOn` | varchar(10) | Local date. The `groups` function sets it to the day they were added unless the caller gives one (not a database default). |
 | `leftOn` | varchar(10)? | Local date |
 | `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |

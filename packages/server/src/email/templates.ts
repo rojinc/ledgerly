@@ -37,13 +37,15 @@ const CHANGE_EMAILS = 'Change your email settings'
 
 /**
  * To the group admins when the statements job drafts a statement: "Your October invoice for
- * Acme is ready to review" (statements.md#1-draft). `profileUrl` is where they turn it off (#431).
+ * Acme is ready to review" (statements.md#1-draft). `final` when the job also finalized it, so
+ * it's locked. `profileUrl` is where they turn it off (#431).
  */
 export function statementReadyEmail(input: {
   type: 'invoice' | 'divide'
   groupName: string
   periodStart: LocalDate
   periodEnd: LocalDate
+  final: boolean
   url: string
   profileUrl: string
 }): EmailContent {
@@ -51,11 +53,17 @@ export function statementReadyEmail(input: {
   const groupName = oneLine(input.groupName)
   return message(
     `Your ${period} ${input.type} for ${groupName} is ready to review`,
-    [
-      `Your ${period} ${input.type} for ${groupName} has been drafted.`,
-      'Check it before you finalize it. You can still add or fix transactions until then.',
-      TURN_OFF,
-    ],
+    input.final
+      ? [
+          `Your ${period} ${input.type} for ${groupName} has been finalized.`,
+          "Check it on its page: if something's wrong, void it; otherwise you can send it.",
+          TURN_OFF,
+        ]
+      : [
+          `Your ${period} ${input.type} for ${groupName} has been drafted.`,
+          'Check it before you finalize it. You can still add or fix transactions until then.',
+          TURN_OFF,
+        ],
     [
       { label: `Review the ${input.type}`, url: input.url },
       { label: CHANGE_EMAILS, url: input.profileUrl },

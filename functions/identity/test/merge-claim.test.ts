@@ -1,4 +1,5 @@
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppError } from '@ledgerly/server/http/app-error'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { finishMerges } from '../src/run-merge'
@@ -313,9 +314,14 @@ function events(spy: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>
   })
 }
 
-/** The merges that stopped on an error: none, unless a test makes one. */
+/** The merges that stopped on a race: none, unless a test makes one. */
 function stopped() {
   return events(warn).filter(({ event }) => event === 'merge_stopped')
+}
+
+/** The merges that stopped on any other error, the alert: none, unless a test makes one. */
+function failed() {
+  return events(error).filter(({ event }) => event === 'merge_run_failed')
 }
 
 describe('POST /claim, merging a placeholder', () => {
@@ -1560,13 +1566,33 @@ describe('POST /claim, merging a placeholder', () => {
     const { status, body } = await claim(services)
     expect(status).toBe(200)
     expect(body).toEqual({ ok: true, data: { linkedGroupIds: expect.arrayContaining(['g9']) } })
-    expect(stopped()).toEqual([{ event: 'merge_stopped', intoPersonId: 'pSam', cause: 'Error' }])
+    // Not a race: an error line, as the hourly run logs it, and no warning (#523).
+    expect(failed()).toEqual([{ event: 'merge_run_failed', intoPersonId: 'pSam', cause: 'Error' }])
+    expect(stopped()).toEqual([])
     // The next claim carries on with the merge.
     vi.mocked(services.db.listRows).mockRestore()
-    warn.mockClear()
+    error.mockClear()
     await claim(services)
     expect(namingSammy(services).identities).toEqual([])
+    expect(failed()).toEqual([])
     expect(stopped()).toEqual([])
+  })
+
+  it.each([
+    ['a claim', 'CONFLICT'],
+    ['a deletion', 'NOT_FOUND'],
+  ] as const)('only warns when a merge stops on a race with %s (#523)', async (_case, code) => {
+    const services = house()
+    const read = services.db.listRows.bind(services.db)
+    vi.spyOn(services.db, 'listRows').mockImplementation((async (params) => {
+      if (params.tableId === 'schedules') throw new AppError(code, 'Raced.')
+      return read(params)
+    }) as typeof services.db.listRows)
+    expect((await claim(services)).status).toBe(200)
+    expect(stopped()).toEqual([
+      { event: 'merge_stopped', intoPersonId: 'pSam', cause: `AppError ${code}` },
+    ])
+    expect(failed()).toEqual([])
   })
 
   it('renames Sammy in a row a final statement locked, and changes nothing else on it (#263)', async () => {

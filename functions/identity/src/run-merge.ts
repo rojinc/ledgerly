@@ -3,6 +3,7 @@ import { type MergeMembers, mergeMembersSchema } from '@ledgerly/core/schemas/id
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
 import { Raced } from '@ledgerly/server/ledger/transactions'
 import { Query } from 'node-appwrite'
@@ -65,6 +66,15 @@ export async function finishMerges(
     }
   }
   return result
+}
+
+/**
+ * Whether U's merges stopped on a race with a claim (`CONFLICT`) or a deletion (`NOT_FOUND`).
+ * That's expected, so `/claim` and the hourly run log it as a warning (`merge_stopped`), and
+ * anything else as an error line (`merge_run_failed`).
+ */
+export function isMergeRace(error: unknown): boolean {
+  return error instanceof AppError && ['CONFLICT', 'NOT_FOUND'].includes(error.code)
 }
 
 /**

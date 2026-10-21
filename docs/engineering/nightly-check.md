@@ -139,15 +139,47 @@ appwrite tablesdb list-rows --database-id main --table-id groups --json \
 - **Pass:** no lines, or only pending groups.
 - **If it fails:** post the IDs on #96. **A group pending at two reads in a row** fails the read: it's an archived group nobody checked, or a purge that's stuck.
 
+### D. Merges that don't finish
+
+A merge that can't finish is tried every hour by `identity`'s scheduled run, and each run logs it as `merge_carries_on`. That line is a `log`, not an error, so it shows only in the run's `.logs` ([finishing merges](../architecture/identity-and-invites.md#finishing-merges)). D lists those merges and any `merge_run_failed`, from the same window.
+
+```bash
+IDRUNS=$(mktemp)
+for offset in 0 100 200; do
+  ( set -o pipefail
+    appwrite functions list-executions --function-id identity --json \
+      --queries '{"method":"equal","attribute":"trigger","values":["schedule"]}' \
+      --queries '{"method":"orderDesc","attribute":"$createdAt"}' \
+      --queries '{"method":"limit","values":[100]}' \
+      --queries "{\"method\":\"offset\",\"values\":[$offset]}" \
+      | jq -c '(.executions // [])[]' ) >> "$IDRUNS" || { echo "FETCH FAILED at offset $offset"; break; }
+done
+jq -rs --arg from "$FROM" --arg to "$TO" '
+  def at: .["$createdAt"][0:19] + "Z";
+  [unique_by(.["$id"])[] | select(at >= $from and at < $to)] as $runs
+  | [$runs[] | ((.errors // "") + "\n" + (.logs // "")) | split("\n")[] | fromjson? | objects
+      | select(.event | IN("merge_carries_on", "merge_run_failed"))]
+  | group_by([.event, .personId // "-", .intoPersonId // "-"])
+  | "identity runs \($runs | length) · merges carried on \(map(select(.[0].event == "merge_carries_on")) | length) · merge runs failed \(map(select(.[0].event == "merge_run_failed")) | length)",
+    (.[] | "\(.[0].event) \(.[0].personId // "-") into \(.[0].intoPersonId // "-") · \(length) of \($runs | length) runs · \(.[0].cause // "-")")
+' "$IDRUNS"
+rm "$IDRUNS"
+```
+
+Each line is the event, the merged person's ID and the one it goes into, in how many runs of the window it appeared, and the error's name for a failed run.
+
+- **D doesn't fail the read:** a merge can wait a while for a group that's busy, or for someone's leave to finish.
+- **Post on #96** a merge that's carried on at two reads in a row (it's stuck), and any `merge_run_failed`, with its IDs and `cause`.
+
 ## The result
 
 Post one comment per read on #299, in this form:
 
 ```text
-2026-10-21T02:38:27Z → 2026-10-22T02:20:00Z · runs 24, not ok 0, longest gap 60 min, longest run 165 s · logged 24 of 24 · findings 0 · failed 0 · cut off 0 · removed 0 · overdue 0 · pending none · PASS
+2026-10-21T02:38:27Z → 2026-10-22T02:20:00Z · runs 24, not ok 0, longest gap 60 min, longest run 165 s · logged 24 of 24 · findings 0 · failed 0 · cut off 0 · removed 0 · overdue 0 · pending none · merges carried on 0 · PASS
 ```
 
-- **PASS** needs A, B and C to pass. Anything else is FAIL, with the IDs on #96. A read that's too early (A) isn't posted.
+- **PASS** needs A, B and C to pass. D's count is posted, but doesn't fail the read. Anything else is FAIL, with the IDs on #96. A read that's too early (A) isn't posted.
 - **`pending`** lists the pending groups' IDs, so the next read can tell.
 - **Then read every function's error lines** in the same shell, with the same `FROM` and `TO` ([error lines](error-lines.md)). Post its line in the same comment, under this one. It never changes this count.
 - **The 2 weeks are done** when passing reads cover 14 days without a break: each read starts at the `to` of the one before, and none failed. **A failed read starts the count again** from its `to`.
