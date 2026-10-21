@@ -204,6 +204,15 @@ describe('the error lines', () => {
     assert.equal(errors(everyFunction(), { capped: ' ledger' }).verdict, 'INCOMPLETE')
   })
 
+  it('say STUCK, not INCOMPLETE, when a repeating error and a run with no lines come together', () => {
+    const draft = (time) =>
+      run(time, { fn: 'statements', lines: [{ event: 'draft_failed', groupId: 'g1' }] })
+    const gone = run('03:20', { fn: 'ledger', trigger: 'http', logs: '' })
+    const result = errors(everyFunction(draft('03:10'), draft('04:10'), draft('05:10'), gone))
+    assert.equal(result.verdict, 'STUCK')
+    assert.match(result.line, / · logged 19 of 20 · error lines 3 in 1 groups · repeating 1 · /)
+  })
+
   it('read the error lines in `errors`, where console.error writes them', () => {
     const failing = run('03:10', {
       fn: 'statements',
