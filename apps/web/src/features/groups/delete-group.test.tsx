@@ -99,6 +99,8 @@ describe('DeleteGroupPage', () => {
     expect(screen.getByRole('region', { name: 'What’s deleted' }).textContent).toMatch(
       /final ones included/,
     )
+    // A house has divides, an employer group invoices: the screen names neither (#556).
+    expect(document.body.textContent).not.toMatch(/invoice/i)
     expect(screen.getByRole('link', { name: 'export its records' }).getAttribute('href')).toBe(
       '/export?groupId=g1',
     )
@@ -130,14 +132,17 @@ describe('DeleteGroupPage', () => {
     )
   })
 
-  it('waits for the group, and says when it can’t be read', async () => {
+  it('waits for the group, and says when it can’t be read, under the page’s h1 (#556)', async () => {
+    const h1 = () => screen.getByRole('heading', { level: 1 }).textContent
     getRow.mockReturnValue(new Promise(() => {}))
     renderPage()
     expect(screen.getByRole('status').textContent).toBe('Loading…')
+    expect(h1()).toBe('Delete group')
     cleanup()
     getRow.mockRejectedValue(new AppwriteException('Not found', 404))
     renderPage()
     expect((await screen.findByRole('alert')).textContent).toMatch(/couldn’t load this group/)
+    expect(h1()).toBe('Delete group')
   })
 
   it('sends { confirm: "DELETE" }, then says so on the groups list, refreshed, with focus on its heading', async () => {

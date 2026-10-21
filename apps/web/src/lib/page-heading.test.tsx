@@ -26,6 +26,45 @@ function LatePage() {
   return ready ? <h1>Late page</h1> : <p>Loading…</p>
 }
 
+/** Bills, as `/bills` and `/bills?groupId=` show it: two pages under one path (#556). */
+function BillsPage() {
+  const [params] = useSearchParams()
+  return params.get('groupId') ? (
+    <>
+      <h1>Bills · Flat 3</h1>
+      <Link to="/bills?groupId=g1&show=paid">Paid</Link>
+    </>
+  ) : (
+    <h1>Bills</h1>
+  )
+}
+
+/** Shows an h1 of its own while it loads, then the loaded page, with another h1 (#556). */
+function SwapPage() {
+  const [ready, setReady] = useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setReady(true), 20)
+    return () => clearTimeout(timer)
+  }, [])
+  return ready ? <LoadedPage /> : <LoadingPage />
+}
+function LoadingPage() {
+  return (
+    <div>
+      <h1>Delete group</h1>
+      <p>Loading…</p>
+    </div>
+  )
+}
+function LoadedPage() {
+  return (
+    <div>
+      <h1>Delete Flat 3</h1>
+      <button type="button">Delete group</button>
+    </div>
+  )
+}
+
 const routes = [
   {
     element: (
@@ -36,6 +75,10 @@ const routes = [
           <Link to="/form">To form</Link>
           <Link to="/a?month=2026-11">Next month</Link>
           <Link to="/none">To none</Link>
+          <Link to="/swap">To swap</Link>
+          <Link to="/bills">To my bills</Link>
+          <Link to="/bills?groupId=g1">To house bills</Link>
+          <Link to="/bills/new">To my new bill</Link>
         </nav>
         <Outlet />
       </>
@@ -54,6 +97,9 @@ const routes = [
         ),
       },
       { path: 'none', element: <p>No heading</p> },
+      { path: 'swap', element: <SwapPage /> },
+      { path: 'bills', element: <BillsPage /> },
+      { path: 'bills/new', element: <BillsPage /> },
       { path: 'home', element: <h1 data-title="Home">Hi, Sam</h1> },
     ],
   },
@@ -153,6 +199,71 @@ describe('followPageHeading (#539)', () => {
     await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
     expect(document.activeElement).toBe(link)
     expect(screen.getByRole('heading', { name: 'Page A' }).hasAttribute('tabindex')).toBe(false)
+  })
+
+  it('hands the focus on from an h1 shown while loading to the loaded page’s (#556)', async () => {
+    renderAt('/a')
+    follow('To swap')
+    const loading = await screen.findByRole('heading', { name: 'Delete group' })
+    await waitFor(() => expect(document.activeElement).toBe(loading))
+    const loaded = await screen.findByRole('heading', { name: 'Delete Flat 3' })
+    await waitFor(() => expect(document.activeElement).toBe(loaded))
+    expect(document.title).toBe('Delete Flat 3 · Ledgerly')
+  })
+
+  it('leaves focus where the person moved it before the loaded page came (#556)', async () => {
+    renderAt('/a')
+    follow('To swap')
+    const loading = await screen.findByRole('heading', { name: 'Delete group' })
+    await waitFor(() => expect(document.activeElement).toBe(loading))
+    const other = screen.getByRole('link', { name: 'To B' })
+    other.focus()
+    await screen.findByRole('heading', { name: 'Delete Flat 3' })
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+    expect(document.activeElement).toBe(other)
+  })
+
+  it('counts a change of Bills’ group as a move (#556)', async () => {
+    renderAt('/bills?groupId=g1')
+    await waitFor(() => expect(document.title).toBe('Bills · Flat 3 · Ledgerly'))
+    follow('To my bills')
+    const heading = await screen.findByRole('heading', { name: 'Bills' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    follow('To house bills')
+    const house = await screen.findByRole('heading', { name: 'Bills · Flat 3' })
+    await waitFor(() => expect(document.activeElement).toBe(house))
+  })
+
+  it('counts it as a move on a page under Bills too (#556)', async () => {
+    renderAt('/bills/new?groupId=g1')
+    await waitFor(() => expect(document.title).toBe('Bills · Flat 3 · Ledgerly'))
+    follow('To my new bill')
+    const heading = await screen.findByRole('heading', { name: 'Bills' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+  })
+
+  it('focuses the next page’s h1 after a move from a page whose h1 it focused (#556)', async () => {
+    renderAt('/a')
+    follow('To B')
+    const b = await screen.findByRole('heading', { name: 'Page B' })
+    await waitFor(() => expect(document.activeElement).toBe(b))
+    // That h1 goes with its page while the link keeps focus: no hand-on, a move.
+    follow('To late')
+    const late = await screen.findByRole('heading', { name: 'Late page' })
+    await waitFor(() => expect(document.activeElement).toBe(late))
+  })
+
+  it('keeps focus on another query change on Bills (#556)', async () => {
+    renderAt('/bills?groupId=g1')
+    await waitFor(() => expect(document.title).toBe('Bills · Flat 3 · Ledgerly'))
+    const link = follow('Paid')
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+    expect(document.activeElement).toBe(link)
+    // Nor later, when the page's h1 changes: no move is waiting for it.
+    const heading = screen.getByRole('heading', { name: 'Bills · Flat 3' })
+    heading.textContent = 'Bills · Flat 3, 2 due'
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+    expect(document.activeElement).toBe(link)
   })
 
   it('names a page without an h1 just Ledgerly', async () => {
