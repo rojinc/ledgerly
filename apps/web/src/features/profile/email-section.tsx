@@ -176,7 +176,7 @@ export function EmailSection() {
         Email
       </h2>
       {/* Mounted from the start, so the message is read out. */}
-      <p role="status" className="text-sm empty:hidden">
+      <p role="status" className="text-sm empty:sr-only">
         {done}
       </p>
       <p className="text-sm break-words text-muted-foreground">You sign in with {user?.email}.</p>

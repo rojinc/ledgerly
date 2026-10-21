@@ -292,8 +292,11 @@ describe('PairPage', () => {
       type('Amount (AUD)', '50')
       expect(input('Note (optional)').tagName).toBe('TEXTAREA')
       type('Note (optional)', 'For the concert\nand the train')
+      // Mounted from the start, so the announcement is read out (#539).
+      const statuses = screen.getAllByRole('status')
+      expect(statuses.map((node) => node.textContent)).not.toContain('Added.')
       fireEvent.click(screen.getByRole('button', { name: 'Add' }))
-      expect(await screen.findByText('Added.')).toBeTruthy()
+      await waitFor(() => expect(statuses.map((node) => node.textContent)).toContain('Added.'))
       const body = sent()
       expect(body).toStrictEqual({
         id: body.id,
@@ -360,8 +363,11 @@ describe('PairPage', () => {
     renderAt('/people/g1')
     fireEvent.click(await screen.findByLabelText('Money was paid back'))
     expect(screen.queryByText(/more than/)).toBeNull()
+    // Mounted, empty, with the form, so the warning is read out when it appears (#539).
+    const statuses = screen.getAllByRole('status')
     type('Amount (AUD)', '60')
-    expect(screen.getByText(/^That’s more than Sam owes you \(.*50\.00\)/)).toBeTruthy()
+    const warning = screen.getByText(/^That’s more than Sam owes you \(.*50\.00\)/)
+    expect(statuses).toContain(warning)
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     await screen.findByText('Added.')
     expect(sent().totalCents).toBe(6000)

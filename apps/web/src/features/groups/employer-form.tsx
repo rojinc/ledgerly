@@ -406,8 +406,11 @@ export function EmployerForm(props: Props) {
           {isSubmitting ? 'Saving…' : props.mode === 'create' ? 'Create employer' : 'Save'}
         </Button>
       )}
-      {props.mode === 'settings' && isSubmitSuccessful && !isDirty && !errors.root && (
-        <Alert>Saved.</Alert>
+      {/* Mounted from the start, so the announcement is read out (#539). */}
+      {props.mode === 'settings' && (
+        <Alert className="empty:sr-only">
+          {isSubmitSuccessful && !isDirty && !errors.root ? 'Saved.' : ''}
+        </Alert>
       )}
     </form>
   )

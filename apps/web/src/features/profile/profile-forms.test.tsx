@@ -35,6 +35,9 @@ describe('ProfileForm', () => {
     type('Public holiday region', 'au-vic')
     type('Currency', 'nzd')
     type('Summary email', 'fortnightly')
+    // Mounted, empty, from the start, so the announcement is read out (#539).
+    const status = screen.getByRole('status')
+    expect(status.textContent).toBe('')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     expect(onSave).toHaveBeenCalledWith({
@@ -44,7 +47,7 @@ describe('ProfileForm', () => {
       currency: 'NZD',
       summaryFrequency: 'fortnightly',
     })
-    expect(await screen.findByText('Saved.')).toBeTruthy()
+    await waitFor(() => expect(status.textContent).toBe('Saved.'))
     // The fields now show what was stored.
     expect((screen.getByLabelText('Public holiday region') as HTMLInputElement).value).toBe(
       'AU-VIC',
@@ -121,6 +124,9 @@ describe('BusinessForm', () => {
     type('BSB', '062-000')
     type('Account number', '1234 5678')
     type('Invoice number prefix', 'SL-')
+    // Mounted, empty, from the start, so the announcement is read out (#539).
+    const status = screen.getByRole('status')
+    expect(status.textContent).toBe('')
     fireEvent.click(screen.getByRole('button', { name: 'Save invoice details' }))
     await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
     expect(onSave).toHaveBeenCalledWith({
@@ -135,6 +141,7 @@ describe('BusinessForm', () => {
       expect((screen.getByLabelText('ABN') as HTMLInputElement).value).toBe('51824753556'),
     )
     expect((screen.getByLabelText('BSB') as HTMLInputElement).value).toBe('062000')
+    expect(status.textContent).toBe('Saved.')
   })
 
   it('starts from the saved details, and clearing a field removes it', async () => {

@@ -130,7 +130,7 @@ export function PasswordSection() {
         Password
       </h2>
       {/* Mounted from the start, so the message is read out. */}
-      <p role="status" className="text-sm empty:hidden">
+      <p role="status" className="text-sm empty:sr-only">
         {done}
       </p>
       {!hasPassword && (

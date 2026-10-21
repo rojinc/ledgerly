@@ -186,7 +186,7 @@ function GroupExport({ groups }: { groups: Groups[] }) {
       <Button type="submit" className="self-start" aria-disabled={busy}>
         {busy ? 'Making the file…' : 'Download CSV'}
       </Button>
-      <p role="status" className="text-sm break-words empty:hidden">
+      <p role="status" className="text-sm break-words empty:sr-only">
         {done}
       </p>
     </form>
@@ -280,7 +280,7 @@ function MyDataExport({
         </p>
       )}
       {/* Mounted from the start, so it's read out when the files are ready. */}
-      <div role="status" className="flex flex-col gap-2 text-sm empty:hidden">
+      <div role="status" className="flex flex-col gap-2 text-sm empty:sr-only">
         {files.length > 0 && (
           <>
             <p>Your files are ready. Download each one:</p>

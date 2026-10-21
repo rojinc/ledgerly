@@ -137,7 +137,7 @@ export function HoursCapForm({ profile, onSave }: Props) {
       <Button type="submit" aria-disabled={saving}>
         {saving ? 'Saving…' : 'Save limit'}
       </Button>
-      <p role="status" className="text-sm empty:hidden">
+      <p role="status" className="text-sm empty:sr-only">
         {saved ? 'Saved.' : ''}
       </p>
     </form>

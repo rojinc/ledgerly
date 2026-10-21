@@ -120,8 +120,11 @@ export function HouseForm(props: Props) {
       <Button type="submit" className="self-start" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : props.mode === 'create' ? 'Create house' : 'Save'}
       </Button>
-      {props.mode === 'settings' && isSubmitSuccessful && !isDirty && !errors.root && (
-        <Alert>Saved.</Alert>
+      {/* Mounted from the start, so the announcement is read out (#539). */}
+      {props.mode === 'settings' && (
+        <Alert className="empty:sr-only">
+          {isSubmitSuccessful && !isDirty && !errors.root ? 'Saved.' : ''}
+        </Alert>
       )}
     </form>
   )

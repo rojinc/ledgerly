@@ -1004,13 +1004,16 @@ describe('HousePage', () => {
       const settings = await screen.findByRole('region', { name: 'Settings' })
       const name = within(settings).getByLabelText('House name') as HTMLInputElement
       expect(name.value).toBe('Flat 3')
+      // Mounted from the start, so the announcement is read out (#539), and empty until a save.
+      const statuses = within(settings).getAllByRole('status')
+      expect(statuses.map((node) => node.textContent)).not.toContain('Saved.')
       fireEvent.change(name, { target: { value: ' Flat 4 ' } })
       fireEvent.change(within(settings).getByLabelText('Split bills'), {
         target: { value: 'equal' },
       })
       fireEvent.click(within(settings).getByLabelText('Close each month with a divide'))
       fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
-      expect(await within(settings).findByText('Saved.')).toBeTruthy()
+      await waitFor(() => expect(statuses.map((node) => node.textContent)).toContain('Saved.'))
       expect(sent()).toEqual([
         'groups',
         'PATCH',

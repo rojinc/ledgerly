@@ -85,7 +85,7 @@ function PersonalBillsPage() {
         </div>
       </div>
       {/* Mounted from the start, so a change is read out. */}
-      <p role="status" className="text-sm empty:hidden">
+      <p role="status" className="text-sm empty:sr-only">
         {done}
       </p>
       {personal.group ? (
@@ -155,7 +155,7 @@ function HouseBillsPage({ groupId }: { groupId: string }) {
         )}
       </div>
       {/* Mounted from the start, so a change is read out. */}
-      <p role="status" className="text-sm empty:hidden">
+      <p role="status" className="text-sm empty:sr-only">
         {done}
       </p>
       {house ? (

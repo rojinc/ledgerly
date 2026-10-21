@@ -257,7 +257,7 @@ export function HouseBillForm({
         </fieldset>
       )}
       {/* Mounted from the start, so a refusal is read out when it appears. */}
-      <p role="status" className="text-sm text-destructive empty:hidden">
+      <p role="status" className="text-sm text-destructive empty:sr-only">
         {shown && 'error' in shown ? shown.error : ''}
       </p>
       {shown && 'lines' in shown && (
