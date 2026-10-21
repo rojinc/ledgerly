@@ -1,34 +1,16 @@
 import { readFile } from 'node:fs/promises'
 import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
-import { expect, type Page, test } from '@playwright/test'
+import { expect, test } from '@playwright/test'
 import { runId, testEmail } from './dev-project'
 import { addEmployer, archiveEmployer } from './employer'
+import { waitOutFinalize } from './statements'
 import { logIn, setupUser } from './users'
 
 // User flow 5 (docs/product/user-flows.md#5-month-end-invoice). The statements job drafts a
 // month's invoice once the month is over, which a test can't wait for. So the entries go in last
 // month, and `statements POST /statements/reissue` drafts that month (statements.md#4-void).
 const ZONE = 'Australia/Sydney'
-// The statements function's timeout (appwrite/functions.json): a finalize still running when the
-// flow stops waiting for it ends within this.
-const FINALIZE_MS = 300_000
-
-/** The statement's stored status, read in the page through the app's own client, as the user. */
-function statusOf(page: Page, id: string): Promise<string> {
-  return page.evaluate(
-    async ({ path, id }) => {
-      const { tablesDB, DATABASE_ID } = await import(path)
-      const row = await tablesDB.getRow({
-        databaseId: DATABASE_ID,
-        tableId: 'statements',
-        rowId: id,
-      })
-      return row.status
-    },
-    { path: '/src/lib/appwrite.ts', id },
-  )
-}
 
 // The employer this test adds, archived after it even when it fails, its invoice, and when
 // Finalize was clicked.
@@ -38,20 +20,7 @@ let finalizedAt: number | undefined
 test.afterEach(async ({ page }, testInfo) => {
   if (!groupId) return
   try {
-    // Archiving is refused while the invoice is finalizing: a finalize that outlasts the flow's
-    // minute is waited out first, with time of its own (#406). A read that fails counts as still
-    // finalizing, so it's read again. The wait is never 0, which `expect.poll` reads as no limit.
-    const left = finalizedAt ? FINALIZE_MS - (Date.now() - finalizedAt) : 0
-    if (statementId && left > 0) {
-      const id = statementId
-      if (testInfo.timeout > 0) testInfo.setTimeout(testInfo.timeout + left)
-      await expect
-        .poll(() => statusOf(page, id).catch(() => 'finalizing'), {
-          timeout: left,
-          intervals: [2_000],
-        })
-        .not.toBe('finalizing')
-    }
+    await waitOutFinalize(page, testInfo, statementId, finalizedAt)
   } finally {
     await archiveEmployer(page, groupId)
   }
@@ -119,8 +88,9 @@ test('invoices last month: the draft, finalize and send, its number and PDF', as
   await test.step('finalizes and sends it', async () => {
     await page.getByRole('button', { name: 'Finalize…', exact: true }).click()
     await expect(page.getByText(`Sending emails it to ${billing}.`, { exact: true })).toBeVisible()
-    finalizedAt = Date.now()
     await page.getByRole('button', { name: 'Finalize and send', exact: true }).click()
+    // After the click, which waits for the button: the finalize starts then.
+    finalizedAt = Date.now()
     // Finalize is an async execution, which the app polls until it ends: a minute at most.
     await expect(page.getByText(/^Final · Sent /)).toBeVisible({ timeout: 60_000 })
     await expect(page.getByText('Finalized as INV-0001 and sent.', { exact: true })).toBeVisible()

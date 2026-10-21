@@ -10,7 +10,7 @@ const envFile = fileURLToPath(new URL('../../.env.local', import.meta.url))
 if (existsSync(envFile)) process.loadEnvFile(envFile)
 
 /**
- * User flows 1–5 (#38) and #512's flows in a real browser: a local Vite server pointed at the dev
+ * User flows 1–10 (#38, #526) and #512's flows in a real browser: a local Vite server pointed at the dev
  * project by VITE_APPWRITE_ENDPOINT and VITE_APPWRITE_PROJECT_ID, with users made through
  * E2E_APPWRITE_API_KEY (docs/engineering/testing.md#end-to-end).
  */
@@ -20,9 +20,9 @@ export default defineConfig({
   fullyParallel: false,
   // One per flow file, set here: Playwright's default (half the CPUs) is 1 on a 2-vCPU runner, and
   // the flows back to back could outlast the 10 minutes before their afterEach archives run.
-  workers: 10,
+  workers: 15,
   forbidOnly: Boolean(process.env.CI),
-  // One flow and every function call it makes; flow 5 alone waits up to a minute for a finalize.
+  // One flow and every function call it makes; flows 5 and 8 wait up to a minute for a finalize.
   timeout: 3 * 60_000,
   // The whole suite, within #38's 10 minutes.
   globalTimeout: 10 * 60_000,
