@@ -39,6 +39,8 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 `e2e.yml`: after each successful Deploy of `main`, and on **Run workflow**, the [user flows](testing.md#end-to-end) in Chromium against dev.
 
+`reads.yml`: every 8 hours (`17 */8 * * *`) on `main`, and on **Run workflow** for the owner's first run: [the reads job](nightly-check.md#after-the-two-weeks), which reads every function's error lines and the nightly check's, and posts on #581 when one needs a look. Its key (`execution.read` only) is in the `reads` environment, which only `main` can use. Its permissions are `contents: read` and `issues: write`, with no `npm ci`, and 5 minutes.
+
 `deploy.yml`:
 
 | Trigger | Steps |

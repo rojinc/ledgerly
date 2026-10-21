@@ -44,9 +44,9 @@ jobs:
         env:
           TZ: UTC
 
-      # The nightly-check and error-line reads' script, against the runbooks' own jq blocks (#553).
-      # jq is on the runner's image.
-      - run: node --test scripts/reads.test.mjs
+      # The nightly-check and error-line reads' script, against the runbooks' own jq blocks (#553),
+      # and the reads job's state and posts (#568). jq is on the runner's image.
+      - run: node --test scripts/reads.test.mjs scripts/reads-job.test.mjs
 
       # Core again in another timezone to catch date bugs, with full coverage.
       - run: npm run coverage -w @ledgerly/core

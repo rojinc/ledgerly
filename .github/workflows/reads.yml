@@ -1,0 +1,48 @@
+name: Reads
+
+# After M4's two weeks, every function's error lines and the nightly check's, read every 8 hours
+# (docs/engineering/nightly-check.md#after-the-two-weeks, #568). It posts on the reads issue, #581,
+# only when a read needs a look. Its log is public, like every run's here: the script prints IDs,
+# counts, times and names only. "Run workflow" is for the owner's first run; agents never run it.
+on:
+  schedule:
+    # Minute 17, away from the top of the hour, when GitHub delays or drops scheduled runs most.
+    - cron: '17 */8 * * *'
+  workflow_dispatch:
+
+# One read at a time, and never cancelled: each starts where the last one ended.
+concurrency:
+  group: reads
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  reads:
+    name: reads
+    # The environment's own branch rule is the guard; this one says it in the file too.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Its key, `execution.read` only, is in this environment, which only main can use.
+    environment: reads
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Node's built-ins only, so no cache and no `npm ci`.
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      # No outside text in this line: the script reads the issue's body itself, and checks it.
+      - run: node scripts/reads-job.mjs
+        env:
+          READS_ISSUE: '581'
+          GITHUB_TOKEN: ${{ github.token }}
+          APPWRITE_ENDPOINT: ${{ secrets.APPWRITE_ENDPOINT }}
+          APPWRITE_PROJECT_ID: ${{ secrets.APPWRITE_DEV_PROJECT_ID }}
+          APPWRITE_API_KEY: ${{ secrets.APPWRITE_READS_KEY }}

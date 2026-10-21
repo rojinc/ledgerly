@@ -980,4 +980,46 @@ describe('--fetch', () => {
       await api.close()
     }
   })
+
+  it('with --skip-overdue, reads no table and says C was not read', async () => {
+    // A group overdue since 01:00, which C would fail on.
+    const due = [{ $id: 'g1', nextCheckAt: '2026-10-21T01:00:00.000+00:00' }]
+    const api = await serve({ runs: everyFunction(), due, never: [] })
+    try {
+      const skipped = await read(
+        ['--from', FROM, '--fetch', '--skip-overdue'],
+        api.env,
+        Date.parse('2026-10-21T06:20:00Z'),
+      )
+      assert.ok(api.requests.every((r) => r.path.endsWith('/executions')))
+      assert.match(skipped.lines[1], / · removed 0 · overdue not read · PASS$/)
+      assert.equal(skipped.code, 0)
+      const full = await read(
+        ['--from', FROM, '--fetch'],
+        api.env,
+        Date.parse('2026-10-21T06:20:00Z'),
+      )
+      assert.match(full.lines[1], / · overdue 1 · pending none · FAIL$/)
+    } finally {
+      await api.close()
+    }
+  })
+
+  it('takes --skip-overdue only with --fetch, and never with --pending', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'reads-'))
+    try {
+      writeFileSync(join(dir, 'runs.json'), '[]')
+      writeFileSync(join(dir, 'groups.json'), '[]')
+      for (const args of [
+        ['--runs', join(dir, 'runs.json'), '--groups', join(dir, 'groups.json'), '--to', TO],
+        ['--fetch', '--pending', 'g1'],
+      ]) {
+        const refused = await read(['--from', FROM, '--skip-overdue', ...args], {}, NOW)
+        assert.equal(refused.code, 2)
+        assert.match(refused.lines[0], /^--skip-overdue is for --fetch/)
+      }
+    } finally {
+      rmSync(dir, { recursive: true })
+    }
+  })
 })
