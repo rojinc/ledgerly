@@ -565,3 +565,33 @@ describe('two starts at once', () => {
     expect(rows.transactions(db).map((row) => row.$id)).toEqual(['tm2'])
   })
 })
+
+describe('PATCH /transactions/{id}', () => {
+  const edit = {
+    id: 'tm1',
+    groupId: 'job',
+    kind: 'shift',
+    date: '2026-10-18',
+    description: 'Shift',
+    shift: { minutes: 60, rateCents: 2500 },
+  }
+
+  it('refuses a running timer, writing nothing, and edits it once it’s stopped', async () => {
+    const db = seed()
+    await startTimer(db)
+    const before = { transactions: rows.transactions(db), activity: rows.activity(db) }
+    const response = await call(db, 'PATCH', '/transactions/tm1', edit, 'u-sam')
+    expect(response.body.error).toMatchObject({
+      code: 'VALIDATION_FAILED',
+      message: 'Stop the timer before editing this shift.',
+    })
+    expect(rows.transactions(db)).toEqual(before.transactions)
+    expect(rows.activity(db)).toEqual(before.activity)
+    expect(rows.shares(db)).toEqual([])
+
+    later(90)
+    expect((await stopTimer(db)).status).toBe(200)
+    expect((await call(db, 'PATCH', '/transactions/tm1', edit, 'u-sam')).status).toBe(200)
+    expect(shiftOf(db)).toMatchObject({ minutes: 60, rateCents: 2500 })
+  })
+})
