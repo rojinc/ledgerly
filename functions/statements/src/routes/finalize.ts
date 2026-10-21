@@ -244,7 +244,7 @@ async function lockAndIssue(
     end: statement.periodEnd as LocalDate,
   }
   await finishVoids(db, group.$id)
-  const { snapshot, unlockedIds, membership } = await computeSnapshot(
+  const { snapshot, unlockedIds, membership, businessDropped } = await computeSnapshot(
     db,
     group,
     period,
@@ -270,13 +270,23 @@ async function lockAndIssue(
   // Step 6, invoices: the issuer again, since the snapshot may lack their business details if
   // their deletion ran meanwhile (#519). The statement stays `finalizing`, with its locks.
   const invoice = statement.type === 'invoice'
-  return updateStatement(
+  const stored = await updateStatement(
     db,
     statement,
     { snapshotJson: JSON.stringify(snapshot), issuedOn, dueOn },
     invoice ? [issuerGuard(group)] : [],
     invoice ? () => requireIssuerStill(db, group) : undefined,
   )
+  // A business detail today's rules refuse is left out of the invoice, never a reason to stop
+  // it: said once, when the snapshot is stored, by field name only (statements.md#snapshot).
+  if (businessDropped.length > 0) {
+    logProblem('invoice_business_dropped', {
+      groupId: group.$id,
+      statementId: statement.$id,
+      businessFields: businessDropped,
+    })
+  }
+  return stored
 }
 
 /**

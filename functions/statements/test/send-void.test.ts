@@ -80,6 +80,25 @@ describe('POST /statements/{id}/send', () => {
     ])
   })
 
+  it('sends and resends an invoice whose stored business details a later rule refuses (#543)', async () => {
+    const services = fakes(
+      rowsOf(shift('s1', '2026-10-02', 120), { statements: [statement('st1')] }),
+    )
+    const final = await finalize(services, 'st1')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    const issuer = snapshot.issuer && {
+      ...snapshot.issuer,
+      business: { businessName: 'Sam Cleans', abn: '1' },
+    }
+    await commitNow(services.db, [
+      op('statements', 'st1', { snapshotJson: JSON.stringify({ ...snapshot, issuer }) }),
+    ])
+    await ok(services, 'POST', '/statements/st1/send')
+    await ok(services, 'POST', '/statements/st1/send')
+    expect(services.sent.map((email) => email.idempotencyKey)).toHaveLength(4)
+    expect(services.sent[0]?.subject).toContain('Sam Cleans')
+  })
+
   it('sends to the billing emails the group has now, and no copy to a worker with no verified email', async () => {
     const services = fakes({ ...rowsOf({ statements: [statement('st1')] }), identities: [] })
     await finalize(services, 'st1')

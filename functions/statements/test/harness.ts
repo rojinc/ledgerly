@@ -88,6 +88,11 @@ export const member = (
   leftOn: null,
 })
 
+/** Sam's profile row, with `businessJson` as given (#543): pass it to `fakes` as `profiles`. */
+export function samProfile(businessJson: string | null): Row {
+  return { ...fakes().db.rows('profiles')[0], businessJson } as Row
+}
+
 /**
  * Sam works for Acme (`job`, monthly invoices to billing@acme.example), with business details
  * and invoice number 9 used last. Alice and Bob share a house. Dan has an account but is in

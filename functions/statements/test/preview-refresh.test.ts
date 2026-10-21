@@ -17,6 +17,7 @@ import {
   op,
   payment,
   rowsOf,
+  samProfile,
   shift,
   snapshotClosing,
   statement,
@@ -93,6 +94,68 @@ describe('POST /statements/preview', () => {
     })
     expect(snapshot.invoice).toEqual({ balanceDueCents: 15000, paymentTermsDays: 14 })
     expect(services.db.rows('statements')).toHaveLength(1)
+  })
+
+  it.each([
+    [
+      'a field today’s rule refuses',
+      { ...BUSINESS, abn: '1' },
+      { businessName: 'Sam Cleans', email: 'sam@example.com', bank: BUSINESS.bank },
+    ],
+    [
+      'the whole bank when one part is refused',
+      { ...BUSINESS, bank: { ...BUSINESS.bank, bsb: '12' } },
+      { businessName: 'Sam Cleans', abn: '51824753556', email: 'sam@example.com' },
+    ],
+    ['every field when the JSON isn’t an object', ['Sam Cleans'], {}],
+    [
+      'nothing, with the rule’s own clean-up, as before',
+      { abn: '51 824 753 556', bank: { ...BUSINESS.bank, bsb: '062-000' } },
+      { abn: '51824753556', bank: BUSINESS.bank },
+    ],
+  ])(
+    'keeps the business details that read, leaving out %s, without a word (#543)',
+    async (_case, stored, business) => {
+      const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const services = fakes({ profiles: [samProfile(JSON.stringify(stored))] })
+      const { snapshot } = await ok<Preview>(services, 'POST', '/statements/preview', {
+        groupId: 'job',
+        periodEnd: '2026-10-31',
+      })
+      expect(snapshot.issuer?.business).toEqual(business)
+      expect(warnings).not.toHaveBeenCalled()
+    },
+  )
+
+  it('has no business details when the stored JSON doesn’t parse (#543)', async () => {
+    const services = fakes({ profiles: [samProfile('{')] })
+    const { snapshot } = await ok<Preview>(services, 'POST', '/statements/preview', {
+      groupId: 'job',
+      periodEnd: '2026-10-31',
+    })
+    expect(snapshot.issuer?.business).toEqual({})
+  })
+
+  it('opens from a final invoice whose business details a later rule refuses (#543)', async () => {
+    const stored = JSON.parse(september.snapshotJson as string)
+    const services = fakes(
+      rowsOf(shift('s1', '2026-10-02', 240), {
+        statements: [
+          {
+            ...september,
+            snapshotJson: JSON.stringify({
+              ...stored,
+              issuer: { ...stored.issuer, business: { businessName: 'Sam Cleans', abn: '1' } },
+            }),
+          },
+        ],
+      }),
+    )
+    const { snapshot } = await ok<Preview>(services, 'POST', '/statements/preview', {
+      groupId: 'job',
+      periodEnd: '2026-10-31',
+    })
+    expect(snapshot.people.map((person) => person.openingCents)).toEqual([-5000, 5000])
   })
 
   it('ends today in the group time zone when no periodEnd is given', async () => {

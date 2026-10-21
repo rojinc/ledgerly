@@ -27,7 +27,7 @@ An event is an error unless `LEVELS` in `packages/server/src/http/log.ts` makes 
 
 The nightly check's B reads its three error events: `nightly_check_finding`, `nightly_check_failed` and `team_membership_removed`. This read skips them, so they aren't counted twice.
 
-**The read skips a list of events, not includes one.** So an event added to `LogEvent` later counts as an error here, as it does in `log.ts`, until it's given a level. The list below mirrors `LEVELS` as of `e8fbfec`; when `LEVELS` changes, change it too.
+**The read skips a list of events, not includes one.** So an event added to `LogEvent` later counts as an error here, as it does in `log.ts`, until it's given a level. The list below mirrors `LEVELS` as of #543; when `LEVELS` changes, change it too.
 
 **A send blocked until #3 is done** ([#3](https://github.com/rojinc/ledgerly/issues/3)). While Resend's sending domain is unverified, or the key is wrong, every send fails with a `cause` of `EmailError <type> 401` or `403`, or `EmailError invalid_api_key`. `sendingBlocked` in `packages/server/src/email/send-email.ts` leaves it for the next run, so it repeats every hour. Until #3 is done, it's counted on its own as `email blocked`, not as an error line.
 - **`missing_config` stays an error:** it's a setting the deploy didn't set.
@@ -77,7 +77,7 @@ jq -rs --arg from "$FROM" --arg to "$TO" --arg capped "$CAPPED" --arg failed "$F
     "pdf_characters_replaced", "merge_left_transaction", "merge_left_locked_transaction",
     "merge_left_schedule", "merge_left_stray_row", "merge_left_subjects", "merge_put_off_team_gone",
     "merge_left_inputs", "merge_stopped", "merge_walk_cut_off", "receipt_cleanup_behind",
-    "receipt_cleanup_tied", "transaction_changes_skipped",
+    "receipt_cleanup_tied", "transaction_changes_skipped", "invoice_business_dropped",
     "nightly_check_finding", "nightly_check_failed", "team_membership_removed");
   def failure($run):
     if has("route") then (.status // 0) >= 500 or ($run.trigger != "http" and .status != 200)
