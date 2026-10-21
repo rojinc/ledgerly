@@ -131,6 +131,11 @@ afterEach(() => {
   vi.resetAllMocks()
 })
 
+/** The element that describes `element` (aria-describedby), which names its row (#539). */
+function describer(element: Element | undefined): Element | null {
+  return document.getElementById(element?.getAttribute('aria-describedby') ?? '')
+}
+
 describe('balanceLine', () => {
   it('words a balance past the amount cap', () => {
     expect(balanceLine('Alice', 20_000_000_000, 'AUD')).toMatch(/^Alice is owed .*200,000,000\.00$/)
@@ -195,6 +200,9 @@ describe('SettleUp', () => {
     const { queryClient } = renderSettleUp()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
     const [first] = await screen.findAllByRole('button', { name: 'Record' })
+    // Every row's button is "Record": its transfer describes it.
+    expect(describer(first)).toBe(first?.closest('li')?.querySelector('span') ?? undefined)
+    expect(describer(first)?.textContent).toMatch(/ pays /)
     fireEvent.click(first as HTMLElement)
     // Prefilled from the transfer, dated today in the house's time zone.
     expect(input('From').value).toBe('p3')

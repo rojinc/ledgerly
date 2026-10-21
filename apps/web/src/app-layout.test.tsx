@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppLayout } from './app-layout'
@@ -50,6 +50,22 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
+describe('AppLayout, at any width (#539)', () => {
+  it.each([1280, 375])(
+    'at %i px, a skip link leads to the page, and the brand is in the banner',
+    (at) => {
+      width = at
+      renderAt('/')
+      const skip = screen.getByRole('link', { name: 'Skip to content' })
+      // The browser follows it to <main>, which can take focus (jsdom doesn't move focus).
+      expect(skip.getAttribute('href')).toBe('#main')
+      expect(screen.getByRole('main').id).toBe('main')
+      expect(screen.getByRole('main').tabIndex).toBe(-1)
+      expect(within(screen.getByRole('banner')).getByText('Ledgerly')).toBeTruthy()
+    },
+  )
+})
+
 describe('AppLayout, 768 px and wider', () => {
   it('puts the menu down the left side, with Log out last', () => {
     renderAt('/')
@@ -63,7 +79,9 @@ describe('AppLayout, 768 px and wider', () => {
     // No extra "complementary" landmark around the menu.
     expect(document.querySelector('aside')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Menu' })).toBeNull()
+    // The skip link comes first (#539).
     expect(screen.getAllByRole('link').map((link) => link.textContent)).toEqual([
+      'Skip to content',
       'Home',
       'Today',
       'Calendar',
@@ -118,7 +136,9 @@ describe('AppLayout, under 768 px', () => {
     fireEvent.click(menu)
     expect(menu.getAttribute('aria-expanded')).toBe('true')
     expect(screen.getAllByRole('navigation', { name: 'Main' })).toHaveLength(1)
-    expect(screen.getAllByRole('link')).toHaveLength(10)
+    expect(
+      within(screen.getByRole('navigation', { name: 'Main' })).getAllByRole('link'),
+    ).toHaveLength(10)
     expect(screen.getByRole('button', { name: 'Log out' })).toBeTruthy()
     fireEvent.click(menu)
     expect(screen.queryByRole('navigation', { name: 'Main' })).toBeNull()

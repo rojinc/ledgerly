@@ -140,15 +140,20 @@ export function SettleUp({
         ) : (
           // In the order the function returns them.
           <ul className="flex flex-col gap-3">
-            {balances.data.transfers.map((transfer) => (
+            {balances.data.transfers.map((transfer, index) => (
               <li key={keyOf(transfer)} className="flex flex-col gap-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span>
+                  <span id={`${headingId}-${index}`}>
                     {name(transfer.fromPersonId)} pays {name(transfer.toPersonId)}{' '}
                     {formatNet(transfer.cents, group.currency)}
                   </span>
                   {canRecord && shown !== keyOf(transfer) && (
-                    <Button variant="outline" {...opener(keyOf(transfer))}>
+                    // Says which transfer: every row's button is "Record" (#539).
+                    <Button
+                      variant="outline"
+                      aria-describedby={`${headingId}-${index}`}
+                      {...opener(keyOf(transfer))}
+                    >
                       Record
                     </Button>
                   )}

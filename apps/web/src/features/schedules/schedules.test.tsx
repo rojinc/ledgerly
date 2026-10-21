@@ -108,6 +108,11 @@ afterEach(() => {
   vi.resetAllMocks()
 })
 
+/** The element that describes `element` (aria-describedby), which names its row (#539). */
+function describer(element: Element | undefined): Element | null {
+  return document.getElementById(element?.getAttribute('aria-describedby') ?? '')
+}
+
 describe('NewSchedulePage', () => {
   it('builds every Thursday 5h at the default rate, previews it, and creates it', async () => {
     mockGroup(acme)
@@ -809,6 +814,10 @@ describe('Restart', () => {
     const restart = await screen.findByRole('button', { name: 'Restart' })
     // Stopped: Restart and End, no Pause, which would start it again without Restart's checks.
     expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
+    // Every row has these buttons: its schedule's name describes each.
+    for (const button of [restart, screen.getByRole('button', { name: 'End' })]) {
+      expect(describer(button)?.textContent).toBe(thursdays.description)
+    }
     expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
     fireEvent.click(restart)
     await waitFor(() => expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(1))
@@ -1043,7 +1052,9 @@ describe('SchedulesPage: pause and resume (#430)', () => {
     mockSchedules([running])
     answerWith({ ...running, pausedFrom: '2026-10-19' }, { removed: 2 })
     renderAt('/schedules?groupId=g1')
-    fireEvent.click(await screen.findByRole('button', { name: 'Pause' }))
+    const pause = await screen.findByRole('button', { name: 'Pause' })
+    expect(describer(pause)?.textContent).toBe(running.description)
+    fireEvent.click(pause)
     const field = screen.getByLabelText('Pause from') as HTMLInputElement
     expect(document.activeElement).toBe(field)
     expect(field.value).toBe('2026-10-19')
@@ -1060,6 +1071,9 @@ describe('SchedulesPage: pause and resume (#430)', () => {
     )
     await waitFor(() =>
       expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Resume' })),
+    )
+    expect(describer(screen.getByRole('button', { name: 'Resume' }))?.textContent).toBe(
+      running.description,
     )
     expect(screen.queryByRole('button', { name: 'Pause' })).toBeNull()
     expect(screen.getByRole('button', { name: 'End' })).toBeTruthy()
