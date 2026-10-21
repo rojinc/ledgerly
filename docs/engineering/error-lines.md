@@ -105,15 +105,17 @@ jq -rs --arg from "$FROM" --arg to "$TO" --arg capped "$CAPPED" --arg failed "$F
   | ($lines | map(select(blocked | not)) | group_by([.fn, .event // .route, .cause // "-", ids])) as $groups
   | ($groups | map(select(map(.run) | unique | length >= 3))) as $repeating
   | ($runs | map(select(notok))) as $notok
+  | ([$notok[] | select(.trigger == "schedule" and (lines | any(has("route")) | not))]
+      | group_by(.fn) | map(select(length >= 3))) as $notokRepeating
   | ($gaps | max_by(.gap)) as $worst
   | ([$done[] | select(lines | any(has("route")))] | length) as $logged
   | (if $failed != "" then "FETCH FAILED"
      elif any($runs[]; .status == "waiting" or .status == "processing") then "TOO EARLY"
-     elif ($repeating | length) > 0 or $worst.gap > 125 then "STUCK"
+     elif ($repeating | length) > 0 or ($notokRepeating | length) > 0 or $worst.gap > 125 then "STUCK"
      elif $capped != "" or $logged < ($done | length) then "INCOMPLETE"
      elif ($groups | length) > 0 or ($notok | length) > 0 then "LOOK"
      else "OK" end) as $verdict
-  | "errors \($from) → \($to) · runs \($fns | map(. as $fn | "\($fn) \([$runs[] | select(.fn == $fn)] | length)") | join(", ")) · not ok \($notok | length) · longest gap \($worst.gap) min (\($worst.fn)) · logged \($logged) of \($done | length) · error lines \($groups | map(length) | add // 0) in \($groups | length) groups · repeating \($repeating | length) · email blocked \($lines | map(select(blocked)) | length) · \($verdict)",
+  | "errors \($from) → \($to) · runs \($fns | map(. as $fn | "\($fn) \([$runs[] | select(.fn == $fn)] | length)") | join(", ")) · not ok \($notok | length) · longest gap \($worst.gap) min (\($worst.fn)) · logged \($logged) of \($done | length) · error lines \($groups | map(length) | add // 0) in \($groups | length) groups · repeating \(($repeating | length) + ($notokRepeating | length)) · email blocked \($lines | map(select(blocked)) | length) · \($verdict)",
     ($notok[] | "not ok \(.fn) \(.["$id"]) \(at) \(.trigger) \(.status) \(.responseStatusCode // "-")"),
     ($groups[] | .[0] as $l | [
       (map(.run) | unique | length | if . == 1 then "1 run" else "\(.) runs" end),
@@ -136,7 +138,7 @@ Every line prints only fixed fields: the function, the run's ID and time, the tr
 | --- | --- | --- |
 | **OK** | every run that answered has its lines, no run is `not ok`, every gap is 125 minutes or less, and there are no error lines besides blocked sends | post the result line |
 | **LOOK** | an error line, a 500 or a run that isn't ok, that doesn't repeat | post the result line, and the group's or run's line on #96. The lead decides whether it needs an issue |
-| **STUCK** | a group of error lines in **3 or more runs**, or a scheduled function with a gap over 125 minutes | post the lines on #96, and file a `bug` issue with the IDs. If `logged` is short too, also read sooner next time |
+| **STUCK** | a group of error lines in **3 or more runs**, a scheduled function whose runs end with no lines (a timeout or a crash) in **3 or more runs**, or a scheduled function with a gap over 125 minutes | post the lines on #96, and file a `bug` issue with the IDs. If `logged` is short too, also read sooner next time |
 | **INCOMPLETE** | a run that answered but whose lines are gone (`logged` fewer than those runs), or `CAPPED` | the window can't be confirmed. Post the counts on #96, and read sooner next time |
 | **TOO EARLY** | a run is still `waiting` or `processing` | wait a few minutes and run both blocks again, with the same `FROM` and `TO`. Post the nightly check's line and this one together. A run still waiting 20 minutes later is stuck: post the result line as it is, and that run's line on #96 |
 | **FETCH FAILED** | a page of runs couldn't be fetched | as above: stop, and post the CLI's error on #96. It isn't posted on #299 |
