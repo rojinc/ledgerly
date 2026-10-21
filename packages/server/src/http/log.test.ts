@@ -173,8 +173,10 @@ group('logProblem', () => {
     logProblem('merge_run', { counts: { unfinished: 1, stopped: 1 } })
     logProblem('merge_run_failed', { intoPersonId: 'pU', error: new Error('x') })
     logProblem('merge_walk_cut_off', { count: 100 })
-    // Receipt clean-up (#163): behind warns, a listed row and a failure are errors.
+    // Receipt clean-up (#163): behind and a whole page tied (#382) warn, a listed row and a
+    // failure are errors.
     logProblem('receipt_cleanup_behind', { counts: { deleted: 1, skipped: 0, failed: 0 } })
+    logProblem('receipt_cleanup_tied', { counts: { deleted: 1, skipped: 0, failed: 0 } })
     logProblem('receipt_row_listed', { rowId: 'f1' })
     logProblem('receipt_cleanup_failed', { counts: { failed: 1 }, error: new Error('x') })
     expect(levels()).toEqual([
@@ -211,6 +213,7 @@ group('logProblem', () => {
       'error',
       'log',
       'error',
+      'warn',
       'warn',
       'warn',
       'error',

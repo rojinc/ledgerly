@@ -5,7 +5,12 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { allRows } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Tx, type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { type Email, EmailError } from '@ledgerly/server/email/send-email'
+import {
+  type Email,
+  EmailError,
+  refusedForGood,
+  sendingBlocked,
+} from '@ledgerly/server/email/send-email'
 import { emailChangedEmail, phoneChangedEmail } from '@ledgerly/server/email/templates'
 import { type ChangeNoticeOutcome, logProblem } from '@ledgerly/server/http/log'
 import { randomId } from '@ledgerly/server/identity/random-id'
@@ -71,7 +76,8 @@ export type NoticeCounts = { retried: number; failed: number; expired: number; g
  * an event run of `users.*.update.email` or `users.*.update.phone` naming `userId` (event-run.ts).
  * Writes a `changeNotices` row per email before sending, and deletes each once it's sent, so the
  * hourly run tries the rest (step 8). Each email's outcome goes to the log, with the ID; throws
- * after the last if any wasn't sent.
+ * after the last if any wasn't sent. When every send fails for now (`sendingBlocked`, #469), the
+ * first such email is the last tried.
  */
 export async function changeNotice(
   services: Services,
@@ -114,9 +120,12 @@ export async function changeNotice(
     }
     const line = await deliver(pace, email)
     log(line)
-    const settled = line.outcome === 'sent' || ('error' in line && refused(line.error))
+    const settled = line.outcome === 'sent' || ('error' in line && refusedForGood(line.error))
     if (settled) await forget(services.db, rows.get(email.idempotencyKey))
     allSent &&= line.outcome === 'sent'
+    // Every send fails for now (our key, domain or settings, #469): logged once, and the rest
+    // keep their rows for the hourly run.
+    if ('error' in line && sendingBlocked(line.error)) break
   }
   // Appwrite doesn't run an event again, so the run fails with a trace in the log.
   if (!allSent) throw new Error('Not every change notice was sent')
@@ -127,7 +136,8 @@ export async function changeNotice(
  * merges, leaving rows an event run may still be sending (RUN_MS). Step 6's limits count from the
  * run's start (`started`), so the merges' time comes off them. A row is deleted once its email is
  * sent, or can never be (refused, gone, or 23 hours old). A 429 ends the retries for the run,
- * since Resend's limit is shared; any other failure adds 1 to `attempts`. Rows it doesn't reach
+ * since Resend's limit is shared, as does a failure every send would meet (`sendingBlocked`,
+ * #469), with no `attempts` added; any other failure adds 1 to `attempts`. Rows it doesn't reach
  * wait for the next hour.
  */
 export async function retryNotices(services: Services, started: number): Promise<NoticeCounts> {
@@ -184,7 +194,7 @@ export async function retryNotices(services: Services, started: number): Promise
         await forget(services.db, row.$id)
         continue
       }
-      if (refused(error)) {
+      if (refusedForGood(error)) {
         counts.failed += 1
         log({ outcome: 'failed', error })
         await forget(services.db, row.$id)
@@ -195,7 +205,12 @@ export async function retryNotices(services: Services, started: number): Promise
       error = thrown
     }
     counts.failed += 1
-    if (error instanceof EmailError && error.type === 'rate_limit_exceeded') {
+    // Resend's shared limit, or every send failing for now (our key, domain or settings, #469):
+    // logged once, with no row changed, and the rest wait for the next run.
+    if (
+      (error instanceof EmailError && error.type === 'rate_limit_exceeded') ||
+      sendingBlocked(error)
+    ) {
       log({ outcome: 'failed', error })
       break
     }
@@ -464,11 +479,6 @@ async function deliver(pace: Pacer, email: Email): Promise<Line> {
       error.type === 'rate_limit_exceeded' && attempt === 1 && (await pace.start(retryAt))
     if (!retry) return { outcome: 'failed', error }
   }
-}
-
-// Resend refused the email itself (`validation_error`), so no later try would send it.
-function refused(error: unknown): boolean {
-  return error instanceof EmailError && error.type === 'validation_error'
 }
 
 function sha256(text: string): string {

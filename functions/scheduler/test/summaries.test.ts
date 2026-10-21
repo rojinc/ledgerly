@@ -413,6 +413,19 @@ describe('step 4: summary emails', () => {
     expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 0 })
   })
 
+  it('stops at a validation_error with 403, our domain: one line, nothing moved (#469)', async () => {
+    const services = seeded({ profiles: [profile(), profile({ $id: 'u2', personId: 'pAlex' })] })
+    services.sendEmail.mockRejectedValue(
+      new EmailError('Domain not verified', 'validation_error', 403),
+    )
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect((await runCron(services)).summaries).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(services.sendEmail).toHaveBeenCalledTimes(1)
+    const lines = quiet.mock.calls.map(([line]) => JSON.parse(String(line)))
+    expect(lines.filter(({ event }) => event === 'summary_failed')).toHaveLength(1)
+    expect(services.db.rows('profiles').map((row) => row.nextSummaryAt)).toEqual([DUE, DUE])
+  })
+
   it.each([
     ['moves on from one Appwrite refuses to build', 400, NEXT_WEEK],
     ['tries one again when a table is missing', 404, DUE],

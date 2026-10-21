@@ -8,12 +8,11 @@ import { allRows, pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { isInTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { EmailError } from '@ledgerly/server/email/send-email'
+import { neverSent, sendingBlocked } from '@ledgerly/server/email/send-email'
 import { type EmailContent, summaryEmail } from '@ledgerly/server/email/templates'
 import { logProblem } from '@ledgerly/server/http/log'
 import { AppwriteException, Query } from 'node-appwrite'
 import { appBase, type Services } from '../services'
-import { NEVER_SENT } from './reminders'
 
 export type SummaryCounts = { sent: number; skipped: number; failed: number }
 
@@ -22,7 +21,7 @@ type Links = { home: string; profile: string }
 /**
  * Step 4 (scheduling.md#step-4-summary-emails): each profile whose `nextSummaryAt` has come
  * gets the summary of the period that just ended, at most once. A profile that fails is
- * counted, and the run carries on.
+ * counted, and the run carries on, unless every send fails for now (#469).
  */
 export async function sendSummaries(services: Services): Promise<SummaryCounts> {
   const base = appBase(services.appUrl)
@@ -40,6 +39,8 @@ export async function sendSummaries(services: Services): Promise<SummaryCounts> 
       // The next run tries it again: nextSummaryAt hasn't moved.
       logProblem('summary_failed', { profileId: profile.$id, error })
       counts.failed += 1
+      // Every send fails for now (our key, domain or settings, #469): logged once, the rest wait.
+      if (sendingBlocked(error)) break
     }
   }
   return counts
@@ -124,7 +125,7 @@ async function moveOn(
         await sendEmail({ to: email.to, ...email.content, idempotencyKey: email.key })
         outcome = 'sent'
       } catch (error) {
-        if (!(error instanceof EmailError && NEVER_SENT.has(error.type))) throw error
+        if (!neverSent(error)) throw error
         outcome = 'failed'
       }
     })

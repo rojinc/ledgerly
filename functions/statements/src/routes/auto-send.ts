@@ -1,7 +1,7 @@
 import type { Groups, Statements } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
-import { EmailError } from '@ledgerly/server/email/send-email'
+import { EmailError, neverSent, sendingBlocked } from '@ledgerly/server/email/send-email'
 import { autoSendFailedEmail } from '@ledgerly/server/email/templates'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
@@ -14,9 +14,6 @@ import { sendInvoice } from './send'
 // Inside Resend's 24 hours for an idempotency key, so every try in the window reuses the same
 // keys and the employer gets the invoice once (statements.md#auto-send).
 const WINDOW_MS = 23 * 60 * 60 * 1000
-
-// Resend's answers that a retry with the same keys can't change.
-const PERMANENT = ['validation_error', 'invalid_idempotent_request']
 
 /** When the job's window to email an invoice it finalizes ends (finalize step 8). */
 export function autoSendUntil(now: Date): string {
@@ -32,7 +29,8 @@ export function autoSends(group: Groups): boolean {
 /**
  * The job's auto-send step (statements.md#auto-send): emails each final invoice whose window is
  * open and that isn't sent yet, as an admin's Send does but with no actor, until `outOfTime`
- * says so or Resend says to slow down. What's left waits for the next run.
+ * says so, Resend says to slow down, or every send fails for now (#469). What's left waits for
+ * the next run.
  */
 export async function sendDueInvoices(services: Services, outOfTime: () => boolean): Promise<void> {
   // idx_autoSendUntil
@@ -52,7 +50,7 @@ export async function sendDueInvoices(services: Services, outOfTime: () => boole
   }
 }
 
-// False when Resend's rate limit ends the step for this run.
+// False when Resend's rate limit, or a failure every send would meet (#469), ends the step.
 async function sendOne(services: Services, statementId: string): Promise<boolean> {
   const { db, now } = services
   // As they are now: a void, an admin's Send or a settings change may have come first.
@@ -79,26 +77,36 @@ async function sendOne(services: Services, statementId: string): Promise<boolean
     const current = await getRowOrNull<Statements>(db, TABLES.statements, statementId)
     if (current?.status !== 'final' || current.sentAt !== null) return true
     logProblem('auto_send_failed', { statementId, error })
+    // Every send fails for now (our key, domain or settings, #469): the notice to the admins
+    // would fail the same way, and the rest wait for the next run.
+    if (sendingBlocked(error)) return false
     if (isPermanent(error)) {
       // No later run tries.
       await updateStatement(db, current, { autoSendUntil: now.toISOString() }).catch(
         (closing: unknown) => logProblem('auto_send_failed', { statementId, error: closing }),
       )
     }
-    await tellAdmins(services, group, current)
+    if (!(await tellAdmins(services, group, current))) return false
     // Resend's limit is shared: the rest waits for the next run.
     return !(error instanceof EmailError && error.status === 429)
   }
 }
 
+// Answers that a retry with the same keys can't change: an invoice that can't be sent as it is,
+// and an email Resend will never send as asked. A 401 or 403 never gets here (#469).
 function isPermanent(error: unknown): boolean {
   if (error instanceof AppError) return error.code === 'VALIDATION_FAILED'
-  return error instanceof EmailError && PERMANENT.includes(error.type)
+  return neverSent(error)
 }
 
 // "Invoice INV-0010 for Acme couldn't be emailed", to every joined admin. One key per admin,
-// so each gets it once however many runs fail inside the window. Best effort.
-async function tellAdmins(services: Services, group: Groups, statement: Statements): Promise<void> {
+// so each gets it once however many runs fail inside the window. Best effort. False when every
+// send fails for now (#469): the admins left, and the invoices left, wait for the next run.
+async function tellAdmins(
+  services: Services,
+  group: Groups,
+  statement: Statements,
+): Promise<boolean> {
   try {
     const admins = await joinedAdmins(services.db, group.$id)
     const emails = await verifiedEmails(
@@ -113,17 +121,19 @@ async function tellAdmins(services: Services, group: Groups, statement: Statemen
     for (const admin of admins) {
       const to = emails.get(admin.personId)
       if (!to?.length) continue
-      await services
-        .sendEmail({
+      try {
+        await services.sendEmail({
           to,
           ...content,
           idempotencyKey: `auto-send-failed/${statement.$id}/${admin.personId}`,
         })
-        .catch((error: unknown) =>
-          logProblem('auto_send_notice_failed', { statementId: statement.$id, error }),
-        )
+      } catch (error) {
+        logProblem('auto_send_notice_failed', { statementId: statement.$id, error })
+        if (sendingBlocked(error)) return false
+      }
     }
   } catch (error) {
     logProblem('auto_send_notice_failed', { statementId: statement.$id, error })
   }
+  return true
 }

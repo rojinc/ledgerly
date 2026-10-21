@@ -12,7 +12,7 @@ import type { Db } from '@ledgerly/server/appwrite/client'
 import { pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { EmailError } from '@ledgerly/server/email/send-email'
+import { neverSent, sendingBlocked } from '@ledgerly/server/email/send-email'
 import {
   billDueSoonEmail,
   type EmailContent,
@@ -75,7 +75,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
     Query.isNull('remindedAt'),
   ])
   for await (const shift of shifts) {
-    await counted(counts, shift, async () => {
+    const stop = await counted(counts, shift, async () => {
       const group = await groups(shift.groupId)
       if (group.archivedAt) return remind(services, shift, [], counts)
       if (!isAwake(group, now) || compareDates(shift.date as LocalDate, today(group, now)) >= 0) {
@@ -102,6 +102,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
         counts,
       )
     })
+    if (stop) return counts
   }
 
   // idx_status_date, on its status alone: there are few running timers.
@@ -111,7 +112,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
     Query.isNull('remindedAt'),
   ])
   for await (const timer of timers) {
-    await counted(counts, timer, async () => {
+    const stop = await counted(counts, timer, async () => {
       const group = await groups(timer.groupId)
       if (group.archivedAt) return remind(services, timer, [], counts)
       if (!isAwake(group, now)) return
@@ -130,6 +131,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
         counts,
       )
     })
+    if (stop) return counts
   }
 
   // idx_status_dueOn. The group's local today is at most a day either side of the UTC date.
@@ -139,7 +141,7 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
     Query.isNull('remindedAt'),
   ])
   for await (const bill of bills) {
-    await counted(counts, bill, async () => {
+    const stop = await counted(counts, bill, async () => {
       const group = await groups(bill.groupId)
       if (group.archivedAt) return remind(services, bill, [], counts)
       const local = today(group, now)
@@ -181,22 +183,26 @@ export async function sendReminders(services: Services): Promise<ReminderCounts>
         }))
       await remind(services, bill, emails, counts)
     })
+    if (stop) return counts
   }
   return counts
 }
 
 // A row that keeps failing mustn't hold up the rows after it: it counts as failed, is logged
-// (IDs and the error's name only), and the next run tries it again.
+// (IDs and the error's name only), and the next run tries it again. True when every send fails
+// for now (our key, domain or settings, #469): the step stops there, having logged it once.
 async function counted(
   counts: ReminderCounts,
   row: Transactions,
   work: () => Promise<void>,
-): Promise<void> {
+): Promise<boolean> {
   try {
     await work()
+    return false
   } catch (error) {
     counts.failed += 1
     logProblem('reminder_failed', { groupId: row.groupId, transactionId: row.$id, error })
+    return sendingBlocked(error)
   }
 }
 
@@ -255,7 +261,7 @@ async function remind(
           sent += 1
         } catch (error) {
           // An email Resend will never take is marked too, so it isn't tried every hour.
-          if (!(error instanceof EmailError && NEVER_SENT.has(error.type))) throw error
+          if (!neverSent(error)) throw error
         }
       }
       outcome = sent > 0 ? 'sent' : 'failed'
@@ -272,13 +278,6 @@ async function remind(
   }
   if (outcome) counts[outcome] += 1
 }
-
-// Resend's errors for an email it will never send as asked: a bad address, or the same key
-// with different content (the group was renamed after a send whose mark failed).
-export const NEVER_SENT: ReadonlySet<string> = new Set([
-  'validation_error',
-  'invalid_idempotent_request',
-])
 
 // It still needs the reminder the page read it for.
 function stillDue(seen: Transactions, stored: Transactions | undefined): boolean {

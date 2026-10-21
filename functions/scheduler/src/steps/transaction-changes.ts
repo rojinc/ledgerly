@@ -19,13 +19,13 @@ import { allRows, pages } from '@ledgerly/server/appwrite/pages'
 import { DATABASE_ID, TABLES, type TableId } from '@ledgerly/server/appwrite/tables'
 import { isInTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import { EmailError } from '@ledgerly/server/email/send-email'
+import { EmailError, neverSent } from '@ledgerly/server/email/send-email'
 import { type ChangedTransaction, transactionChangesEmail } from '@ledgerly/server/email/templates'
 import { logProblem } from '@ledgerly/server/http/log'
 import { AppwriteException, type Models, Query } from 'node-appwrite'
 import { z } from 'zod'
 import { appBase, type Services } from '../services'
-import { memo, NEVER_SENT } from './reminders'
+import { memo } from './reminders'
 import { verifiedEmail } from './summaries'
 
 /** `sent` and `failed` are emails; `skipped` is windows too old to send. */
@@ -331,7 +331,7 @@ async function deliver(
       if (error instanceof EmailError && error.type === 'concurrent_idempotent_requests') {
         return 'sent'
       }
-      if (error instanceof EmailError && NEVER_SENT.has(error.type)) return 'failed'
+      if (neverSent(error)) return 'failed'
       const wait = error instanceof EmailError ? (error.retryAfterMs ?? RETRY_AFTER_MS) : 0
       if (
         error instanceof EmailError &&

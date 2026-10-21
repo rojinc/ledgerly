@@ -1,7 +1,7 @@
 import type { Shares, Transactions } from '@ledgerly/core/generated/rows'
 import type { ScheduleResult } from '@ledgerly/core/schemas/scheduler'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
-import type { Email } from '@ledgerly/server/email/send-email'
+import { type Email, EmailError } from '@ledgerly/server/email/send-email'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { RunResult } from '../src/routes/run'
 import {
@@ -549,6 +549,28 @@ describe('step 3: bill due soon', () => {
     expect(run.reminders).toEqual({ sent: 0, skipped: 2, failed: 0 })
     expect(row(services, occurrence(19)).status).toBe('due')
     expect(services.sendEmail).not.toHaveBeenCalled()
+  })
+
+  it('stops at the first email when Resend answers 403, our key or domain: nothing marked (#469)', async () => {
+    const services = seeded(MORNING)
+    // Two admins for each bill, and two bills: nothing is tried after the first 403.
+    await update(services, 'members', 'elm-pAlex', { role: 'admin' })
+    await create(services, rent(20, false))
+    await create(services, rent(21, false))
+    services.sendEmail.mockRejectedValue(
+      new EmailError('Resend answered 403 validation_error', 'validation_error', 403),
+    )
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(services.sendEmail).toHaveBeenCalledTimes(1)
+    expect(
+      errors.mock.calls.filter(([line]) => String(line).includes('reminder_failed')),
+    ).toHaveLength(1)
+    errors.mockRestore()
+    expect([occurrence(20), occurrence(21)].map((id) => row(services, id).remindedAt)).toEqual([
+      null,
+      null,
+    ])
   })
 
   it('logs counts only', async () => {

@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
-import { type Email, EmailError, sendEmail } from './send-email'
+import {
+  type Email,
+  EmailError,
+  neverSent,
+  refusedForGood,
+  sendEmail,
+  sendingBlocked,
+} from './send-email'
 
 const email: Email = {
   to: 'boss@acme.example',
@@ -125,6 +132,35 @@ describe('sendEmail', () => {
     expect(error.message).toBe('Resend answered 422 validation_error')
   })
 
+  it.each([400, 401])(
+    'names Resend’s "API key is invalid" with %i invalid_api_key, our key and not the email (#469)',
+    async (status) => {
+      answer(status, {
+        statusCode: status,
+        name: 'validation_error',
+        message: 'API key is invalid',
+      })
+      const error = await failure(sendEmail(email))
+      expect(error).toMatchObject({ status, type: 'invalid_api_key' })
+      expect(error.message).toBe(`Resend answered ${status} invalid_api_key`)
+      expect(refusedForGood(error)).toBe(false)
+      expect(sendingBlocked(error)).toBe(true)
+    },
+  )
+
+  // The lead's call on #475: the exact text, and nothing near it. Reworded, a bad key's 400 is
+  // refused for good again, as before #469.
+  it.each(['api key is invalid', 'API key is invalid.', ' API key is invalid', 'Invalid API key'])(
+    'keeps validation_error for any other message, such as %j',
+    async (message) => {
+      answer(400, { statusCode: 400, name: 'validation_error', message })
+      const error = await failure(sendEmail(email))
+      expect(error).toMatchObject({ status: 400, type: 'validation_error' })
+      expect(refusedForGood(error)).toBe(true)
+      expect(sendingBlocked(error)).toBe(false)
+    },
+  )
+
   it.each([
     ['a body that is not JSON', 502, '<html>Bad gateway</html>'],
     ['an error name that is not an identifier', 400, { name: 'bad boss@acme.example' }],
@@ -203,5 +239,50 @@ describe('sendEmail', () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout')
     await sendEmail(email, { timeoutMs })
     expect(timeout).toHaveBeenCalledWith(applied)
+  })
+})
+
+describe('refusedForGood (#469)', () => {
+  it.each([
+    ['a field Resend refused (400)', new EmailError('x', 'validation_error', 400), true],
+    ['a bad address (422)', new EmailError('x', 'validation_error', 422), true],
+    ['an invalid key (401)', new EmailError('x', 'validation_error', 401), false],
+    ['an unverified domain (403)', new EmailError('x', 'validation_error', 403), false],
+    ['no status', new EmailError('x', 'validation_error'), false],
+    ['another type at 422', new EmailError('x', 'missing_required_field', 422), false],
+    ['not an EmailError', new TypeError('validation_error'), false],
+  ])('is %s: %s', (_case, error, refused) => {
+    expect(refusedForGood(error)).toBe(refused)
+  })
+})
+
+describe('sendingBlocked (#469)', () => {
+  it.each([
+    ['an invalid key (401)', new EmailError('x', 'validation_error', 401), true],
+    ['an unverified domain (403)', new EmailError('x', 'validation_error', 403), true],
+    ['no key (401)', new EmailError('x', 'missing_api_key', 401), true],
+    ['a suspended key (403)', new EmailError('x', 'suspended_api_key', 403), true],
+    ['a malformed key (400)', new EmailError('x', 'invalid_api_key', 400), true],
+    ['a setting not set', new EmailError('x', 'missing_config'), true],
+    ['a refused field (400)', new EmailError('x', 'validation_error', 400), false],
+    ['a bad address (422)', new EmailError('x', 'validation_error', 422), false],
+    ['a rate limit (429)', new EmailError('x', 'rate_limit_exceeded', 429), false],
+    ['a timeout', new EmailError('x', 'timeout'), false],
+    ['not an EmailError', new TypeError('missing_config'), false],
+  ])('is %s: %s', (_case, error, blocked) => {
+    expect(sendingBlocked(error)).toBe(blocked)
+  })
+})
+
+describe('neverSent (#469)', () => {
+  it.each([
+    ['a bad address (422)', new EmailError('x', 'validation_error', 422), true],
+    ['the same key, other content', new EmailError('x', 'invalid_idempotent_request', 409), true],
+    ['an unverified domain (403)', new EmailError('x', 'validation_error', 403), false],
+    ['a malformed key (400)', new EmailError('x', 'invalid_api_key', 400), false],
+    ['two sends at once (409)', new EmailError('x', 'concurrent_idempotent_requests', 409), false],
+    ['not an EmailError', new TypeError('invalid_idempotent_request'), false],
+  ])('is %s: %s', (_case, error, never) => {
+    expect(neverSent(error)).toBe(never)
   })
 })

@@ -430,6 +430,40 @@ describe('step 3: shift to confirm', () => {
     expect(remindedAt(services, 't2')).toBe(NOW.toISOString())
   })
 
+  it.each([401, 403])(
+    'stops at a validation_error with %i, our key or domain: one line, nothing marked (#469)',
+    async (status) => {
+      const services = seeded([transaction('t1'), transaction('t2', { date: '2026-10-17' })])
+      services.sendEmail.mockRejectedValue(
+        new EmailError(`Resend answered ${status}`, 'validation_error', status),
+      )
+      expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 1 })
+      expect(services.sendEmail).toHaveBeenCalledTimes(1)
+      const lines = logged.mock.calls.map(([line]) => JSON.parse(String(line)))
+      expect(lines.filter(({ event }) => event === 'reminder_failed')).toHaveLength(1)
+      expect([remindedAt(services, 't1'), remindedAt(services, 't2')]).toEqual([null, null])
+      // Once it's fixed, the next run sends both.
+      services.sendEmail.mockReset()
+      expect((await runCron(services)).reminders.sent).toBe(2)
+    },
+  )
+
+  it('stops before the timers too, when a shift’s email meets a 403 (#469)', async () => {
+    const services = seeded([
+      transaction('t1'),
+      transaction('timer', {
+        status: 'running',
+        startedAt: new Date(NOW.getTime() - 13 * 3_600_000).toISOString(),
+      }),
+    ])
+    services.sendEmail.mockRejectedValue(
+      new EmailError('Resend answered 403', 'validation_error', 403),
+    )
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(services.sendEmail).toHaveBeenCalledTimes(1)
+    expect([remindedAt(services, 't1'), remindedAt(services, 'timer')]).toEqual([null, null])
+  })
+
   it('counts and logs any other failure, and carries on with the next row', async () => {
     const services = seeded([transaction('t1'), transaction('t2', { date: '2026-10-17' })])
     services.sendEmail.mockRejectedValueOnce(new TypeError('Sam <sam@example.com>'))
@@ -622,6 +656,19 @@ describe('step 3: timer still running', () => {
       expect.objectContaining({ to: 'sam@example.com', subject: 'Your timer is still running' }),
     )
     expect(remindedAt(services, 'shift')).toBe(NOW.toISOString())
+  })
+
+  it('stops at the first timer whose email meets a 401 (#469)', async () => {
+    const services = seeded([
+      transaction('t1', { status: 'running', startedAt: started(13) }),
+      transaction('t2', { status: 'running', startedAt: started(14), createdBy: 'pAlex' }),
+    ])
+    services.sendEmail.mockRejectedValue(
+      new EmailError('Resend answered 401', 'validation_error', 401),
+    )
+    expect((await runCron(services)).reminders).toEqual({ sent: 0, skipped: 0, failed: 1 })
+    expect(services.sendEmail).toHaveBeenCalledTimes(1)
+    expect([remindedAt(services, 't1'), remindedAt(services, 't2')]).toEqual([null, null])
   })
 
   it('sends nothing before 07:00 or in archived groups', async () => {

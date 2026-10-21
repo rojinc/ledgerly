@@ -304,7 +304,7 @@ An email or phone change notice that hasn't gone out yet ([#345](https://github.
 Indexes: `uniq_idempotencyKey (idempotencyKey)` (unique), so a replayed event makes one row; `idx_userId (userId)`, for the cap of 3 rows per user ([change notice](identity-and-invites.md#email-and-phone-change-notice), step 6). The hourly run lists rows by `$createdAt`, oldest first.
 Permissions: none (server only). A row goes when:
 - it's sent, or Resend has seen its key;
-- Resend refuses it for good (`validation_error`);
+- Resend refuses it for good (`validation_error` with 400 or 422, not 401 or 403: [#469](https://github.com/rojinc/ledgerly/issues/469));
 - the user or their person is gone, or its identity is gone, moved or no longer verified (`gone`);
 - or at the first hourly run that reaches it 23 hours after its key was made, normally the first (`expired`). None is sent after that.
 
