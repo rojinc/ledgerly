@@ -39,12 +39,15 @@ function BillsPage() {
   )
 }
 
-/** Shows an h1 of its own while it loads, then the loaded page, with another h1 (#556). */
+/**
+ * Shows an h1 of its own while it loads, then the loaded page, with another h1 (#556). It loads
+ * when the test calls `finishLoading`, never on a timer, so the loading h1 is there to check.
+ */
+let finishLoading = () => {}
 function SwapPage() {
   const [ready, setReady] = useState(false)
   useEffect(() => {
-    const timer = setTimeout(() => setReady(true), 20)
-    return () => clearTimeout(timer)
+    finishLoading = () => setReady(true)
   }, [])
   return ready ? <LoadedPage /> : <LoadingPage />
 }
@@ -206,6 +209,7 @@ describe('followPageHeading (#539)', () => {
     follow('To swap')
     const loading = await screen.findByRole('heading', { name: 'Delete group' })
     await waitFor(() => expect(document.activeElement).toBe(loading))
+    act(() => finishLoading())
     const loaded = await screen.findByRole('heading', { name: 'Delete Flat 3' })
     await waitFor(() => expect(document.activeElement).toBe(loaded))
     expect(document.title).toBe('Delete Flat 3 · Ledgerly')
@@ -218,6 +222,7 @@ describe('followPageHeading (#539)', () => {
     await waitFor(() => expect(document.activeElement).toBe(loading))
     const other = screen.getByRole('link', { name: 'To B' })
     other.focus()
+    act(() => finishLoading())
     await screen.findByRole('heading', { name: 'Delete Flat 3' })
     await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
     expect(document.activeElement).toBe(other)
