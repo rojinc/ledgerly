@@ -180,12 +180,18 @@ It reads the period's start again after staging, and answers `CONFLICT` (try aga
 
 `buildStatementSnapshot()` in `packages/core` builds it, and `checkSnapshot()` runs finalize step 5. `people` lists everyone with a non-zero opening or a share in the lines, sorted by `personId`; `lines` are sorted by date, then transaction ID. Divides get `suggestTransfers()` of the closings; invoices need an issuer who is a member, a recipient and payment terms, and get the worker's closing as `balanceDueCents`. `invoice.dueOn` stays empty until finalize step 6.
 
+**The issuer's business details** ([#543](https://github.com/rojinc/ledgerly/issues/543)) come from their profile's `businessJson`, read field by field each time a snapshot is built: drafting, refresh, preview, reissue and finalize.
+- A field goes in only if it passes today's rule for it (`businessDetailsSchema`). The bank goes in only if all three of its parts do, since an invoice prints them together.
+- JSON that doesn't parse, or isn't an object, gives no details. A field left out never stops a snapshot from being built.
+- A finalize whose snapshot leaves a field out logs one `invoice_business_dropped` warning, with the group and statement IDs and the field names, never their values: `json` when the stored JSON doesn't parse, or isn't an object. Every other build (drafting, refresh, preview and reissue) leaves it out without logging, so a preview someone opens again and again doesn't repeat it.
+- The snapshot keeps each field as plain text (`snapshotBusinessSchema`), so a stored snapshot still parses whatever the Profile's rules later become: send, resend, auto-send and the next statement's opening balances all read it.
+
 ```ts
 type StatementSnapshot = {
   version: 1
   group: { id: string; name: string; type: 'employer' | 'house'; currency: string; timezone: string }
   period: { start: string; end: string }
-  issuer?: { personId: string; name: string; business: BusinessDetails }  // invoices
+  issuer?: { personId: string; name: string; business: SnapshotBusiness }  // invoices: each field plain text
   recipient?: { personId: string; name: string; emails: string[] }        // invoices
   people: {
     personId: string; name: string
@@ -205,7 +211,7 @@ type StatementSnapshot = {
 
 ## Invoice PDF layout (employer)
 
-1. **Header:** issuer business name, ABN, address, email and phone; "INVOICE", number, issue date, due date and period.
+1. **Header:** issuer business name, ABN, address, email and phone, those the snapshot has; "INVOICE", number, issue date, due date and period.
 2. **Bill to:** employer name and billing email(s).
 3. **Opening balance** (from the previous invoice).
 4. **Work and charges**, by date: shifts (date, description, hours, rate, amount), reimbursable expenses and adjustments.

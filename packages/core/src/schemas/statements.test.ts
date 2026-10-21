@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import type { z } from 'zod'
+import { businessDetailsSchema } from './identity'
 import {
   closeStatementBodySchema,
   finalizeStatementBodySchema,
   previewStatementBodySchema,
   reissueStatementBodySchema,
+  snapshotBusinessSchema,
   statementSnapshotSchema,
   voidStatementBodySchema,
 } from './statements'
@@ -110,6 +112,47 @@ describe('statementSnapshotSchema', () => {
     expect(paths(statementSnapshotSchema, { ...invoice, lines: [{ ...line, kind: 3 }] })).toEqual([
       'lines.0.kind',
     ])
+  })
+
+  it('keeps business details as plain text, so old snapshots always parse (#543)', () => {
+    // An ABN today's Profile rules refuse, as a later, stricter rule would leave stored ones.
+    const business = { businessName: 'Sam Lee Cleaning', abn: '1', email: 'not an email' }
+    const old = { ...invoice, issuer: { ...invoice.issuer, business } }
+    expect(statementSnapshotSchema.parse(old).issuer?.business).toEqual(business)
+    expect(businessDetailsSchema.safeParse(business).success).toBe(false)
+  })
+
+  it('takes a whole bank or none, and only the Profile’s fields', () => {
+    const withBank = (bank: object) => ({
+      ...invoice,
+      issuer: { ...invoice.issuer, business: { bank } },
+    })
+    const bank = { accountName: 'Sam Lee', bsb: '062000', accountNumber: '12345678' }
+    expect(paths(statementSnapshotSchema, withBank(bank))).toEqual([])
+    expect(paths(statementSnapshotSchema, withBank({ bsb: '062000' }))).toEqual([
+      'issuer.business.bank.accountName',
+      'issuer.business.bank.accountNumber',
+    ])
+    expect(
+      paths(statementSnapshotSchema, {
+        ...invoice,
+        issuer: { ...invoice.issuer, business: { notes: 'x' } },
+      }),
+    ).toEqual(['issuer.business'])
+    expect(
+      paths(statementSnapshotSchema, {
+        ...invoice,
+        issuer: { ...invoice.issuer, business: { abn: 51824753556 } },
+      }),
+    ).toEqual(['issuer.business.abn'])
+  })
+
+  it('has the Profile’s business fields, and the bank’s', () => {
+    const keys = (schema: { shape: object }) => Object.keys(schema.shape).sort()
+    expect(keys(snapshotBusinessSchema)).toEqual(keys(businessDetailsSchema))
+    expect(keys(snapshotBusinessSchema.shape.bank.unwrap())).toEqual(
+      keys(businessDetailsSchema.shape.bank.unwrap()),
+    )
   })
 
   it('rejects transfers of zero and instants that are not UTC', () => {

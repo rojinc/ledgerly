@@ -7,12 +7,32 @@ import {
   localDateSchema,
   text,
 } from './common'
-import { businessDetailsSchema } from './identity'
 
 // functions-api.md#statements and statements.md#snapshot.
 
 // Balances add up many amounts, so they may go past MAX_AMOUNT_CENTS.
 const balanceCentsSchema = z.int()
+
+/**
+ * The issuer's business details as an invoice's snapshot keeps them: the Profile's fields
+ * (`businessDetailsSchema`), each as plain text, so a stored snapshot still parses whatever the
+ * Profile's rules later become (#543). A field added to the Profile is added here too, optional.
+ * The bank is whole or absent, since an invoice prints its three parts together.
+ */
+export const snapshotBusinessSchema = z.strictObject({
+  businessName: z.string().optional(),
+  abn: z.string().optional(),
+  address: z.string().optional(),
+  email: z.string().optional(),
+  phone: z.string().optional(),
+  bank: z
+    .strictObject({ accountName: z.string(), bsb: z.string(), accountNumber: z.string() })
+    .optional(),
+  payId: z.string().optional(),
+  invoiceNotes: z.string().optional(),
+})
+
+export type SnapshotBusiness = z.infer<typeof snapshotBusinessSchema>
 
 const shareAmountsSchema = z.strictObject({
   personId: idSchema,
@@ -35,7 +55,7 @@ export const statementSnapshotSchema = z.strictObject({
   }),
   period: z.strictObject({ start: localDateSchema, end: localDateSchema }),
   issuer: z // invoices
-    .strictObject({ personId: idSchema, name: z.string(), business: businessDetailsSchema })
+    .strictObject({ personId: idSchema, name: z.string(), business: snapshotBusinessSchema })
     .optional(),
   recipient: z // invoices
     .strictObject({ personId: idSchema, name: z.string(), emails: z.array(z.string()) })
