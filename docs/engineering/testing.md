@@ -87,7 +87,7 @@ Every v1 behaviour in [features](../product/features.md), and the spec that driv
 | F-01 email code, set and change a password; change of email, Sign out other devices | *to come* | |
 | F-01 reset by an emailed link | | `recover-page`, `recover-complete-page`, `login-page`: the secret only comes by email |
 | F-02 verify, then claim | `flow-1` (*dev-only*; verified through the API) | Invites need it: `invite-member`, `identity/test/invites` |
-| F-03 profile | `email-settings`: region, currency, reload | |
+| F-03 profile | `email-settings`: name, region, currency, reload | |
 | F-04 business details on an invoice | *to come* | |
 | F-06 delete account; export your data | `account-delete`: deletion, then `profile.csv` and `my-records.csv` | |
 | F-07 the getting-started guide | `flow-1` (*dev-only*), `flow-2`; step 2 *to come* | Hide: `getting-started` |

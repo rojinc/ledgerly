@@ -47,6 +47,7 @@ test('a deleted account is signed out for good, and the one left deletes the arc
   await add.getByLabel('Email (optional)', { exact: true }).fill(gil.email)
   await add.getByRole('button', { name: 'Add housemate', exact: true }).click()
   const gilRow = page.getByRole('listitem').filter({ hasText: gil.name })
+  await expect(gilRow).toBeVisible()
   // Gil has an account, but shows as not joined until he signs in, as anyone would (F-12).
   await expect(gilRow).toContainText('Not joined yet')
   // Fay invites him by email (F-40): the app says it went. No spec reads an inbox.
@@ -74,6 +75,9 @@ test('a deleted account is signed out for good, and the one left deletes the arc
   await expect(page.getByRole('heading', { level: 1, name })).toBeVisible()
   await expect(page.getByRole('button', { name: 'Archive group', exact: true })).toBeVisible()
   await expect(page.getByText(/^This group is archived\./)).toHaveCount(0)
+  // Gil has joined since, so his row no longer says he hasn't (F-12).
+  await expect(gilRow).toBeVisible()
+  await expect(gilRow).not.toContainText('Not joined yet')
 
   // Fay marks Gil as moved out: he keeps seeing the house, as a viewer who isn't `active`.
   await page
