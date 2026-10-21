@@ -31,7 +31,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 | Code | HTTP | When |
 | --- | --- | --- |
 | `UNAUTHENTICATED` | 401 | No signed-in user. Also `identity POST /invites` and `POST /reminders` from a caller (the inviter or the sender) whose account deletion started while the request ran ([invites](identity-and-invites.md#invites), [reminders](identity-and-invites.md#reminders)); one that started before gets `NOT_A_MEMBER` ([permissions](permissions.md)) |
-| `VALIDATION_FAILED` | 400 | Payload failed the zod schema or a ledger rule. `details` holds the issues. |
+| `VALIDATION_FAILED` | 400 | Payload failed the zod schema or a ledger rule. When the schema fails, `details` holds the zod issues; receipts that can't be attached give one issue per file, in the same shape ([receipts](#ledger)). A ledger rule or any other check carries no `details`, only its message, except `account`'s two refusals that list theirs ([account](#account)). |
 | `NOT_A_MEMBER` | 403 | Caller has no member row in the group, hasn't joined it (`placeholder`), or left it on their own (out of its team) |
 | `FORBIDDEN` | 403 | Caller's role can't do this |
 | `NOT_FOUND` | 404 | Row doesn't exist, or the caller can't see it |
@@ -48,6 +48,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 - Creating something takes a **client-generated `id`** (`ID.unique()`). If a row with that ID exists **with the same content**, the function returns it with 200. If the content differs, it returns `CONFLICT`. So the app can safely retry after a timeout or a lost connection.
 - Updates are naturally idempotent: the same body twice gives the same result.
 - **Exception:** `identity POST /reminders` answers any body with a used `id`, from the same sender in the same group, with the stored `{ sentAt }`. It sends the email again under the same key only while that key is live (under 23 hours) and the address and balance checks pass again ([reminders](identity-and-invites.md#reminders), step 3).
+- **Exception:** `groups POST /groups` compares only the fields the body gives, and never `counterpart`, since resolving it again could find someone else. So a retry that leaves a field out, or names another counterpart, gets the stored `{ group, members }`, but only from the group's owner while they're still active in it. Anyone else gets `CONFLICT`.
 
 ## Shared types
 
@@ -68,7 +69,7 @@ type SplitSpec =  // see ledger.md#splits
 
 ```ts
 type TransactionInput = {
-  id: string                    // ID.unique() from the client
+  id: string                    // ID.unique() from the client; a new one never ends in _ and 8 digits (see ledger)
   groupId: string
   kind: 'shift' | 'expense' | 'bill' | 'payment' | 'loan' | 'income' | 'adjustment'
   date: LocalDate               // in the group's timezone; at most 1 year in the future
@@ -125,12 +126,12 @@ All money writes.
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /transactions` | `TransactionInput` | `TransactionView` | admin, member |
-| `PATCH /transactions/{id}` | `TransactionInput` (same `id`) | `TransactionView` | creator or admin; not locked |
+| `PATCH /transactions/{id}` | `TransactionInput` (same `id`) | `TransactionView` | creator or admin; not locked (`LOCKED`); not voided or a running timer, with the same `groupId` and `kind`, and for a bill the same due or paid state (`VALIDATION_FAILED`; a due bill is paid with `/post`) |
 | `POST /transactions/{id}/post` | `{ date?, payers?, shift?: { minutes?, rateCents?, breakMinutes? } }` | `TransactionView` | creator or admin; status `scheduled` or `due` |
 | `POST /transactions/{id}/void` | `{ reason: string }` | `TransactionView` | creator or admin; not locked |
 | `POST /transactions/{id}/receipts` | `{ receiptFileIds: string[] }` (the whole new list, 0–10) | `TransactionView` | creator or admin; not locked |
-| `POST /timer/start` | `{ id, groupId, rateCents?, description? }` | `TransactionView` | the group's owner (employer group) |
-| `POST /timer/stop` | `{ transactionId, breakMinutes? }` | `TransactionView` | the person who started it |
+| `POST /timer/start` | `{ id, groupId, rateCents?, description? }` | `TransactionView` | an admin who is the group's owner, the person it pays (employer group) |
+| `POST /timer/stop` | `{ transactionId, breakMinutes? }` | `TransactionView` | the person who started it, while an admin or member |
 | `GET /groups/{groupId}/balances` | none | `{ people: { personId, netCents }[], transfers: { fromPersonId, toPersonId, cents }[] }` | any member |
 
 What every write does, in **one TablesDB transaction**:
@@ -139,6 +140,8 @@ What every write does, in **one TablesDB transaction**:
 2. Run `buildShares()` and `assertShareInvariants()` from `packages/core`.
 3. Write the transaction row, replace its items and shares, and append an `activity` row.
 4. Commit. On conflict, retry once from step 1.
+
+`POST /transactions` and `POST /timer/start` refuse an `id` that ends in `_` and 8 digits (`VALIDATION_FAILED`, "This id is kept for schedule occurrences."): `<scheduleId>_<YYYYMMDD>` is a schedule occurrence's ID, and taking one would stop the scheduler creating it ([scheduling](scheduling.md#idempotency)).
 
 On `PATCH`, `/post`, `/void`, `/receipts` and `/timer/stop`, a caller who isn't a member of the transaction's group gets `NOT_FOUND`, the same answer as for an ID that doesn't exist, so the route doesn't say which IDs are in use. The scheduler's `PATCH /schedules/{id}`, `/end` and `DELETE` do the same for a schedule's group.
 
@@ -168,7 +171,7 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 
 **Merges still open.** `PATCH` and `/post` refuse with `CONFLICT` (`details: { reason: 'merging' }`) a row whose stored shares, input or item splits name a person whose merge is still open in the group ([merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)). The app asks to try again shortly.
 
-**Payers when none are given.** On `POST /transactions`, the caller pays everything, and that payer is stored in `inputJson`. On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a posted row with several stored payers or none; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
+**Payers when none are given.** On `POST /transactions`, a posted row's payer is the caller, who pays everything, and that payer is stored in `inputJson`. A due bill stores none: whoever posts it pays (`/post`, below). On `PATCH`, whoever paid before still pays, not the person editing: the single stored payer; the creator, for a posted row with several stored payers or none; the person editing, for an unposted row (it stores none). On `/post`, the body's payers, else the stored ones, else the caller.
 
 `/post` on a transaction that is already posted, with the same date and payers, returns it unchanged (a retried post); anything else on a posted row is `VALIDATION_FAILED`.
 
@@ -187,8 +190,8 @@ A `PATCH` that changes a bill's `dueOn`, or a `scheduled` row's `date`, clears `
 | `POST /groups/{id}/archive` | none | `group` | admin |
 | `POST /groups/{id}/unarchive` | none | `group` | admin |
 | `POST /groups/{id}/members` | `{ displayName, email?, phone?, role?, joinedOn? }` | `member` | admin (house: member too) |
-| `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn?: LocalDate \| null }` | `member` | admin; `leftOn: null` moves someone who moved out back in ([leaving](permissions.md#leaving-a-group)) |
-| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares, aren't named in an unposted transaction or a schedule template, and didn't create a schedule whose template names no payers (`VALIDATION_FAILED`); not while a person merged into them still has shares there, or is named in an unposted transaction or template there, with that merge open in the group (`CONFLICT`, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)). Also removes any team membership. In the same transaction it gives the person a fresh `rev`, and `orphanedAt` when the row was a lone placeholder's last (`isPlaceholder()`, no other member row); the person, its identities and the invites stay, and [scheduler step 5c](scheduling.md#step-5c-placeholder-clean-up) deletes that placeholder's identities and name 30 days later ([permissions](permissions.md#leaving-a-group)). |
+| `PATCH /groups/{id}/members/{memberId}` | `{ displayName?, role?, joinedOn?, leftOn?: LocalDate \| null }` | `member` | admin; `leftOn: null` moves someone who moved out back in ([leaving](permissions.md#leaving-a-group)); not a change of role or `leftOn` that leaves the group with no joined admin (`VALIDATION_FAILED`, "The group needs at least one admin who has joined.") |
+| `DELETE /groups/{id}/members/{memberId}` | none | `{}` | admin; only if they have no shares, aren't named in an unposted transaction or a schedule template, and didn't create a schedule whose template names no payers (`VALIDATION_FAILED`); not the last joined admin (`VALIDATION_FAILED`, as for `PATCH`); not while a person merged into them still has shares there, or is named in an unposted transaction or template there, with that merge open in the group (`CONFLICT`, [merging](identity-and-invites.md#while-a-merge-is-open-in-a-group)). Also removes any team membership. In the same transaction it gives the person a fresh `rev`, and `orphanedAt` when the row was a lone placeholder's last (`isPlaceholder()`, no other member row); the person, its identities and the invites stay, and [scheduler step 5c](scheduling.md#step-5c-placeholder-clean-up) deletes that placeholder's identities and name 30 days later ([permissions](permissions.md#leaving-a-group)). |
 | `POST /groups/{id}/leave` | none | `{}` | the member; only if their balance is 0, they aren't the last joined admin and no person merged into them still has shares there with that merge open in the group (`CONFLICT`), except a retry of their own leave cut off before the team step, which finishes anyway ([leaving](permissions.md#leaving-a-group)). Once it has finished, the caller is out of the team, so sending it again gets `NOT_A_MEMBER`: treat that as done |
 
 `counterpart` is required for `employer` and `pair` groups. It creates the second member, always as a placeholder ([D-016](decisions.md)). These groups always have exactly these two members; adding another returns `VALIDATION_FAILED`. Removing one with `DELETE /groups/{id}/members/{memberId}` also returns `VALIDATION_FAILED`; archive the group instead. `currency` cannot change after the group's first transaction (`VALIDATION_FAILED`).
@@ -206,15 +209,15 @@ Archiving clears `nextCloseAt`, so no more statements are drafted, until an admi
 | `POST /bootstrap` | `{ timezone }` | `{ profile, personId, personalGroupId, linkedGroupIds }` | the user; idempotent |
 | `PATCH /profile` | `{ displayName?, timezone?, region?, currency?, business?, invoicePrefix?, summaryFrequency?, hoursCap?, emailOptOuts? }` | `profile` | the user |
 | `POST /claim` | none | `{ linkedGroupIds: string[] }` | the user |
-| `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)) |
+| `POST /invites` | `{ groupId, memberId, email?, phone? }` (exactly one) | `{ sentAt, expiresAt }` | anyone who may add members ([permissions](permissions.md)), with a verified email; only to a `placeholder` member ([invites](identity-and-invites.md#invites)); email only until SMS invites (#40): a `phone` gets `VALIDATION_FAILED`, "Invites by text message are not available yet." |
 | `POST /invites/accept` | `{ token }` | `{ groupId }` or `{ needsVerification: 'email' \| 'phone' }` | signed-in user |
 | `POST /reminders` | `{ id, groupId, email }` | `{ sentAt }` | a joined admin or member of a `pair` group, with a verified email, whom the other member owes ([reminders](identity-and-invites.md#reminders)); email only until SMS reminders (#40) |
 | `GET /groups/pending` | none | `{ groups: { id, type, name, archivedAt, counterpartName? }[] }` | the user |
-| `POST /` | the Appwrite user, as the event sends it; none for a scheduled run | `{}`; a scheduled run returns `{ unfinished, finished, skipped, cutOff, notices }` | only `identity`'s own runs, below; a signed-in call gets `FORBIDDEN` |
+| `POST /` | the Appwrite user, as the event sends it; none for a scheduled run | `{}`; a scheduled run returns `{ unfinished, finished, skipped, cutOff, stopped, notices }` | only `identity`'s own runs, below; a signed-in call gets `FORBIDDEN` |
 | `POST /groups/{id}/join` | none | `{ group, member }` | the user |
 
 **`POST /` is one route for two kinds of run**, and it dispatches on the kind:
-- a [scheduled run](permissions.md#function-side-checks) (`ctx.scheduled`), every 60 minutes (`interval: 60`), carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)), then retries change notices that didn't go out ([change notice](identity-and-invites.md#email-and-phone-change-notice), step 8: `notices: { retried, failed, expired, gone }`), and returns `{ unfinished, finished, skipped, cutOff, notices }`;
+- a [scheduled run](permissions.md#function-side-checks) (`ctx.scheduled`), every 60 minutes (`interval: 60`), carries on unfinished merges ([finishing merges](identity-and-invites.md#finishing-merges)), then retries change notices that didn't go out ([change notice](identity-and-invites.md#email-and-phone-change-notice), step 8: `notices: { retried, failed, expired, gone }`), and returns `{ unfinished, finished, skipped, cutOff, stopped, notices }` ([finishing merges](identity-and-invites.md#finishing-merges), step 6, says what each counts);
 - an [event run](permissions.md#function-side-checks) (`ctx.event`) of `users.*.update.password` or `users.*.recovery.*.update` sends the [password notice](identity-and-invites.md#password-notice), and one of `users.*.update.email` or `users.*.update.phone` the [email and phone change notice](identity-and-invites.md#email-and-phone-change-notice).
 
 A person calling `POST /` gets `FORBIDDEN`, and any other call without a JWT `UNAUTHENTICATED`.
@@ -228,7 +231,7 @@ An event run of `POST /` reads only the user ID, from the event's name in `x-app
 `/groups/pending` and `/join` are how someone who already had an account when they were added joins a group ([Joining a group](identity-and-invites.md#joining-a-group)). Both act only on the caller's own person:
 
 - `/groups/pending` lists the groups where that person is a `placeholder` member (`members.idx_person_status`), archived ones included. For a `pair` group it adds `counterpartName`, the other member's display name: the group's own `name` is what its creator calls the caller. Nothing else about the other member is returned, never an email or phone.
-- `/join` reads the caller's member row in that group first, so someone who isn't in the group learns nothing about it; with no row it returns `NOT_A_MEMBER`. It then runs the steps in [Joining a group](identity-and-invites.md#joining-a-group): team first, then `active` (or `left` if `leftOn` is set) with a `member.joined` row. If the row is already `active`, or `left` for someone who moved out (still in the team), it returns `{ group, member }` unchanged and doesn't touch the team, so a retry is safe. Someone who left on their own (`left`, no longer in the team) gets `NOT_A_MEMBER`: coming back after leaving isn't supported in v1. If the join fails while the row is still `placeholder`, the team membership from the first step is taken back. Joining writes no ledger data, so it works on archived groups, the same as claim and invites, but not on a group being deleted (`deletingAt` set, [deleting a group](identity-and-invites.md#deleting-a-group)), which answers `NOT_A_MEMBER` as for a team that's gone.
+- `/join` reads the caller's member row in that group first, so someone who isn't in the group learns nothing about it; with no row it returns `NOT_A_MEMBER`. It then runs the steps in [Joining a group](identity-and-invites.md#joining-a-group): team first, then `active` (or `left` if `leftOn` is set) with a `member.joined` row. If the row is already `active`, or `left` for someone who moved out (still in the team), it returns `{ group, member }` unchanged and doesn't touch the team, so a retry is safe. Someone who left on their own (`left`, no longer in the team) gets `NOT_A_MEMBER`: coming back after leaving isn't supported in v1. If the join fails while the row is still `placeholder`, the team membership from the first step is taken back. Joining writes no ledger data, so it works on archived groups, the same as claim and accepting an invite (sending one gets `ARCHIVED`), but not on a group being deleted (`deletingAt` set, [deleting a group](identity-and-invites.md#deleting-a-group)), which answers `NOT_A_MEMBER` as for a team that's gone.
 
 Details: [People, identity and invites](identity-and-invites.md).
 
@@ -241,7 +244,7 @@ Deleting an account ([#50](https://github.com/rojinc/ledgerly/issues/50)), and a
 | `POST /delete` | `{ confirm: 'DELETE' }` | `{ deletedAt, finished }` | the user, signed in within the last 10 minutes |
 | `POST /groups/{id}/delete` | `{ confirm: 'DELETE' }` | `{ finished }` | admin of an archived group with nobody else in its team, signed in within the last 10 minutes |
 
-Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), then group deletes (groups with `deletingAt` set), then deletes the end-to-end flows' accounts (Appwrite users labelled `e2e` whose email is a run's test address), skipping any started or labelled in the last minute ([finishing purges](identity-and-invites.md#finishing-purges)). A person calling `POST /` gets `FORBIDDEN`.
+Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), then group deletes (groups with `deletingAt` set), then deletes the end-to-end flows' accounts (Appwrite users labelled `e2e` whose email is a run's test address), skipping any started or labelled in the last minute ([finishing purges](identity-and-invites.md#finishing-purges)). It returns `{ finished, users, groups, e2e, failed }`: the account deletions it finished, the labelled users it deleted, the group deletes it finished, the end-to-end accounts it deleted, and those that failed (each logged by its ID). A person calling `POST /` gets `FORBIDDEN`.
 
 **`POST /delete`** deletes the caller's account ([deleting an account](identity-and-invites.md#deleting-an-account-m4)). It is synchronous and works for up to 20 seconds; `finished: false` means the hourly job deletes the rest. Refusals change nothing, and are checked in this order:
 
@@ -308,7 +311,7 @@ Details: [Scheduling](scheduling.md).
 
 ## statements
 
-Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). Each run drafts the periods that are due, then emails the invoices with lines it auto-finalized in groups with `autoSend` on ([auto-send](statements.md#auto-send)). HTTP routes:
+Every 60 minutes (`interval: 60`; Appwrite calls `POST /`, and only a scheduled run may). Each run drafts the periods that are due, then emails the invoices with lines it auto-finalized in groups with `autoSend` on ([auto-send](statements.md#auto-send)). It returns `{ drafted, failed }`: the groups it drafted a statement for, and those whose draft failed (each logged). The emails aren't counted. HTTP routes:
 
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
@@ -335,9 +338,16 @@ Details: [Statements and invoices](statements.md).
 
 ```
 functions/<name>/
-  src/main.ts          entry point: export default createHandler(routes)
-  src/routes/<route>.ts one file per route: schema + handler
-  test/<route>.test.ts
+  src/main.ts           <name>Routes(services), the route list; export default createHandler(<name>Routes(servicesFromRequest))
+  src/services.ts       the Appwrite services, email and clock the routes use, so tests can pass fakes; servicesFromRequest builds the real ones
+  src/routes/<route>.ts a route's handler (identity's pending-groups.ts holds two), and helpers it exports to other routes
+                        or the job (claim.ts, finalize.ts, send.ts); routes/auto-send.ts is only helpers (finalize and the job)
+  src/steps/<step>.ts   scheduler only: one file per job step
+  src/<file>.ts         code several routes share, and one-off backfills that scripts/ runs
+  test/<topic>.test.ts  by route or topic, with fake services
+  test/harness.ts       the fixed clock, fixtures and fakes the tests share
 ```
+
+The body schemas aren't in `functions/`: each route parses its body with its schema from `packages/core/src/schemas/` ([validation](#validation)), one file per function (`account`'s are in `identity.ts`), and `emptyBodySchema` in `common.ts`.
 
 `createHandler` (in `packages/server`) does the routing by method and path, verifies the caller's JWT ([permissions step 1](permissions.md#function-side-checks)), turns `AppError` into the envelope above and logs one structured line per request (no personal data).
