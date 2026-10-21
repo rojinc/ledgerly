@@ -6,7 +6,7 @@ import { logIn, setupUser } from './users'
 // User flow 10 (docs/product/user-flows.md#10-personal-rent): weekly rent in the personal group,
 // one week marked paid, then a pause and a resume from the bills page. The reminder two days
 // before each bill comes from the hourly scheduler, which a test can't wait for: its own tests
-// cover it (functions/scheduler/test/reminders.test.ts).
+// cover it (functions/scheduler/test/bills.test.ts).
 const ZONE = 'Australia/Sydney'
 
 /** `26 Oct 2026`, worded in the browser, as the bills pages word a date. */

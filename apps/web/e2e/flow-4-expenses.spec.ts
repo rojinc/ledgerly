@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { formatNet } from '@ledgerly/core/money/format'
 import { expect, type Locator, type Page, test } from '@playwright/test'
 import { expectBalanceShown } from './balances'
@@ -69,4 +70,42 @@ test('records each expense preset and a payment, with the balance after each', a
       await expectBalance(page, card, balanceText(step.netCents, employer))
     })
   }
+
+  // History's filters (F-71, #424): by kind, by a search of descriptions, then every group's rows.
+  await test.step('filters History', async () => {
+    const list = page.getByRole('region', { name: 'Transactions', exact: true })
+    const rows = list.getByRole('link')
+    await page.getByLabel('Kind', { exact: true }).selectOption({ label: 'Payment' })
+    await expect(rows).toHaveCount(1)
+    await expect(rows).toContainText('October pay')
+    await page.getByLabel('Kind', { exact: true }).selectOption({ label: 'All' })
+    // Each filter builds on the one before as rendered, so the next waits for this one's rows.
+    await expect(rows).toHaveCount(STEPS.length)
+    await page.getByLabel('Search descriptions').fill('boots')
+    await expect(rows).toHaveCount(1)
+    await expect(rows).toContainText('Work boots')
+    await page.getByLabel('Group', { exact: true }).selectOption({ label: 'All groups' })
+    // Across groups, each row names its group.
+    await expect(rows.filter({ hasText: 'Work boots' })).toContainText(employer)
+  })
+
+  // The group's CSV (F-72), from Export, which opens on this group and its whole history.
+  await test.step('exports the group as CSV', async () => {
+    await page.goto(`/export?groupId=${groupId}`)
+    const download = page.waitForEvent('download')
+    await page.getByRole('button', { name: 'Download CSV', exact: true }).click()
+    const csv = await readFile(await (await download).path(), 'utf8')
+    for (const step of STEPS) expect(csv).toContain(step.description)
+  })
+
+  // The payment received is this month's income on Home, from employers (F-54).
+  await test.step('counts the payment as income', async () => {
+    await page.goto('/')
+    const month = page.getByRole('region', { name: 'AUD', exact: true })
+    const income = formatNet(50000, 'AUD', 'en-AU')
+    await expect(month.locator('dt', { hasText: /^Income$/ }).locator('+ dd')).toHaveText(income)
+    await expect(month.locator('dt', { hasText: 'From employers' }).locator('+ dd')).toHaveText(
+      income,
+    )
+  })
 })

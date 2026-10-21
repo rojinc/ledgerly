@@ -156,6 +156,7 @@ describe('PATCH /profile', () => {
   it('moves nextSummaryAt when the timezone changes', async () => {
     const services = withProfile({ summaryFrequency: 'weekly', nextSummaryAt: AT_LAST_SET })
     const profile = await patch(services, { timezone: 'Australia/Perth' })
+    expect(services.db.rows('profiles')[0]?.timezone).toBe('Australia/Perth')
     expect(profile.nextSummaryAt).toBe(nextSummaryAt('weekly', 'Australia/Perth', NOW))
     expect(profile.nextSummaryAt).toBe('2026-10-18T23:00:00.000Z') // 07:00 today in Perth
   })
