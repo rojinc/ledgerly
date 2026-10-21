@@ -1786,10 +1786,16 @@ describe('POST /claim, merging a placeholder', () => {
       }
       return stage(params)
     })
-    expect(await failure(services, 'POST', '/claim')).toMatchObject({
-      status: 500,
-      code: 'INTERNAL',
-    })
+    const { status, body, logs } = await call(services, 'POST', '/claim')
+    expect({ status, body }).toMatchObject({ status: 500, body: { error: { code: 'INTERNAL' } } })
+    // The handler's error line, which a NOT_FOUND would never write (create-handler.ts).
+    expect(logs.map((line) => JSON.parse(line))).toContainEqual(
+      expect.objectContaining({
+        route: 'POST /claim',
+        status: 500,
+        cause: 'AppwriteException 500 general_unknown',
+      }),
+    )
     expect(sammy()).toEqual(before)
   })
 
