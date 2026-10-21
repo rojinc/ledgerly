@@ -28,7 +28,7 @@ export type LogEvent =
   | 'change_notice'
   | 'team_membership_removed'
   | 'schedule_template_unreadable'
-  | 'stuck_finalize_not_archived'
+  | 'stuck_finalize_archived'
   | 'merge_no_member_dates'
   | 'merge_member_dates_unreadable'
   | 'merge_left_transaction'

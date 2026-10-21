@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   account,
   beforeCommit,
+  beforeCommitOf,
   beforeStaging,
   call,
   crashOnCall,
@@ -772,7 +773,7 @@ describe('POST /delete: each group they joined', () => {
     expect(activityIn(services, 'h1').map((row) => row.action)).toEqual(['member.left'])
   })
 
-  it('doesn’t wait for a finalize stuck for over an hour: the group stays unarchived, logged by ID', async () => {
+  it('doesn’t wait for a finalize stuck for over an hour: the group is archived over it, logged by ID (#503)', async () => {
     const services = kept()
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     beforeStaging(
@@ -787,12 +788,20 @@ describe('POST /delete: each group they joined', () => {
       },
     )
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
-    expect(rowOf(services, 'groups', 'e1')).toMatchObject({ archivedAt: null })
+    // So the last person in it can delete it (#486). The statement stays as it was.
+    expect(rowOf(services, 'groups', 'e1')).toMatchObject({
+      archivedAt: DELETED_AT,
+      nextCloseAt: null,
+    })
     expect(rowOf(services, 'statements', 'st1')).toMatchObject({ status: 'finalizing' })
     expect(rowOf(services, 'members', 'e1-p1')).toMatchObject({ displayName: 'Former member' })
+    expect(activityIn(services, 'e1').map((row) => row.action)).toEqual([
+      'member.left',
+      'group.archived',
+    ])
     expect(teamOf(services, 'e1')).toEqual(['u3'])
     expect(errors.mock.calls.map(([line]) => JSON.parse(String(line)))).toEqual([
-      { fn: 'unknown', event: 'stuck_finalize_not_archived', groupId: 'e1', statementId: 'st1' },
+      { fn: 'unknown', event: 'stuck_finalize_archived', groupId: 'e1', statementId: 'st1' },
     ])
     errors.mockRestore()
   })
@@ -1117,6 +1126,287 @@ describe('POST /delete: each group they joined', () => {
     ])
     errors.mockRestore()
   })
+})
+
+describe('POST /delete: a kept house with no joined admin left (#503)', () => {
+  // Past step 2 (a rerun), so refusal 6 doesn't ask Sam to hand over first: as when Alex, the
+  // other admin, stepped down after step 1 checked. Alex moved in on 1 March.
+  async function noAdminLeft(extra: Seed = {}) {
+    const services = kept({}, extra)
+    await setRow(services, 'persons', 'p1', { deletedAt: EARLIER })
+    await setRow(services, 'members', 'h1-p2', { role: 'member', joinedOn: '2026-03-01' })
+    return services
+  }
+
+  const housemate = (personId: string, joinedOn: string, $createdAt: string) =>
+    member('h1', personId, { role: 'member', joinedOn, $createdAt })
+
+  function handovers(services: Fakes) {
+    return activityIn(services, 'h1').filter((row) => row.action === 'member.updated')
+  }
+
+  // Each list puts the right one last, after rows any one tie-break left out would pick.
+  it.each([
+    [
+      'the earliest joinedOn',
+      [
+        housemate('p5', '2026-02-02', '2026-01-01T00:00:00.000+00:00'),
+        housemate('p4', '2026-02-01', '2026-09-01T00:00:00.000+00:00'),
+      ],
+      'p4',
+    ],
+    [
+      'then the earliest $createdAt',
+      [
+        housemate('p4', '2026-02-01', '2026-09-01T00:00:00.000+00:00'),
+        housemate('p5', '2026-02-01', '2026-01-01T00:00:00.000+00:00'),
+      ],
+      'p5',
+    ],
+    [
+      // A viewer was made read-only on purpose, so a member wins, however late they joined.
+      'a member before any viewer, then',
+      [
+        member('h1', 'p5', {
+          role: 'viewer',
+          joinedOn: '2026-01-15',
+          $createdAt: '2026-01-01T00:00:00.000+00:00',
+        }),
+        housemate('p4', '2026-02-01', '2026-09-01T00:00:00.000+00:00'),
+      ],
+      'p4',
+    ],
+    // allRows() lists by $id and the sort is stable, so this one only catches a reversed order.
+    [
+      'then the lowest $id',
+      [
+        housemate('p5', '2026-02-01', '2026-01-01T00:00:00.000+00:00'),
+        housemate('p4', '2026-02-01', '2026-01-01T00:00:00.000+00:00'),
+      ],
+      'p4',
+    ],
+  ])('makes the active member with %s its admin, and never archives it', async (_, rows, heir) => {
+    const services = await noAdminLeft({
+      members: [
+        // Never one who moved out, or a placeholder who hasn't joined, however early.
+        member('h1', 'p6', {
+          role: 'viewer',
+          status: 'left',
+          joinedOn: '2025-01-01',
+          leftOn: '2025-06-30',
+        }),
+        member('h1', 'p7', { role: 'member', status: 'placeholder', joinedOn: '2025-02-01' }),
+        ...rows,
+      ],
+    })
+    expect(await remove(services)).toEqual({ deletedAt: EARLIER, finished: true })
+    expect(
+      services.db
+        .rows('members')
+        .filter((row) => row.groupId === 'h1' && row.role === 'admin')
+        .map((row) => row.personId),
+    ).toEqual([heir])
+    expect(rowOf(services, 'groups', 'h1')).toMatchObject({ archivedAt: null })
+    // By Sam, as the handover refusal 6 would have asked for writes it (update-member.ts).
+    expect(activityIn(services, 'h1').map((row) => row.action)).toEqual([
+      'member.left',
+      'member.updated',
+    ])
+    expect(handovers(services)).toEqual([
+      expect.objectContaining({
+        actorPersonId: 'p1',
+        subjectPersonId: heir,
+        summary: 'was made an admin',
+        changesJson: JSON.stringify({ before: { role: 'member' }, after: { role: 'admin' } }),
+      }),
+    ])
+    expect(teamOf(services, 'h1')).toEqual(['u2'])
+  })
+
+  it('hands over an archived house too, which stays archived', async () => {
+    const services = await noAdminLeft()
+    await setRow(services, 'groups', 'h1', { archivedAt: ARCHIVED_AT, nextCloseAt: null })
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'admin' })
+    expect(rowOf(services, 'groups', 'h1')).toMatchObject({ archivedAt: ARCHIVED_AT })
+    expect(activityIn(services, 'h1').map((row) => row.action)).toEqual([
+      'member.left',
+      'member.updated',
+    ])
+  })
+
+  it.each([
+    ['running', 1],
+    ['stuck', 61],
+  ])('hands over without waiting for a finalize %s', async (_, minutes) => {
+    const services = await noAdminLeft({
+      statements: [{ ...finalizing('st1', 'h1'), $updatedAt: minutesAgo(minutes) }],
+    })
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'admin' })
+    expect(rowOf(services, 'groups', 'h1')).toMatchObject({ archivedAt: null })
+    // The new admin can resume it.
+    expect(rowOf(services, 'statements', 'st1')).toMatchObject({ status: 'finalizing' })
+  })
+
+  it('makes no second admin on a rerun after a crash before the team step', async () => {
+    const services = await noAdminLeft({
+      members: [housemate('p4', '2026-04-01', '2026-01-01T00:00:00.000+00:00')],
+    })
+    crashOnCall(services.teams, 'deleteMembership', (params) => params.teamId === 'h1')
+    expect((await call(services)).status).toBe(500)
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'admin' })
+    vi.restoreAllMocks()
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'admin' })
+    expect(rowOf(services, 'members', 'h1-p4')).toMatchObject({ role: 'member' })
+    expect(handovers(services)).toHaveLength(1)
+    expect(teamOf(services, 'h1')).toEqual(['u2'])
+  })
+
+  it('leaves the house for a later run when a joined admin appears before it commits, then moves on', async () => {
+    const services = await noAdminLeft({
+      members: [housemate('p4', '2026-04-01', '2026-01-01T00:00:00.000+00:00')],
+    })
+    // Kim (p4) is made an admin by someone else meanwhile, say.
+    beforeStaging(
+      services.db,
+      (operations) => operations.includes('"role":"admin"'),
+      () => setRow(services, 'members', 'h1-p4', { role: 'admin' }),
+    )
+    expect(await remove(services)).toEqual({ deletedAt: EARLIER, finished: false })
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'member' })
+    expect(handovers(services)).toEqual([])
+    expect(teamOf(services, 'h1')).toEqual(['u1', 'u2'])
+    vi.restoreAllMocks()
+    // The rerun finds a joined admin: nothing to hand over.
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'member' })
+    expect(handovers(services)).toEqual([])
+    expect(rowOf(services, 'groups', 'h1')).toMatchObject({ archivedAt: null })
+  })
+
+  it('leaves the house for a later run when a join commits first, then hands over', async () => {
+    const services = await noAdminLeft()
+    // A join's guard write to the group row, say, after the handover staged its own.
+    beforeCommitOf(services, '"role":"admin"', () =>
+      setRow(services, 'groups', 'h1', { rev: 'join' }),
+    )
+    expect(await remove(services)).toEqual({ deletedAt: EARLIER, finished: false })
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'member' })
+    expect(handovers(services)).toEqual([])
+    vi.restoreAllMocks()
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'admin' })
+    expect(handovers(services)).toHaveLength(1)
+  })
+
+  it('counts a joined admin whose own deletion is under way, until their own keep', async () => {
+    const services = kept()
+    // Alex, the other admin, is deleting their account too, but their run hasn't reached h1.
+    await setRow(services, 'persons', 'p2', { deletedAt: EARLIER })
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'admin', status: 'active' })
+    expect(handovers(services)).toEqual([])
+    expect(rowOf(services, 'groups', 'h1')).toMatchObject({ archivedAt: null })
+  })
+
+  it('picks an active member whose own deletion is under way like anyone else', async () => {
+    const services = await noAdminLeft({
+      persons: [person('p4', 'u4', { deletedAt: EARLIER })],
+      members: [housemate('p4', '2026-02-01', '2026-01-01T00:00:00.000+00:00')],
+    })
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h1-p4')).toMatchObject({ role: 'admin' })
+    expect(handovers(services)).toEqual([expect.objectContaining({ subjectPersonId: 'p4' })])
+  })
+
+  it('makes the earliest active viewer its admin when no member is left', async () => {
+    const services = await noAdminLeft({
+      members: [
+        member('h1', 'p4', {
+          role: 'viewer',
+          joinedOn: '2026-04-01',
+          $createdAt: '2026-01-01T00:00:00.000+00:00',
+        }),
+      ],
+    })
+    // Alex is a viewer too, and joined first.
+    await setRow(services, 'members', 'h1-p2', { role: 'viewer' })
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'members', 'h1-p2')).toMatchObject({ role: 'admin' })
+    expect(rowOf(services, 'members', 'h1-p4')).toMatchObject({ role: 'viewer' })
+    expect(handovers(services)).toEqual([
+      expect.objectContaining({
+        subjectPersonId: 'p2',
+        changesJson: JSON.stringify({ before: { role: 'viewer' }, after: { role: 'admin' } }),
+      }),
+    ])
+    expect(rowOf(services, 'groups', 'h1')).toMatchObject({ archivedAt: null })
+  })
+
+  it.each([
+    ['h1', 'a housemate joins the house'],
+    ['e1', 'an admin joins the employer group'],
+  ])('doesn’t archive %s when, before the archive commits, %s', async (groupId, _) => {
+    // A finalize stuck in it, which the archive would otherwise go over, and log.
+    const services = kept(
+      {},
+      { statements: [{ ...finalizing(`st-${groupId}`, groupId), $updatedAt: minutesAgo(61) }] },
+    )
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    // Past step 2: the finalize started after step 1, which refuses one Sam could finish.
+    await setRow(services, 'persons', 'p1', { deletedAt: EARLIER })
+    // Alex moved out, so the house has nobody to hand over to when the keep decides.
+    await setRow(services, 'members', 'h1-p2', {
+      role: 'viewer',
+      status: 'left',
+      leftOn: '2026-09-30',
+    })
+    beforeStaging(
+      services.db,
+      (operations) =>
+        operations.includes('"archivedAt"') && operations.includes(`"rowId":"${groupId}"`),
+      () =>
+        groupId === 'h1'
+          ? insert(services, 'members', [member('h1', 'p4', { role: 'member' })])
+          : setRow(services, 'members', 'e1-p3', { role: 'admin' }),
+    )
+    expect((await remove(services)).finished).toBe(false)
+    expect(rowOf(services, 'groups', groupId)).toMatchObject({ archivedAt: null })
+    vi.restoreAllMocks()
+    expect((await remove(services)).finished).toBe(true)
+    expect(rowOf(services, 'groups', groupId)).toMatchObject({ archivedAt: null })
+    expect(activityIn(services, groupId).map((row) => row.action)).toEqual(
+      groupId === 'h1' ? ['member.left', 'member.updated'] : ['member.left'],
+    )
+    // Not archived, so nothing archived over a stuck finalize.
+    expect(errors.mock.calls.join('\n')).not.toMatch(/stuck_finalize/)
+  })
+
+  it.each([
+    ['moves out', { status: 'left', role: 'viewer', leftOn: TODAY }, 'p4', 'h1-p4'],
+    // The row now names the person Alex was merged into.
+    ['is merged into another person', { personId: 'p9' }, 'p9', 'h1-p2'],
+  ] as const)(
+    'picks again on a later run when the one it picked %s before it commits',
+    async (_, change, heir, rowId) => {
+      const services = await noAdminLeft({
+        members: [housemate('p4', '2026-04-01', '2026-01-01T00:00:00.000+00:00')],
+      })
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"role":"admin"'),
+        () => setRow(services, 'members', 'h1-p2', change),
+      )
+      expect(await remove(services)).toEqual({ deletedAt: EARLIER, finished: false })
+      expect(handovers(services)).toEqual([])
+      vi.restoreAllMocks()
+      expect((await remove(services)).finished).toBe(true)
+      expect(rowOf(services, 'members', rowId)).toMatchObject({ role: 'admin', personId: heir })
+      expect(handovers(services)).toEqual([expect.objectContaining({ subjectPersonId: heir })])
+    },
+  )
 })
 
 describe('POST /delete: steps 5 to 7', () => {

@@ -150,8 +150,9 @@ async function othersIn(db: Db, groupId: string, personId: string): Promise<Memb
 }
 
 // A group with a statement being finalized where they're the only joined admin: only an admin
-// can finish a finalize, so once they're gone nobody could, and the group couldn't be archived.
-// (An archived group never has one: archiving waits for a finalize, which refuses one archived.)
+// can finish a finalize, so once they're gone nobody could, and an hour later the deletion would
+// go on without it (#503). An archived group has one only if a deletion archived it over a stuck
+// finalize; its admin can unarchive it and resume a divide.
 async function finalizingAlone(db: Db, personId: string, adminRows: Members[]): Promise<boolean> {
   for (const { groupId } of adminRows) {
     if (!(await finalizingStatement(db, groupId))) continue
