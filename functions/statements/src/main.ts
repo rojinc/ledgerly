@@ -48,13 +48,13 @@ export function statementsRoutes(
       closeStatement(services(ctx), requireUser(ctx.userId), ctx.body),
     ),
     route('POST', '/statements/:id/refresh', async (ctx) =>
-      refreshStatement(services(ctx), requireUser(ctx.userId), ctx.params.id),
+      refreshStatement(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
     ),
     route('POST', '/statements/:id/finalize', async (ctx) =>
       finalizeRoute(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
     ),
     route('POST', '/statements/:id/send', async (ctx) =>
-      sendRoute(services(ctx), requireUser(ctx.userId), ctx.params.id),
+      sendRoute(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),
     ),
     route('POST', '/statements/:id/void', async (ctx) =>
       voidRoute(services(ctx), requireUser(ctx.userId), ctx.params.id, ctx.body),

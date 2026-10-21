@@ -1,7 +1,9 @@
+import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { ledgerRoute } from '@ledgerly/server/ledger/transactions'
 import { deleteScheduleRows, hasOccurrence } from '@ledgerly/server/scheduler/end-schedule'
 import { Query } from 'node-appwrite'
+import { parseBody } from '../parse-body'
 import { requireScheduleWriter } from '../schedule-rows'
 import type { Services } from '../services'
 
@@ -14,8 +16,10 @@ export async function deleteSchedule(
   services: Services,
   userId: string | null,
   scheduleId: string,
+  body: unknown,
 ): Promise<Record<string, never>> {
   const { db } = services
+  parseBody(emptyBodySchema, body ?? {})
   return ledgerRoute(async () => {
     const { membership } = await requireScheduleWriter(services, userId, scheduleId)
     if (await hasOccurrence(db, scheduleId, [Query.equal('status', 'posted')])) {

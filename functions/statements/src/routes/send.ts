@@ -1,5 +1,6 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Groups, Members, Persons, Statements } from '@ledgerly/core/generated/rows'
+import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
 import { isInTeam } from '@ledgerly/server/appwrite/teams'
@@ -17,6 +18,7 @@ import {
   invalid,
   listAll,
   NO_SUCH_STATEMENT,
+  parseBody,
   snapshotOf,
   statementName,
   updateStatement,
@@ -30,7 +32,9 @@ export async function sendRoute(
   services: Services,
   userId: string,
   statementId: string,
+  body: unknown,
 ): Promise<{ sentAt: string }> {
+  parseBody(emptyBodySchema, body ?? {})
   const statement = await getStatement(services.db, statementId)
   const { person, group } = await requireMemberOf(
     services.db,

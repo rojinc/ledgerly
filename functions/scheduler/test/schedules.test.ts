@@ -1244,6 +1244,26 @@ describe('POST /schedules/{id}/pause and /resume', () => {
 
   const dates = (services: Fakes, id = ID) => occurrences(services, id).map((row) => row.date)
 
+  it('refuses a body with any field on resume, and changes nothing; an empty one resumes (#482)', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    await pause(services, '2026-11-10')
+    const before = dates(services)
+    expect(
+      await failure(services, 'POST', `/schedules/${ID}/resume`, { body: { from: '2026-11-10' } }),
+    ).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
+    // Not NOT_FOUND: the body is checked before the schedule is looked up.
+    expect(
+      await failure(services, 'POST', '/schedules/noSuchSchedule0001/resume', { body: { x: 1 } }),
+    ).toEqual({ status: 400, code: 'VALIDATION_FAILED' })
+    expect(scheduleRow(services)?.pausedFrom).toBe('2026-11-10')
+    expect(dates(services)).toEqual(before)
+    const { schedule } = await ok<ResumedSchedule>(services, 'POST', `/schedules/${ID}/resume`, {
+      body: {},
+    })
+    expect(schedule.pausedFrom).toBeNull()
+  })
+
   it('deletes the occurrences from its date that aren’t edited, and makes no more', async () => {
     const services = seeded()
     await create(services, thursdays)
@@ -1641,6 +1661,25 @@ describe('DELETE /schedules/{id}', () => {
     expect(services.db.rows('schedules')).toEqual([])
     expect(services.db.rows('transactions')).toEqual([])
     expect(services.db.rows('items')).toEqual([])
+  })
+
+  it('refuses a body with any field before it reads anything, and takes an empty one (#482)', async () => {
+    const services = seeded()
+    await create(services, thursdays)
+    const extra = { body: { force: true } }
+    expect(await failure(services, 'DELETE', `/schedules/${ID}`, extra)).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+    })
+    // Not NOT_FOUND: the body is checked before the schedule is looked up.
+    expect(await failure(services, 'DELETE', '/schedules/noSuchSchedule0001', extra)).toEqual({
+      status: 400,
+      code: 'VALIDATION_FAILED',
+    })
+    expect(scheduleRow(services)).toBeDefined()
+    expect(occurrences(services)).toHaveLength(11)
+    expect(await ok(services, 'DELETE', `/schedules/${ID}`, { body: {} })).toEqual({})
+    expect(services.db.rows('schedules')).toEqual([])
   })
 
   it('refuses a schedule with a posted occurrence', async () => {

@@ -1,5 +1,6 @@
 import type { LocalDate } from '@ledgerly/core/dates/local-date'
 import type { Statements } from '@ledgerly/core/generated/rows'
+import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMemberOf } from '@ledgerly/server/auth/require-member'
@@ -10,6 +11,7 @@ import {
   getStatement,
   invalid,
   NO_SUCH_STATEMENT,
+  parseBody,
 } from '../shared'
 import { computeSnapshot } from '../snapshot'
 
@@ -23,7 +25,9 @@ export async function refreshStatement(
   { db, teams, now }: Services,
   userId: string,
   statementId: string,
+  body: unknown,
 ): Promise<Statements> {
+  parseBody(emptyBodySchema, body ?? {})
   const statement = await getStatement(db, statementId)
   const { group } = await requireMemberOf(db, teams, userId, statement.groupId, NO_SUCH_STATEMENT)
   if (statement.status !== 'draft') throw invalid(DRAFTS_ONLY)
