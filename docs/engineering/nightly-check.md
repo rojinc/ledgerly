@@ -24,7 +24,7 @@ Every run also writes one line for its request, with `route` and `status` ([conv
 
 A group that's due is checked, logged as one of the events above, put off as `busy` (tried an hour later, with no line), skipped while a purge deletes it, or not reached because the budget ran out first. The last three stay due with no line. **So the runs' lines, plus the groups still overdue now (C), cover every group.**
 
-**How long the logs are kept.** Appwrite keeps execution logs for 24 hours on the Free plan and 7 days on Pro ([executions](https://appwrite.io/docs/products/functions/executions)). `ledgerly-dev`'s organisation is on the GitHub Student Pack plan ([function settings](environments-and-deploys.md#function-settings)), whose retention isn't documented. Until the owner confirms it ([#3](https://github.com/rojinc/ledgerly/issues/3)), **read within 23 hours of the last read's `to`.** A run whose logs are gone can't be confirmed.
+**How long the logs are kept.** Appwrite keeps execution logs for 24 hours on the Free plan and 7 days on Pro ([executions](https://appwrite.io/docs/products/functions/executions)). `ledgerly-dev`'s organisation is on the GitHub Student Pack plan ([function settings](environments-and-deploys.md#function-settings)), whose retention isn't documented. Until the owner confirms it ([#3](https://github.com/rojinc/ledgerly/issues/3)), plan for Free's 24 hours, the shortest: **read within 23 hours of the last read's `to`.** A run whose logs are gone can't be confirmed.
 
 ## Before you start
 
@@ -34,7 +34,7 @@ A group that's due is checked, logged as one of the events above, put off as `bu
 
 ## A read
 
-Set the window. `FROM` is the `to` of the last result posted on #299. The first read starts at Deploy run 174's `DEPLOYED_AT`. `TO` is 20 minutes ago, so every run in the window has finished: a run can take up to 15 minutes.
+Set the window. `FROM` is the `to` of the last result posted on #299. The first read starts at Deploy run 174's `DEPLOYED_AT`, and **the lead runs it before 02:40Z on 2026-10-22**, while the first runs' logs are still kept. `TO` is 20 minutes ago, so every run in the window has finished: a run can take up to 15 minutes.
 
 ```bash
 FROM=2026-10-21T02:38:27Z                     # the last result's "to"
