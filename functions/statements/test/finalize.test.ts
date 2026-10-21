@@ -96,6 +96,33 @@ const locks = (services: Services) =>
   Object.fromEntries(services.db.rows('transactions').map((row) => [row.$id, row.statementId]))
 const lastNumber = (services: Services) => services.db.rows('profiles')[0]?.lastInvoiceNumber
 
+// When Sam, the worker, deleted their account (#503, #519), and how finalize refuses then.
+const DELETED_AT = '2026-11-01T00:00:00.000Z'
+const REFUSAL = {
+  code: 'CONFLICT',
+  message: 'The worker has deleted their account, so this invoice can’t be finalized.',
+}
+
+/** Commits `operations` just before the first transaction whose writes include `text` commits. */
+function beforeCommitOf(services: Services, text: string, operations: object[]) {
+  const stage = services.db.createOperations.bind(services.db)
+  const commit = services.db.updateTransaction.bind(services.db)
+  let target: string | undefined
+  vi.spyOn(services.db, 'createOperations').mockImplementation(async (params) => {
+    if (target === undefined && JSON.stringify(params.operations).includes(text)) {
+      target = params.transactionId
+    }
+    return stage(params)
+  })
+  vi.spyOn(services.db, 'updateTransaction').mockImplementation(async (params) => {
+    if (params.commit && params.transactionId === target) {
+      target = ''
+      await commitNow(services.db, operations)
+    }
+    return commit(params)
+  })
+}
+
 describe('POST /statements/{id}/finalize', () => {
   it('numbers the invoice, locks what it covers, stores the PDF and marks it final', async () => {
     const services = fakes(october())
@@ -486,12 +513,13 @@ describe('POST /statements/{id}/finalize', () => {
     expect(stored(services).status).toBe('draft')
   })
 
-  // #503: Sam, the worker, has deleted their account. Acme joined, and was made admin.
+  // Sam, the worker, is deleting their account: past its point of no return (`deletedAt`), but
+  // before step 6 clears `userId` (#503, #519). Acme joined, and was made admin.
   async function workerDeleted(services: Services) {
     await acmeJoins(services)
     await commitNow(services.db, [
       op('members', 'm-acme', { role: 'admin' }),
-      op('persons', 'sam', { userId: null }),
+      op('persons', 'sam', { deletedAt: DELETED_AT }),
     ])
   }
 
@@ -513,14 +541,61 @@ describe('POST /statements/{id}/finalize', () => {
         { send: false },
         'u-acme',
       )
-      expect(refused).toMatchObject({
-        code: 'CONFLICT',
-        message: 'The worker has deleted their account, so this invoice can’t be finalized.',
-      })
+      expect(refused).toMatchObject(REFUSAL)
       expect(stored(services)).toEqual(before)
       expect(lastNumber(services)).toBe(9)
       expect(locks(services)).toEqual({ s1: null })
       expect(services.db.rows('activity')).toEqual([])
+    },
+  )
+
+  it.each([
+    // Just after the first check, before step 1 stages.
+    ['before it numbers it', [op('persons', 'sam', { deletedAt: DELETED_AT })], 1],
+    // Their deletion's step 5 deletes the profile.
+    ['with their profile gone', [op('profiles', 'u-sam', {}, 'delete')], 1],
+    // After step 2's own read, just before it stages: only its check after staging sees it.
+    ['after its own read', [op('persons', 'sam', { deletedAt: DELETED_AT })], 2],
+  ])(
+    'checks the issuer again at step 2, %s: CONFLICT, finalizing and unnumbered (#519)',
+    async (_, change, nth) => {
+      const services = fakes(october())
+      beforeStaging(services.db, change, nth)
+      expect(
+        await failure(services, 'POST', '/statements/st1/finalize', { send: false }),
+      ).toMatchObject({ status: 409, ...REFUSAL })
+      expect(stored(services)).toMatchObject({ status: 'finalizing', number: null })
+    },
+  )
+
+  it('checks the issuer again at step 6: CONFLICT, finalizing and never issued (#519)', async () => {
+    const services = fakes(october())
+    // Their deletion lands after step 2 numbered it, before step 4 locks.
+    beforeStaging(services.db, [op('persons', 'sam', { deletedAt: DELETED_AT })], 3)
+    expect(
+      await failure(services, 'POST', '/statements/st1/finalize', { send: false }),
+    ).toMatchObject({ status: 409, ...REFUSAL })
+    expect(stored(services)).toMatchObject({
+      status: 'finalizing',
+      number: 10,
+      issuedOn: null,
+      pdfFileId: null,
+    })
+  })
+
+  it.each([
+    ['step 2 numbers it', '"lastInvoiceNumber"', { number: null }],
+    ['step 6 issues it', '"issuedOn"', { number: 10, issuedOn: null }],
+  ])(
+    'fails the commit when their deletion lands after %s stages, before it commits (#519)',
+    async (_, text, left) => {
+      const services = fakes(october())
+      // Its guard write on Sam's person row: a deletion committing first fails this commit.
+      beforeCommitOf(services, text, [op('persons', 'sam', { deletedAt: DELETED_AT })])
+      expect(
+        await failure(services, 'POST', '/statements/st1/finalize', { send: false }),
+      ).toMatchObject({ status: 409, code: 'CONFLICT' })
+      expect(stored(services)).toMatchObject({ status: 'finalizing', ...left })
     },
   )
 
@@ -529,7 +604,7 @@ describe('POST /statements/{id}/finalize', () => {
       statements: [statement('st-house', { groupId: 'house', type: 'divide' })],
     })
     await commitNow(services.db, [
-      op('persons', 'alice', { userId: null }),
+      op('persons', 'alice', { deletedAt: DELETED_AT, userId: null }),
       op('members', 'm-bob', { role: 'admin' }),
     ])
     const final = await finalize(services, false, 'st-house', 'u-bob')
@@ -648,7 +723,7 @@ describe('auto-finalize (the statements job)', () => {
       ...rowsOf(shift('s1', '2026-10-02', 120)),
       groups: [job({ autoFinalize: true })],
     })
-    await commitNow(services.db, [op('persons', 'sam', { userId: null })])
+    await commitNow(services.db, [op('persons', 'sam', { deletedAt: DELETED_AT })])
     expect(await ok(services, 'POST', '/', undefined, null)).toEqual({ drafted: 1, failed: 0 })
     expect(services.db.rows('statements')[0]).toMatchObject({ status: 'draft', number: null })
     expect(lastNumber(services)).toBe(9)
