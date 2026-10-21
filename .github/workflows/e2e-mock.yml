@@ -1,0 +1,60 @@
+name: E2E on the mock
+
+# The user flows in apps/web/e2e in a real browser on every pull request, against
+# packages/e2e-mock: an in-repo mock of the Appwrite API that runs the functions' own route
+# handlers (testing.md#on-the-mock, #554). No secrets and no network: it catches a change that
+# breaks a flow before it merges. e2e.yml's run against dev, after each deploy, is still the check
+# that counts.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+
+# A new push to a PR cancels that PR's older runs.
+concurrency:
+  group: e2e-mock-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-mock:
+    name: e2e-mock
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    # The install, then the suite's own 10 minutes (playwright.config.ts).
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - run: npm ci
+
+      # In the web workspace: Playwright is installed there (apps/web/node_modules), not at the
+      # root, so a bare `npx playwright` finds nothing.
+      - run: npm exec -w @ledgerly/web -- playwright install --with-deps chromium
+
+      # Builds the mock from this checkout, then runs every flow against it (E2E_MOCK=1).
+      - name: User flows on the mock
+        run: npm run test:e2e:mock -w @ledgerly/web
+        env:
+          CI: true
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: playwright-report-mock
+          path: |
+            apps/web/playwright-report/
+            apps/web/test-results/
+            packages/e2e-mock/dist/mock.log
+          retention-days: 14

@@ -35,6 +35,8 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 `docs.yml`, on every pull request when it's opened, pushed to, reopened or marked ready, but never while it's a draft. It has no paths filter, since a code PR can break a link by moving a file. Steps: the link checker's tests → `scripts/check-links.mjs`, which fails on a relative link to a file that doesn't exist, or to an anchor no heading has (by GitHub's rules for heading anchors). External links aren't checked. No `npm ci`, read-only, no secrets.
 
+`e2e-mock.yml`, on a pull request as `ci.yml` is (the same events, drafts and paths): the [user flows](testing.md#on-the-mock) in Chromium against `packages/e2e-mock`, an in-repo mock of the Appwrite API. Steps: `npm ci` → install Chromium → `npm run test:e2e:mock -w @ledgerly/web`, which builds the mock and runs every flow; the report and the mock's log are kept when it fails. Read-only, no secrets, 15 minutes.
+
 `e2e.yml`: after each successful Deploy of `main`, and on **Run workflow**, the [user flows](testing.md#end-to-end) in Chromium against dev.
 
 `deploy.yml`:

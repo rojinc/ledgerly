@@ -27,6 +27,7 @@ export default async function globalSetup() {
     if (live.length > 0) {
       throw new Error(`${live.length} of the ${made.length} users made are still live`)
     }
+    if (process.env.E2E_MOCK === '1') await expectMockServedAll()
   }
   try {
     const users = {
@@ -68,4 +69,21 @@ export default async function globalSetup() {
     throw error
   }
   return teardown
+}
+
+/**
+ * On the mock (#554), a request it has no route for answers 404, which a flow may not notice: a
+ * function that starts calling a new Appwrite API fails the run here instead, with the routes in
+ * `packages/e2e-mock/dist/mock.log`.
+ */
+async function expectMockServedAll(): Promise<void> {
+  const origin = new URL(process.env.VITE_APPWRITE_ENDPOINT ?? '').origin
+  const { unhandled } = (await (await fetch(`${origin}/mock/stats`)).json()) as {
+    unhandled: number
+  }
+  if (unhandled > 0) {
+    throw new Error(
+      `The mock had no route for ${unhandled} request${unhandled === 1 ? '' : 's'}: see packages/e2e-mock/dist/mock.log`,
+    )
+  }
 }

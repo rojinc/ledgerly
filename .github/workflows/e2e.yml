@@ -87,8 +87,10 @@ jobs:
       - if: steps.latest.outputs.run == 'true'
         run: npm ci
 
+      # In the web workspace, where Playwright is installed (apps/web/node_modules): a bare
+      # `npx playwright` at the root finds nothing (#561's first e2e-mock run).
       - if: steps.latest.outputs.run == 'true'
-        run: npx playwright install --with-deps chromium
+        run: npm exec -w @ledgerly/web -- playwright install --with-deps chromium
 
       - name: User flows
         if: steps.latest.outputs.run == 'true'
