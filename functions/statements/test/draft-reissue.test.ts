@@ -723,10 +723,13 @@ describe('who the job emails', () => {
 })
 
 describe('the "ready" emails, when sends fail (#476)', () => {
-  /** Acme and Bobs Bakery are both due, and Sam and Dan run both, with verified addresses. */
+  /**
+   * Acme and Bobs Bakery are both due, and Sam and Dan run both, with verified addresses. Bobs
+   * Bakery auto-finalizes: its idle invoice has no lines, so its "ready" email still goes.
+   */
   function twoGroups() {
     return fakes({
-      groups: [job(), { ...job(), $id: 'job2', name: 'Bobs Bakery' }],
+      groups: [job(), { ...job({ autoFinalize: true }), $id: 'job2', name: 'Bobs Bakery' }],
       identities: ['sam', 'dan'].map((personId) => ({
         $id: `i-${personId}`,
         key: `email:${personId}@example.com`,
@@ -767,9 +770,10 @@ describe('the "ready" emails, when sends fail (#476)', () => {
       const services = twoGroups()
       const tried = failingWith(services, error)
       expect(await runJob(services)).toEqual({ drafted: 2, failed: 0 })
+      // The later group is still auto-finalized.
       expect(drafts(services).map((row) => [row.groupId, row.status])).toEqual([
         ['job', 'draft'],
-        ['job2', 'draft'],
+        ['job2', 'final'],
       ])
       // The first admin of the first group only: not the other admin, nor the next group's.
       expect(tried).toHaveLength(1)
@@ -818,7 +822,7 @@ describe('the "ready" emails, when sends fail (#476)', () => {
     expect(errors).toHaveLength(1)
   })
 
-  it('stops for that run only: the next run tries its "ready" emails again', async () => {
+  it('stops for that run only: a later run’s "ready" emails still go', async () => {
     const blocked = twoGroups()
     failingWith(blocked, new EmailError('Resend answered 403', 'validation_error', 403))
     await runJob(blocked)
