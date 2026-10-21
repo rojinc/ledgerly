@@ -47,9 +47,10 @@ test('refuses a delete for 24 hours after a password is set, and keeps the group
 test('deletes an archived group once DELETE is typed, after a link to Export', async ({ page }) => {
   await logInWithToken(page, setupUser('bea'))
   const name = await archivedEmployer(page, 'bea')
+  // It preselects this group, so its whole history can be saved first (#542).
   await expect(page.getByRole('link', { name: 'export its records' })).toHaveAttribute(
     'href',
-    '/export',
+    `/export?groupId=${groupId}`,
   )
   await page.getByLabel('Type DELETE to confirm').fill('DELETE')
   await page.getByRole('button', { name: 'Delete group', exact: true }).click()

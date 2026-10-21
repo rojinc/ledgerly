@@ -132,7 +132,7 @@ const E2E_LABEL = 'e2e'
  * so no other user of dev is ever read, let alone changed. One it can't label and block it deletes
  * outright, as before. One failure doesn't stop the others; any failure is thrown at the end.
  */
-export async function handOverRunUsers(id: string): Promise<number> {
+export async function handOverRunUsers(id: string): Promise<void> {
   if (!RUN_ID.test(id)) throw new Error('Not a run ID: nothing handed over')
   const ours: { $id: string; email: string; labels: string[] }[] = []
   // All of them first, as when they were deleted here: a deleted user can't be a cursor.
@@ -170,5 +170,4 @@ export async function handOverRunUsers(id: string): Promise<number> {
   if (failed.length > 0) {
     throw new Error(`${failed.length} failures handing users over: ${failed.join('; ')}`)
   }
-  return ours.length
 }
