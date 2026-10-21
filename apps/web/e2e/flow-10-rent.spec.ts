@@ -6,7 +6,7 @@ import { logIn, setupUser } from './users'
 // User flow 10 (docs/product/user-flows.md#10-personal-rent): weekly rent in the personal group,
 // one week marked paid, then a pause and a resume from the bills page. The reminder two days
 // before each bill comes from the hourly scheduler, which a test can't wait for: its own tests
-// cover it (functions/scheduler/test/reminders).
+// cover it (functions/scheduler/test/reminders.test.ts).
 const ZONE = 'Australia/Sydney'
 
 /** `26 Oct 2026`, worded in the browser, as the bills pages word a date. */
@@ -38,7 +38,7 @@ test.afterEach(async ({ page }) => {
   await page.getByRole('button', { name: 'Stop Rent', exact: true }).click()
   await page.getByRole('button', { name: /^(Stop|Remove) it$/ }).click()
   // Stopped: its end date is set, so Stop goes. One not started yet, with its first bill paid
-  // early, ends on that bill's date, so it reads "Last due …" rather than "Ended" until then.
+  // early, ends on its first due date, so it reads "Last due …" rather than "Ended" until then.
   await expect(page.getByText(/^(Stopped|Removed) Rent\./)).toBeVisible()
   await expect(page.getByRole('button', { name: 'Stop Rent', exact: true })).toHaveCount(0)
 })
@@ -82,16 +82,22 @@ test('adds weekly rent, pays a week, then pauses and resumes it', async ({ page 
 
   await test.step('pauses it from today, then resumes it', async () => {
     await page.goto('/bills')
+    // Today as the page has it when it pauses: taken here, so a run that crossed midnight since
+    // the start still matches.
+    const pausedOn = localToday(ZONE, new Date())
     await page.getByRole('button', { name: 'Pause Rent', exact: true }).click()
     await page.getByRole('button', { name: 'Pause it', exact: true }).click()
     await expect(
       page.getByText('Paused Rent from today. Resume it to carry on.', { exact: true }),
     ).toBeVisible()
-    await expect(rentRow(page)).toContainText(`Paused from ${await dateText(page, today)}`)
-    // The week already paid stays; the unpaid ones from today on go.
+    await expect(rentRow(page)).toContainText(`Paused from ${await dateText(page, pausedOn)}`)
+    // The week already paid stays; the unpaid ones from today on go. "Nothing due." shows only
+    // once the list has loaded.
     await expect(
-      page.getByRole('region', { name: 'Due', exact: true }).getByRole('link', { name: /Rent/ }),
-    ).toHaveCount(0)
+      page
+        .getByRole('region', { name: 'Due', exact: true })
+        .getByText('Nothing due.', { exact: true }),
+    ).toBeVisible()
     await page.getByRole('button', { name: 'Resume Rent', exact: true }).click()
     await expect(page.getByText(/^Resumed Rent\. Bills are made again from today/)).toBeVisible()
     await expect(rentRow(page)).not.toContainText('Paused from')

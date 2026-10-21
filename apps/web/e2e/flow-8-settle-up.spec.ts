@@ -1,3 +1,4 @@
+import { localToday } from '@ledgerly/core/dates/time-zone'
 import { expect, test } from '@playwright/test'
 import { expectBalanceShown } from './balances'
 import { testName } from './dev-project'
@@ -10,6 +11,7 @@ import { logIn, setupUser } from './users'
 // suggested payment recorded, then the period closed and its divide finalized. The job drafts a
 // month's divide only once the month is over, so the flow closes the period now (statements.md#6)
 // and finalizes it without email ("Finalize only"). Finalizing locks the period's transactions.
+const ZONE = 'Australia/Sydney'
 
 // The house this test adds, archived after it even when it fails, its divide, and when Finalize
 // was clicked.
@@ -32,17 +34,24 @@ test('settles up, then closes the period and finalizes its divide', async ({ pag
   const hal = setupUser('hal')
   const bob = testName('Bob')
   await logIn(page, hal)
+  // Today in the house's time zone, taken once and filled in wherever a date goes, as flow 5
+  // does: a run across midnight then dates the move-in, the expense and the close alike.
+  const today = localToday(ZONE, new Date())
   groupId = await addHouse(page, testName('Oak Lane'), 'Equally')
-  await addHousemate(page, bob)
+  await addHousemate(page, bob, today)
 
   const expenseId = await test.step('Hal pays $80, split equally', async () => {
     await page.goto(`/transactions/new?groupId=${groupId}`)
     await page.getByLabel('Amount (AUD)').fill('80')
+    await page.getByLabel('Date', { exact: true }).fill(today)
     await page.getByLabel('Description', { exact: true }).fill('Cleaning')
     await page.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(
       page.getByRole('heading', { level: 1, name: 'Cleaning', exact: true }),
     ).toBeVisible()
+    // Open for now: Edit is there, and nothing says it's locked.
+    await expect(page.getByRole('button', { name: 'Edit', exact: true })).toBeVisible()
+    await expect(page.getByText(/, so it can’t be changed\.$/)).toHaveCount(0)
     return new URL(page.url()).pathname.split('/').at(-1) as string
   })
 
@@ -69,7 +78,8 @@ test('settles up, then closes the period and finalizes its divide', async ({ pag
   statementId = await test.step('closes the period now', async (): Promise<string> => {
     await page.goto(`/groups/${groupId}/statements`)
     await page.getByRole('button', { name: 'Close period now…', exact: true }).click()
-    // Up to its "Last day", today by default.
+    // Up to today, the expense's date.
+    await page.getByLabel('Last day').fill(today)
     await page.getByRole('button', { name: 'Close period', exact: true }).click()
     await page.waitForURL(new RegExp(`/groups/${groupId}/statements/[^/]+$`))
     await expect(page.getByText('Draft', { exact: true })).toBeVisible()
@@ -81,7 +91,7 @@ test('settles up, then closes the period and finalizes its divide', async ({ pag
     await page.getByRole('button', { name: 'Finalize only', exact: true }).click()
     // After the click, which waits for the button: the finalize starts then.
     finalizedAt = Date.now()
-    // Finalize is an async execution, which the app polls until it ends: a minute at most.
+    // Finalize is an async execution, which the app polls for up to about 320 s; a minute here.
     await expect(page.getByText('Final', { exact: true })).toBeVisible({ timeout: 60_000 })
   })
 

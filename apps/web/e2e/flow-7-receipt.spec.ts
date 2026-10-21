@@ -30,6 +30,19 @@ async function fillItem(
   }
 }
 
+/**
+ * The transaction's four items, with the beer at `beer` and for Bob only. The shared items' "for
+ * …" lists names in person-ID order, which is random in a run, so those aren't read.
+ */
+async function expectItems(page: Page, beer: string): Promise<void> {
+  const items = page.getByRole('region', { name: 'Items', exact: true }).getByRole('listitem')
+  await expect(items).toHaveCount(4)
+  await expect(items.filter({ hasText: 'Beer' })).toHaveText(
+    `Beer: ${beer}, for ${testName('Bob')}`,
+  )
+  await expect(items.filter({ hasText: 'Member discount' })).toContainText('$0.60')
+}
+
 // The house this test adds, archived after it even when it fails. Its receipt file goes when
 // the run's users are deleted: nobody else is in its team, so Gus's deletion purges the house,
 // receipts included (identity-and-invites.md#purging-a-group).
@@ -77,7 +90,7 @@ test('adds an itemised receipt with a photo, then changes an item', async ({ pag
         `${cara}: for them $3.00`,
       ],
     )
-    await expect(page.getByRole('region', { name: 'Items', exact: true })).toContainText('Beer')
+    await expectItems(page, '$20.00')
   })
 
   await test.step('attaches a photo of the receipt', async () => {
@@ -99,6 +112,8 @@ test('adds an itemised receipt with a photo, then changes an item', async ({ pag
         `${cara}: for them $3.00`,
       ],
     )
+    // Still itemised, with the new beer.
+    await expectItems(page, '$26.00')
     // The photo stays with it.
     await page.goto(`/transactions/${expenseId}`)
     await expect(page.getByRole('img', { name: 'Receipt 1 of 1', exact: true })).toBeVisible()

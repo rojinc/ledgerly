@@ -25,60 +25,64 @@ test('lends $50 to someone not registered, who then signs in and sees it', async
   browser,
 }) => {
   const ivy = setupUser('ivy')
-  const pat = testName('Pat')
+  const pia = testName('Pia')
   // A label no setup user has, so this address belongs to nobody yet: a claim, not the pending
   // path (`sam` is flow 2's user).
-  const email = testEmail('pat')
+  const email = testEmail('pia')
   await logIn(page, ivy)
 
-  await test.step('a lend & borrow with Pat, by email', async () => {
+  await test.step('a lend & borrow with Pia, by email', async () => {
     await page.goto('/people/new')
-    await page.getByLabel('Name', { exact: true }).fill(pat)
+    await page.getByLabel('Name', { exact: true }).fill(pia)
     await page.getByLabel('Email (optional)', { exact: true }).fill(email)
     await page.getByRole('button', { name: 'Create', exact: true }).click()
     await page.waitForURL(/\/people\/(?!new$)[^/]+$/)
     groupId = new URL(page.url()).pathname.split('/').at(-1)
-    await expect(page.getByRole('heading', { level: 1, name: pat })).toBeVisible()
+    await expect(page.getByRole('heading', { level: 1, name: pia })).toBeVisible()
     await expect(page.getByText('Not joined yet', { exact: true })).toBeVisible()
   })
 
-  await test.step('lends Pat $50', async () => {
+  await test.step('lends Pia $50', async () => {
     // The entry form comes with the balance.
     await expectBalanceShown(page, balance(page, 'All square'), balance(page, 'Not available yet'))
-    await page.getByRole('radio', { name: `I lent ${pat} money`, exact: true }).check()
+    await page.getByRole('radio', { name: `I lent ${pia} money`, exact: true }).check()
     await page.getByLabel('Amount (AUD)').fill('50')
     await page.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(page.getByText('Added.', { exact: true })).toBeVisible()
-    await expect(balance(page, `${pat} owes you $50.00`)).toBeVisible()
+    await expect(balance(page, `${pia} owes you $50.00`)).toBeVisible()
   })
 
-  await test.step('Pat signs in, claims the pair, and sees the loan', async () => {
+  await test.step('Pia signs in, claims the pair, and sees the loan', async () => {
     // Made now, verified, with Ivy's address for them: their first sign-in claims it.
-    const user = await createUser('pat', 'Pat')
-    // Pat's own browser, on the same app, zone and locale as Ivy's.
+    const user = await createUser('pia', 'Pia')
+    // Pia's own browser, on the same app, zone and locale as Ivy's.
     const { baseURL, timezoneId, locale } = test.info().project.use
     const context = await browser.newContext({ baseURL, timezoneId, locale })
     try {
-      const patPage = await context.newPage()
-      await logIn(patPage, user)
+      const piaPage = await context.newPage()
+      await logIn(piaPage, user)
       await expect(
-        patPage.getByText('We found 1 group you were added to.', { exact: true }),
+        piaPage.getByText('We found 1 group you were added to.', { exact: true }),
       ).toBeVisible()
-      await patPage.goto(`/people/${groupId}`)
+      await piaPage.goto(`/people/${groupId}`)
       await expectBalanceShown(
-        patPage,
-        balance(patPage, `You owe ${ivy.name} $50.00`),
-        balance(patPage, 'Not available yet'),
+        piaPage,
+        balance(piaPage, `You owe ${ivy.name} $50.00`),
+        balance(piaPage, 'Not available yet'),
       )
     } finally {
       await context.close()
     }
   })
 
-  await test.step('Ivy sees that Pat joined', async () => {
+  await test.step('Ivy sees that Pia joined', async () => {
     await page.reload()
     // Loaded first: "Not joined yet" is part of the details the balance comes with.
-    await expect(balance(page, `${pat} owes you $50.00`)).toBeVisible()
+    await expectBalanceShown(
+      page,
+      balance(page, `${pia} owes you $50.00`),
+      balance(page, 'Not available yet'),
+    )
     await expect(page.getByText('Not joined yet', { exact: true })).toHaveCount(0)
   })
 })

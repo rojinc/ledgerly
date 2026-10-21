@@ -43,8 +43,10 @@ test('splits a bill by days present, then marks it paid', async ({ page }) => {
       `${cara}: 61 days, $67.22`,
     ])
     await page.getByRole('button', { name: 'Add bill', exact: true }).click()
-    await page.waitForURL(/\/bills\/[^/]+$/)
+    await page.waitForURL((url) => /^\/bills\/(?!new$)[^/]+$/.test(url.pathname))
     await expect(page.getByRole('heading', { level: 1, name: 'Electricity' })).toBeVisible()
+    // The typed due date, worded "Due …" or "Overdue: it was due …" as the run's date has it.
+    await expect(page.getByText(/due 15 Oct 2026\.$/i)).toBeVisible()
     return new URL(page.url()).pathname.split('/').at(-1) as string
   })
 

@@ -1,8 +1,9 @@
 import { expect, type Page, type TestInfo } from '@playwright/test'
 
-// The statements function's timeout (appwrite/functions.json): a finalize still running when a
-// flow stops waiting for it ends within this.
-const FINALIZE_MS = 300_000
+// The statements function's timeout (appwrite/functions.json), and a margin for a run that starts
+// late after a cold start: a finalize still running when a flow stops waiting for it ends within
+// this.
+const FINALIZE_MS = 300_000 + 30_000
 
 /** The statement's stored status, read in the page through the app's own client, as the user. */
 function statusOf(page: Page, id: string): Promise<string> {

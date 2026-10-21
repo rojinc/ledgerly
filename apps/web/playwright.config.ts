@@ -10,9 +10,9 @@ const envFile = fileURLToPath(new URL('../../.env.local', import.meta.url))
 if (existsSync(envFile)) process.loadEnvFile(envFile)
 
 /**
- * User flows 1–10 (#38, #526) and #512's flows in a real browser: a local Vite server pointed at the dev
- * project by VITE_APPWRITE_ENDPOINT and VITE_APPWRITE_PROJECT_ID, with users made through
- * E2E_APPWRITE_API_KEY (docs/engineering/testing.md#end-to-end).
+ * User flows 1–10 (#38, #526), #512's flows and #525's in a real browser: a local Vite server
+ * pointed at the dev project by VITE_APPWRITE_ENDPOINT and VITE_APPWRITE_PROJECT_ID, with users
+ * made through E2E_APPWRITE_API_KEY (docs/engineering/testing.md#end-to-end).
  */
 export default defineConfig({
   testDir: 'e2e',

@@ -1,8 +1,9 @@
 import { expect, type Locator, type Page } from '@playwright/test'
 
 /**
- * Adds a house from New house, splitting bills `split` by default, and returns its ID from the
- * house page saving opens. Its time zone, region and currency are the profile's.
+ * Adds a house from New house, splitting bills `split` by default, and returns its ID as soon as
+ * the house page saving opens has it, so the caller can archive it whatever comes next. Its time
+ * zone, region and currency are the profile's.
  */
 export async function addHouse(
   page: Page,
@@ -13,11 +14,9 @@ export async function addHouse(
   await page.getByLabel('House name').fill(name)
   await page.getByLabel('Split bills').selectOption({ label: split })
   await page.getByRole('button', { name: 'Create house', exact: true }).click()
-  // The ID first, so a check that fails after saving still leaves something to archive.
   await page.waitForURL((url) => /^\/groups\/(?!new-house$)[^/]+$/.test(url.pathname))
   const groupId = /^\/groups\/([^/]+)$/.exec(new URL(page.url()).pathname)?.[1]
   if (!groupId) throw new Error('Saving the house didn’t open its page')
-  await expect(page.getByRole('heading', { level: 1, name, exact: true })).toBeVisible()
   return groupId
 }
 
