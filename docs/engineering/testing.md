@@ -79,7 +79,7 @@ npm run test:e2e -w @ledgerly/web         # the e2e flows against dev (below)
 
 ### Coverage
 
-Every v1 behaviour in [features](../product/features.md), and the spec that drives it end to end, or the unit tests that cover it and why e2e can't ([#555](https://github.com/rojinc/ledgerly/issues/555)). No spec reads an inbox, so an email is checked by the app saying it went, and its contents by unit tests. **Where they run:** every spec runs on dev after each deploy, and [on the mock](#on-the-mock) on every pull request that changes code, sign-up, PDFs and file storage included. Rows marked *to come* are #555's later PRs.
+Every v1 behaviour in [features](../product/features.md), and the spec that drives it end to end, or the unit tests that cover it and why e2e can't ([#555](https://github.com/rojinc/ledgerly/issues/555)). No spec reads an inbox, so an email is checked by the app saying it went, and its contents by unit tests. **Where they run:** every spec runs [on the mock](#on-the-mock) on every pull request that changes code, sign-up, PDFs and file storage included, and on dev after each deploy once the e2e key exists (#78). Rows marked *to come* are #555's later PRs.
 
 | Feature | Driven by | Or unit tests, and why |
 | --- | --- | --- |
@@ -87,9 +87,9 @@ Every v1 behaviour in [features](../product/features.md), and the spec that driv
 | F-01 email code, set and change a password; change of email, Sign out other devices | *to come* | |
 | F-01 reset by an emailed link | | `recover-page`, `recover-complete-page`, `login-page`: the secret only comes by email |
 | F-02 verify, then claim | `flow-1` (verified through the API) | Invites need it: `invite-member`, `identity/test/invites` |
-| F-03 profile | `email-settings`: name, region, currency, reload | |
+| F-03 profile | `email-settings`: name, time zone, region, currency, reload | The stored time zone: `identity/test/profile` |
 | F-04 business details on an invoice | *to come* | |
-| F-06 delete account; export your data | `account-delete`: deletion, then `profile.csv` and `my-records.csv` | |
+| F-06 delete account; export your data | `account-delete`: `profile.csv` and `my-records.csv`, then deletion | `my-records.csv`'s rows: `export`, as Fay has no shares |
 | F-07 the getting-started guide | `flow-1`, `flow-2`; step 2 and its end, `flow-9` | Hide: `getting-started` |
 | F-08 privacy policy and terms pages | `flow-1`: Terms of use from sign-up, and Back; `email-settings`: Profile's Privacy policy link | The renderer, the pages signed in and out, and every link: `markdown`, `legal-page`, `signup-page`, `login-page`, `invite-page`, `profile-page` |
 | F-10 create each group type | `flow-2`, `flow-6`, `flow-9` | |
@@ -98,19 +98,19 @@ Every v1 behaviour in [features](../product/features.md), and the spec that driv
 | F-13 moving in and out | `flow-6`, `account-delete` | |
 | F-14 activity | `flow-3` | |
 | F-15 archive, unarchive, delete | `group-delete`, `account-delete` | |
-| F-20–F-28 employer, shifts, schedules, timer, expenses, payments, balance | `flow-2`, `flow-3`, `flow-4`, `skip-dates`, `schedule-pause`; start and end with a break, *to come* | Auto-confirm and the 12 h reminder: `scheduler/test/auto-post`, `reminders`, since a day must pass |
-| F-29 invoices: draft, finalize, send, number, PDF | `flow-5`; void and reissue *to come* | Close period now (the house's is `flow-8`): `close`, `statements`; auto-finalize and auto-send: `auto-send`, timed |
+| F-20–F-28 employer, shifts, schedules, timer, expenses, payments, balance | `flow-2`, `flow-3`, `flow-4`, `skip-dates`, `schedule-pause`; start and end with a break, *to come* | Auto-confirm and the 12 h reminder: `scheduler/test/auto-post`, `scheduler/test/reminders`, since a day must pass |
+| F-29 invoices: draft, finalize, send, number, PDF | `flow-5`; void and reissue *to come* | Close period now (the house's is `flow-8`): `statements/test/close` and the web's `statements`; auto-finalize and auto-send: `statements/test/auto-send`, timed |
 | F-30 a rate change affects the future only | `flow-3` | |
 | F-40 housemates; invite by email | `flow-6`, `account-delete` | Accepting: `invite-page`, `accept-invite` |
-| F-41–F-48 house expenses, bills, items, receipts, recurring, settle up, divide, locks | `flow-6`, `flow-7`, `flow-8`; split modes, recurring, the divide's contents and PDF *to come* | Who may add and edit: `transactions`, `transactions-update`; a PDF receipt: `receipts-section` |
+| F-41–F-48 house expenses, bills, items, receipts, recurring, settle up, divide, locks | `flow-6`, `flow-7`, `flow-8`; split modes, recurring, the period so far, the divide's contents and PDF *to come* | Who may add and edit: the web's `transactions`, `ledger/test/transactions-update`; a PDF receipt: `receipts-section` |
 | F-50, F-51 personal bills | `flow-10` | Reminders before due (F-52): `scheduler/test/bills`, timed |
 | F-53, F-54 spending and income | income: `flow-4`; spending *to come* | |
-| F-60–F-63 lend and borrow | `flow-9` (with a part repayment and a reminder), `flow-1` | The reminder email: `identity/test/reminders` |
+| F-60–F-63 lend and borrow | `flow-9` (with a part repayment and a reminder), `flow-1` | Money borrowed (F-61): `pair-values`; the reminder email: `identity/test/reminders` |
 | F-70 calendar | `flow-2`, `flow-3` | Colours: `calendar-page` |
 | F-71 history filters, search and all groups | `flow-4` | |
 | F-72 CSV export | `flow-4` | |
 | F-80 summary email | `email-settings`: the frequency stays | The email: `scheduler/test/summaries`, timed |
-| F-81 notifications | `email-settings`; "added to a group" in `flow-1`, `flow-9` | The emails: `draft-reissue`, `bills`, `reminders`, `transaction-changes`, `pending-groups` |
+| F-81 notifications | `email-settings`; "added to a group" in `flow-1`, `flow-9` | The emails: `statements/test/draft-reissue`, `scheduler/test/bills`, `scheduler/test/reminders`, `scheduler/test/transaction-changes`, `identity/test/pending-groups` |
 | F-82 work-hours cap | `flow-3` | |
 
 ### On the mock

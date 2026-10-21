@@ -51,11 +51,15 @@ test('refuses a delete for 24 hours after a password is set, and keeps the group
     .getByRole('alertdialog')
     .getByRole('button', { name: 'Unarchive group', exact: true })
     .click()
+  // From the click on, afterEach archives it, even if a check below fails (#570's W40).
+  archived = false
   await expect(
     page.getByText('This group is unarchived, so it can be changed again.', { exact: true }),
   ).toBeVisible()
   await expect(page.getByText(/^This group is archived\./)).toHaveCount(0)
-  archived = false
+  // Stored, not just shown: after a reload it can be archived again.
+  await page.reload()
+  await expect(page.getByRole('button', { name: 'Archive group', exact: true })).toBeVisible()
 })
 
 test('deletes an archived group once DELETE is typed, after a link to Export', async ({ page }) => {
