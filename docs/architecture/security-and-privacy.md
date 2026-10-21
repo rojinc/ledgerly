@@ -100,7 +100,7 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 | Appwrite API key (deploy) | GitHub Actions secret per environment | CI deploy |
 | `E2E_APPWRITE_API_KEY` (the dev project, `users.read` and `users.write`) | GitHub Actions secret; for a person the owner gives it to, their own `.env.local` | e2e: creates and verifies test users, then labels them `e2e` and blocks them at teardown, for the `account` job to delete, which deletes only a labelled user whose address, and every identity of whose person, is a run's test address ([finishing purges](identity-and-invites.md#finishing-purges)). Those checks guard against mistakes, not against the key: it can already act as any user. It deletes outright a user it can't label and block, as before ([testing](../engineering/testing.md#end-to-end)). Dev has real users, so it can read and change any of them: it's handled like the deploy key. |
 | Resend API key | Appwrite project variable `RESEND_API_KEY` | functions |
-| SMS provider keys (M3) | Appwrite project variables | `identity` |
+| SMS provider keys (after v1, [#40](https://github.com/rojinc/ledgerly/issues/40)) | Appwrite project variables | `identity` |
 | Sentry DSN (M4) | Project variable / Vite env | functions, web |
 | Stripe restricted key, once billing is built ([billing](billing.md#security-and-privacy)) | Function variable `STRIPE_SECRET_KEY` on `billing` and `account` only (each its own restricted key), not a project variable; test mode on dev, live on prod | `billing`, `account` |
 | Stripe webhook signing secret, only if the webhook design is chosen ([billing](billing.md#if-the-lead-picks-the-webhook-instead)) | Function variable `STRIPE_WEBHOOK_SECRET` on `stripe-webhook` only | `stripe-webhook` |
