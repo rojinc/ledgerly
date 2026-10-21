@@ -20,6 +20,7 @@ const THURSDAYS: ScheduleValues = {
   startsOn: '2026-10-22',
   skipPublicHolidays: true,
   autoPost: false,
+  skipped: [],
 }
 
 describe('toScheduleInput', () => {
@@ -38,12 +39,20 @@ describe('toScheduleInput', () => {
     expect(scheduleInputSchema.safeParse(input).success).toBe(true)
   })
 
-  it('keeps what the form doesn’t show, such as an end date and skipped days', () => {
-    const input = toScheduleInput(THURSDAYS, IDS, 'AUD', {
-      endsOn: '2026-12-31',
-      exdates: ['2026-11-05'],
-    })
-    expect(input).toMatchObject({ endsOn: '2026-12-31', exdates: ['2026-11-05'] })
+  it('keeps what the form doesn’t show, such as an end date', () => {
+    const input = toScheduleInput(THURSDAYS, IDS, 'AUD', { endsOn: '2026-12-31' })
+    expect(input).toMatchObject({ endsOn: '2026-12-31' })
+  })
+
+  it('sends the skipped dates, past ones included, in date order and once each (#487)', () => {
+    const skipped = ['2026-11-12', '2026-10-01', '2026-11-12', '2026-11-05']
+    const input = toScheduleInput({ ...THURSDAYS, skipped }, IDS, 'AUD')
+    expect(input.exdates).toEqual(['2026-10-01', '2026-11-05', '2026-11-12'])
+    expect(scheduleInputSchema.safeParse(input).success).toBe(true)
+  })
+
+  it('leaves exdates out when nothing is skipped', () => {
+    expect(toScheduleInput(THURSDAYS, IDS, 'AUD')).not.toHaveProperty('exdates')
   })
 
   it('sends NaN for hours or a rate that aren’t numbers, so the schema refuses them', () => {
@@ -79,6 +88,11 @@ describe('fromSchedule', () => {
     expect(toScheduleInput(values as ScheduleValues, IDS, 'AUD').template).toEqual({
       shift: { minutes: 300, rateCents: 2550 },
     })
+  })
+
+  it('reads every stored skipped date, past ones too, so a save keeps them (#487)', () => {
+    const exdates = ['2026-11-05', '2025-12-25']
+    expect(fromSchedule({ ...stored, exdates }, 'AUD')?.skipped).toEqual(exdates)
   })
 
   it('can’t show a rule it never builds, or a template that isn’t a shift', () => {
