@@ -48,7 +48,7 @@ type Err    = { ok: false; error: { code: ErrorCode; message: string; details?: 
 - Creating something takes a **client-generated `id`** (`ID.unique()`). If a row with that ID exists **with the same content**, the function returns it with 200. If the content differs, it returns `CONFLICT`. So the app can safely retry after a timeout or a lost connection.
 - Updates are naturally idempotent: the same body twice gives the same result.
 - **Exception:** `identity POST /reminders` answers any body with a used `id`, from the same sender in the same group, with the stored `{ sentAt }`. It sends the email again under the same key only while that key is live (under 23 hours) and the address and balance checks pass again ([reminders](identity-and-invites.md#reminders), step 3).
-- **Exception:** `groups POST /groups` compares only the fields the body gives, and never `counterpart`, since resolving it again could find someone else. So a retry that leaves a field out, or names another counterpart, gets the stored `{ group, members }`.
+- **Exception:** `groups POST /groups` compares only the fields the body gives, and never `counterpart`, since resolving it again could find someone else. So a retry that leaves a field out, or names another counterpart, gets the stored `{ group, members }`, but only from the group's owner while they're still active in it. Anyone else gets `CONFLICT`.
 
 ## Shared types
 
@@ -69,7 +69,7 @@ type SplitSpec =  // see ledger.md#splits
 
 ```ts
 type TransactionInput = {
-  id: string                    // ID.unique() from the client; never ending in _ and 8 digits (see ledger)
+  id: string                    // ID.unique() from the client; a new one never ends in _ and 8 digits (see ledger)
   groupId: string
   kind: 'shift' | 'expense' | 'bill' | 'payment' | 'loan' | 'income' | 'adjustment'
   date: LocalDate               // in the group's timezone; at most 1 year in the future
@@ -340,10 +340,12 @@ Details: [Statements and invoices](statements.md).
 functions/<name>/
   src/main.ts           <name>Routes(services), the route list; export default createHandler(<name>Routes(servicesFromRequest))
   src/services.ts       the Appwrite services, email and clock the routes use, so tests can pass fakes; servicesFromRequest builds the real ones
-  src/routes/<route>.ts a route's handler; a few hold two routes, or a helper one route uses
+  src/routes/<route>.ts a route's handler (identity's pending-groups.ts holds two), and helpers it exports to other routes
+                        or the job (claim.ts, finalize.ts, send.ts); routes/auto-send.ts is only helpers (finalize and the job)
   src/steps/<step>.ts   scheduler only: one file per job step
   src/<file>.ts         code several routes share, and one-off backfills that scripts/ runs
   test/<topic>.test.ts  by route or topic, with fake services
+  test/harness.ts       the fixed clock, fixtures and fakes the tests share
 ```
 
 The body schemas aren't in `functions/`: each route parses its body with its schema from `packages/core/src/schemas/` ([validation](#validation)), one file per function (`account`'s are in `identity.ts`), and `emptyBodySchema` in `common.ts`.
