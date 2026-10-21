@@ -64,7 +64,7 @@ done
 - **`CAPPED`:** that function had more than 2,000 runs since `FROM`, and the read stopped there. The read is `INCOMPLETE`. Read sooner, and post the function's name on #96.
 - **The server refuses the order:** use `{"method":"orderDesc","attribute":"$id"}`, as in the [nightly check](nightly-check.md#a-read).
 
-Then read them. It prints the result line, then one line per run that isn't ok, and one per group of error lines.
+Then read them. It prints the result line, then one line per run that isn't ok, one per group of error lines, and one per merge carried on ([merges that don't finish](#merges-that-dont-finish)).
 
 ```bash
 jq -rs --arg from "$FROM" --arg to "$TO" --arg capped "$CAPPED" --arg failed "$FAILED" '
@@ -108,6 +108,9 @@ jq -rs --arg from "$FROM" --arg to "$TO" --arg capped "$CAPPED" --arg failed "$F
   | ([$notok[] | select(.trigger == "schedule" and (lines | any(has("route")) | not))]
       | group_by(.fn) | map(select(length >= 3))) as $notokRepeating
   | ($gaps | max_by(.gap)) as $worst
+  | [$runs[] | select(.fn == "identity" and .trigger == "schedule")] as $idruns
+  | ([$idruns[] | . as $run | lines[] | select(.event == "merge_carries_on") | . + {run: $run["$id"]}]
+      | group_by([.personId // "-", .intoPersonId // "-"])) as $carried
   | ([$done[] | select(lines | any(has("route")))] | length) as $logged
   | (if $failed != "" then "FETCH FAILED"
      elif any($runs[]; .status == "waiting" or .status == "processing") then "TOO EARLY"
@@ -115,7 +118,7 @@ jq -rs --arg from "$FROM" --arg to "$TO" --arg capped "$CAPPED" --arg failed "$F
      elif $capped != "" or $logged < ($done | length) then "INCOMPLETE"
      elif ($groups | length) > 0 or ($notok | length) > 0 then "LOOK"
      else "OK" end) as $verdict
-  | "errors \($from) → \($to) · runs \($fns | map(. as $fn | "\($fn) \([$runs[] | select(.fn == $fn)] | length)") | join(", ")) · not ok \($notok | length) · longest gap \($worst.gap) min (\($worst.fn)) · logged \($logged) of \($done | length) · error lines \($groups | map(length) | add // 0) in \($groups | length) groups · repeating \(($repeating | length) + ($notokRepeating | length)) · email blocked \($lines | map(select(blocked)) | length) · \($verdict)",
+  | "errors \($from) → \($to) · runs \($fns | map(. as $fn | "\($fn) \([$runs[] | select(.fn == $fn)] | length)") | join(", ")) · not ok \($notok | length) · longest gap \($worst.gap) min (\($worst.fn)) · logged \($logged) of \($done | length) · error lines \($groups | map(length) | add // 0) in \($groups | length) groups · repeating \(($repeating | length) + ($notokRepeating | length)) · email blocked \($lines | map(select(blocked)) | length) · merges carried on \($carried | length) · \($verdict)",
     ($notok[] | "not ok \(.fn) \(.["$id"]) \(at) \(.trigger) \(.status) \(.responseStatusCode // "-")"),
     ($groups[] | .[0] as $l | [
       (map(.run) | unique | length | if . == 1 then "1 run" else "\(.) runs" end),
@@ -125,7 +128,8 @@ jq -rs --arg from "$FROM" --arg to "$TO" --arg capped "$CAPPED" --arg failed "$F
       ($l.outcome // empty | "outcome \(.)"),
       ($l | ids | select(. != "")),
       "first \(map(.at) | min) last \(map(.at) | max)"
-    ] | join(" · "))
+    ] | join(" · ")),
+    ($carried[] | "carried on · \(map(.run) | unique | length) of \($idruns | length) identity runs · personId \(.[0].personId // "-") into \(.[0].intoPersonId // "-")")
 ' "$RUNS"
 rm "$RUNS"
 ```
@@ -152,12 +156,19 @@ Every line prints only fixed fields: the function, the run's ID and time, the tr
 - **A repeating group** is the same function, event or route, error name and IDs in 3 or more runs: three hourly tries that all failed. A one-off failure that the next run fixes shows up once or twice.
 - **The groups of the scheduled steps** are each tried every run, so one that keeps failing repeats. Its first and last times show how long it's been failing, within this window.
 
+## Merges that don't finish
+
+A merge that can't finish is tried every hour by `identity`'s scheduled run, which logs it as `merge_carries_on` ([finishing merges](../architecture/identity-and-invites.md#finishing-merges)). That line is a `log`, not an error, so the read above skips it, and lists it on its own instead: the merged person's ID, the one it goes into, and in how many of the window's `identity` runs it was carried on. A merge whose run failed (`merge_run_failed`) is an error line, so it's in the groups above.
+
+- **It doesn't change the verdict:** a merge can wait a while for a group that's busy, or for someone's leave to finish.
+- **Post on #96 a merge that's carried on at two reads in a row** (it's stuck), with its IDs.
+
 ## The result
 
 Post the result line in the same comment on #299 as the nightly check's result, under it:
 
 ```text
-errors 2026-10-21T02:38:27Z → 2026-10-22T02:20:00Z · runs scheduler 24, statements 24, account 24, identity 31, groups 5, ledger 140 · not ok 0 · longest gap 60 min (scheduler) · logged 248 of 248 · error lines 0 in 0 groups · repeating 0 · email blocked 72 · OK
+errors 2026-10-21T02:38:27Z → 2026-10-22T02:20:00Z · runs scheduler 24, statements 24, account 24, identity 31, groups 5, ledger 140 · not ok 0 · longest gap 60 min (scheduler) · logged 248 of 248 · error lines 0 in 0 groups · repeating 0 · email blocked 72 · merges carried on 0 · OK
 ```
 
 AI A notes it in #299's section 1 at each sweep, with the nightly check's count.
