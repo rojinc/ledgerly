@@ -21,6 +21,8 @@ import {
 const root = join(import.meta.dirname, '..')
 const FROM = '2026-10-21T02:00:00Z'
 const TO = '2026-10-21T06:00:00Z'
+// 20 minutes after TO, as a read's default --to is.
+const NOW = Date.parse('2026-10-21T06:20:00Z')
 
 let ids = 0
 /** One run of `fn` at `time` (HH:MM on the 21st), answering 200 with its request line. */
@@ -231,6 +233,18 @@ describe('the error lines', () => {
     assert.match(result.line, / · logged 16 of 16 · error lines 2 in 2 groups · /)
   })
 
+  it('list a merge carried on, saying to post it at the next read', () => {
+    const carried = run('03:10', {
+      fn: 'identity',
+      lines: [{ event: 'merge_carries_on', personId: 'p1', intoPersonId: 'p2' }],
+    })
+    const result = errors(everyFunction(carried))
+    assert.equal(result.verdict, 'OK')
+    assert.deepEqual(result.notes, [
+      'carried on · 1 of 5 identity runs · personId p1 into p2 · post it if it is carried on at the next read too',
+    ])
+  })
+
   it('keep two groups apart by their IDs alone', () => {
     const twice = run('03:10', {
       fn: 'statements',
@@ -293,7 +307,9 @@ describe('the skipped events', () => {
   it('are LEVELS’ log and warn events and the nightly check’s three, here and in error-lines.md', () => {
     const log = readFileSync(join(root, 'packages/server/src/http/log.ts'), 'utf8')
     const levels = log.match(/const LEVELS[^{]*\{([^}]*)\}/)[1]
-    const quiet = [...levels.matchAll(/^\s*(\w+): '(log|warn)',$/gm)].map((match) => match[1])
+    const quiet = [...levels.matchAll(/^\s*(\w+): '(log|warn)',(\s*\/\/.*)?$/gm)].map(
+      (match) => match[1],
+    )
     const expected = [
       ...quiet,
       'nightly_check_finding',
@@ -461,7 +477,6 @@ describe('parseRecords', () => {
 describe('the command', () => {
   const dir = mkdtempSync(join(tmpdir(), 'reads-'))
   after(() => rmSync(dir, { recursive: true }))
-  const NOW = Date.parse('2026-10-21T06:20:00Z')
 
   function files(runs, groups = []) {
     writeFileSync(join(dir, 'runs.jsonl'), runs.map((r) => JSON.stringify(r)).join('\n'))
@@ -470,7 +485,11 @@ describe('the command', () => {
   }
 
   it('prints the two lines to post, from the files, and exits 0', async () => {
-    const { lines, code } = await read(['--from', FROM, ...files(everyFunction())], {}, NOW)
+    const { lines, code } = await read(
+      ['--from', FROM, '--to', TO, ...files(everyFunction())],
+      {},
+      NOW,
+    )
     assert.equal(code, 0)
     assert.deepEqual(lines.slice(0, 2), [
       'Post on #299:',
@@ -485,7 +504,11 @@ describe('the command', () => {
 
   it('exits 1 with the lines for #96 when the read fails, or the error lines need a look', async () => {
     const overdue = [{ $id: 'g9', nextCheckAt: '2026-10-21T01:00:00.000+00:00' }]
-    const failed = await read(['--from', FROM, ...files(everyFunction(), overdue)], {}, NOW)
+    const failed = await read(
+      ['--from', FROM, '--to', TO, ...files(everyFunction(), overdue)],
+      {},
+      NOW,
+    )
     assert.equal(failed.code, 1)
     assert.deepEqual(failed.lines.slice(3), [
       '',
@@ -496,7 +519,7 @@ describe('the command', () => {
       fn: 'statements',
       lines: [{ event: 'draft_failed', groupId: 'g1' }],
     })
-    const look = await read(['--from', FROM, ...files(everyFunction(draft))], {}, NOW)
+    const look = await read(['--from', FROM, '--to', TO, ...files(everyFunction(draft))], {}, NOW)
     assert.equal(look.code, 1)
     assert.match(look.lines[1], / · PASS$/)
     assert.match(look.lines[2], / · LOOK$/)
@@ -505,7 +528,7 @@ describe('the command', () => {
   it('exits 1 for any line under Post on #96, even when it passes and is OK', async () => {
     const removed = { event: 'team_membership_removed', groupId: 'g2', membershipId: 'm1' }
     const runs = everyFunction(run('03:10', { lines: [removed] }))
-    const { lines, code } = await read(['--from', FROM, ...files(runs)], {}, NOW)
+    const { lines, code } = await read(['--from', FROM, '--to', TO, ...files(runs)], {}, NOW)
     assert.match(lines[1], / · removed 1 · .* · PASS$/)
     assert.match(lines[2], / · OK$/)
     assert.deepEqual(lines.slice(3), [
@@ -518,7 +541,11 @@ describe('the command', () => {
 
   it('exits 2 with nothing to post when it’s too early, or the arguments are wrong', async () => {
     const waiting = run('05:50', { status: 'waiting', responseStatusCode: 0 })
-    const early = await read(['--from', FROM, ...files(everyFunction(waiting))], {}, NOW)
+    const early = await read(
+      ['--from', FROM, '--to', TO, ...files(everyFunction(waiting))],
+      {},
+      NOW,
+    )
     assert.equal(early.code, 2)
     assert.match(early.lines[0], /^TOO EARLY/)
     assert.match(early.lines[2], /, not ok 1, .* · FAIL$/)
@@ -530,6 +557,110 @@ describe('the command', () => {
       [2, `--to (${FROM}) has to be after --from.`],
     )
     assert.equal((await read(['--from', FROM, '--fetch'], {}, NOW)).code, 2)
+  })
+
+  it('exits 2 for a run of any function that hasn’t finished, not only the scheduler’s', async () => {
+    const waiting = run('05:50', { fn: 'statements', status: 'waiting', responseStatusCode: 0 })
+    const early = await read(
+      ['--from', FROM, '--to', TO, ...files(everyFunction(waiting))],
+      {},
+      NOW,
+    )
+    assert.equal(early.code, 2)
+    assert.match(early.lines[0], /^TOO EARLY/)
+    assert.match(early.lines[2], / · PASS$/)
+  })
+
+  it('exits 1 on an INCOMPLETE or STUCK error read, even with no lines for #96', async () => {
+    const gone = run('03:10', { fn: 'ledger', trigger: 'http', logs: '' })
+    const incomplete = await read(
+      ['--from', FROM, '--to', TO, ...files(everyFunction(gone))],
+      {},
+      NOW,
+    )
+    assert.match(incomplete.lines[2], / · INCOMPLETE$/)
+    assert.deepEqual([incomplete.lines.length, incomplete.code], [3, 1])
+    // statements runs at 01:42 and 05:42 only: a 240-minute gap.
+    const gap = [
+      ...['scheduler', 'account', 'identity'].flatMap((fn) => hourly(fn, run('05:42', { fn }))),
+      run('01:42', { fn: 'statements' }),
+      run('05:42', { fn: 'statements' }),
+    ]
+    const stuck = await read(['--from', FROM, '--to', TO, ...files(gap)], {}, NOW)
+    assert.match(stuck.lines[2], / · longest gap 240 min \(statements\) · .* · STUCK$/)
+    assert.deepEqual([stuck.lines.length, stuck.code], [3, 1])
+  })
+
+  it('takes --pending as the result line prints it, with a comma and a space', async () => {
+    const deleting = {
+      $id: 'g1',
+      nextCheckAt: null,
+      $createdAt: '2026-10-20T01:00:00.000+00:00',
+      deletingAt: '2026-10-21T01:00Z',
+    }
+    const archived = {
+      $id: 'g2',
+      nextCheckAt: '2026-10-21T01:00:00.000+00:00',
+      archivedAt: '2026-10-21T01:00Z',
+    }
+    const args = ['--from', FROM, '--to', TO, '--pending', 'g2, g1']
+    const { lines, code } = await read(
+      [...args, ...files(everyFunction(), [deleting, archived])],
+      {},
+      NOW,
+    )
+    assert.match(lines[1], / · overdue 2 · pending none · FAIL$/)
+    assert.deepEqual(lines.slice(5), [
+      'overdue g2 due 2026-10-21T01:00:00.000+00:00 deleting - archived 2026-10-21T01:00Z · pending at the last read too',
+      'overdue g1 due never deleting 2026-10-21T01:00Z archived - · pending at the last read too',
+    ])
+    assert.equal(code, 1)
+  })
+
+  it('names a --capped function for #96, but never repeats other text given there', async () => {
+    const args = ['--from', FROM, '--to', TO, '--capped', 'ledger, typed-text']
+    const { lines, code } = await read([...args, ...files(everyFunction())], {}, NOW)
+    assert.match(lines[2], / · INCOMPLETE$/)
+    assert.deepEqual(lines.slice(3), [
+      '',
+      'Post on #96:',
+      'capped ledger: more than 2,000 runs since --from; read sooner',
+    ])
+    assert.ok(!lines.join('\n').includes('typed-text'))
+    assert.equal(code, 1)
+  })
+
+  it('refuses files without --to, which must be where the files end', async () => {
+    const { lines, code } = await read(['--from', FROM, ...files(everyFunction())], {}, NOW)
+    assert.deepEqual(
+      [code, lines[0]],
+      [2, 'With --runs, give --to: the blocks\' "$TO", where the files end.'],
+    )
+  })
+
+  it('exits 2 with the usage, never the argument or the file’s text, when it can’t read them', async () => {
+    const unknown = await read(['--from', FROM, '--bogus-key-text'], {}, NOW)
+    assert.deepEqual(
+      [unknown.code, unknown.lines[0]],
+      [2, "An argument isn't one this script takes (ERR_PARSE_ARGS_UNKNOWN_OPTION)."],
+    )
+    assert.ok(!unknown.lines.join('\n').includes('bogus'))
+    // --pending g1, g2 without quotes: g2 is a stray argument.
+    const unquoted = await read(['--from', FROM, '--pending', 'g1,', 'g2'], {}, NOW)
+    assert.match(unquoted.lines[0], /\(ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL\)\.$/)
+    assert.equal(unquoted.code, 2)
+    const args = ['--from', FROM, '--to', TO]
+    const missing = await read(
+      [...args, '--runs', join(dir, 'none.jsonl'), '--groups', join(dir, 'none.json')],
+      {},
+      NOW,
+    )
+    assert.deepEqual([missing.code, missing.lines[0]], [2, "Can't read --runs's file (ENOENT)."])
+    const [runsArg, runsFile, groupsArg, groupsFile] = files(everyFunction())
+    writeFileSync(groupsFile, 'a private line\n')
+    const bad = await read([...args, runsArg, runsFile, groupsArg, groupsFile], {}, NOW)
+    assert.deepEqual([bad.code, bad.lines[0]], [2, "Can't read --groups's file (SyntaxError)."])
+    assert.ok(!bad.lines.join('\n').includes('private'))
   })
 
   it('runs as a script', () => {
@@ -544,13 +675,45 @@ describe('the command', () => {
     assert.match(out.stdout, /^Post on #299:\n.* · PASS\nerrors .* · OK\n$/)
   })
 
+  it('stops with the error’s name only and exits 2, as a script, when a run can’t be read', () => {
+    // A run with no $createdAt: reading its time throws.
+    const [, runsFile, , groupsFile] = files([
+      { $id: 'x', fn: 'scheduler', trigger: 'schedule', logs: 'a private line' },
+    ])
+    const out = spawnSync(
+      process.execPath,
+      [
+        join(root, 'scripts/reads.mjs'),
+        '--from',
+        FROM,
+        '--to',
+        TO,
+        '--runs',
+        runsFile,
+        '--groups',
+        groupsFile,
+      ],
+      { encoding: 'utf8' },
+    )
+    assert.equal(out.status, 2)
+    assert.equal(
+      out.stdout,
+      'STOPPED: TypeError. Nothing to post: run it again, or read by hand.\n',
+    )
+    assert.equal(out.stderr, '')
+  })
+
   it('counts a group as overdue 2 hours after its time, from now', async () => {
     assert.equal(todate(NOW / 1000 - 7200), '2026-10-21T04:20:00Z')
     const groups = [
       { $id: 'g1', nextCheckAt: '2026-10-21T04:50:00.000+00:00' },
       { $id: 'g2', nextCheckAt: '2026-10-21T03:50:00.000+00:00' },
     ]
-    const { lines } = await read(['--from', FROM, ...files(everyFunction(), groups)], {}, NOW)
+    const { lines } = await read(
+      ['--from', FROM, '--to', TO, ...files(everyFunction(), groups)],
+      {},
+      NOW,
+    )
     assert.match(lines[1], / · overdue 1 · /)
     assert.equal(lines.at(-1), 'overdue g2 due 2026-10-21T03:50:00.000+00:00 deleting - archived -')
   })
@@ -560,22 +723,24 @@ describe('--fetch', () => {
   const KEY = 'test-key-never-printed'
 
   /** A stand-in for the Appwrite API: executions by function and groups, as `GET`s only. */
-  async function serve(data, { status } = {}) {
+  async function serve(data, { status, type = 'general_unauthorized_scope', raw } = {}) {
     const requests = []
     const server = createServer((request, response) => {
       const url = new URL(request.url, 'http://localhost')
       const sent = url.searchParams.getAll('queries[]').map((q) => JSON.parse(q))
       requests.push({
         method: request.method,
+        url: request.url,
         path: url.pathname,
         headers: request.headers,
         queries: sent,
       })
-      if (status) {
-        response.writeHead(status, { 'content-type': 'application/json' })
-        return response.end(
-          JSON.stringify({ message: 'secret detail', type: 'general_unauthorized_scope' }),
-        )
+      if (status || raw !== undefined) {
+        const json = raw === undefined
+        response.writeHead(status ?? 200, {
+          'content-type': json ? 'application/json' : 'text/html',
+        })
+        return response.end(json ? JSON.stringify({ message: 'secret detail', type }) : raw)
       }
       const queries = url.searchParams.getAll('queries[]').map((q) => JSON.parse(q))
       const query = (method) => queries.find((q) => q.method === method)
@@ -632,6 +797,8 @@ describe('--fetch', () => {
       assert.equal(fetched.code, 0)
       assert.match(fetched.lines[2], /, ledger 150 · /)
       assert.ok(api.requests.every((r) => r.method === 'GET'))
+      // The key goes in its header only, never in a URL, which proxies and servers log.
+      assert.ok(api.requests.every((r) => !r.url.includes(KEY)))
       assert.ok(
         api.requests.every(
           (r) =>
@@ -657,6 +824,9 @@ describe('--fetch', () => {
         attribute: 'nextCheckAt',
         values: ['2026-10-21T04:20:00Z'],
       })
+      for (const groups of api.requests.filter((r) => r.path.endsWith('/groups/rows'))) {
+        assert.deepEqual(groups.queries[1], { method: 'limit', values: [100] })
+      }
       assert.ok(!fetched.lines.join('\n').includes(KEY))
     } finally {
       await api.close()
@@ -677,6 +847,37 @@ describe('--fetch', () => {
       ])
     } finally {
       await api.close()
+    }
+  })
+
+  it('prints an error’s type only when it reads as one', async () => {
+    const api = await serve({}, { status: 401, type: 'Key test-key-never-printed is wrong' })
+    try {
+      const failed = await read(['--from', FROM, '--fetch'], api.env, NOW)
+      assert.deepEqual(failed, { lines: ['FETCH FAILED scheduler at offset 0: 401 -'], code: 2 })
+    } finally {
+      await api.close()
+    }
+  })
+
+  it('stops with FETCH FAILED, never the body, when a reply isn’t the JSON it expects', async () => {
+    for (const [status, raw, says] of [
+      [undefined, '<html>a private page</html>', '200 not JSON'],
+      [undefined, 'null', '200 no executions list'],
+      [undefined, '{"executions":"a private value"}', '200 no executions list'],
+      // An edge or proxy's error page: its status, and no type.
+      [502, '<html>a private page</html>', '502 -'],
+    ]) {
+      const api = await serve({}, { status, raw })
+      try {
+        const failed = await read(['--from', FROM, '--fetch'], api.env, NOW)
+        assert.deepEqual(failed, {
+          lines: [`FETCH FAILED scheduler at offset 0: ${says}`],
+          code: 2,
+        })
+      } finally {
+        await api.close()
+      }
     }
   })
 
@@ -717,7 +918,12 @@ describe('--fetch', () => {
   })
 
   it('sends the key only over HTTPS, or to this machine', async () => {
-    for (const endpoint of ['http://cloud.example/v1', 'ftp://cloud.example/v1', 'not a url']) {
+    for (const endpoint of [
+      'http://cloud.example/v1',
+      'http://localhost.example/v1',
+      'ftp://cloud.example/v1',
+      'not a url',
+    ]) {
       const env = { APPWRITE_ENDPOINT: endpoint, APPWRITE_PROJECT_ID: 'p', APPWRITE_API_KEY: KEY }
       const result = await read(
         ['--from', FROM, '--fetch'],
@@ -774,6 +980,12 @@ describe('--fetch', () => {
         Date.parse('2026-10-21T06:20:00Z'),
       )
       assert.match(capped.lines[2], / · INCOMPLETE$/)
+      assert.deepEqual(capped.lines.slice(3), [
+        '',
+        'Post on #96:',
+        'capped groups: more than 2,000 runs since --from; read sooner',
+      ])
+      assert.equal(capped.code, 1)
       assert.equal(
         api.requests.filter((r) => r.path === '/v1/functions/groups/executions').length,
         20,

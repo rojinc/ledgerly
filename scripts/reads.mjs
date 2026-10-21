@@ -1,12 +1,16 @@
 // One read of the nightly check and the error lines (docs/engineering/nightly-check.md and
 // error-lines.md, #553): the runbooks' checks, in Node with built-ins only, ending in the two lines
 // to post on #299. The lead runs it at each read, with the runs and groups the runbooks fetch:
-//   node scripts/reads.mjs --from <the last result's "to"> --runs <file> --groups <file>
-// or fetching them itself, read-only, with the read key:
-//   APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/reads.mjs --from … --fetch
+//   node scripts/reads.mjs --from <the last result's "to"> --to <the blocks' "$TO"> \
+//     --runs <file> --groups <file>
+// or fetching them itself, read-only, with the read key, typed so it stays out of the shell history:
+//   read -rs APPWRITE_API_KEY && export APPWRITE_API_KEY
+//   APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… node scripts/reads.mjs --from … --fetch
+//   unset APPWRITE_API_KEY
 // It prints IDs, counts, times, event and error names only: never a raw line, a body, a name or the
 // key. It exits 0 on PASS and OK, 1 when there's something to post on #96, and 2 when there's
-// nothing to post yet (too early, a fetch that failed, or a wrong argument).
+// nothing to post yet (too early, a fetch that failed, a reply or file it can't read, or a wrong
+// argument).
 import { readFileSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
@@ -344,7 +348,7 @@ export function errorLines(runs, { from, to, capped = '', failed = '' }) {
       }),
       ...carried.map(
         (group) =>
-          `carried on · ${runCount(group)} of ${identityRuns.length} identity runs · personId ${text(or(group[0].personId, '-'))} into ${text(or(group[0].intoPersonId, '-'))}`,
+          `carried on · ${runCount(group)} of ${identityRuns.length} identity runs · personId ${text(or(group[0].personId, '-'))} into ${text(or(group[0].intoPersonId, '-'))} · post it if it is carried on at the next read too`,
       ),
     ],
   }
@@ -376,9 +380,16 @@ export function parseRecords(content) {
 
 class FetchFailed extends Error {}
 
-/** Read-only GETs to the Appwrite API, paging as the runbooks do. Never prints the key. */
+/** An error's `type` from Appwrite, such as `general_unauthorized_scope`, or `-`: never other text. */
+const errorType = (body) =>
+  typeof body?.type === 'string' && /^[a-z0-9_]{1,64}$/.test(body.type) ? body.type : '-'
+
+/**
+ * Read-only GETs to the Appwrite API, paging as the runbooks do. Never prints the key, and never a
+ * reply's body: a reply that isn't JSON, or has no `list` array, is a FETCH FAILED.
+ */
 export async function fetchReads({ endpoint, project, key, from, stale, orderBy = '$createdAt' }) {
-  const get = async (what, path, queries) => {
+  const get = async (what, path, queries, list) => {
     const url = new URL(endpoint.replace(/\/$/, '') + path)
     for (const query of queries) url.searchParams.append('queries[]', JSON.stringify(query))
     let response
@@ -395,13 +406,19 @@ export async function fetchReads({ endpoint, project, key, from, stale, orderBy 
       throw new FetchFailed(`FETCH FAILED ${what}: ${response.status} redirect refused`)
     }
     if (!response.ok) {
-      const type = await response.json().then(
-        (body) => body.type,
-        () => undefined,
-      )
-      throw new FetchFailed(`FETCH FAILED ${what}: ${response.status} ${type ?? '-'}`)
+      const type = await response.json().then(errorType, () => '-')
+      throw new FetchFailed(`FETCH FAILED ${what}: ${response.status} ${type}`)
     }
-    return response.json()
+    let body
+    try {
+      body = await response.json()
+    } catch {
+      throw new FetchFailed(`FETCH FAILED ${what}: ${response.status} not JSON`)
+    }
+    if (!Array.isArray(body?.[list])) {
+      throw new FetchFailed(`FETCH FAILED ${what}: ${response.status} no ${list} list`)
+    }
+    return body[list]
   }
   const order = { method: 'orderDesc', attribute: orderBy }
   const page = (offset) => [
@@ -412,11 +429,13 @@ export async function fetchReads({ endpoint, project, key, from, stale, orderBy 
   const runs = []
   // The nightly check's: the scheduler's scheduled runs, 3 pages of 100.
   for (const offset of [0, 100, 200]) {
-    const body = await get(`scheduler at offset ${offset}`, '/functions/scheduler/executions', [
-      { method: 'equal', attribute: 'trigger', values: ['schedule'] },
-      ...page(offset),
-    ])
-    runs.push(...(body.executions ?? []).map((run) => ({ ...run, fn: 'scheduler' })))
+    const executions = await get(
+      `scheduler at offset ${offset}`,
+      '/functions/scheduler/executions',
+      [{ method: 'equal', attribute: 'trigger', values: ['schedule'] }, ...page(offset)],
+      'executions',
+    )
+    runs.push(...executions.map((run) => ({ ...run, fn: 'scheduler' })))
   }
   // The error lines': every function's runs, back past `from`, at most 2,000 each.
   const capped = []
@@ -426,12 +445,14 @@ export async function fetchReads({ endpoint, project, key, from, stale, orderBy 
         capped.push(fn)
         break
       }
-      const body = await get(
-        `${fn} at offset ${offset}`,
-        `/functions/${fn}/executions`,
-        page(offset),
-      )
-      const executions = (body.executions ?? []).map((run) => ({ ...run, fn }))
+      const executions = (
+        await get(
+          `${fn} at offset ${offset}`,
+          `/functions/${fn}/executions`,
+          page(offset),
+          'executions',
+        )
+      ).map((run) => ({ ...run, fn }))
       runs.push(...executions)
       if (executions.length < 100 || at(executions.at(-1)) < from) break
     }
@@ -442,11 +463,13 @@ export async function fetchReads({ endpoint, project, key, from, stale, orderBy 
     ['groups', { method: 'lessThan', attribute: 'nextCheckAt', values: [stale] }],
     ['groups never due', { method: 'isNull', attribute: 'nextCheckAt' }],
   ]) {
-    const body = await get(what, '/tablesdb/main/tables/groups/rows', [
-      query,
-      { method: 'limit', values: [100] },
-    ])
-    groups.push(...(body.rows ?? []))
+    const rows = await get(
+      what,
+      '/tablesdb/main/tables/groups/rows',
+      [query, { method: 'limit', values: [100] }],
+      'rows',
+    )
+    groups.push(...rows)
   }
   return { runs, groups, capped: capped.map((fn) => ` ${fn}`).join('') }
 }
@@ -455,29 +478,36 @@ const TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/
 
 /** The whole read: the lines to print, and the exit code. */
 export async function read(args, env = process.env, now = Date.now()) {
-  const { values } = parseArgs({
-    args,
-    options: {
-      from: { type: 'string' },
-      to: { type: 'string' },
-      pending: { type: 'string' },
-      runs: { type: 'string' },
-      groups: { type: 'string' },
-      capped: { type: 'string' },
-      fetch: { type: 'boolean' },
-      'order-by-id': { type: 'boolean' },
-    },
-  })
-  const to = values.to ?? todate(now / 1000 - 1200)
-  const stale = todate(now / 1000 - 7200)
   const usage = (problem) => ({
     lines: [
       problem,
-      "Use: node scripts/reads.mjs --from <the last result's \"to\"> [--to <time>] [--pending '<IDs>']",
-      "       (--runs <file> --groups <file> [--capped '<functions>'] | --fetch [--order-by-id])",
+      "Use: node scripts/reads.mjs --from <the last result's \"to\"> [--pending '<IDs>']",
+      '       (--fetch [--to <time>] [--order-by-id]',
+      "        | --runs <file> --groups <file> --to <the blocks' \"$TO\"> [--capped '<functions>'])",
     ],
     code: 2,
   })
+  let values
+  try {
+    ;({ values } = parseArgs({
+      args,
+      options: {
+        from: { type: 'string' },
+        to: { type: 'string' },
+        pending: { type: 'string' },
+        runs: { type: 'string' },
+        groups: { type: 'string' },
+        capped: { type: 'string' },
+        fetch: { type: 'boolean' },
+        'order-by-id': { type: 'boolean' },
+      },
+    }))
+  } catch (error) {
+    // Its code only: the message would repeat the argument, which could be anything typed.
+    return usage(`An argument isn't one this script takes (${error.code ?? error.name}).`)
+  }
+  const to = values.to ?? todate(now / 1000 - 1200)
+  const stale = todate(now / 1000 - 7200)
   if (!values.from || !TIME.test(values.from) || !TIME.test(to)) {
     return usage('--from, and --to if given, are UTC times such as 2026-10-21T02:38:27Z.')
   }
@@ -516,8 +546,17 @@ export async function read(args, env = process.env, now = Date.now()) {
       throw error
     }
   } else if (values.runs && values.groups) {
-    runs = parseRecords(readFileSync(values.runs, 'utf8'))
-    groups = parseRecords(readFileSync(values.groups, 'utf8'))
+    // The files end at the blocks' TO, not at 20 minutes ago: a later --to would pass unread time.
+    if (!values.to) return usage('With --runs, give --to: the blocks\' "$TO", where the files end.')
+    let reading = '--runs'
+    try {
+      runs = parseRecords(readFileSync(values.runs, 'utf8'))
+      reading = '--groups'
+      groups = parseRecords(readFileSync(values.groups, 'utf8'))
+    } catch (error) {
+      // Its code or name only: a parse error's message quotes the file.
+      return usage(`Can't read ${reading}'s file (${error.code ?? error.name}).`)
+    }
   } else {
     return usage('Give --runs and --groups, or --fetch.')
   }
@@ -536,7 +575,16 @@ export async function read(args, env = process.env, now = Date.now()) {
     },
   )
   const errors = errorLines(runs, { from, to, capped })
-  const notes = [...nightly.notes, ...errors.notes]
+  const notes = [
+    ...nightly.notes,
+    ...errors.notes,
+    // Outside errorLines, whose lines match the runbook's jq: the fetch there prints CAPPED itself.
+    // Only names in FUNCTIONS, so --capped's own text is never repeated.
+    ...capped
+      .split(' ')
+      .filter((fn) => FUNCTIONS.includes(fn))
+      .map((fn) => `capped ${fn}: more than 2,000 runs since --from; read sooner`),
+  ]
   if (nightly.tooEarly || errors.verdict === 'TOO EARLY') {
     return {
       lines: [
@@ -562,7 +610,13 @@ export async function read(args, env = process.env, now = Date.now()) {
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
-  const { lines: out, code } = await read(process.argv.slice(2))
-  console.log(out.join('\n'))
-  process.exit(code)
+  try {
+    const { lines: out, code } = await read(process.argv.slice(2))
+    console.log(out.join('\n'))
+    process.exit(code)
+  } catch (error) {
+    // Its name only: a message or a stack could quote a reply or a file.
+    console.log(`STOPPED: ${error.name}. Nothing to post: run it again, or read by hand.`)
+    process.exit(2)
+  }
 }
