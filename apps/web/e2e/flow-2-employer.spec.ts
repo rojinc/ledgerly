@@ -33,7 +33,7 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   const billing = testEmail('acme-billing')
   groupId = await addEmployer(page, employer, billing)
   // Its settings, as saved.
-  await expect(page.getByLabel('Billing emails')).toHaveValue(billing)
+  await expect(page.getByLabel('Billing emails', { exact: true })).toHaveValue(billing)
   await expect(page.getByLabel('Default hourly rate (AUD)')).toHaveValue('25.00')
   await expect(page.getByLabel('Invoice cycle')).toHaveValue('monthly')
   await expect(page.getByLabel('Payment terms (days)')).toHaveValue('14')

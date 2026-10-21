@@ -18,11 +18,11 @@ test.afterEach(async ({ page }) => {
   if (groupId && !archived) await archiveEmployer(page, groupId)
 })
 
-/** Adds an employer, archives it, and opens Delete group from its settings. */
-async function archivedEmployer(page: Page, label: string): Promise<string> {
-  const name = `${label} ${runId()}`
+/** Adds `who`'s employer, archives it, and opens Delete group from its settings. */
+async function archivedEmployer(page: Page, who: 'ann' | 'bea'): Promise<string> {
+  const name = `Co of ${who} ${runId()}`
   await page.goto('/groups/new-employer')
-  groupId = await addEmployer(page, name, testEmail(`${label.toLowerCase()}-billing`))
+  groupId = await addEmployer(page, name, testEmail(`${who}-billing`))
   await archiveEmployer(page, groupId)
   archived = true
   // Its admin, with nobody else joined, gets Delete group beside Unarchive.
@@ -36,7 +36,7 @@ test('refuses a delete for 24 hours after a password is set, and keeps the group
   page,
 }) => {
   await logIn(page, setupUser('ann'))
-  await archivedEmployer(page, 'Ann Co')
+  await archivedEmployer(page, 'ann')
   await page.getByLabel('Type DELETE to confirm').fill('DELETE')
   await page.getByRole('button', { name: 'Delete group', exact: true }).click()
   await expect(page.getByRole('alert')).toContainText('changed in the last 24 hours')
@@ -46,7 +46,7 @@ test('refuses a delete for 24 hours after a password is set, and keeps the group
 
 test('deletes an archived group once DELETE is typed, after a link to Export', async ({ page }) => {
   await logInWithToken(page, setupUser('bea'))
-  const name = await archivedEmployer(page, 'Bea Co')
+  const name = await archivedEmployer(page, 'bea')
   await expect(page.getByRole('link', { name: 'export its records' })).toHaveAttribute(
     'href',
     '/export',
