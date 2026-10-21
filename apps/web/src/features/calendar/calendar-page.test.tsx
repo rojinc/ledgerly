@@ -192,6 +192,12 @@ describe('CalendarPage', () => {
     expect(await legend.findByText('Alex')).toBeTruthy()
     const list = within(screen.getByRole('region', { name: /Thursday.*2026/ }))
     expect((await list.findByRole('link')).textContent).toMatch(/Dinner.*Alex · Due/)
+    // Wraps on a phone, so a long one isn't cut off at 320 px, and keeps to one line from md (#539).
+    for (const text of ['Dinner', 'Alex']) {
+      const classes = list.getByText(text).closest('[class~="md:truncate"]')?.className.split(' ')
+      expect(classes, text).toContain('break-words')
+      expect(classes, text).not.toContain('truncate')
+    }
     expect(screen.queryByText(/Sam/)).toBeNull()
   })
 

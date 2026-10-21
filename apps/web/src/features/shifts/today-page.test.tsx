@@ -244,6 +244,15 @@ describe('TodayPage', () => {
     expect(items.map((item) => item.getAttribute('href'))).toEqual(['/shifts/s2', '/shifts/s1'])
     expect(items[0]?.textContent).toMatch(/^DinnerBistro · Scheduled.*150\.00$/)
     expect(items[1]?.textContent).toMatch(/^CaféAcme Cafe · Confirmed.*204\.00$/)
+    // Wraps on a phone, so a long one isn't cut off at 320 px, and keeps to one line from md (#539).
+    for (const text of ['Café', 'Acme Cafe']) {
+      const classes = within(items[1] as HTMLElement)
+        .getByText(text)
+        .closest('[class~="md:truncate"]')
+        ?.className.split(' ')
+      expect(classes, text).toContain('break-words')
+      expect(classes, text).not.toContain('truncate')
+    }
     expect(screen.queryByText('Old')).toBeNull()
     expect(screen.queryByText('Next')).toBeNull()
 

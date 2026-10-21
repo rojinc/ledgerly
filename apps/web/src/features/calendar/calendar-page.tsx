@@ -284,17 +284,18 @@ function DayList({
                       )}
                       style={{ borderColor: colours.get(item.groupId) }}
                     />
+                    {/* The description and group name wrap on a phone, so nothing is cut off (#539). */}
                     <span className="min-w-0">
                       <span
                         className={cn(
-                          'block truncate font-medium',
+                          'block break-words md:truncate font-medium',
                           item.status === 'void' && 'line-through',
                         )}
                       >
                         {item.description}
                       </span>
                       <span className="flex gap-1 text-sm text-muted-foreground">
-                        <span className="truncate">
+                        <span className="min-w-0 break-words md:truncate">
                           {group ? <GroupName group={group} /> : 'Group'}
                         </span>{' '}
                         <span className="shrink-0">· {status}</span>

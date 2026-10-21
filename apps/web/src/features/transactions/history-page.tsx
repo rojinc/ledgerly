@@ -371,10 +371,11 @@ function History({
                   to={`/transactions/${row.$id}`}
                   className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                 >
-                  {/* A running timer has no amount, so its description takes the whole row. */}
+                  {/* A running timer has no amount, so its description takes the whole row. It and the
+                      group's name wrap on a phone, so nothing is cut off at 320 px (#539). */}
                   <span
                     className={cn(
-                      'truncate font-medium',
+                      'min-w-0 break-words md:truncate font-medium',
                       row.status === 'running' && 'col-span-2',
                       row.status === 'void' && 'line-through',
                     )}
@@ -386,7 +387,7 @@ function History({
                   </span>
                   {/* A line of its own, so the status still fits at 375 px. */}
                   {!group && (
-                    <span className="col-span-2 truncate text-sm text-muted-foreground">
+                    <span className="col-span-2 break-words md:truncate text-sm text-muted-foreground">
                       <GroupName group={rowGroup} />
                     </span>
                   )}
