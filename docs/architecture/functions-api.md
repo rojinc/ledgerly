@@ -242,7 +242,7 @@ Deleting an account ([#50](https://github.com/rojinc/ledgerly/issues/50)), and a
 | Route | Body | Returns | Who |
 | --- | --- | --- | --- |
 | `POST /delete` | `{ confirm: 'DELETE' }` | `{ deletedAt, finished }` | the user, signed in within the last 10 minutes |
-| `POST /groups/{id}/delete` | `{ confirm: 'DELETE' }` | `{ finished }` | admin of an archived group with nobody else in its team, or anyone in it once it has no joined admin ([#486](https://github.com/rojinc/ledgerly/issues/486)), signed in within the last 10 minutes |
+| `POST /groups/{id}/delete` | `{ confirm: 'DELETE' }` | `{ finished }` | the last person in an archived group's team: its admin, or anyone once it has no joined admin ([#486](https://github.com/rojinc/ledgerly/issues/486)); signed in within the last 10 minutes |
 
 Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger: it finishes account deletions (persons with `deletedAt` and `userId` both set, and Appwrite users labelled `deleted`), then group deletes (groups with `deletingAt` set), then deletes the end-to-end flows' accounts (Appwrite users labelled `e2e` whose email is a run's test address), skipping any started or labelled in the last minute ([finishing purges](identity-and-invites.md#finishing-purges)). It returns `{ finished, users, groups, e2e, failed }`: the account deletions it finished, the labelled users it deleted, the group deletes it finished, the end-to-end accounts it deleted, and those that failed (each logged by its ID). A person calling `POST /` gets `FORBIDDEN`.
 
