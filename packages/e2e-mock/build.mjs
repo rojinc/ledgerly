@@ -1,7 +1,8 @@
 // Bundles the e2e mock (src/server.ts) as scripts/build-functions.mjs bundles a function, so it
 // always runs this checkout's function code, and copies the statements PDF fonts next to it,
 // where packages/server/src/pdf/fonts.ts reads them. `npm run test:e2e:mock -w @ledgerly/web`
-// runs it first (docs/engineering/testing.md#on-the-mock).
+// runs it first (docs/engineering/testing.md#on-the-mock). The script is `build:mock`, not `build`,
+// so the root build, and so the deploy, never runs it.
 import { copyFileSync, mkdirSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { basename, dirname, join } from 'node:path'

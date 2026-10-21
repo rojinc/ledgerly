@@ -8,7 +8,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "test:e2e:mock": "npm run build -w @ledgerly/e2e-mock && E2E_MOCK=1 playwright test",
+    "test:e2e:mock": "npm run build:mock -w @ledgerly/e2e-mock && E2E_MOCK=1 playwright test",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

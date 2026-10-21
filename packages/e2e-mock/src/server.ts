@@ -777,62 +777,50 @@ async function verifyCaller(jwt: string): Promise<string> {
 const sharedDb = () => db
 
 const ROUTES: Record<string, Route[]> = {
-  ledger: ledgerRoutes(() => ({ teams, files: ledgerFiles }) as never),
-  groups: groupsRoutes((ctx) => ({ db: ctx.db, teams, now: new Date() }) as never),
-  identity: identityRoutes(
-    (ctx) =>
-      ({
-        db: ctx.db,
-        teams,
-        users: usersApi,
-        now: new Date(),
-        sendEmail: fakeSendEmail,
-        appUrl: APP_URL,
-        supportEmail: '',
-      }) as never,
-  ),
-  account: accountRoutes(
-    (ctx, budgetMs) =>
-      ({
-        db: ctx.db,
-        teams,
-        users: usersApi,
-        files: accountFiles,
-        now: new Date(),
-        outOfTime: budget(budgetMs),
-      }) as never,
-  ),
-  scheduler: schedulerRoutes(
-    (ctx) =>
-      ({
-        db: ctx.db,
-        teams,
-        users: usersApi,
-        sendEmail: fakeSendEmail,
-        files: receiptsBucket,
-        now: new Date(),
-        appUrl: APP_URL,
-        outOfTime: budget(12 * 60_000),
-        wait: (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 50))),
-      }) as never,
-  ),
-  statements: statementsRoutes(
-    (ctx) =>
-      ({
-        db: ctx.db,
-        teams,
-        files: statementFiles,
-        sendEmail: fakeSendEmail,
-        now: new Date(),
-        appUrl: APP_URL,
-      }) as never,
-  ),
+  ledger: ledgerRoutes(() => ({ teams, files: ledgerFiles })),
+  groups: groupsRoutes((ctx) => ({ db: ctx.db, teams, now: new Date() })),
+  identity: identityRoutes((ctx) => ({
+    db: ctx.db,
+    teams,
+    users: usersApi,
+    now: new Date(),
+    sendEmail: fakeSendEmail,
+    appUrl: APP_URL,
+    supportEmail: '',
+  })),
+  account: accountRoutes((ctx, budgetMs) => ({
+    db: ctx.db,
+    teams,
+    users: usersApi,
+    files: accountFiles,
+    now: new Date(),
+    outOfTime: budget(budgetMs),
+  })),
+  scheduler: schedulerRoutes((ctx) => ({
+    db: ctx.db,
+    teams,
+    users: usersApi,
+    sendEmail: fakeSendEmail,
+    files: receiptsBucket,
+    now: new Date(),
+    appUrl: APP_URL,
+    outOfTime: budget(12 * 60_000),
+    wait: (ms: number) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 50))),
+  })),
+  statements: statementsRoutes((ctx) => ({
+    db: ctx.db,
+    teams,
+    files: statementFiles,
+    sendEmail: fakeSendEmail,
+    now: new Date(),
+    appUrl: APP_URL,
+  })),
 }
 
 const HANDLERS = Object.fromEntries(
   Object.entries(ROUTES).map(([name, routes]) => [
     name,
-    createHandler(routes, sharedDb as never, verifyCaller),
+    createHandler(routes, sharedDb, verifyCaller),
   ]),
 )
 
