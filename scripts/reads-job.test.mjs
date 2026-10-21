@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
-import { lastTo, runJob, stateLine, TITLE, withState } from './reads-job.mjs'
+import { lastTo, main, runJob, stateLine, TITLE, withState } from './reads-job.mjs'
 
 // The job at 08:37 UTC: its read ends 20 minutes earlier, and reaches back 23 hours at most.
 const NOW = Date.parse('2026-11-05T08:37:00Z')
@@ -192,6 +192,32 @@ describe('a read', () => {
     assert.match(run.comments[0].body, /a run is still waiting, two reads running/)
   })
 
+  it('says only that a run is still waiting when it posts for a gap, on the first read', async () => {
+    const gh = github({ issue: { title: TITLE, body: "The lead's text only." } })
+    const run = await job(TOO_EARLY, { gh })
+    assert.equal(run.bodies.length, 0)
+    assert.match(run.comments[0].body, /: a run is still waiting\*\*/)
+    assert.ok(run.comments[0].body.includes("no last read in the issue's body"))
+  })
+
+  it('keeps only a verdict it knows in the state line, and `?` for anything else', async () => {
+    const odd = { lines: ['Post on #299:', `${LAST} → ${TO} · PASS!`, `errors … · <b>`], code: 0 }
+    const run = await job(odd)
+    assert.match(run.bodies[0].body, / · nightly \? · errors \? · /)
+  })
+
+  it('links the run only from a GitHub server address and a run number', async () => {
+    for (const env of [
+      { ...ENV, GITHUB_SERVER_URL: 'https://github.invalid/x)[evil](https://evil.invalid' },
+      { ...ENV, GITHUB_SERVER_URL: 'http://github.invalid' },
+      { ...ENV, GITHUB_RUN_ID: '42)' },
+    ]) {
+      const run = await job(LOOK, { env })
+      assert.match(run.comments[0].body, /: needs a look\*\*\n/)
+      assert.ok(!run.comments[0].body.includes('[run]'))
+    }
+  })
+
   it('caps a long read under GitHub’s limit, and says how many lines are only in the log', async () => {
     const many = {
       ...LOOK,
@@ -306,5 +332,29 @@ describe('the issue', () => {
     assert.equal(run.code, 1)
     assert.equal(run.reads.length, 0)
     assert.deepEqual(run.lines, ['GITHUB FAILED reading the issue: 404'])
+  })
+})
+
+describe('the command', () => {
+  it('prints the lines and returns the code', async () => {
+    const printed = []
+    const code = await main(
+      async () => ({ lines: ['a', 'b'], code: 1 }),
+      (text) => printed.push(text),
+    )
+    assert.equal(code, 1)
+    assert.deepEqual(printed, ['a\nb'])
+  })
+
+  it("exits 1 with the error's name only when the job throws, so the run shows red", async () => {
+    const printed = []
+    const code = await main(
+      async () => {
+        throw new TypeError('a message quoting a reply')
+      },
+      (text) => printed.push(text),
+    )
+    assert.equal(code, 1)
+    assert.deepEqual(printed, ['STOPPED: TypeError.'])
   })
 })

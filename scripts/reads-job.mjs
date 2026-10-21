@@ -164,9 +164,11 @@ export async function runJob({
           ? 'read, but not from where the last one ended'
           : result.code === 1
             ? 'needs a look'
-            : tooEarly
+            : stuck
               ? 'a run is still waiting, two reads running'
-              : "couldn't read"
+              : tooEarly
+                ? 'a run is still waiting'
+                : "couldn't read"
       const runUrl =
         /^https:\/\/[\w.-]+$/.test(env.GITHUB_SERVER_URL ?? '') &&
         /^\d+$/.test(env.GITHUB_RUN_ID ?? '')
@@ -219,14 +221,17 @@ export async function runJob({
   }
 }
 
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+/** The command: prints the job's lines and returns its exit code, 1 when anything throws. */
+export async function main(job = runJob, print = console.log) {
   try {
-    const { lines, code } = await runJob()
-    console.log(lines.join('\n'))
-    process.exit(code)
+    const { lines, code } = await job()
+    print(lines.join('\n'))
+    return code
   } catch (error) {
-    // Its name only: a message or a stack could quote a reply.
-    console.log(`STOPPED: ${name(error?.name)}.`)
-    process.exit(1)
+    // Its name only: a message or a stack could quote a reply. And 1, so the run shows red.
+    print(`STOPPED: ${name(error?.name)}.`)
+    return 1
   }
 }
+
+if (import.meta.url === pathToFileURL(process.argv[1]).href) process.exit(await main())
