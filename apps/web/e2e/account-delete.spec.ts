@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises'
 import { expect, type Page, test } from '@playwright/test'
 import { createToken, runId } from './dev-project'
 import { logInWithToken, setupUser } from './users'
@@ -45,7 +46,14 @@ test('a deleted account is signed out for good, and the one left deletes the arc
   await add.getByLabel('Name', { exact: true }).fill(gil.name)
   await add.getByLabel('Email (optional)', { exact: true }).fill(gil.email)
   await add.getByRole('button', { name: 'Add housemate', exact: true }).click()
-  await expect(page.getByRole('listitem').filter({ hasText: gil.name })).toBeVisible()
+  const gilRow = page.getByRole('listitem').filter({ hasText: gil.name })
+  // Gil has an account, but shows as not joined until he signs in, as anyone would (F-12).
+  await expect(gilRow).toContainText('Not joined yet')
+  // Fay invites him by email (F-40): the app says it went. No spec reads an inbox.
+  await gilRow.getByRole('button', { name: 'Invite by email', exact: true }).click()
+  await page.getByLabel('Their email address').fill(gil.email)
+  await page.getByRole('button', { name: 'Send', exact: true }).click()
+  await expect(page.getByText(/^Invite sent\. It expires on /)).toBeVisible()
   await logOut(page)
 
   // Gil signs in: Fay's placeholder for him is merged into him, and he joins the house.
@@ -79,6 +87,18 @@ test('a deleted account is signed out for good, and the one left deletes the arc
       name: 'Moved back in',
     }),
   ).toBeVisible()
+
+  // Before it goes, Fay saves her data (F-06): her profile, and her records across groups.
+  await page.goto('/export')
+  await page.getByRole('button', { name: 'Make my files', exact: true }).click()
+  for (const [file, holds] of [
+    ['profile.csv', `email,${fay.email}`],
+    ['my-records.csv', 'group,groupType,date,kind,description'],
+  ] as const) {
+    const download = page.waitForEvent('download')
+    await page.getByRole('link', { name: file, exact: true }).click()
+    expect(await readFile(await (await download).path(), 'utf8'), file).toContain(holds)
+  }
 
   // Now nobody `active` could take over, so Fay's account goes. Its steps must finish in the
   // call: the hourly job can't be waited for.

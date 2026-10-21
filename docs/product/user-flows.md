@@ -82,3 +82,14 @@ A posted house expense is fixed the same way as an employer entry: its creator o
 2. The scheduler creates each week's bill as `due`. A reminder email goes out 2 days before.
 3. The user taps **Mark paid** → `ledger POST /transactions/{id}/post`. If autopay is on in the schedule (`autoPost`), it is posted automatically on the due date.
 4. **Away for a month:** on Bills, **Pause** the recurring bill from today → `scheduler POST /schedules/{id}/pause`. Coming back: **Resume** → `scheduler POST /schedules/{id}/resume`. Bills carry on from today, and the weeks in between aren't added ([#430](https://github.com/rojinc/ledgerly/issues/430)).
+
+## 11. Archive, unarchive and delete a group
+
+1. On a group's **Settings**, an admin taps **Archive group**, and it becomes read-only → `groups POST /groups/{id}/archive`. Its schedules stop, and no more statements are drafted.
+2. **Unarchive group** makes it writable again from today → `groups POST /groups/{id}/unarchive` ([#428](https://github.com/rojinc/ledgerly/issues/428)).
+3. Once nobody else is in an archived group, its last person can delete it, with everything in it: **Delete group**, past a link to export its records first, then type DELETE → `account POST /groups/{id}/delete` ([deleting a group](../architecture/identity-and-invites.md#deleting-a-group)).
+
+## 12. Export your data, then delete your account
+
+1. **Profile → Export your data**, then **Make my files**: the app builds `profile.csv` and `my-records.csv` in the browser from what the user can read, with no function ([data export](../architecture/security-and-privacy.md#data-export)).
+2. **Profile → Delete your account**, type DELETE, then **Delete my account** → `account POST /delete`. It's refused while they're the only admin of a house where someone else still lives ([refusals](../architecture/identity-and-invites.md#refusals)); once the others there have moved out, or someone else is an admin too, it goes through, and the app signs them out ([deleting an account](../architecture/identity-and-invites.md#deleting-an-account-m4)).
