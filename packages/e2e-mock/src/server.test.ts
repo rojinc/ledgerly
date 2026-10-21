@@ -109,5 +109,38 @@ describe('PATCH /account/email', () => {
     expect(
       await call('PATCH', '/account/email', { email: 'sam.new@example.com', password }, cookie),
     ).toMatchObject({ status: 200, body: { email: 'sam.new@example.com' } })
+    // Its own address again isn't another account's (AI B on #590).
+    expect(
+      await call('PATCH', '/account/email', { email: 'sam.new@example.com', password }, cookie),
+    ).toMatchObject({ status: 200 })
+  })
+})
+
+describe('uploads', () => {
+  const upload = (bucket: string, cookie: string) => {
+    const form = new FormData()
+    form.set('fileId', 'unique()')
+    form.set('file', new Blob(['%PDF-1.4']), 'receipt.pdf')
+    return fetch(`${origin}/v1/storage/buckets/${bucket}/files`, {
+      method: 'POST',
+      headers: { cookie },
+      body: form,
+    })
+  }
+
+  it('take a receipt from a verified user only, and a statement from no user, as buckets.json says (AI B on #590)', async () => {
+    const email = 'lee@example.com'
+    const password = 'correct horse'
+    const created = await call('POST', '/account', { userId: 'unique()', email, password })
+    const { response } = await call('POST', '/account/sessions/email', { email, password })
+    const cookie = response.headers.get('set-cookie')?.split(';')[0] ?? ''
+    expect((await upload('receipts', cookie)).status).toBe(401)
+    await fetch(`${origin}/v1/users/${created.body.$id}/verification`, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json', 'x-appwrite-key': 'a key' },
+      body: JSON.stringify({ emailVerification: true }),
+    })
+    expect((await upload('receipts', cookie)).status).toBeLessThan(300)
+    expect((await upload('statements', cookie)).status).toBe(401)
   })
 })
