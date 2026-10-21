@@ -1185,26 +1185,34 @@ describe('skipped dates on the schedule form (#487)', () => {
 
   it('on an edit, lists only dates from today on, keeps past ones, and saves the new list', async () => {
     mockGroup(acme)
-    mockSchedules([{ ...thursdays, exdates: ['2026-11-05', '2025-12-25'] }])
+    // Stored out of order, as the API takes them.
+    mockSchedules([{ ...thursdays, exdates: ['2026-11-12', '2025-12-25', '2026-11-05'] }])
     mockScheduler()
     renderAt(`/schedules/${thursdays.$id}`)
     await screen.findByRole('heading', { name: 'Thursday shift' })
-    expect(skippedList()).toEqual([expect.stringMatching(/(5 Nov|Nov 5),? 2026$/)])
+    expect(skippedList()).toEqual([
+      expect.stringMatching(/(5 Nov|Nov 5),? 2026$/),
+      expect.stringMatching(/(12 Nov|Nov 12),? 2026$/),
+    ])
     expect(
       screen.getByText(
         'Saving removes the planned shift on a newly skipped day, unless it’s been edited or confirmed, and brings back the shift on a day you remove, from today on.',
       ),
     ).toBeTruthy()
-    skip('2026-11-12')
+    skip('2026-11-19')
     fireEvent.click(screen.getByRole('button', { name: /^Remove Thu, (5 Nov|Nov 5),? 2026$/ }))
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(callsTo(`/schedules/${thursdays.$id}`)).toHaveLength(1))
     const [, method, , input] = callsTo(`/schedules/${thursdays.$id}`)[0] ?? []
     expect(method).toBe('PATCH')
-    expect((input as { exdates: string[] }).exdates).toEqual(['2025-12-25', '2026-11-12'])
+    expect((input as { exdates: string[] }).exdates).toEqual([
+      '2025-12-25',
+      '2026-11-12',
+      '2026-11-19',
+    ])
   })
 
-  it('takes a kept end date as the last date', async () => {
+  it('takes a kept end date as the last date, or the rule’s if that’s earlier', async () => {
     mockGroup(acme)
     mockSchedules([{ ...thursdays, endsOn: '2026-12-31' }])
     mockScheduler()
@@ -1213,6 +1221,12 @@ describe('skipped dates on the schedule form (#487)', () => {
     skip('2027-01-07')
     expect(
       screen.getByText(/^Pick a date on or before Thu, (31 Dec|Dec 31),? 2026\.$/),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('On a date'))
+    fireEvent.change(screen.getByLabelText('Last date'), { target: { value: '2026-11-30' } })
+    skip('2026-12-10')
+    expect(
+      screen.getByText(/^Pick a date on or before Mon, (30 Nov|Nov 30),? 2026\.$/),
     ).toBeTruthy()
     expect(skippedList()).toHaveLength(1)
   })
