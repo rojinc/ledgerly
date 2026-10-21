@@ -186,15 +186,45 @@ export function UnarchiveGroup({
           </Confirm>
         )}
       </div>
-      {alone && (
-        <Link
-          to={`/groups/${group.$id}/delete`}
-          className={cn(buttonVariants({ variant: 'outline' }), 'self-start')}
-        >
-          Delete group
-        </Link>
-      )}
+      {alone && <DeleteLink group={group} />}
     </>
+  )
+}
+
+/**
+ * Delete group for the last person in an archived group with no joined admin (no `active` row
+ * with the role `admin`), whatever their role (#486): nobody can unarchive it, so it's the only
+ * way out. The page shows it to anyone but an admin, who gets UnarchiveGroup instead. So, as for
+ * the admin's, it's shown only while nobody else's row is `active`, which also means nobody else
+ * is a joined admin.
+ */
+export function DeleteWithoutAdmin({ group, personId }: { group: Groups; personId: string }) {
+  const members = useMembers(group.$id)
+  const rows = members.data
+  if (
+    rows === undefined ||
+    rows.some((row) => row.status === 'active' && row.personId !== personId)
+  ) {
+    return null
+  }
+  return (
+    <div className="flex flex-col items-start gap-2">
+      <p className="text-sm text-muted-foreground">
+        This group has no admin any more, so you can delete it.
+      </p>
+      <DeleteLink group={group} />
+    </div>
+  )
+}
+
+function DeleteLink({ group }: { group: Groups }) {
+  return (
+    <Link
+      to={`/groups/${group.$id}/delete`}
+      className={cn(buttonVariants({ variant: 'outline' }), 'self-start')}
+    >
+      Delete group
+    </Link>
   )
 }
 

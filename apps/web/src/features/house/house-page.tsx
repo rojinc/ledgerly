@@ -9,6 +9,7 @@ import { useCurrentUser } from '../auth/use-current-user'
 import {
   ARCHIVED_NOTICE,
   ArchiveGroup,
+  DeleteWithoutAdmin,
   UNARCHIVED_NEWS,
   UnarchiveGroup,
 } from '../groups/archive-group'
@@ -126,6 +127,9 @@ function House({
             focusHeading()
           }}
         />
+      )}
+      {archived && me && me.role !== 'admin' && (
+        <DeleteWithoutAdmin group={group} personId={me.personId} />
       )}
       {/* Mounted from the start, so the announcement is read out when it changes. */}
       <p role="status" className="text-sm text-muted-foreground empty:hidden">

@@ -1010,6 +1010,48 @@ describe('archiving a group (#37)', () => {
       renderAt('/groups/g1/settings')
       expect(deleteLink()).toBeNull()
     })
+
+    // #486: the worker deleted their account, so their kept row is `left`, and nobody has
+    // joined as an admin. The employer, a viewer, is the last one in.
+    function workerGone(others: Members[] = []) {
+      membersHook.mockReturnValue({
+        data: [
+          { personId: 'p1', role: 'viewer', status: 'left' },
+          { personId: 'p2', role: 'viewer', status: 'active' },
+          ...others,
+        ] as Members[],
+      } as ReturnType<typeof useMembers>)
+      mockGroup(archived)
+      memberHook.mockReturnValue({
+        data: { personId: 'p2', role: 'viewer', status: 'active' } as Members,
+        isError: false,
+      } as ReturnType<typeof useMyMember>)
+    }
+
+    it('links Delete group, never Unarchive, for the last person once no admin has joined (#486)', () => {
+      workerGone()
+      renderAt('/groups/g1/settings')
+      expect(
+        screen.getByText('This group has no admin any more, so you can delete it.'),
+      ).toBeTruthy()
+      expect(deleteLink()?.getAttribute('href')).toBe('/groups/g1/delete')
+      expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+      cleanup()
+      // A placeholder's admin row isn't a joined admin.
+      workerGone([{ personId: 'p3', role: 'admin', status: 'placeholder' } as Members])
+      renderAt('/groups/g1/settings')
+      expect(deleteLink()).toBeTruthy()
+    })
+
+    it('isn’t offered to them while someone has joined as an admin, or anyone else has joined (#486)', () => {
+      for (const role of ['admin', 'viewer'] as const) {
+        workerGone([{ personId: 'p3', role, status: 'active' } as Members])
+        renderAt('/groups/g1/settings')
+        expect(deleteLink()).toBeNull()
+        expect(screen.queryByText(/no admin any more/)).toBeNull()
+        cleanup()
+      }
+    })
   })
 
   describe('and unarchiving it (#428)', () => {

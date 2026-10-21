@@ -405,6 +405,31 @@ describe('HousePage', () => {
       expect(await within(history).findByText('No expenses yet.')).toBeTruthy()
     })
 
+    it('offers Delete group, never Unarchive, to the last person once no admin has joined (#486)', async () => {
+      // The admin deleted their account: Alex, a viewer, is the only one left `active`.
+      seed('viewer', { archivedAt: '2026-10-01T00:00:00.000Z' })
+      renderAt('/groups/g1')
+      expect(
+        await screen.findByText('This group has no admin any more, so you can delete it.'),
+      ).toBeTruthy()
+      expect(screen.getByRole('link', { name: 'Delete group' }).getAttribute('href')).toBe(
+        '/groups/g1/delete',
+      )
+      expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+    })
+
+    it.each([
+      ['a joined admin', 'admin'],
+      ['another housemate who has joined', 'viewer'],
+    ] as const)('offers it to nobody else while there’s %s (#486)', async (_case, role) => {
+      seed('viewer', { archivedAt: '2026-10-01T00:00:00.000Z' })
+      stored.members.push(member('m4', { personId: 'p4', displayName: 'Kim', role }))
+      renderAt('/groups/g1')
+      await row('Kim')
+      expect(screen.queryByRole('link', { name: 'Delete group' })).toBeNull()
+      expect(screen.queryByText(/no admin any more/)).toBeNull()
+    })
+
     it('names a housemate who moved out as the payer in the history (#183)', async () => {
       const members = listRows.getMockImplementation() as (params: unknown) => Promise<unknown>
       listRows.mockImplementation((async (params: { tableId: string }) => {
