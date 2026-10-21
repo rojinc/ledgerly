@@ -107,9 +107,11 @@ export function DeleteAccountPage() {
   const [unconfirmed, setUnconfirmed] = useState(false)
   if (deleted) return <Deleted result={deleted} />
   if (unconfirmed) return <Unconfirmed />
+  // The page's h1 meanwhile, so the tab is named and a move's focus has somewhere to go (#556).
   if (user.isPending) {
     return (
       <Page>
+        <h1 className="text-2xl font-semibold">Delete your account</h1>
         <p role="status" className="text-muted-foreground">
           Loading…
         </p>
@@ -120,6 +122,7 @@ export function DeleteAccountPage() {
     if (user.isError) {
       return (
         <Page>
+          <h1 className="text-2xl font-semibold">Delete your account</h1>
           <Alert variant="destructive">
             We couldn’t reach Ledgerly. Check your connection and reload the page.
           </Alert>
