@@ -17,7 +17,8 @@ const balanceCentsSchema = z.int()
  * The issuer's business details as an invoice's snapshot keeps them: the Profile's fields
  * (`businessDetailsSchema`), each as plain text, so a stored snapshot still parses whatever the
  * Profile's rules later become (#543). A field added to the Profile is added here too, optional.
- * The bank is whole or absent, since an invoice prints its three parts together.
+ * One the Profile drops or renames stays here, optional, since final invoices hold it for good
+ * (#556). The bank is whole or absent, since an invoice prints its three parts together.
  */
 export const snapshotBusinessSchema = z.strictObject({
   businessName: z.string().optional(),

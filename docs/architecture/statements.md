@@ -186,7 +186,7 @@ Every write of it (drafting, a close, refresh, reissue and finalize step 6) pars
 - A field goes in only if it passes today's rule for it (`businessDetailsSchema`), cleaned up as the rule does (spaces out of an ABN). The bank goes in only if all three of its parts do, since an invoice prints them together. A key that isn't one of the Profile's fields is ignored: a field renamed in the Profile needs its stored values moved, which is a contract change.
 - JSON that doesn't parse, or isn't an object, gives no details. A field left out never stops a snapshot from being built.
 - A finalize whose snapshot leaves a field out logs one `invoice_business_dropped` warning once step 6 stores it, with the group and statement IDs and the field names, never their values: `json` when the stored JSON doesn't parse, or isn't an object. A run that stops before then, and every other build (drafting, a close, refresh, preview and reissue), leaves it out without logging, so a preview someone opens again and again doesn't repeat it.
-- The snapshot keeps each field as plain text (`snapshotBusinessSchema`), so a stored snapshot still parses whatever the Profile's rules later become: send, resend, auto-send and the next statement's opening balances all read it.
+- The snapshot keeps each field as plain text (`snapshotBusinessSchema`), so a stored snapshot still parses whatever the Profile's rules later become: send, resend, auto-send and the next statement's opening balances all read it. Its fields only grow: a field added to the Profile is added to it too, and one the Profile drops or renames stays in it, optional, since final invoices hold it for good ([#556](https://github.com/rojinc/ledgerly/issues/556)).
 
 ```ts
 type StatementSnapshot = {
