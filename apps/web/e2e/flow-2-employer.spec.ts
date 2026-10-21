@@ -4,7 +4,7 @@ import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
 import { expect, test } from '@playwright/test'
 import { dayButton } from './calendar'
 import { runId, testEmail } from './dev-project'
-import { addEmployer, archiveEmployer } from './employer'
+import { addEmployer, archiveEmployer, expectEmployerSettings } from './employer'
 import { logIn, setupUser } from './users'
 
 // User flow 2 (docs/product/user-flows.md#2-set-up-an-employer-with-a-weekly-shift). The
@@ -32,6 +32,7 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   await page.getByRole('link', { name: /^Hours I work for someone/ }).click()
   const billing = testEmail('acme-billing')
   groupId = await addEmployer(page, employer, billing)
+  await expectEmployerSettings(page, employer)
   // Its settings, as saved.
   await expect(page.getByLabel('Billing emails', { exact: true })).toHaveValue(billing)
   await expect(page.getByLabel('Default hourly rate (AUD)')).toHaveValue('25.00')

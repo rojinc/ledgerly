@@ -3,7 +3,7 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import { expect, test } from '@playwright/test'
 import { expectPlannedShifts } from './calendar'
 import { runId, testEmail } from './dev-project'
-import { addEmployer, archiveEmployer } from './employer'
+import { addEmployer, archiveEmployer, expectEmployerSettings } from './employer'
 import { addWeeklyShift } from './schedule'
 import { logIn, setupUser } from './users'
 
@@ -23,7 +23,9 @@ test('a pause removes the planned shifts from its date, and Resume brings them b
   test.slow()
   await logIn(page, setupUser('cal'))
   await page.goto('/groups/new-employer')
-  groupId = await addEmployer(page, `Cal Co ${runId()}`, testEmail('cal-billing'))
+  const employer = `Cal Co ${runId()}`
+  groupId = await addEmployer(page, employer, testEmail('cal-billing'))
+  await expectEmployerSettings(page, employer)
   const today = localToday(ZONE, new Date())
   const weeks = [0, 7, 14, 21, 28].map((days) => addDays(today, days))
   await addWeeklyShift(page, groupId, today, addDays(today, 28))

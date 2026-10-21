@@ -3,7 +3,7 @@ import { addDays, type LocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import { expect, test } from '@playwright/test'
 import { runId, testEmail } from './dev-project'
-import { addEmployer, archiveEmployer } from './employer'
+import { addEmployer, archiveEmployer, expectEmployerSettings } from './employer'
 import { waitOutFinalize } from './statements'
 import { logIn, setupUser } from './users'
 
@@ -40,6 +40,7 @@ test('invoices last month: the draft, finalize and send, its number and PDF', as
   const billing = testEmail('nimbus-billing')
   await page.goto('/groups/new-employer')
   groupId = await addEmployer(page, employer, billing)
+  await expectEmployerSettings(page, employer)
 
   await test.step('back-dated into last month: a shift and an expense', async () => {
     await page.goto(`/shifts/new?groupId=${groupId}&date=${month}-15`)

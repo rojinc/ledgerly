@@ -2,7 +2,7 @@ import { addDays, type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-d
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import { expect, type Page, test } from '@playwright/test'
 import { runId, testEmail } from './dev-project'
-import { addEmployer, archiveEmployer } from './employer'
+import { addEmployer, archiveEmployer, expectEmployerSettings } from './employer'
 import { logIn, setupUser } from './users'
 
 // User flow 3 (docs/product/user-flows.md#3-a-normal-thursday-extra-hours-or-a-missed-day), on
@@ -30,6 +30,7 @@ test('changes a shift, adds another, voids one and times one', async ({ page }) 
   const employer = `Kiosk ${runId()}`
   await page.goto('/groups/new-employer')
   groupId = await addEmployer(page, employer, testEmail('kiosk-billing'))
+  await expectEmployerSettings(page, employer)
 
   const today = localToday(ZONE, new Date())
   const weekday = WEEKDAYS[weekdayOf(today) - 1] as string
