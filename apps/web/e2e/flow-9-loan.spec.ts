@@ -42,6 +42,14 @@ test('lends $50 to someone not registered, who then signs in and sees it', async
     await expect(page.getByText('Not joined yet', { exact: true })).toBeVisible()
   })
 
+  // Getting started (F-07): with a group but nothing in it, Home asks for a first entry.
+  const firstEntry = page.getByRole('heading', { name: 'Record your first entry', exact: true })
+  await test.step('Home asks for a first entry', async () => {
+    await page.goto('/')
+    await expect(firstEntry).toBeVisible()
+    await page.goto(`/people/${groupId}`)
+  })
+
   await test.step('lends Pia $50', async () => {
     // The entry form comes with the balance.
     await expectBalanceShown(page, balance(page, 'All square'), balance(page, 'Not available yet'))
@@ -50,6 +58,13 @@ test('lends $50 to someone not registered, who then signs in and sees it', async
     await page.getByRole('button', { name: 'Add', exact: true }).click()
     await expect(page.getByText('Added.', { exact: true })).toBeVisible()
     await expect(balance(page, `${pia} owes you $50.00`)).toBeVisible()
+  })
+
+  await test.step('Home asks no more, once something is recorded', async () => {
+    await page.goto('/')
+    await expect(page.getByRole('heading', { level: 1 })).toBeVisible()
+    await expect(firstEntry).toHaveCount(0)
+    await page.goto(`/people/${groupId}`)
   })
 
   await test.step('Pia signs in, claims the pair, and sees the loan', async () => {
@@ -84,5 +99,42 @@ test('lends $50 to someone not registered, who then signs in and sees it', async
       balance(page, 'Not available yet'),
     )
     await expect(page.getByText('Not joined yet', { exact: true })).toHaveCount(0)
+  })
+
+  // A part repayment (F-61): the balance goes down by it.
+  await test.step('Pia pays back $20', async () => {
+    await page.getByRole('radio', { name: 'Money was paid back', exact: true }).check()
+    await page.getByLabel('Who paid back?').selectOption({ label: `${pia} paid me` })
+    await page.getByLabel('Amount (AUD)').fill('20')
+    await page.getByRole('button', { name: 'Add', exact: true }).click()
+    await expect(page.getByText('Added.', { exact: true })).toBeVisible()
+    await expect(balance(page, `${pia} owes you $30.00`)).toBeVisible()
+  })
+
+  // Send a reminder (F-63), to the address Ivy added Pia with: one the group has for them. The
+  // app says it went. No spec reads an inbox.
+  await test.step('reminds Pia', async () => {
+    await page.getByRole('button', { name: 'Send a reminder', exact: true }).click()
+    await page.getByLabel('Their email address').fill(email)
+    // The function's own answer, so a send the server never took fails here, not just the words.
+    const answered = page.waitForResponse(
+      (response) =>
+        response.url().includes('/executions') &&
+        (response.request().postData() ?? '').includes('/reminders'),
+    )
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
+    const execution = await (await answered).json()
+    expect(JSON.parse(execution.responseBody)).toMatchObject({ ok: true })
+    await expect(page.getByText('Reminder sent.', { exact: true })).toBeVisible()
+  })
+
+  // Each group keeps its own name for a person (F-11): Ivy renames Pia in the pair's Settings.
+  await test.step('renames Pia here', async () => {
+    const renamed = `${pia} R`
+    const settings = page.getByRole('region', { name: 'Settings', exact: true })
+    await settings.getByRole('button', { name: 'Change their name', exact: true }).click()
+    await settings.getByLabel('Their name').fill(renamed)
+    await settings.getByRole('button', { name: 'Save', exact: true }).click()
+    await expect(page.getByRole('heading', { level: 1, name: renamed })).toBeVisible()
   })
 })

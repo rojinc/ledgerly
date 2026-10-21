@@ -79,6 +79,31 @@ test('changes a shift, adds another, voids one and times one', async ({ page }) 
     await expect(items.filter({ hasText: '$175.00' })).toHaveText(/^Shift.*· Scheduled/)
   })
 
+  // Rate changes affect only shifts to come (F-30): next week's planned shift takes the new rate,
+  // and today's, which was changed by hand, keeps its own.
+  await test.step('a new rate on the schedule: next week’s shift changes, today’s stays', async () => {
+    await page.goto(`/schedules?groupId=${groupId}`)
+    await page.getByRole('link', { name: 'Shift', exact: true }).click()
+    await page.getByLabel('Hourly rate (AUD)').fill('30')
+    await page.getByRole('button', { name: 'Save', exact: true }).click()
+    await page.waitForURL(`/schedules?groupId=${groupId}`)
+    await expect(await dayItems(page, addDays(today, 7))).toHaveText(
+      /^Shift.*· Scheduled\s*\$150\.00$/,
+    )
+    await expect((await dayItems(page, today)).filter({ hasText: '$175.00' })).toHaveCount(1)
+  })
+
+  // The work-hours limit (F-82): set on Profile, and Today says this week has gone over it.
+  await test.step('a limit of 8 h a week: Today says this week is over it', async () => {
+    await page.goto('/profile')
+    await page.getByLabel('Per week', { exact: true }).check()
+    await page.getByLabel('Hours a week').fill('8')
+    await page.getByRole('button', { name: 'Save limit', exact: true }).click()
+    await expect(page.getByText('Saved.', { exact: true })).toBeVisible()
+    await page.goto('/today')
+    await expect(page.getByText(/^This week: .+ of your 8 h\. .+ over your limit\.$/)).toBeVisible()
+  })
+
   await test.step('didn’t go: next week’s shift is voided with a reason', async () => {
     const nextWeek = addDays(today, 7)
     const items = await dayItems(page, nextWeek)
