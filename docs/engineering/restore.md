@@ -3,7 +3,7 @@
 The runbook for bringing `main` back from one of Appwrite's backups, and for the drill that tries it once before launch ([#567](https://github.com/rojinc/ledgerly/issues/567)). Step 0 and the drill are launch blockers on [#299](https://github.com/rojinc/ledgerly/issues/299). A real recovery (section 2) follows the path the drill proved.
 
 **Who runs what:**
-- **The owner** checks the plan, takes the backups, runs the restores, makes and deletes the drill's databases, and makes and deletes the one-off keys. Accounts, the console and production are the owner's ([D-015](../architecture/decisions.md#d-015-the-lead-agent-runs-the-project-day-to-day)).
+- **The owner** checks the plan, takes the backups, runs the restores, makes and deletes the drill's databases, makes and deletes the one-off keys, and writes 2d's marks. Accounts, the console and production are the owner's ([D-015](../architecture/decisions.md#d-015-the-lead-agent-runs-the-project-day-to-day)).
 - **The lead** holds and lifts the merge hold on #96, runs `scripts/restore-check.mjs`, and posts the results.
 - **No other agent** runs any of it (AGENTS.md).
 
@@ -146,7 +146,7 @@ The owner takes a **Manual Backup** of `main` now, and notes its ID on #96. Rest
 A restore brings back the rows of every account and group deleted since the backup, but not their Auth users or teams. So those are exactly the persons whose user is gone, and the groups whose team is gone. The check lists both, and **each must be deleted again before the app is announced as back** (the lead's Q4 on #567, [security and privacy](../architecture/security-and-privacy.md#retention)).
 
 - **Listed as "finishing"** (a person with `deletedAt` set, or a group with `deletingAt` set): the deletion had started before the backup. The `account` function's next hourly run finishes it by itself ([finishing purges](../architecture/identity-and-invites.md#finishing-purges)).
-- **A person "to mark"** (the user is gone and no `deletedAt`): the account was deleted after the backup. Write on its row the same mark that `POST /delete`'s step 2 writes, and the hourly run's account pass does steps 3–7. Step 3 and step 7 count a user who is already gone as done ([order](../architecture/identity-and-invites.md#order)). Step 4 purges, or keeps, each of its groups as the deletion did, so a group purged with that account goes too.
+- **A person "to mark"** (the user is gone and no `deletedAt`): the account was deleted after the backup. Write on its row exactly the mark that `account POST /delete`'s step 2 writes, `deletedAt`, "Former member" and a fresh `rev` (`delete-account.ts`, `markDeleted`), and the hourly run's account pass does steps 3–7. Step 3 and step 7 count a user who is already gone as done ([order](../architecture/identity-and-invites.md#order)). Step 4 purges, or keeps, each of its groups as the deletion did, so a group purged with that account goes too.
 
   ```bash
   appwrite tablesdb update-row --database-id main --table-id persons --row-id <person ID> \
@@ -154,9 +154,16 @@ A restore brings back the rows of every account and group deleted since the back
     --json | jq -r '.["$id"]'
   ```
 
-- **Then run the check again** after the next hourly run. A group still "to mark" was deleted on its own ([deleting a group](../architecture/identity-and-invites.md#deleting-a-group)). Write `account POST /groups/{id}/delete`'s step 2 mark on it: `deletingAt`, `deletingBy` (the person ID of the member who deleted it, or else of any member row it still has), and a fresh `rev`. The hourly run's group pass then purges it, ending with that member's row.
-- **These marks need a second one-off key with `rows.write` only,** made for this step and deleted in 2f. They're the only rows this runbook writes by hand. Each is the same write a route makes, so everything after it runs as it would for a deletion that was cut off.
-- **Post the person and group IDs on #96,** and the check's next run, which must list neither.
+- **Then run the check again** after the next hourly run. A group still "to mark" was deleted on its own ([deleting a group](../architecture/identity-and-invites.md#deleting-a-group)). Write on it exactly the mark that `account POST /groups/{id}/delete`'s step 2 writes (`delete-group.ts`): `deletingAt`, `deletingBy` and a fresh `rev`. `deletingBy` is the person ID of a member row the group still has, its admin's if it has one. The hourly run's group pass then purges it, ending with that member's row.
+
+  ```bash
+  appwrite tablesdb update-row --database-id main --table-id groups --row-id <group ID> \
+    --data "{\"deletingAt\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"deletingBy\":\"<person ID>\",\"rev\":\"$(openssl rand -hex 10)\"}" \
+    --json | jq -r '.["$id"]'
+  ```
+
+- **The owner runs these commands, never an agent,** with a second one-off key with `rows.write` only, made for this step and deleted in 2f. They're the only rows this runbook writes by hand. Each writes exactly the fields its route's step 2 writes, no more and no fewer, so everything after it runs as it would for a deletion that was cut off (the lead on [#578](https://github.com/rojinc/ledgerly/pull/578)).
+- **Post only the person and group IDs on #96,** never a name or an address, and the check's next run, which must list neither.
 
 ### 2e. The nightly check
 
