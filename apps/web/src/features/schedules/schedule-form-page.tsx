@@ -314,6 +314,16 @@ function ScheduleForm({
         }}
       >
         {errors.root && <Alert variant="destructive">{errors.root.message}</Alert>}
+        {schedule?.pausedFrom && (
+          <Alert>
+            Paused from {formatDate(schedule.pausedFrom)}. Saving keeps the pause: no shifts are
+            made from that date until it’s resumed on{' '}
+            <Link to={`/schedules?groupId=${group.$id}`} className="underline underline-offset-4">
+              Schedules
+            </Link>
+            .
+          </Alert>
+        )}
         <TextField
           id="description"
           label="Description"
@@ -415,6 +425,9 @@ function ScheduleForm({
               id="count"
               inputMode="numeric"
               label="Number of shifts"
+              // scheduling.md: COUNT counts dates before exdates and holidays are taken out, and
+              // the days inside a pause too (#523).
+              hint="Skipped dates, public holidays and paused days count toward this number."
               error={errors.count}
               {...form.register('count')}
             />
@@ -467,6 +480,8 @@ function ScheduleForm({
       <PreviewPanel
         body={{ ...preview, count: 10 }}
         currency={group.currency}
+        // A save keeps the pause (scheduling.md#pausing-a-schedule); the preview's body can't.
+        pausedFrom={schedule?.pausedFrom ?? undefined}
         // A new schedule creates its past dates too, from the start to yesterday. An edit
         // doesn't recreate them.
         backdatedFrom={
@@ -613,17 +628,27 @@ function SkippedDates({
   )
 }
 
-/** The next dates, from `/schedules/preview`, and the ones it skips and why. */
+/**
+ * The next dates, from `/schedules/preview`, and the ones it skips and why. A paused schedule's
+ * dates stop at `pausedFrom`, the first date the pause skips (#523).
+ */
 function PreviewPanel({
   body,
   currency,
   backdatedFrom,
+  pausedFrom,
 }: {
   body: Parameters<typeof usePreview>[0]
   currency: string
   backdatedFrom?: string
+  pausedFrom?: string
 }) {
   const preview = usePreview(body)
+  const beforePause = (date: string) => pausedFrom === undefined || date < pausedFrom
+  const dates = preview.data?.dates.filter(beforePause) ?? []
+  const skipped = preview.data?.skipped.filter(({ date }) => beforePause(date)) ?? []
+  // Set when the pause takes dates off the preview.
+  const cutFrom = dates.length < (preview.data?.dates.length ?? 0) ? pausedFrom : undefined
   const shift = body?.template.shift
   let amount: string | undefined
   try {
@@ -644,9 +669,7 @@ function PreviewPanel({
       </h2>
       {/* Read out briefly on each change, not the whole list again. */}
       <p className="sr-only" aria-live="polite">
-        {preview.data
-          ? `${preview.data.dates.length} dates, ${preview.data.skipped.length} skipped`
-          : ''}
+        {preview.data ? `${dates.length} dates, ${skipped.length} skipped` : ''}
       </p>
       {!preview.data ? (
         <p className="text-sm text-muted-foreground">
@@ -656,27 +679,35 @@ function PreviewPanel({
               ? 'Working out the dates…'
               : 'Fill in the form to see the dates.'}
         </p>
-      ) : preview.data.dates.length === 0 ? (
-        <p className="text-sm text-muted-foreground">
-          {/COUNT|UNTIL/.test(body?.rrule ?? '')
-            ? 'No more dates.'
-            : 'No dates: it never falls on a day it can.'}
-        </p>
-      ) : (
+      ) : dates.length > 0 ? (
         <ul className="flex flex-col gap-1 text-sm">
-          {preview.data.dates.map((date) => (
+          {dates.map((date) => (
             <li key={date} className="flex justify-between gap-3">
               <span>{formatDate(date)}</span>
               {amount && <span className="tabular-nums">{amount}</span>}
             </li>
           ))}
         </ul>
+      ) : (
+        !cutFrom && (
+          <p className="text-sm text-muted-foreground">
+            {/* It ends by its rule, or by a kept end date this form doesn't show (#523). */}
+            {/COUNT|UNTIL/.test(body?.rrule ?? '') || body?.endsOn
+              ? 'No more dates.'
+              : 'No dates: it never falls on a day it can.'}
+          </p>
+        )
       )}
-      {preview.data && preview.data.skipped.length > 0 && (
+      {cutFrom && (
+        <p className="text-sm text-muted-foreground">
+          Paused from {formatDate(cutFrom)}: none from then until it’s resumed.
+        </p>
+      )}
+      {skipped.length > 0 && (
         <>
           <h3 className="text-sm font-medium">Skipped</h3>
           <ul className="flex flex-col gap-1 text-sm text-muted-foreground">
-            {preview.data.skipped.map(({ date, reason }) => (
+            {skipped.map(({ date, reason }) => (
               <li key={date}>
                 {formatDate(date)}: {reason === 'holiday' ? 'public holiday' : 'a day you skipped'}
               </li>

@@ -232,6 +232,19 @@ describe('NewSchedulePage', () => {
     expect(callsTo('/schedules')).toHaveLength(0)
   })
 
+  it('says under the count what counts toward it (#523, P6)', () => {
+    mockGroup(acme)
+    mockScheduler()
+    renderAt('/schedules/new?groupId=g1')
+    fireEvent.click(screen.getByLabelText('After a number of shifts'))
+    expect(screen.getByLabelText('Number of shifts').getAttribute('aria-describedby')).toBe(
+      'count-hint',
+    )
+    expect(document.getElementById('count-hint')?.textContent).toBe(
+      'Skipped dates, public holidays and paused days count toward this number.',
+    )
+  })
+
   it('shows a refusal from the scheduler in the form', async () => {
     mockGroup(acme)
     mockScheduler({ ok: false, error: { code: 'FORBIDDEN', message: 'Only an admin can.' } })
@@ -343,6 +356,122 @@ describe('EditSchedulePage', () => {
     renderAt(`/schedules/${thursdays.$id}`)
     expect(await screen.findByText(/set up in a way this page can’t show/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
+  })
+})
+
+describe('a paused schedule on its form (#523, P2)', () => {
+  // The scheduler previews 22 and 29 Oct, and lists 5 Nov and 24 Dec as skipped (mockScheduler).
+  const openPaused = async (pausedFrom: string | null) => {
+    mockGroup(acme)
+    mockSchedules([{ ...thursdays, pausedFrom }])
+    mockScheduler()
+    renderAt(`/schedules/${thursdays.$id}`)
+    const preview = await screen.findByRole('region', { name: 'Next shifts' })
+    await within(preview).findByText(/\d+ dates, \d+ skipped/)
+    return preview
+  }
+  const liveText = (preview: HTMLElement) =>
+    preview.querySelector('[aria-live="polite"]')?.textContent
+  // The form's notice, read whole: its link splits its text.
+  const pauseNotice = () =>
+    screen.getAllByRole('status').find((el) => el.textContent?.startsWith('Paused from'))
+
+  it('says it’s paused, and previews only the dates before the pause', async () => {
+    const preview = await openPaused('2026-10-29')
+    const notice = pauseNotice()
+    expect(notice?.textContent).toMatch(
+      /^Paused from \w+, (29 Oct|Oct 29),? 2026\. Saving keeps the pause: no shifts are made from that date until it’s resumed on Schedules\.$/,
+    )
+    expect(
+      within(notice as HTMLElement)
+        .getByRole('link', { name: 'Schedules' })
+        .getAttribute('href'),
+    ).toBe('/schedules?groupId=g1')
+    expect(within(preview).getByText(/(22 Oct|Oct 22),? 2026/)).toBeTruthy()
+    // The pause's own date is the first one it skips.
+    expect(within(preview).queryByText(/^\w+, (29 Oct|Oct 29),? 2026$/)).toBeNull()
+    expect(within(preview).queryByText('Skipped')).toBeNull()
+    expect(
+      within(preview).getByText(
+        /^Paused from \w+, (29 Oct|Oct 29),? 2026: none from then until it’s resumed\.$/,
+      ),
+    ).toBeTruthy()
+    expect(liveText(preview)).toBe('1 dates, 0 skipped')
+  })
+
+  it('previews no dates when it’s paused from before all of them', async () => {
+    const preview = await openPaused('2026-10-22')
+    expect(within(preview).queryAllByRole('listitem')).toHaveLength(0)
+    expect(within(preview).queryByText('No more dates.')).toBeNull()
+    expect(within(preview).queryByText(/^No dates/)).toBeNull()
+    expect(
+      within(preview).getByText(
+        /^Paused from \w+, (22 Oct|Oct 22),? 2026: none from then until it’s resumed\.$/,
+      ),
+    ).toBeTruthy()
+    expect(liveText(preview)).toBe('0 dates, 0 skipped')
+  })
+
+  it('previews everything when the pause is after the dates shown, and still says it’s paused', async () => {
+    const preview = await openPaused('2027-01-04')
+    expect(pauseNotice()?.textContent).toMatch(/^Paused from \w+, (4 Jan|Jan 4),? 2027\. Saving/)
+    expect(within(preview).getAllByRole('listitem')).toHaveLength(4)
+    expect(within(preview).queryByText(/: none from then/)).toBeNull()
+    expect(liveText(preview)).toBe('2 dates, 2 skipped')
+  })
+
+  it('leaves out the skipped dates from the pause on, with no pause line when no date goes', async () => {
+    // 5 Nov, a skipped date, is the pause's own date.
+    const preview = await openPaused('2026-11-05')
+    expect(within(preview).getAllByRole('listitem')).toHaveLength(2)
+    expect(within(preview).queryByText('Skipped')).toBeNull()
+    expect(within(preview).queryByText(/: none from then/)).toBeNull()
+    expect(liveText(preview)).toBe('2 dates, 0 skipped')
+  })
+
+  it('says there are no more dates when the rule has run out, paused or not', async () => {
+    mockGroup(acme)
+    mockSchedules([
+      { ...thursdays, rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=2', pausedFrom: '2026-10-29' },
+    ])
+    call.mockResolvedValue({ ok: true, data: { dates: [], skipped: [] } })
+    renderAt(`/schedules/${thursdays.$id}`)
+    const preview = await screen.findByRole('region', { name: 'Next shifts' })
+    expect(await within(preview).findByText('No more dates.')).toBeTruthy()
+    expect(within(preview).queryByText(/: none from then/)).toBeNull()
+  })
+
+  it('says nothing of a pause when it isn’t paused', async () => {
+    const preview = await openPaused(null)
+    expect(screen.queryByText(/Paused from/)).toBeNull()
+    expect(liveText(preview)).toBe('2 dates, 2 skipped')
+  })
+})
+
+describe('the preview with no dates (#523)', () => {
+  const emptyPreview = async (schedule: Schedules) => {
+    mockGroup(acme)
+    mockSchedules([schedule])
+    call.mockResolvedValue({ ok: true, data: { dates: [], skipped: [] } })
+    renderAt(`/schedules/${schedule.$id}`)
+    const preview = await screen.findByRole('region', { name: 'Next shifts' })
+    await within(preview).findByText('0 dates, 0 skipped')
+    return preview
+  }
+
+  it('says there are no more dates once a kept end date has been reached', async () => {
+    const preview = await emptyPreview({
+      ...thursdays,
+      startsOn: '2026-09-03',
+      endsOn: '2026-10-20',
+    })
+    expect(within(preview).getByText('No more dates.')).toBeTruthy()
+    expect(within(preview).queryByText(/^No dates/)).toBeNull()
+  })
+
+  it('says a rule with no end never falls on a day it can', async () => {
+    const preview = await emptyPreview(thursdays)
+    expect(within(preview).getByText('No dates: it never falls on a day it can.')).toBeTruthy()
   })
 })
 

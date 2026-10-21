@@ -306,7 +306,7 @@ Creating or editing a schedule sets its `nextRunAt` to now in the same transacti
   - A resume makes again any occurrence the pause deleted that's dated today or later. A bill reminded about before the pause can then be reminded about a second time (Resend's idempotency key only stops a resend within 24 hours). That's accepted, as when an ended schedule is reopened with `PATCH`.
   - Nothing resumes on its own: a pause lasts until someone resumes it.
 - **The other routes and jobs:**
-  - `PATCH` keeps `pausedFrom` (no `ScheduleInput` can set it), and end keeps it too.
+  - `PATCH` keeps `pausedFrom` (no `ScheduleInput` can set it), and end keeps it too. So the app's form for a paused schedule says it's paused, and its preview leaves out the dates from `pausedFrom` on ([#523](https://github.com/rojinc/ledgerly/issues/523)).
   - [Deleting an account](identity-and-invites.md#each-group-they-joined) ends a paused schedule all the same, by its stored `endsOn`, not its pause, so a later resume makes nothing after that end.
   - An expansion's schedule guard compares `pausedFrom` too, so one that races a pause or a resume runs again.
 
