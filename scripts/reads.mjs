@@ -595,9 +595,10 @@ export async function read(args, env = process.env, now = Date.now()) {
     ...nightly.notes,
     ...errors.notes,
     // Outside errorLines, whose lines match the runbook's jq: the fetch there prints CAPPED itself.
+    // Only names in FUNCTIONS, so --capped's own text is never repeated.
     ...capped
       .split(' ')
-      .filter(Boolean)
+      .filter((fn) => FUNCTIONS.includes(fn))
       .map((fn) => `capped ${fn}: more than 2,000 runs since --from; read sooner`),
   ]
   if (nightly.tooEarly || errors.verdict === 'TOO EARLY') {

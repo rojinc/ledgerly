@@ -617,6 +617,19 @@ describe('the command', () => {
     assert.equal(code, 1)
   })
 
+  it('names a --capped function for #96, but never repeats other text given there', async () => {
+    const args = ['--from', FROM, '--to', TO, '--capped', 'ledger, typed-text']
+    const { lines, code } = await read([...args, ...files(everyFunction())], {}, NOW)
+    assert.match(lines[2], / · INCOMPLETE$/)
+    assert.deepEqual(lines.slice(3), [
+      '',
+      'Post on #96:',
+      'capped ledger: more than 2,000 runs since --from; read sooner',
+    ])
+    assert.ok(!lines.join('\n').includes('typed-text'))
+    assert.equal(code, 1)
+  })
+
   it('refuses files without --to, which must be where the files end', async () => {
     const { lines, code } = await read(['--from', FROM, ...files(everyFunction())], {}, NOW)
     assert.deepEqual(
@@ -722,13 +735,12 @@ describe('--fetch', () => {
         headers: request.headers,
         queries: sent,
       })
-      if (status) {
-        response.writeHead(status, { 'content-type': 'application/json' })
-        return response.end(JSON.stringify({ message: 'secret detail', type }))
-      }
-      if (raw !== undefined) {
-        response.writeHead(200, { 'content-type': 'text/html' })
-        return response.end(raw)
+      if (status || raw !== undefined) {
+        const json = raw === undefined
+        response.writeHead(status ?? 200, {
+          'content-type': json ? 'application/json' : 'text/html',
+        })
+        return response.end(json ? JSON.stringify({ message: 'secret detail', type }) : raw)
       }
       const queries = url.searchParams.getAll('queries[]').map((q) => JSON.parse(q))
       const query = (method) => queries.find((q) => q.method === method)
@@ -849,12 +861,14 @@ describe('--fetch', () => {
   })
 
   it('stops with FETCH FAILED, never the body, when a reply isn’t the JSON it expects', async () => {
-    for (const [raw, says] of [
-      ['<html>a private page</html>', '200 not JSON'],
-      ['null', '200 no executions list'],
-      ['{"executions":"a private value"}', '200 no executions list'],
+    for (const [status, raw, says] of [
+      [undefined, '<html>a private page</html>', '200 not JSON'],
+      [undefined, 'null', '200 no executions list'],
+      [undefined, '{"executions":"a private value"}', '200 no executions list'],
+      // An edge or proxy's error page: its status, and no type.
+      [502, '<html>a private page</html>', '502 -'],
     ]) {
-      const api = await serve({}, { raw })
+      const api = await serve({}, { status, raw })
       try {
         const failed = await read(['--from', FROM, '--fetch'], api.env, NOW)
         assert.deepEqual(failed, {
