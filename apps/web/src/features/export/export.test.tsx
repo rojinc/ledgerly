@@ -529,12 +529,23 @@ describe('ExportPage: a delete screen’s link (#535)', () => {
     expect(fieldValue('To')).toBe('2026-10-26')
   })
 
+  it('ends on a last transaction past today in a group behind UTC (#556 W12)', async () => {
+    // Monday the 26th in UTC, still Sunday the 25th in Los Angeles.
+    vi.setSystemTime(new Date('2026-10-26T05:00:00.000Z'))
+    datesAre('2026-01-10', '2026-10-26')
+    renderPage({ path: '/export?groupId=g2' })
+    await waitFor(() => expect(fieldValue('From')).toBe('2026-01-10'))
+    expect(fieldValue('To')).toBe('2026-10-26')
+  })
+
   it('offers this year when the linked group has nothing recorded', async () => {
     datesAre(null, null)
     renderPage({ path: '/export?groupId=g1' })
     await screen.findByRole('button', { name: 'Download CSV' })
     expect(fieldValue('From')).toBe('2026-01-01')
     expect(fieldValue('To')).toBe('2026-10-26')
+    // Nothing recorded isn't a failed read: no "couldn't find" alert (#556 W13).
+    expect(screen.queryByRole('alert')).toBeNull()
   })
 
   it('waits for the dates before it downloads anything', async () => {
