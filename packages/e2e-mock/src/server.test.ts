@@ -69,7 +69,27 @@ describe("the browser's TablesDB reads", () => {
     expect(await rows('transactions', Query.search('description', 'rent'))).toMatchObject(refused)
     expect(await rows('transactions', Query.startsWith('description', 'R'))).toMatchObject(refused)
     expect(await row(Query.limit(1))).toMatchObject(refused)
-    expect(await unhandled()).toBe(before + 3)
+    // On a table no row of which is readable too, where no filter ever runs (AI A on #570).
+    expect(await rows('reminders', Query.notContains('groupId', 'g1'))).toMatchObject(refused)
+    expect(await unhandled()).toBe(before + 4)
+  })
+})
+
+describe("the runner's Users reads", () => {
+  it('pick the selected columns, as a row read does (AI A on #570)', async () => {
+    await call('POST', '/account', {
+      userId: 'unique()',
+      email: 'kim@example.com',
+      password: 'correct horse',
+    })
+    const response = await fetch(`${origin}/v1/users?${search([Query.select(['email'])])}`, {
+      headers: { 'x-appwrite-key': 'a key' },
+    })
+    const { users } = (await response.json()) as { users: Array<Record<string, unknown>> }
+    expect(users.length).toBeGreaterThan(0)
+    for (const user of users) {
+      expect(Object.keys(user).filter((key) => !key.startsWith('$'))).toEqual(['email'])
+    }
   })
 })
 

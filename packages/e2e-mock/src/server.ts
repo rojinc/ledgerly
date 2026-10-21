@@ -693,8 +693,9 @@ const usersApi = {
     const all = [...users.values()].map(publicUser) as unknown as Array<
       Record<string, unknown> & { $id: string }
     >
-    const { total, page } = applyQueries(all, queries)
-    return { total, users: page as never[] }
+    const { total, page, select } = applyQueries(all, queries)
+    // A select picks the columns, as a row read's does.
+    return { total, users: page.map((user) => pick(user, select)) as never[] }
   },
 }
 
