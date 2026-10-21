@@ -43,7 +43,7 @@ const shareAmountsSchema = z.strictObject({
 })
 
 /**
- * `statements.snapshotJson`: a historical record, never rewritten. `kind` and
+ * `statements.snapshotJson`: once final, a historical record, never rewritten. `kind` and
  * `category` stay plain strings so old snapshots still parse if those lists change.
  */
 export const statementSnapshotSchema = z.strictObject({

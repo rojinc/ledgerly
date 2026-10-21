@@ -97,11 +97,14 @@ export function HistoryPage() {
   // What's typed, spaces and all; the URL keeps it trimmed. A link that changes ?q= wins.
   const [typed, setTyped] = useState(q)
   const search = typed.trim() === q ? typed : q
+  // Each filter is built on `params` as last rendered, and the router renders in a transition, so
+  // each change renders at once (flushSync, here and in pickGroup). A second change before that
+  // would undo the first.
   function setParam(name: string, value: string) {
     const next = new URLSearchParams(params)
     if (value === '') next.delete(name)
     else next.set(name, value)
-    setParams(next, { replace: true })
+    setParams(next, { replace: true, flushSync: true })
   }
 
   // A person is one group's, and a kind may not be the next group's, so neither carries over.
@@ -113,7 +116,7 @@ export function HistoryPage() {
     const picked = sorted.find((g) => g.$id === id)
     const allowed = picked ? KINDS_BY_GROUP[picked.type] : TRANSACTION_KINDS
     if (!allowed.some((k) => k === next.get('kind'))) next.delete('kind')
-    setParams(next, { replace: true })
+    setParams(next, { replace: true, flushSync: true })
   }
 
   let content: ReactNode
