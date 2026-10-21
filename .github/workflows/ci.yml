@@ -44,6 +44,10 @@ jobs:
         env:
           TZ: UTC
 
+      # The restore check's script, against a stand-in API and core's balances rule (#567). Its test
+      # bundles core with esbuild, so it runs here, after `npm ci`.
+      - run: node --test scripts/restore-check.test.mjs
+
       # Core again in another timezone to catch date bugs, with full coverage.
       - run: npm run coverage -w @ledgerly/core
         env:
