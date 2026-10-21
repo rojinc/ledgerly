@@ -725,7 +725,8 @@ describe('who the job emails', () => {
 describe('the "ready" emails, when sends fail (#476)', () => {
   /**
    * Acme and Bobs Bakery are both due, and Sam and Dan run both, with verified addresses. Bobs
-   * Bakery auto-finalizes: its idle invoice has no lines, so its "ready" email still goes.
+   * Bakery auto-finalizes with `autoSend` off: no invoice is on its way, so its "ready" email
+   * still goes.
    */
   function twoGroups() {
     return fakes({
@@ -791,8 +792,10 @@ describe('the "ready" emails, when sends fail (#476)', () => {
 
   it.each([
     ['a 500', new EmailError('Resend answered 500 application_error', 'application_error', 500)],
+    ['a 400', new EmailError('Resend answered 400 validation_error', 'validation_error', 400)],
     ['a 422', new EmailError('Resend answered 422 validation_error', 'validation_error', 422)],
     ['a timeout', new EmailError('Resend could not be reached: timeout', 'timeout')],
+    ['a network failure', new EmailError('Resend could not be reached: network', 'network')],
   ])('tries every admin of every group after %s, a line each, as before', async (_, error) => {
     const services = twoGroups()
     const tried = failingWith(services, error)
@@ -820,6 +823,37 @@ describe('the "ready" emails, when sends fail (#476)', () => {
     expect(count).toBe(2)
     expect(services.sent).toHaveLength(1)
     expect(errors).toHaveLength(1)
+  })
+
+  it('reads no later group’s addresses once sending is blocked', async () => {
+    const services = twoGroups()
+    failingWith(services, new EmailError('Resend answered 403', 'validation_error', 403))
+    const read = vi.spyOn(services.db, 'listRows')
+    await runJob(services)
+    // The first group's only: the blocked run returns before the next group reads anything.
+    expect(read.mock.calls.filter(([params]) => params.tableId === 'identities')).toHaveLength(1)
+  })
+
+  it('still emails a later group when a read fails for the first one', async () => {
+    const services = twoGroups()
+    // The first group's read of its admins' addresses fails once. That's the database, not our
+    // key, domain or settings, so it stops nothing (#476).
+    const listRows = services.db.listRows.bind(services.db)
+    let failed = false
+    vi.spyOn(services.db, 'listRows').mockImplementation(async (params) => {
+      if (!failed && params.tableId === 'identities') {
+        failed = true
+        throw new AppwriteException('Database is down', 503, 'general_unknown')
+      }
+      return listRows(params)
+    })
+    expect(await runJob(services)).toEqual({ drafted: 2, failed: 0 })
+    const later = drafts(services).find((row) => row.groupId === 'job2')
+    expect(services.sent.map((email) => email.idempotencyKey).toSorted()).toEqual([
+      `ready/${later?.$id}/dan`,
+      `ready/${later?.$id}/sam`,
+    ])
+    expect(errors.map((line) => JSON.parse(line).event)).toEqual(['ready_email_failed'])
   })
 
   it('stops for that run only: a later run’s "ready" emails still go', async () => {
