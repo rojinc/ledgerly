@@ -14,7 +14,7 @@ export const ENV_NAMES = [
 
 export type TestUser = { id: string; name: string; email: string; password: string }
 
-function env(name: string): string {
+export function env(name: string): string {
   const value = process.env[name]
   if (!value) throw new Error(`${name} isn't set (docs/engineering/testing.md#end-to-end)`)
   return value
@@ -56,22 +56,36 @@ async function api<T>(method: string, path: string, body?: object): Promise<T> {
 const query = (method: string, values: unknown[], attribute?: string) =>
   `queries[]=${encodeURIComponent(JSON.stringify({ method, values, ...(attribute ? { attribute } : {}) }))}`
 
-/** A verified user, made through the API: for the flows that start signed in. */
-export async function createUser(label: string, name: string): Promise<TestUser> {
+/**
+ * A verified user, made through the API: for the flows that start signed in. One made without a
+ * password (`password` empty) never has `passwordUpdate` set, so `account` doesn't refuse it a
+ * delete for 24 hours (identity-and-invites.md#refusals, #512); it signs in with `createToken`.
+ */
+export async function createUser(
+  label: string,
+  name: string,
+  { password = true } = {},
+): Promise<TestUser> {
   const user = {
     id: randomUUID(),
     name: testName(name),
     email: testEmail(label),
-    password: randomBytes(18).toString('base64url'),
+    password: password ? randomBytes(18).toString('base64url') : '',
   }
   await api('POST', '/users', {
     userId: user.id,
     email: user.email,
-    password: user.password,
+    ...(user.password ? { password: user.password } : {}),
     name: user.name,
   })
   await verifyEmail(user.id)
   return user
+}
+
+/** A one-off secret the user's browser exchanges for a session (`POST /account/sessions/token`). */
+export async function createToken(userId: string): Promise<string> {
+  const { secret } = await api<{ secret: string }>('POST', `/users/${userId}/tokens`, {})
+  return secret
 }
 
 /** Marks a user's email verified, as the link in the email would. */

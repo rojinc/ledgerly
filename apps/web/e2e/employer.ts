@@ -7,7 +7,7 @@ import { expect, type Page } from '@playwright/test'
  */
 export async function addEmployer(page: Page, name: string, billing: string): Promise<string> {
   await page.getByLabel('Employer name').fill(name)
-  await page.getByLabel('Billing emails').fill(billing)
+  await page.getByLabel('Billing emails', { exact: true }).fill(billing)
   await page.getByLabel('Default hourly rate (AUD)').fill('25')
   await page.getByLabel('Invoice cycle').selectOption({ label: 'Monthly' })
   await page.getByLabel('Payment terms (days)').fill('14')

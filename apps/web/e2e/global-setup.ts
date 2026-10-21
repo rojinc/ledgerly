@@ -17,8 +17,11 @@ export default async function globalSetup() {
   // Letters and digits only, so it's one word in a name or an address.
   const runId = `e2e${Date.now().toString(36)}${randomBytes(3).toString('hex')}`
   process.env.E2E_RUN_ID = runId
+  let made = 0
   const teardown = async () => {
-    await handOverRunUsers(runId)
+    const handedOver = await handOverRunUsers(runId)
+    // Every user made, the passwordless one included: one left out would be a live account.
+    if (handedOver < made) throw new Error(`Handed over ${handedOver} of the ${made} users made`)
   }
   try {
     const users = {
@@ -29,7 +32,15 @@ export default async function globalSetup() {
       kim: await createUser('kim', 'Kim'),
       lee: await createUser('lee', 'Lee'),
       max: await createUser('max', 'Max'),
+      // #512's flows, one each. Ann deletes with a password set today, so she's refused; Bea has
+      // no password, so she isn't, and signs in with an API token instead.
+      ann: await createUser('ann', 'Ann'),
+      bea: await createUser('bea', 'Bea', { password: false }),
+      cal: await createUser('cal', 'Cal'),
+      dee: await createUser('dee', 'Dee'),
+      eve: await createUser('eve', 'Eve'),
     }
+    made = Object.keys(users).length
     process.env.E2E_USERS = JSON.stringify(users)
   } catch (error) {
     // The setup's error is the one to see; a failed clean-up is added to it. Both messages

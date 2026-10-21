@@ -1,7 +1,8 @@
-import { addDays, type LocalDate, weekdayOf } from '@ledgerly/core/dates/local-date'
+import { addDays, weekdayOf } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import { publicHolidayChecker } from '@ledgerly/core/recurrence/public-holidays'
-import { expect, type Page, test } from '@playwright/test'
+import { expect, test } from '@playwright/test'
+import { dayButton } from './calendar'
 import { runId, testEmail } from './dev-project'
 import { addEmployer, archiveEmployer } from './employer'
 import { logIn, setupUser } from './users'
@@ -32,7 +33,7 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
   const billing = testEmail('acme-billing')
   groupId = await addEmployer(page, employer, billing)
   // Its settings, as saved.
-  await expect(page.getByLabel('Billing emails')).toHaveValue(billing)
+  await expect(page.getByLabel('Billing emails', { exact: true })).toHaveValue(billing)
   await expect(page.getByLabel('Default hourly rate (AUD)')).toHaveValue('25.00')
   await expect(page.getByLabel('Invoice cycle')).toHaveValue('monthly')
   await expect(page.getByLabel('Payment terms (days)')).toHaveValue('14')
@@ -68,20 +69,3 @@ test('sets up an employer and a weekly Thursday shift, shown dashed for 8 weeks'
     }
   }
 })
-
-/**
- * A calendar day's button, named by its date ("Thursday 22 October, 1 item"). The date is
- * worded in the browser, as the calendar words it.
- */
-async function dayButton(page: Page, day: LocalDate) {
-  const label = await page.evaluate((date) => {
-    const [year, month, dayOfMonth] = date.split('-').map(Number) as [number, number, number]
-    return new Intl.DateTimeFormat(undefined, {
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      timeZone: 'UTC',
-    }).format(Date.UTC(year, month - 1, dayOfMonth))
-  }, day)
-  return page.getByRole('button', { name: new RegExp(`^${label}, \\d+ items?$`) })
-}
