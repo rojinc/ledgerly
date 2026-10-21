@@ -1,11 +1,12 @@
 import { ADDRESS_MISS_LIMIT } from '@ledgerly/core/constants/limits'
 import type { Persons } from '@ledgerly/core/generated/rows'
-import type { Db } from '@ledgerly/server/appwrite/client'
-import { TABLES } from '@ledgerly/server/appwrite/tables'
-import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
-import type { AppError } from '@ledgerly/server/http/app-error'
-import { randomId } from '@ledgerly/server/identity/random-id'
-import { conflictAsTryAgain, getRowOrNull, isAppwriteError } from './rows'
+import { AppwriteException } from 'node-appwrite'
+import type { Db } from '../appwrite/client'
+import { TABLES } from '../appwrite/tables'
+import { type Write, withTransaction } from '../appwrite/transaction'
+import { AppError } from '../http/app-error'
+import { randomId } from './random-id'
+import { findPerson } from './resolve-person'
 
 const WINDOW_MS = ADDRESS_MISS_LIMIT.hours * 60 * 60 * 1000
 
@@ -36,12 +37,13 @@ function liveWindow(person: Counted | null, now: Date): string | null {
 }
 
 /**
- * Counting first (#274): counts one address check on the sender's `persons` row before the
- * address is looked at, in one transaction: a guard write (a fresh `rev`), the row read again as
- * committed, then `addressMisses + 1` in a live window, or a new window at 1 from now. At the
- * limit, `tooMany` instead, and nothing is written. A 409 runs it once more, then CONFLICT, still
- * before any address is looked at. The row gets a count and a time only: no address, target or
- * route. Returns the start of the window the count was taken in, for `takeBack`.
+ * Counting first (#274, and #378's adds with an email and a phone): counts one address check on
+ * the sender's `persons` row before the address is looked at, in one transaction: a guard write
+ * (a fresh `rev`), the row read again as committed, then `addressMisses + 1` in a live window, or
+ * a new window at 1 from now. At the limit, `tooMany` instead, and nothing is written. A 409
+ * runs it once more, then CONFLICT, still before any address is looked at. The row gets a count
+ * and a time only: no address, target or route. Returns the start of the window the count was
+ * taken in, for `takeBack`.
  */
 export async function countCheck(
   db: Db,
@@ -51,7 +53,7 @@ export async function countCheck(
 ): Promise<string> {
   // Set by each run, so after a rerun it is the committed run's window.
   let window = ''
-  await conflictAsTryAgain(() =>
+  await asTryAgain(() =>
     onceMore(() =>
       onSenderRow(db, senderId, (stored) => {
         if (atMissLimit(stored, now)) throw tooMany()
@@ -67,12 +69,13 @@ export async function countCheck(
 }
 
 /**
- * Taking the count back: the write that gives the check of a new invite or reminder that's sent
- * its 1 back, for the transaction that commits it, which guards the sender's row and read it as
- * stored after that: `addressMisses − 1`, never below 0, `addressMissesFrom` unchanged. None once
- * another check has started a new window since `window`, the one the count was taken in, so it
- * can't cancel a check counted there. A reminder retry never takes its count back
- * (identity-and-invites.md#reminders, step 3).
+ * Taking the count back: the write that gives the check of a new invite or reminder that's sent,
+ * or of an add whose email and phone both found one existing person (#378), its 1 back, for the
+ * transaction that commits it, which guards the sender's row and read it as stored after that:
+ * `addressMisses − 1`, never below 0, `addressMissesFrom` unchanged. None once another check has
+ * started a new window since `window`, the one the count was taken in, so it can't cancel a check
+ * counted there. A reminder retry never takes its count back (identity-and-invites.md#reminders,
+ * step 3).
  */
 export function takeBack(senderId: string, stored: Counted | null, window: string): Write[] {
   // As instants: Appwrite may give back a datetime in another form than the one written.
@@ -99,7 +102,7 @@ function onSenderRow(
       rowId: senderId,
       data: { rev: randomId() },
     })
-    const stored = await getRowOrNull<Persons>(db, TABLES.persons, senderId)
+    const stored = (await findPerson(db, senderId)) ?? null
     const data = change(stored)
     await tx.write({ action: 'update', tableId: TABLES.persons, rowId: senderId, data })
   })
@@ -110,7 +113,21 @@ async function onceMore(write: () => Promise<void>): Promise<void> {
   try {
     await write()
   } catch (error) {
-    if (!isAppwriteError(error, 409)) throw error
+    if (!isConflict(error)) throw error
     await write()
   }
+}
+
+/** Runs `write`, turning a commit conflict (Appwrite's 409) into CONFLICT rather than INTERNAL. */
+async function asTryAgain(write: () => Promise<void>): Promise<void> {
+  try {
+    await write()
+  } catch (error) {
+    if (!isConflict(error)) throw error
+    throw new AppError('CONFLICT', 'Something else changed this at the same time. Try again.')
+  }
+}
+
+function isConflict(error: unknown): boolean {
+  return error instanceof AppwriteException && error.code === 409
 }

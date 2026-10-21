@@ -1,8 +1,8 @@
 import { type Email, EmailError } from '@ledgerly/server/email/send-email'
 import { AppError } from '@ledgerly/server/http/app-error'
+import { countCheck } from '@ledgerly/server/identity/address-misses'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { countCheck } from '../src/address-misses'
 import {
   beforeCommit,
   beforeStaging,
@@ -19,7 +19,8 @@ import {
 // #274 (identity-and-invites.md#invites, step 2; #reminders, steps 3, 5 and 6.2): address checks
 // typed for invites and reminders, counted together on the sender's persons row before they run,
 // with the count of a new invite or reminder that's sent taken back. A reminder retry never takes
-// its count back.
+// its count back. countCheck lives in packages/server since #378, but these tests run it through
+// identity's routes, so they stay here.
 
 type Row = Record<string, unknown> & { $id: string }
 

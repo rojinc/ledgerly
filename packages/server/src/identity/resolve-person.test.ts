@@ -2,7 +2,13 @@ import { AppwriteException } from 'node-appwrite'
 import { describe, expect, it, vi } from 'vitest'
 import { FakeDb } from '../appwrite/fake'
 import { withTransaction } from '../appwrite/transaction'
-import { findPerson, isLonePlaceholder, isPlaceholder, resolvePerson } from './resolve-person'
+import {
+  bothKeysFindOne,
+  findPerson,
+  isLonePlaceholder,
+  isPlaceholder,
+  resolvePerson,
+} from './resolve-person'
 
 function db() {
   return new FakeDb({
@@ -161,6 +167,43 @@ describe('resolvePerson', () => {
         resolvePerson(store, { displayName: 'A', email: 'a@example.com' }, 'AU-NSW', tx.id),
       ),
     ).rejects.toThrow('A person was merged too many times in a row')
+  })
+})
+
+// #378: the only add with both keys whose address check takes its count back.
+describe('bothKeysFindOne', () => {
+  // pEmail's phone too, and a placeholder merged into pEmail holding another email.
+  function known() {
+    return new FakeDb({
+      persons: [
+        { $id: 'pEmail', displayName: 'Sam', userId: null, mergedInto: null },
+        { $id: 'pPhone', displayName: 'Sammy', userId: 'uSam', mergedInto: null },
+        { $id: 'pOld', displayName: 'S', userId: null, mergedInto: 'pEmail' },
+      ],
+      identities: [
+        { $id: 'i1', key: 'email:sam@example.com', type: 'email', personId: 'pEmail' },
+        { $id: 'i2', key: 'phone:+61412345678', type: 'phone', personId: 'pPhone' },
+        { $id: 'i3', key: 'phone:+61498765432', type: 'phone', personId: 'pEmail' },
+        { $id: 'i4', key: 'email:old@example.com', type: 'email', personId: 'pOld' },
+      ],
+    })
+  }
+  it.each([
+    ['both keys find one person', 'sam@example.com', '0498 765 432', true],
+    ['one key is on a person merged into the other’s', 'old@example.com', '0498 765 432', true],
+    ['they find two persons', 'sam@example.com', '0412 345 678', false],
+    ['only the email finds someone', 'sam@example.com', '0400 000 001', false],
+    ['only the phone finds someone', 'new@example.com', '0498 765 432', false],
+    ['both find nobody', 'new@example.com', '0400 000 001', false],
+  ])('says %s: %s', async (_case, email, phone, expected) => {
+    expect(await bothKeysFindOne(known(), { displayName: 'X', email, phone }, 'AU-NSW')).toBe(
+      expected,
+    )
+  })
+
+  it('is false for one key', async () => {
+    const input = { displayName: 'X', email: 'sam@example.com' }
+    expect(await bothKeysFindOne(known(), input, 'AU-NSW')).toBe(false)
   })
 })
 

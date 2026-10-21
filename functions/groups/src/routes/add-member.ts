@@ -12,10 +12,12 @@ import {
   activityWrite,
   aRole,
   conflictAsTryAgain,
+  countTwoKeys,
   findFirst,
   invalid,
   parseBody,
   resolveGuarded,
+  takeBackTwoKeys,
   teamRead,
   today,
 } from '../shared'
@@ -46,6 +48,8 @@ export async function addMember(
     throw invalid(`A ${group.type} group always has exactly two members.`)
   }
 
+  // Step 2: an add with both an email and a phone is counted before either is looked up (#378).
+  const window = await countTwoKeys(db, caller.$id, input, group.region, now).catch(invalidKey)
   const memberId = ID.unique()
   const newRole = role ?? 'member'
   await conflictAsTryAgain(() =>
@@ -56,6 +60,7 @@ export async function addMember(
         Query.equal('personId', resolved.personId),
       ])
       if (existing) throw new AppError('CONFLICT', 'This person is already in the group.')
+      await takeBackTwoKeys(tx, db, caller.$id, input, group.region, window)
       // Another request adding the same person, or the same new key, at the same time fails
       // this commit on a unique index (uniq_group_person, identities.key), and a claim of the
       // person found fails it on their guarded row: CONFLICT.
@@ -87,12 +92,13 @@ export async function addMember(
   return db.getRow<Members>({ databaseId: DATABASE_ID, tableId: TABLES.members, rowId: memberId })
 }
 
-// resolvePerson throws a RangeError, with a fixed message, for an email or phone it can't use.
 async function resolveOrInvalid(tx: Tx, db: Db, input: PersonInput, region: string) {
-  try {
-    return await resolveGuarded(tx, db, input, region)
-  } catch (error) {
-    if (error instanceof RangeError) throw invalid(error.message)
-    throw error
-  }
+  return resolveGuarded(tx, db, input, region).catch(invalidKey)
+}
+
+// resolvePerson and countTwoKeys throw a RangeError, with a fixed message, for an email or phone
+// they can't use.
+function invalidKey(error: unknown): never {
+  if (error instanceof RangeError) throw invalid(error.message)
+  throw error
 }
