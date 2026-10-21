@@ -159,11 +159,26 @@ describe('FakeDb reads', () => {
     expect(rows.map((row) => row.$id)).toEqual(['p1', 'p2'])
   })
 
-  it('refuses queries it does not model, instead of ignoring them', async () => {
+  it('refuses queries it does not model, instead of ignoring them, even with no rows', async () => {
+    for (const db of [transactions(), new FakeDb()]) {
+      await expect(
+        db.listRows({ ...DB, queries: [Query.search('description', 'rent')] }),
+      ).rejects.toThrow('FakeDb does not support the "search" query')
+    }
+  })
+
+  it('refuses a column the table lacks, in a filter, an order or a select, as Appwrite does', async () => {
     const db = transactions()
-    await expect(
-      db.listRows({ ...DB, queries: [Query.search('description', 'rent')] }),
-    ).rejects.toThrow('FakeDb does not support the "search" query')
+    for (const query of [
+      Query.equal('nope', 'x'),
+      Query.orderAsc('nope'),
+      Query.select(['nope']),
+    ]) {
+      await expect(db.listRows({ ...DB, queries: [query] })).rejects.toMatchObject({
+        code: 400,
+        type: 'general_query_invalid',
+      })
+    }
   })
 
   it('refuses an `equal` with no values, as Appwrite does', async () => {

@@ -72,9 +72,10 @@ export default async function globalSetup() {
 }
 
 /**
- * On the mock (#554), a request it has no route for answers 404, which a flow may not notice: a
- * function that starts calling a new Appwrite API fails the run here instead, with the routes in
- * `packages/e2e-mock/dist/mock.log`.
+ * On the mock (#554), a request from the app or the runner that it has no route for answers 404,
+ * and a query it doesn't model 400, which a flow may not notice: either fails the run here
+ * instead, with the routes and queries in `packages/e2e-mock/dist/mock.log`. A function's calls go
+ * to in-process services, so a new one fails `npm run typecheck`.
  */
 async function expectMockServedAll(): Promise<void> {
   const origin = new URL(process.env.VITE_APPWRITE_ENDPOINT ?? '').origin
@@ -83,7 +84,7 @@ async function expectMockServedAll(): Promise<void> {
   }
   if (unhandled > 0) {
     throw new Error(
-      `The mock had no route for ${unhandled} request${unhandled === 1 ? '' : 's'}: see packages/e2e-mock/dist/mock.log`,
+      `The mock had no route or query for ${unhandled} request${unhandled === 1 ? '' : 's'}: see packages/e2e-mock/dist/mock.log`,
     )
   }
 }
