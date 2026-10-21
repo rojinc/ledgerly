@@ -244,8 +244,8 @@ function texts(value: unknown, fields: string[]): Record<string, string> {
 
 /**
  * `profile.csv`: the stored business details with the rest of the profile. They're read field by
- * field, as the Profile form reads them, so a value that a later schema would refuse doesn't drop
- * every other one (#535).
+ * field, keeping only text, so a value that a later schema would refuse doesn't drop every other
+ * one (#535).
  */
 export function profileExport({
   businessJson,

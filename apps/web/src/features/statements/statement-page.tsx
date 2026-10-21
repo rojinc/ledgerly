@@ -47,16 +47,20 @@ function periodText(statement: Pick<Statements, 'periodStart' | 'periodEnd'>): s
 /**
  * Whether the invoice PDF will print any of the snapshot's text as � (#269): the issuer's
  * business details, the recipient and the lines, as packages/server/src/pdf/invoice-pdf.ts
- * prints them.
+ * prints them. The ABN and the bank's numbers are digits when stored today, but a snapshot keeps
+ * any text (#543).
  */
 function unprintable({ issuer, recipient, lines }: StatementSnapshot): boolean {
   const business = issuer?.business
   return [
     business?.businessName ?? issuer?.name,
+    business?.abn,
     business?.address,
     business?.email,
     business?.phone,
     business?.bank?.accountName,
+    business?.bank?.bsb,
+    business?.bank?.accountNumber,
     business?.payId,
     business?.invoiceNotes,
     recipient?.name,

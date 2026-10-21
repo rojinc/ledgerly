@@ -183,8 +183,10 @@ describe('POST /statements/{id}/finalize', () => {
     expect(final.status).toBe('final')
     const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
     expect(snapshot.issuer?.business).toEqual({
-      businessName: 'Sam Cleans',
-      email: 'sam@example.com',
+      ...BUSINESS,
+      abn: undefined,
+      phone: undefined,
+      bank: undefined,
     })
     expect(warnings.map((line) => JSON.parse(line))).toEqual([
       expect.objectContaining({
