@@ -29,6 +29,13 @@ export default async function globalSetup() {
       kim: await createUser('kim', 'Kim'),
       lee: await createUser('lee', 'Lee'),
       max: await createUser('max', 'Max'),
+      // #512's flows, one each. Ann deletes with a password set today, so she's refused; Bea has
+      // no password, so she isn't, and signs in with an API token instead.
+      ann: await createUser('ann', 'Ann'),
+      bea: await createUser('bea', 'Bea', { password: false }),
+      cal: await createUser('cal', 'Cal'),
+      dee: await createUser('dee', 'Dee'),
+      eve: await createUser('eve', 'Eve'),
     }
     process.env.E2E_USERS = JSON.stringify(users)
   } catch (error) {
