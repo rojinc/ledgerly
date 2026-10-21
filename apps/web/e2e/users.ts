@@ -3,7 +3,19 @@ import { createToken, env, type TestUser } from './dev-project'
 
 /** The users global setup made for this run. */
 export function setupUser(
-  key: 'alex' | 'sam' | 'kim' | 'lee' | 'max' | 'ann' | 'bea' | 'cal' | 'dee' | 'eve',
+  key:
+    | 'alex'
+    | 'sam'
+    | 'kim'
+    | 'lee'
+    | 'max'
+    | 'ann'
+    | 'bea'
+    | 'cal'
+    | 'dee'
+    | 'eve'
+    | 'fay'
+    | 'gil',
 ): TestUser {
   const users = JSON.parse(process.env.E2E_USERS ?? '{}') as Record<string, TestUser>
   const user = users[key]

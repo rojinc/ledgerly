@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { createUser, ENV_NAMES, handOverRunUsers } from './dev-project'
+import { createUser, ENV_NAMES, handOverRunUsers, userState } from './dev-project'
 
 /**
  * Before any flow: the dev project's variables, this run's ID, and the users the flows log in
@@ -17,11 +17,16 @@ export default async function globalSetup() {
   // Letters and digits only, so it's one word in a name or an address.
   const runId = `e2e${Date.now().toString(36)}${randomBytes(3).toString('hex')}`
   process.env.E2E_RUN_ID = runId
-  let made = 0
+  let made: string[] = []
   const teardown = async () => {
-    const handedOver = await handOverRunUsers(runId)
-    // Every user made, the passwordless one included: one left out would be a live account.
-    if (handedOver < made) throw new Error(`Handed over ${handedOver} of the ${made} users made`)
+    await handOverRunUsers(runId)
+    // Every user made is handed over, the passwordless ones included, or gone, as one whose flow
+    // deleted their account is (#525). One still live would be an account nobody signs out.
+    const live: string[] = []
+    for (const id of made) if ((await userState(id)) === 'live') live.push(id)
+    if (live.length > 0) {
+      throw new Error(`${live.length} of the ${made.length} users made are still live`)
+    }
   }
   try {
     const users = {
@@ -39,8 +44,12 @@ export default async function globalSetup() {
       cal: await createUser('cal', 'Cal'),
       dee: await createUser('dee', 'Dee'),
       eve: await createUser('eve', 'Eve'),
+      // #525's flow: Fay deletes her account, then Gil, who moved out of her house, deletes the
+      // house. Neither has a password, so neither is refused for 24 hours.
+      fay: await createUser('fay', 'Fay', { password: false }),
+      gil: await createUser('gil', 'Gil', { password: false }),
     }
-    made = Object.keys(users).length
+    made = Object.values(users).map((user) => user.id)
     process.env.E2E_USERS = JSON.stringify(users)
   } catch (error) {
     // The setup's error is the one to see; a failed clean-up is added to it. Both messages
