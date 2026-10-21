@@ -241,7 +241,7 @@ done
 
 - **Pass:** each function has a run with `completed` and `200`, and after two hours a second one about 60 minutes later. `account`'s `200` also shows its users queries (1a) work on the server.
 - **If it fails:**
-  - **An invalid-query error:** the server refuses the `$createdAt` filter. Drop the two `$createdAt` queries, raise the limit to 10, and filter in `jq` instead: `select(.["$createdAt"] > $since)`, with `--arg since "$DEPLOYED_AT"`. 4b's command takes the same change.
+  - **An invalid-query error:** the server refuses the `$createdAt` filter. Drop only the `greaterThan` query, raise the limit to 10, and filter in `jq` instead: `select(.["$createdAt"] > $since)`, with `--arg since "$DEPLOYED_AT"`. Keep the `orderDesc`, so the newest runs come first; without an order, Appwrite lists the oldest first, and the filter would remove them all. If the server refuses that order too, use `{"method":"orderDesc","attribute":"$id"}`, and check the printed dates are newest first. 4b's command takes the same change.
   - **No run after 70 minutes:** the interval didn't take. Check the Deploy run's function push for "doesn't support cron schedules" or a skipped function, and [function settings](environments-and-deploys.md#function-settings).
   - **`failed` or a 500:** read that run's log lines, which hold IDs, event names and error names only:
 
@@ -271,10 +271,11 @@ Each finished run prints a `==` line, then one line per email failure. Count the
 
 - **Pass:** a `==` line for each function, and under it **at most one** line for each of these, with a cause that's a blocked send (`EmailError validation_error 403` or `401`, `EmailError invalid_api_key <status>`, or `EmailError missing_config`):
   - `scheduler`: `reminder_failed`, `summary_failed`, `transaction_changes_failed`;
-  - `statements`: `auto_send_failed` or `auto_send_notice_failed`, one of the two;
+  - `statements`: `ready_email_failed` (since #481), and `auto_send_failed` or `auto_send_notice_failed`, one of the two;
   - `identity`: `change_notice`.
 
-  Until #476 merges, `statements` can also log `ready_email_failed` once per admin of each statement the run drafted. No email line at all is a pass too, if nothing was due to send. **But if 1b showed a 403 and no step has logged a blocked line after two hours,** check that something was due, such as a bill's reminder or a summary, before calling it a pass. A step that failed some other way would have made 4a's run a 500.
+  No email line at all is a pass too, if nothing was due to send.
+- **No blocked line after two hours,** though 1b showed sends are blocked (a 403 or 401, a bad key, or an `@resend.dev` sender): run 4b's command again without `| select((.cause // "") | startswith("EmailError"))`. A step that failed some other way logs its own line, such as `reminder_failed` or `summary_failed` with another cause, and its run still answers 200, so 4a doesn't show it. If there's no such line either, check that something was due, such as a bill's reminder or a summary, before calling it a pass.
 - **No `==` line** for a function: no finished run since the deploy yet. Wait and run it again.
 - **If it fails:** two or more lines with the same event and a blocked-send cause mean that step didn't stop. Post the function, event and count on #96 (AI A wrote #475). A cause of `EmailError validation_error 400` or `422` is an address Resend refused, which is expected now and then.
 
