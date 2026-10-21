@@ -42,6 +42,7 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 | push to `main` | `npm ci` → `npm run build` (the web app with `VITE_APPWRITE_ENDPOINT` and `VITE_APPWRITE_PROJECT_ID`) → install `appwrite-cli` (pinned) → `appwrite client -e $ENDPOINT -p $PROJECT -k $KEY` → the table plan and the table check ([schema changes that lose data](#schema-changes-that-lose-data)) → `appwrite push table` and `bucket` (`--all --force`) → every function's and the site's settings (`--no-code`) → code only for what changed (below) |
 | **Run workflow** on `main`, by a person | the same steps, but every function and the site get new code: a full redeploy of `main`'s latest commit, one deployment each. Use it after changing a project variable, since Appwrite then marks every function as needing a redeploy. Agents never run it (AGENTS.md). |
 
+- **The first deploy after the Actions outage** has its own runbook: [first deploy](first-deploy.md), the lead's checks before, during and after it.
 - **One deploy at a time,** and a running one is never cancelled.
 - **Only what changed gets new code.** The plan allows **200 deployments a day** (it resets at 00:00 UTC), and every function or site push with code is one, changed or not. So the step "Choose what to deploy" finds the last run whose push step succeeded (through the GitHub API, `actions: read`), and gives new code only to:
   - **a function** whose folder changed, or `packages/core`, `packages/server`, `appwrite/functions.json` or `scripts/build-functions.mjs`;
