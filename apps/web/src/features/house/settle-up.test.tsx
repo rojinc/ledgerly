@@ -199,10 +199,13 @@ describe('SettleUp', () => {
     mockLedger()
     const { queryClient } = renderSettleUp()
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
-    const [first] = await screen.findAllByRole('button', { name: 'Record' })
-    // Every row's button is "Record": its transfer describes it.
+    const [first, second] = await screen.findAllByRole('button', { name: 'Record' })
+    // Every row's button is "Record": its own transfer describes it.
     expect(describer(first)).toBe(first?.closest('li')?.querySelector('span') ?? undefined)
-    expect(describer(first)?.textContent).toMatch(/ pays /)
+    expect([first, second].map((button) => describer(button)?.textContent)).toEqual([
+      `Cara pays Mia (you) ${money(4520)}`,
+      `Dan pays Mia (you) ${money(960)}`,
+    ])
     fireEvent.click(first as HTMLElement)
     // Prefilled from the transfer, dated today in the house's time zone.
     expect(input('From').value).toBe('p3')

@@ -1232,8 +1232,13 @@ describe('SchedulesPage: pause and resume (#430)', () => {
     mockGroup(acme, 'member')
     mockSchedules([running, { ...paused, $id: 'klmnopqrst0123456789', description: 'Saturdays' }])
     renderAt('/schedules?groupId=g1')
-    expect(await screen.findByRole('button', { name: 'Pause' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy()
+    const pause = await screen.findByRole('button', { name: 'Pause' })
+    const resume = screen.getByRole('button', { name: 'Resume' })
+    // Every row has these buttons: each is described by its own schedule's name.
+    expect([pause, resume].map((button) => describer(button)?.textContent)).toEqual([
+      running.description,
+      'Saturdays',
+    ])
   })
 
   it('lets End wait for a resume on its way, so what the resume says isn’t lost', async () => {
