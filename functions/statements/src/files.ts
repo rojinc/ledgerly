@@ -17,7 +17,11 @@ export interface Files {
 
 /** Storage for this execution, with the per-execution API key. */
 export function filesFromRequest(headers: Record<string, string>): Files {
-  const storage = new Storage(clientFromRequest(headers))
+  return statementsBucket(new Storage(clientFromRequest(headers)))
+}
+
+/** The statements bucket through `storage`. Its tests pass a stub. */
+export function statementsBucket(storage: Storage): Files {
   return {
     async upload(fileId, name, content, permissions) {
       try {
