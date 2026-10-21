@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build:mock": "node build.mjs",
-    "typecheck": "tsc --noEmit -p ."
+    "typecheck": "tsc --noEmit -p .",
+    "test": "vitest run"
   },
   "dependencies": {
     "@ledgerly/fn-account": "*",

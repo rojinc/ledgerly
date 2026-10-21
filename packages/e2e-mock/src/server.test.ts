@@ -1,0 +1,93 @@
+import http from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { Query } from 'node-appwrite'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
+
+// Port 0 for the listeners the mock starts on import, so they never take an e2e run's port.
+process.env.MOCK_PORT = '0'
+const { handleRequest } = await import('./server')
+
+const server = http.createServer((req, res) => void handleRequest(req, res))
+let origin = ''
+beforeAll(async () => {
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+})
+afterAll(() => new Promise((resolve) => server.close(resolve)))
+
+async function call(method: string, path: string, body?: object, cookie = '') {
+  const response = await fetch(`${origin}/v1${path}`, {
+    method,
+    headers: { 'content-type': 'application/json', cookie },
+    ...(body && { body: JSON.stringify(body) }),
+  })
+  return { status: response.status, body: await response.json(), response }
+}
+
+const search = (queries: string[]) =>
+  queries.map((query) => `queries[]=${encodeURIComponent(query)}`).join('&')
+const rows = (table: string, ...queries: string[]) =>
+  call('GET', `/tablesdb/main/tables/${table}/rows?${search(queries)}`)
+// Row g1 isn't there: the queries are checked first.
+const row = (query: string) =>
+  call('GET', `/tablesdb/main/tables/groups/rows/g1?${search([query])}`)
+
+async function unhandled(): Promise<number> {
+  return ((await (await fetch(`${origin}/mock/stats`)).json()) as { unhandled: number }).unhandled
+}
+
+const refused = { status: 400, body: { type: 'general_query_invalid' } }
+
+describe("the browser's TablesDB reads", () => {
+  it('serves the columns of tables.json and the system ones', async () => {
+    const read = await rows(
+      'transactions',
+      Query.equal('groupId', 'g1'),
+      Query.contains('description', 'rent'),
+      Query.orderDesc('date'),
+      Query.orderAsc('$sequence'),
+      Query.select(['$id', 'date']),
+    )
+    expect(read).toMatchObject({ status: 200, body: { total: 0, rows: [] } })
+  })
+
+  it('refuses a column the table lacks, in a filter, an order or a select, as FakeDb does', async () => {
+    const before = await unhandled()
+    expect(await rows('transactions', Query.equal('nope', 'x'))).toMatchObject(refused)
+    expect(await rows('transactions', Query.orderAsc('nope'))).toMatchObject(refused)
+    expect(await rows('transactions', Query.select(['$id', 'nope']))).toMatchObject(refused)
+    expect(await row(Query.select(['nope']))).toMatchObject(refused)
+    expect(await unhandled()).toBe(before)
+  })
+
+  it('refuses an `equal` with no values', async () => {
+    expect(await rows('transactions', Query.equal('$id', []))).toMatchObject(refused)
+  })
+
+  it('counts a query it does not model as a gap, which fails the run', async () => {
+    const before = await unhandled()
+    expect(await rows('transactions', Query.search('description', 'rent'))).toMatchObject(refused)
+    expect(await rows('transactions', Query.startsWith('description', 'R'))).toMatchObject(refused)
+    expect(await row(Query.limit(1))).toMatchObject(refused)
+    expect(await unhandled()).toBe(before + 3)
+  })
+})
+
+describe('PATCH /account/email', () => {
+  it("refuses another account's address, as Appwrite 1.8 does, and takes a free one", async () => {
+    const password = 'correct horse'
+    await call('POST', '/account', { userId: 'unique()', email: 'sam@example.com', password })
+    await call('POST', '/account', { userId: 'unique()', email: 'alex@example.com', password })
+    const { response } = await call('POST', '/account/sessions/email', {
+      email: 'sam@example.com',
+      password,
+    })
+    const cookie = response.headers.get('set-cookie')?.split(';')[0] ?? ''
+    expect(
+      await call('PATCH', '/account/email', { email: 'Alex@example.com', password }, cookie),
+    ).toMatchObject({ status: 409, body: { type: 'user_target_already_exists' } })
+    expect(
+      await call('PATCH', '/account/email', { email: 'sam.new@example.com', password }, cookie),
+    ).toMatchObject({ status: 200, body: { email: 'sam.new@example.com' } })
+  })
+})

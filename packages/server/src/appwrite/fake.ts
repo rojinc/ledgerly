@@ -87,6 +87,7 @@ export class FakeDb implements Db {
     let selected: string[] | undefined
     const orders: Array<{ attribute: string; direction: 1 | -1 }> = []
     for (const query of queries) {
+      checkQuery(params.tableId, query)
       const { method, attribute = '', values = [] } = query
       switch (method) {
         case 'limit':
@@ -99,25 +100,17 @@ export class FakeDb implements Db {
           cursorAfter = values[0]
           break
         case 'select':
-          for (const column of values as string[]) checkQueryColumn(params.tableId, column)
           selected = values as string[]
           break
         case 'orderAsc':
         case 'orderDesc':
-          checkQueryColumn(params.tableId, attribute)
           orders.push({ attribute, direction: method === 'orderAsc' ? 1 : -1 })
           break
-        default:
-          checkQueryColumn(params.tableId, attribute)
-          // As Appwrite does: its query validator refuses an `equal` with no values.
-          if (method === 'equal' && values.length === 0) {
-            throw new AppwriteException(
-              'Invalid query: Equal queries require at least one value.',
-              400,
-              'general_query_invalid',
-            )
-          }
-          rows = rows.filter((row) => matches(row[attribute], method, values))
+        default: {
+          const filter = FILTERS.get(method)
+          if (!filter) throw new Error(`FakeDb does not support the "${method}" query`)
+          rows = rows.filter((row) => filter(row[attribute], values))
+        }
       }
     }
     if (orders.length > 0) {
@@ -397,29 +390,29 @@ function rowsOf(tables: Tables, tableId: string): Map<string, Row> {
   return table
 }
 
-function matches(value: unknown, method: string, values: unknown[]): boolean {
-  switch (method) {
-    case 'equal':
-      return values.some((candidate) => candidate === value)
-    case 'notEqual':
-      return values.every((candidate) => candidate !== value)
-    case 'isNull':
-      return value === null || value === undefined
-    case 'isNotNull':
-      return value !== null && value !== undefined
-    case 'lessThan':
-      return value != null && compare(value, values[0]) < 0
-    case 'lessThanEqual':
-      return value != null && compare(value, values[0]) <= 0
-    case 'greaterThan':
-      return value != null && compare(value, values[0]) > 0
-    case 'greaterThanEqual':
-      return value != null && compare(value, values[0]) >= 0
-    case 'between':
-      return value != null && compare(value, values[0]) >= 0 && compare(value, values[1]) <= 0
-    // On text, a substring of any case, every character literal (`%` and `_` too), as dev answers
-    // History's search (#424). On an array column, one of its values.
-    case 'contains':
+/**
+ * Appwrite's filter queries that FakeDb models, by method: whether a row's value matches the
+ * query's values. The e2e mock filters the browser's reads with them too (packages/e2e-mock).
+ */
+export const FILTERS = new Map<string, (value: unknown, values: unknown[]) => boolean>([
+  ['equal', (value, values) => values.some((candidate) => candidate === value)],
+  ['notEqual', (value, values) => values.every((candidate) => candidate !== value)],
+  ['isNull', (value) => value === null || value === undefined],
+  ['isNotNull', (value) => value !== null && value !== undefined],
+  ['lessThan', (value, values) => value != null && compare(value, values[0]) < 0],
+  ['lessThanEqual', (value, values) => value != null && compare(value, values[0]) <= 0],
+  ['greaterThan', (value, values) => value != null && compare(value, values[0]) > 0],
+  ['greaterThanEqual', (value, values) => value != null && compare(value, values[0]) >= 0],
+  [
+    'between',
+    (value, values) =>
+      value != null && compare(value, values[0]) >= 0 && compare(value, values[1]) <= 0,
+  ],
+  // On text, a substring of any case, every character literal (`%` and `_` too), as dev answers
+  // History's search (#424). On an array column, one of its values.
+  [
+    'contains',
+    (value, values) => {
       if (Array.isArray(value)) return values.some((candidate) => value.includes(candidate))
       return (
         typeof value === 'string' &&
@@ -428,13 +421,12 @@ function matches(value: unknown, method: string, values: unknown[]): boolean {
             typeof candidate === 'string' && value.toLowerCase().includes(candidate.toLowerCase()),
         )
       )
-    default:
-      throw new Error(`FakeDb does not support the "${method}" query`)
-  }
-}
+    },
+  ],
+])
 
 // Nulls sort first, like Appwrite.
-function compare(a: unknown, b: unknown): number {
+export function compare(a: unknown, b: unknown): number {
   if (a == null || b == null) return a == null ? (b == null ? 0 : -1) : 1
   if (typeof a === 'number' && typeof b === 'number') return a - b
   return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0
@@ -454,6 +446,32 @@ function tableSchema(tableId: string) {
   const table = TABLE_SCHEMAS.get(tableId)
   if (!table) throw new AppwriteException(`Table ${tableId} not found`, 404, 'table_not_found')
   return table
+}
+
+/**
+ * Refuses a query as Appwrite's query validator does: a column the table doesn't have, in a
+ * filter, an order or a select, or an `equal` with no values. The e2e mock checks the browser's
+ * reads with it too.
+ */
+export function checkQuery(tableId: string, { method, attribute = '', values = [] }: Query): void {
+  switch (method) {
+    case 'limit':
+    case 'offset':
+    case 'cursorAfter':
+      return
+    case 'select':
+      for (const column of values as string[]) checkQueryColumn(tableId, column)
+      return
+    default:
+      checkQueryColumn(tableId, attribute)
+      if (method === 'equal' && values.length === 0) {
+        throw new AppwriteException(
+          'Invalid query: Equal queries require at least one value.',
+          400,
+          'general_query_invalid',
+        )
+      }
+  }
 }
 
 function checkQueryColumn(tableId: string, column: string): void {

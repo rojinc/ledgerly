@@ -2,8 +2,8 @@
 // and no secrets (docs/engineering/testing.md#on-the-mock, #554). The repo's FakeDb and FakeTeams
 // back everything, and the six functions run their real route handlers through createHandler,
 // with in-memory Users, sessions, Storage and email in place of Appwrite's. It listens on the
-// loopback only, makes no outbound request, and logs methods, paths (no query strings) and IDs
-// only: never bodies, names or addresses.
+// loopback only, makes no outbound request, and logs methods (HTTP and query), paths (no query
+// strings) and IDs only: never bodies, names or addresses.
 import { createHash, randomBytes } from 'node:crypto'
 import { appendFileSync } from 'node:fs'
 import http from 'node:http'
@@ -14,10 +14,11 @@ import { identityRoutes } from '@ledgerly/fn-identity/src/main'
 import { ledgerRoutes } from '@ledgerly/fn-ledger/src/main'
 import { schedulerRoutes } from '@ledgerly/fn-scheduler/src/main'
 import { statementsRoutes } from '@ledgerly/fn-statements/src/main'
-import { FakeDb } from '@ledgerly/server/appwrite/fake'
+import { checkQuery, compare, FakeDb, FILTERS } from '@ledgerly/server/appwrite/fake'
 import { FakeTeams } from '@ledgerly/server/appwrite/fake-teams'
 import { createHandler, type Route } from '@ledgerly/server/http/create-handler'
 import { AppwriteException } from 'node-appwrite'
+import buckets from '../../../appwrite/buckets.json'
 import tables from '../../../appwrite/tables.json'
 
 const PORT = Number(process.env.MOCK_PORT ?? 8790)
@@ -140,14 +141,8 @@ const executions = new Map<string, Execution>()
 const jwts = new Map<string, { userId: string; sessionId: string }>()
 let emailsSent = 0
 
-const BUCKETS: Record<string, { create: string[]; extensions: string[]; maxSize: number }> = {
-  receipts: {
-    create: ['users/verified'],
-    extensions: ['jpg', 'jpeg', 'png', 'webp', 'heic', 'pdf'],
-    maxSize: 10 * 1024 * 1024,
-  },
-  statements: { create: [], extensions: ['pdf'], maxSize: 10 * 1024 * 1024 },
-}
+// As appwrite/buckets.json makes them: who may create a file, its extensions and size limit.
+const BUCKETS = new Map(buckets.map((bucket) => [bucket.$id, bucket]))
 
 // ---------------------------------------------------------------- errors
 
@@ -176,6 +171,11 @@ function publicUser(user: User) {
   return { ...rest, hashOptions: {}, hash: user.password ? 'argon2' : '' }
 }
 
+// Whether a user other than `userId` has this (lower-case) address.
+function emailTaken(email: string, userId?: string): boolean {
+  return [...users.values()].some((user) => user.email === email && user.$id !== userId)
+}
+
 function createUserRecord(input: {
   userId?: string
   email?: string
@@ -187,7 +187,7 @@ function createUserRecord(input: {
   if (users.has(id))
     throw new HttpError(409, 'user_already_exists', 'A user with the same id already exists.')
   const email = (input.email ?? '').toLowerCase()
-  if (email && [...users.values()].some((user) => user.email === email)) {
+  if (email && emailTaken(email)) {
     throw new HttpError(409, 'user_already_exists', 'A user with the same email already exists.')
   }
   if (input.password !== undefined && input.password !== '' && input.password.length < 8) {
@@ -423,85 +423,41 @@ function useToken(userId: string, secret: string): void {
 
 type Query = { method: string; attribute?: string; values?: unknown[] }
 
-function compare(a: unknown, b: unknown): number {
-  if (a == null || b == null) return a == null ? (b == null ? 0 : -1) : 1
-  if (typeof a === 'number' && typeof b === 'number') return a - b
-  return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0
+// A query method the mock doesn't model is a gap, as a route it lacks is: refused, and counted
+// for global teardown to fail the run on.
+function unmodelled(method: string): HttpError {
+  unhandled += 1
+  log(`UNHANDLED query ${method}`)
+  return new HttpError(400, 'general_query_invalid', `Mock does not support query ${method}`)
 }
 
-function matchesQuery(row: Record<string, unknown>, query: Query): boolean {
-  const value = query.attribute === undefined ? undefined : row[query.attribute]
-  const values = query.values ?? []
-  switch (query.method) {
-    case 'equal':
-      return values.some((candidate) =>
-        Array.isArray(value) ? value.includes(candidate) : candidate === value,
-      )
-    case 'notEqual':
-      return values.every((candidate) => candidate !== value)
-    case 'lessThan':
-      return value != null && compare(value, values[0]) < 0
-    case 'lessThanEqual':
-      return value != null && compare(value, values[0]) <= 0
-    case 'greaterThan':
-      return value != null && compare(value, values[0]) > 0
-    case 'greaterThanEqual':
-      return value != null && compare(value, values[0]) >= 0
-    case 'between':
-      return value != null && compare(value, values[0]) >= 0 && compare(value, values[1]) <= 0
-    case 'isNull':
-      return value == null
-    case 'isNotNull':
-      return value != null
-    // As FakeDb does, and dev: on text, a substring of any case, every character literal (#424).
-    case 'contains':
-      if (Array.isArray(value)) return values.some((candidate) => value.includes(candidate))
-      return (
-        typeof value === 'string' &&
-        values.some((candidate) => value.toLowerCase().includes(String(candidate).toLowerCase()))
-      )
-    case 'startsWith':
-      return (
-        typeof value === 'string' && values.some((candidate) => value.startsWith(String(candidate)))
-      )
-    case 'endsWith':
-      return (
-        typeof value === 'string' && values.some((candidate) => value.endsWith(String(candidate)))
-      )
-    case 'search':
-      return (
-        typeof value === 'string' &&
-        values.some((candidate) => value.toLowerCase().includes(String(candidate).toLowerCase()))
-      )
-    case 'or':
-      return (values as Query[]).some((sub) => matchesQuery(row, sub))
-    case 'and':
-      return (values as Query[]).every((sub) => matchesQuery(row, sub))
-    default:
-      throw new HttpError(
-        400,
-        'general_query_invalid',
-        `Mock does not support query ${query.method}`,
-      )
-  }
+// Not one of FakeDb's filters: only the runner's Users reads send it (apps/web/e2e/dev-project.ts).
+function startsWith(value: unknown, values: unknown[]): boolean {
+  return (
+    typeof value === 'string' && values.some((candidate) => value.startsWith(String(candidate)))
+  )
 }
 
-/** Filters, orders and pages `rows` as Appwrite would for these queries. */
+/**
+ * Filters, orders and pages `rows` as Appwrite would for these queries, with FakeDb's filters
+ * (fake.ts), so its tests cover the rule the mock runs. A table's rows get FakeDb's filters only,
+ * and its checks of each query.
+ */
 function applyQueries<R extends Record<string, unknown> & { $id: string }>(
   rows: R[],
   rawQueries: string[],
+  tableId?: string,
 ): { total: number; page: R[]; select?: string[] } {
   const queries = rawQueries.map((query) => JSON.parse(query) as Query)
   let limit = 25
   let offset = 0
   let cursorAfter: string | undefined
-  let cursorBefore: string | undefined
   let select: string[] | undefined
   const orders: Array<{ attribute: string; direction: 1 | -1 }> = []
   let filtered = rows
   for (const query of queries) {
-    const values = query.values ?? []
-    switch (query.method) {
+    const { method, attribute = '', values = [] } = query
+    switch (method) {
       case 'limit':
         limit = Number(values[0])
         break
@@ -511,24 +467,22 @@ function applyQueries<R extends Record<string, unknown> & { $id: string }>(
       case 'cursorAfter':
         cursorAfter = String(values[0])
         break
-      case 'cursorBefore':
-        cursorBefore = String(values[0])
-        break
       case 'select':
         select = values as string[]
         break
       case 'orderAsc':
       case 'orderDesc':
-        orders.push({
-          attribute: query.attribute ?? '',
-          direction: query.method === 'orderAsc' ? 1 : -1,
-        })
+        orders.push({ attribute, direction: method === 'orderAsc' ? 1 : -1 })
         break
-      case 'orderRandom':
-        break
-      default:
-        filtered = filtered.filter((row) => matchesQuery(row, query))
+      default: {
+        const filter =
+          FILTERS.get(method) ??
+          (tableId === undefined && method === 'startsWith' ? startsWith : undefined)
+        if (!filter) throw unmodelled(method)
+        filtered = filtered.filter((row) => filter(row[attribute], values))
+      }
     }
+    if (tableId !== undefined) checkQuery(tableId, query)
   }
   if (orders.length > 0) {
     filtered = [...filtered].sort((a, b) => {
@@ -545,16 +499,11 @@ function applyQueries<R extends Record<string, unknown> & { $id: string }>(
     if (index === -1) throw new HttpError(400, 'general_cursor_not_found', 'Cursor not found')
     filtered = filtered.slice(index + 1)
   }
-  if (cursorBefore !== undefined) {
-    const index = filtered.findIndex((row) => row.$id === cursorBefore)
-    if (index === -1) throw new HttpError(400, 'general_cursor_not_found', 'Cursor not found')
-    filtered = filtered.slice(Math.max(0, index - limit), index)
-  }
   return { total, page: filtered.slice(offset, offset + limit), select }
 }
 
 function pick(row: Record<string, unknown>, select: string[] | undefined) {
-  if (!select || select.includes('*')) return row
+  if (!select) return row
   return Object.fromEntries(
     Object.entries(row).filter(([key]) => key.startsWith('$') || select.includes(key)),
   )
@@ -1157,7 +1106,17 @@ on('PATCH', '/v1/account/email', (ctx) => {
   if (user.password && user.password !== ctx.json.password) {
     throw new HttpError(401, 'user_invalid_credentials', 'Invalid credentials.')
   }
-  user.email = String(ctx.json.email ?? '').toLowerCase()
+  const email = String(ctx.json.email ?? '').toLowerCase()
+  // As Appwrite 1.8 refuses another account's address: it is that account's messaging target
+  // (apps/web/src/features/profile/email-section.tsx).
+  if (email && emailTaken(email, user.$id)) {
+    throw new HttpError(
+      409,
+      'user_target_already_exists',
+      'A target with the same ID already exists.',
+    )
+  }
+  user.email = email
   user.emailVerification = false
   user.$updatedAt = nowIso()
   return publicUser(user)
@@ -1241,22 +1200,27 @@ on('GET', '/v1/tablesdb/:db/tables/:table/rows', (ctx) => {
   const auth = authOf(ctx.req)
   const roles = rolesOf(auth?.user)
   if (ctx.params.db !== 'main') throw notFound('database_not_found', 'Database')
-  const rows = db
-    .rows(ctx.params.table ?? '')
-    .filter((row) => allowed(row.$permissions as string[], 'read', roles))
-  const { total, page, select } = applyQueries(rows, ctx.queries)
+  const table = ctx.params.table ?? ''
+  const rows = db.rows(table).filter((row) => allowed(row.$permissions as string[], 'read', roles))
+  const { total, page, select } = applyQueries(rows, ctx.queries, table)
   return { total, rows: page.map((row) => pick(row, select)) }
 })
 on('GET', '/v1/tablesdb/:db/tables/:table/rows/:row', (ctx) => {
   const auth = authOf(ctx.req)
   const roles = rolesOf(auth?.user)
   if (ctx.params.db !== 'main') throw notFound('database_not_found', 'Database')
-  const row = db.rows(ctx.params.table ?? '').find((found) => found.$id === ctx.params.row)
+  const table = ctx.params.table ?? ''
+  const rows = db.rows(table)
+  // A select is the only query a row read takes.
+  let select: string[] | undefined
+  for (const query of ctx.queries.map((query) => JSON.parse(query) as Query)) {
+    if (query.method !== 'select') throw unmodelled(query.method)
+    checkQuery(table, query)
+    select ??= query.values as string[]
+  }
+  const row = rows.find((found) => found.$id === ctx.params.row)
   if (!row || !allowed(row.$permissions as string[], 'read', roles))
     throw notFound('row_not_found', 'Row')
-  const select = ctx.queries
-    .map((query) => JSON.parse(query) as Query)
-    .find((query) => query.method === 'select')?.values as string[] | undefined
   return pick(row, select)
 })
 for (const method of ['POST', 'PUT', 'PATCH', 'DELETE']) {
@@ -1370,7 +1334,7 @@ on('GET', '/v1/functions/:fn/executions', (ctx) => {
 // ---------------------------------------------------------------- routes: Storage (browser)
 
 function bucketOr404(bucketId: string) {
-  const bucket = BUCKETS[bucketId]
+  const bucket = BUCKETS.get(bucketId)
   if (!bucket) throw notFound('storage_bucket_not_found', 'Bucket')
   return bucket
 }
@@ -1380,7 +1344,7 @@ on('POST', '/v1/storage/buckets/:bucket/files', async (ctx) => {
   const bucket = bucketOr404(bucketId)
   const auth = authOf(ctx.req)
   const roles = rolesOf(auth?.user)
-  if (!bucket.create.some((role) => roles.has(role))) {
+  if (!allowed(bucket.$permissions, 'create', roles)) {
     throw new HttpError(
       401,
       'user_unauthorized',
@@ -1395,7 +1359,7 @@ on('POST', '/v1/storage/buckets/:bucket/files', async (ctx) => {
   const chunk = Buffer.from(await upload.arrayBuffer())
   const name = (upload as File).name ?? 'file'
   const extension = name.includes('.') ? (name.split('.').pop()?.toLowerCase() ?? '') : ''
-  if (!bucket.extensions.includes(extension)) {
+  if (!bucket.allowedFileExtensions.includes(extension)) {
     throw new HttpError(
       400,
       'storage_file_type_unsupported',
@@ -1415,7 +1379,7 @@ on('POST', '/v1/storage/buckets/:bucket/files', async (ctx) => {
   }
   const range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(String(ctx.req.headers['content-range'] ?? ''))
   const total = range ? Number(range[3]) : chunk.length
-  if (total > bucket.maxSize)
+  if (total > bucket.maximumFileSize)
     throw new HttpError(400, 'storage_invalid_file_size', 'File size not allowed')
   const chunksTotal = Math.max(1, Math.ceil(total / CHUNK_SIZE))
   const uploadId =
@@ -1541,8 +1505,9 @@ on('POST', '/mock/cron/:fn', async (ctx) => {
   })
   return result
 })
-// A route the mock lacks answers 404 and is counted here: global teardown fails the run on any,
-// so a function that starts calling a new Appwrite API shows up rather than passing quietly.
+// A request from the app or the runner that the mock has no route for (404), or a query it doesn't
+// model (400), is counted here, and global teardown fails the run on any. A function's calls go
+// to in-process services instead, so a new one fails `npm run typecheck`.
 let unhandled = 0
 on('GET', '/mock/stats', () => ({
   unhandled,
@@ -1562,7 +1527,8 @@ async function readBody(req: http.IncomingMessage): Promise<Buffer> {
   return Buffer.concat(chunks)
 }
 
-const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
+// Exported for server.test.ts, which serves it on a port of its own.
+export const handleRequest = async (req: http.IncomingMessage, res: http.ServerResponse) => {
   const started = performance.now()
   const url = new URL(req.url ?? '/', 'http://localhost')
   const method = (req.method ?? 'GET').toUpperCase()
