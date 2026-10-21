@@ -1,8 +1,15 @@
 import { useState } from 'react'
 import { Button } from '../../ui/button'
+import { useBootstrap } from './use-bootstrap'
+import { useCurrentUser } from './use-current-user'
 
-/** After bootstrap: tells the user about groups others had already added them to. */
-export function LinkedGroupsNotice({ count }: { count: number }) {
+/**
+ * After bootstrap: tells the user about groups others had already added them to. In AppLayout,
+ * after the skip link and in the column the side menu pads (#570's W33).
+ */
+export function LinkedGroupsNotice() {
+  const userId = useCurrentUser().data?.$id ?? ''
+  const count = useBootstrap(userId).data?.linkedGroupIds.length ?? 0
   const [dismissed, setDismissed] = useState(false)
   if (count === 0 || dismissed) return null
   return (

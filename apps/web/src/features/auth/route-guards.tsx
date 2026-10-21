@@ -3,7 +3,6 @@ import type { ReactNode } from 'react'
 import { Navigate, Outlet, useLocation } from 'react-router'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
-import { LinkedGroupsNotice } from './linked-groups-notice'
 import { useBootstrap } from './use-bootstrap'
 import { useCurrentUser } from './use-current-user'
 
@@ -66,7 +65,6 @@ function Bootstrapped({ userId }: { userId: string }) {
   const bootstrap = useBootstrap(userId)
   return (
     <UserGate query={bootstrap} failure="We couldn’t set up your account. Try again in a moment.">
-      <LinkedGroupsNotice count={bootstrap.data?.linkedGroupIds.length ?? 0} />
       <Outlet />
     </UserGate>
   )

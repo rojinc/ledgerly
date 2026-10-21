@@ -1,6 +1,6 @@
 import type { Groups, Transactions } from '@ledgerly/core/generated/rows'
 import { AppwriteException } from 'appwrite'
-import { type ChangeEvent, useEffect, useRef, useState } from 'react'
+import { type ChangeEvent, useEffect, useId, useRef, useState } from 'react'
 import { storage } from '../../lib/appwrite'
 import { Button } from '../../ui/button'
 import { Label } from '../../ui/label'
@@ -212,6 +212,7 @@ function Receipt({
   const [open, setOpen] = useState(false)
   const opener = useRef<HTMLButtonElement>(null)
   const name = `Receipt ${number} of ${count}`
+  const nameId = useId()
 
   useEffect(() => {
     let gone = false
@@ -254,8 +255,11 @@ function Receipt({
         </button>
       ) : 'pdf' in kind ? (
         <>
-          <p className="text-sm">{name} (PDF)</p>
-          <DownloadPdf fileId={fileId} />
+          <p id={nameId} className="text-sm">
+            {name} (PDF)
+          </p>
+          {/* Every PDF's button says "Download PDF": its receipt's name describes it. */}
+          <DownloadPdf fileId={fileId} describedBy={nameId} />
         </>
       ) : (
         <p className="text-sm text-destructive">We couldn’t load receipt {number}.</p>
@@ -287,13 +291,14 @@ function Receipt({
 }
 
 /** A PDF is downloaded, never opened in the page. */
-function DownloadPdf({ fileId }: { fileId: string }) {
+function DownloadPdf({ fileId, describedBy }: { fileId: string; describedBy: string }) {
   const [failed, setFailed] = useState(false)
   return (
     <>
       <Button
         size="sm"
         variant="outline"
+        aria-describedby={describedBy}
         onClick={async () => {
           setFailed(false)
           try {

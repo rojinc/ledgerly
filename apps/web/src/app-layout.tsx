@@ -1,6 +1,7 @@
 import { type ReactNode, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { NavLink, Outlet } from 'react-router'
 import { authErrorMessage } from './features/auth/auth-error'
+import { LinkedGroupsNotice } from './features/auth/linked-groups-notice'
 import { useLogOut } from './features/auth/use-log-out'
 import { VerifyEmailBanner } from './features/auth/verify-email-banner'
 import { useRealtimeSync } from './lib/realtime'
@@ -83,6 +84,7 @@ export function AppLayout() {
           {authErrorMessage(logOut.error)}
         </Alert>
       )}
+      <LinkedGroupsNotice />
       <VerifyEmailBanner />
       <main
         id="main"

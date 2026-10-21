@@ -5,6 +5,7 @@ import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { callFunction } from '../../lib/api'
 import { account } from '../../lib/appwrite'
+import { LinkedGroupsNotice } from './linked-groups-notice'
 import { RedirectIfSignedIn, RequireAuth } from './route-guards'
 import { bootstrapBody } from './use-bootstrap'
 
@@ -28,7 +29,21 @@ function renderAt(path: string) {
         element: <RedirectIfSignedIn />,
         children: [{ path: 'login', element: <p>Login page</p> }],
       },
-      { element: <RequireAuth />, children: [{ path: 'secret', element: <p>Secret page</p> }] },
+      {
+        element: <RequireAuth />,
+        // The notice sits in AppLayout, inside the guard, as here.
+        children: [
+          {
+            path: 'secret',
+            element: (
+              <>
+                <LinkedGroupsNotice />
+                <p>Secret page</p>
+              </>
+            ),
+          },
+        ],
+      },
       { path: '/', element: <p>Home page</p> },
     ],
     { initialEntries: [path] },
