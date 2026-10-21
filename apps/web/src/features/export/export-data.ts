@@ -115,6 +115,29 @@ export async function groupExport(
   throw new Error('The group kept changing while it was read')
 }
 
+/**
+ * The dates of a group's first and last transactions, on `idx_group_date`, or null when it has
+ * none: a delete screen's Export link offers them, so nothing is left out before the delete (#535).
+ */
+export async function groupDates(groupId: string): Promise<{ first: string; last: string } | null> {
+  const [first, last] = await Promise.all(
+    [Query.orderAsc('date'), Query.orderDesc('date')].map(async (order) => {
+      const { rows } = await tablesDB.listRows<Transactions>({
+        databaseId: DATABASE_ID,
+        tableId: 'transactions',
+        queries: [
+          Query.equal('groupId', groupId),
+          Query.select(['$id', 'date']),
+          order,
+          Query.limit(1),
+        ],
+      })
+      return rows[0]?.date
+    }),
+  )
+  return first && last ? { first, last } : null
+}
+
 async function readGroup(
   group: Pick<Groups, '$id' | 'currency'>,
   start: LocalDate,
@@ -201,19 +224,44 @@ async function readMyRecords(personId: string, groups: readonly Groups[]): Promi
   return myRecordsCsv(records)
 }
 
-/** `profile.csv`: the stored business details, if they read, with the rest of the profile. */
+// The business details' fields and the bank's, from the schema, so a field added there is
+// exported too. Taking one out of the schema stops its stored value being exported: that's a
+// contract change (AGENTS.md), so say so there.
+const BUSINESS_FIELDS = Object.keys(businessDetailsSchema.shape).filter((key) => key !== 'bank')
+const BANK_FIELDS = Object.keys(businessDetailsSchema.shape.bank.unwrap().shape)
+
+/** Each of `fields` that `value` holds as text. */
+function texts(value: unknown, fields: string[]): Record<string, string> {
+  // A field of a string or a number is undefined too.
+  const object = (value ?? {}) as Record<string, unknown>
+  return Object.fromEntries(
+    fields.flatMap((field) => {
+      const text = object[field]
+      return typeof text === 'string' ? [[field, text]] : []
+    }),
+  )
+}
+
+/**
+ * `profile.csv`: the stored business details with the rest of the profile. They're read field by
+ * field, as the Profile form reads them, so a value that a later schema would refuse doesn't drop
+ * every other one (#535).
+ */
 export function profileExport({
   businessJson,
   ...input
 }: Omit<ProfileExport, 'business'> & { businessJson: string | null }): string {
-  let business: ProfileExport['business'] = null
+  let stored: unknown = null
   try {
-    const parsed = businessDetailsSchema.safeParse(JSON.parse(businessJson ?? 'null'))
-    business = parsed.success ? parsed.data : null
+    stored = JSON.parse(businessJson ?? 'null')
   } catch {
-    business = null
+    stored = null
   }
-  return profileCsv({ ...input, business })
+  const bank = (stored as { bank?: unknown } | null)?.bank
+  return profileCsv({
+    ...input,
+    business: { ...texts(stored, BUSINESS_FIELDS), bank: texts(bank, BANK_FIELDS) },
+  })
 }
 
 /** A link target for `csv`, in the browser only: nothing is uploaded. Revoke it when done. */

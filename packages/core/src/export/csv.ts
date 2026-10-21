@@ -152,7 +152,10 @@ export type ProfileExport = {
     | 'hoursCapStartsOn'
     | 'emailOptOuts'
   >
-  business: BusinessDetails | null
+  /** As stored, read field by field (#535): any of them can be missing, the bank's too. */
+  business:
+    | (Omit<BusinessDetails, 'bank'> & { bank?: Partial<NonNullable<BusinessDetails['bank']>> })
+    | null
 }
 
 /** The user's profile (F-06) as `field,value` rows; empty fields are left out. */
