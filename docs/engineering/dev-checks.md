@@ -126,7 +126,7 @@ No deploy pushes these. The lead reads them with the Appwrite MCP, or the owner 
 export RUN=$(node -e "console.log('e2e' + Date.now().toString(36) + require('node:crypto').randomBytes(3).toString('hex'))")
 export A_ID=$(node -e "console.log(require('node:crypto').randomUUID())")
 export C_ID=$(node -e "console.log(require('node:crypto').randomUUID())")
-read -rs A_PASSWORD   # A's password, typed here and in the app, never on the command line's history
+read -rs A_PASSWORD   # A's password, typed here and in the app, never in the shell history
 appwrite users create --user-id "$A_ID" --email "delivered+$RUN-a@resend.dev" --password "$A_PASSWORD" --name "A $RUN" --json | jq -r '"made \(.["$id"])"'
 appwrite users create --user-id "$C_ID" --email "delivered+$RUN-c@resend.dev" --name "C $RUN" --json | jq -r '"made \(.["$id"])"'
 for id in "$A_ID" "$C_ID"; do
@@ -156,6 +156,8 @@ Setting a first password fires `users.<id>.update.password`, and identity's even
    ```bash
    appwrite users create-token --user-id "$C_ID" --json | jq -r .secret
    ```
+
+   That's the one secret this runbook prints: paste it into the snippet below, and never post it.
 
    On the app's `/login` page, in the developer console:
 
@@ -293,12 +295,19 @@ While sends are blocked (#3), each step stops at its first blocked email, logs o
 
 - **Hand A and C to the `account` job:** label `e2e` and block, as the e2e flows' teardown does (`handOverRunUsers()`). The job deletes each within about two hours, with every row they made, A's house and pair included.
 
+  It hands over only a user whose address starts with this run's `delivered+$RUN-`, as `handOverRunUsers()` checks each one, so IDs from another run's notes, or an empty `$RUN` in a fresh shell, block nobody:
+
   ```bash
-  [[ "$RUN" =~ ^e2e[a-z0-9]{10,}$ ]] || echo "Not a run ID: stop"
-  for id in "$A_ID" "$C_ID"; do
-    appwrite users update-labels --user-id "$id" --labels e2e --json >/dev/null
-    appwrite users update-status --user-id "$id" --status=false --json | jq -r '"\(.["$id"]) handed over: blocked \(.status == false)"'
-  done
+  if [[ "$RUN" =~ ^e2e[a-z0-9]{10,}$ ]]; then
+    for id in "$A_ID" "$C_ID"; do
+      ours=$(appwrite users get --user-id "$id" --json | jq --arg p "delivered+$RUN-" '.email | startswith($p)')
+      [[ "$ours" == true ]] || { echo "$id isn't this run's: skipped"; continue; }
+      appwrite users update-labels --user-id "$id" --labels e2e --json >/dev/null
+      appwrite users update-status --user-id "$id" --status=false --json | jq -r '"\(.["$id"]) handed over: blocked \(.status == false)"'
+    done
+  else
+    echo "Not a run ID: nothing handed over"
+  fi
   ```
 
   After A's email change, A's address is `delivered+$RUN-a2@resend.dev`, which still has the job's shape. P's and Q's member rows go with A's groups, and scheduler step 5c clears the two placeholders 30 days later.
