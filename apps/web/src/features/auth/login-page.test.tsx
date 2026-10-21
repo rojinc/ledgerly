@@ -137,6 +137,11 @@ describe('LoginPage', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Email code' }))
     expect(screen.getByText(notice)).toBeTruthy()
+    // The notice's own links, not the footer's as well: a screen reader hears each once.
+    expect(screen.getByRole('link', { name: 'Terms of use' }).getAttribute('href')).toBe('/terms')
+    expect(screen.getByRole('link', { name: 'Privacy policy' }).getAttribute('href')).toBe(
+      '/privacy',
+    )
   })
 
   it('leaves focus alone on the first email form', () => {

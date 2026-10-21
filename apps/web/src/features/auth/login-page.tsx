@@ -86,7 +86,8 @@ export function LoginPage() {
           Create an account
         </Link>
       </p>
-      <LegalLinks className="text-center" />
+      {/* An email code's form says what it agrees to, with both links: once is enough. */}
+      {mode === 'password' && <LegalLinks className="text-center" />}
     </AuthCard>
   )
 }
