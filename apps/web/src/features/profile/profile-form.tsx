@@ -95,7 +95,10 @@ export function ProfileForm({ profile, displayName, onSave }: Props) {
       <Button type="submit" aria-disabled={isSubmitting}>
         {isSubmitting ? 'Saving…' : 'Save'}
       </Button>
-      {isSubmitSuccessful && !isDirty && !errors.root && <Alert>Saved.</Alert>}
+      {/* Mounted from the start, so the announcement is read out (#539). */}
+      <Alert className="empty:sr-only">
+        {isSubmitSuccessful && !isDirty && !errors.root ? 'Saved.' : ''}
+      </Alert>
     </form>
   )
 }

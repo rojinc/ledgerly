@@ -185,7 +185,7 @@ export function PairPage() {
       </h1>
       {/* Mounted with the group, so the news is read out. */}
       {group.data && (
-        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
           {unarchived && !group.data.archivedAt ? UNARCHIVED_NEWS : ''}
         </p>
       )}
@@ -460,11 +460,10 @@ export function EntryForm({
             Cancel
           </Button>
         )}
-        {saved && (
-          <p role="status" className="text-sm text-muted-foreground">
-            Added.
-          </p>
-        )}
+        {/* Mounted from the start, so the announcement is read out (#539). */}
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
+          {saved ? 'Added.' : ''}
+        </p>
       </div>
     </form>
   )

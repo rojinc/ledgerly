@@ -95,7 +95,7 @@ export function PairSettings({
           />
         )}
         {/* Mounted from the start, so the news is read out. */}
-        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
           {invited ? inviteSentText(invited) : ''}
         </p>
       </section>

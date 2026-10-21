@@ -262,7 +262,7 @@ function VerifyEmail({ onVerified }: { onVerified: () => void }) {
   })
   return (
     <>
-      <p role="status" className="text-center text-sm text-muted-foreground empty:hidden">
+      <p role="status" className="text-center text-sm text-muted-foreground empty:sr-only">
         {send.isSuccess
           ? 'We sent you a new link.'
           : send.isError

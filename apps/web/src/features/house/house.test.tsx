@@ -1009,8 +1009,10 @@ describe('HousePage', () => {
         target: { value: 'equal' },
       })
       fireEvent.click(within(settings).getByLabelText('Close each month with a divide'))
+      // Mounted from the start, so the announcement is read out (#539).
+      const statuses = within(settings).getAllByRole('status')
       fireEvent.click(within(settings).getByRole('button', { name: 'Save' }))
-      expect(await within(settings).findByText('Saved.')).toBeTruthy()
+      await waitFor(() => expect(statuses.map((node) => node.textContent)).toContain('Saved.'))
       expect(sent()).toEqual([
         'groups',
         'PATCH',

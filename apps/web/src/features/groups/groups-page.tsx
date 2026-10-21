@@ -65,7 +65,7 @@ export function GroupsPage() {
         </div>
       </div>
       {/* Mounted from the start, so the announcement is read out when it changes. */}
-      <p role="status" className="text-sm text-muted-foreground empty:hidden">
+      <p role="status" className="text-sm text-muted-foreground empty:sr-only">
         {joined ? `Joined ${joined}.` : deleted}
       </p>
       <PendingGroups

@@ -292,8 +292,10 @@ describe('PairPage', () => {
       type('Amount (AUD)', '50')
       expect(input('Note (optional)').tagName).toBe('TEXTAREA')
       type('Note (optional)', 'For the concert\nand the train')
+      // Mounted from the start, so the announcement is read out (#539).
+      const statuses = screen.getAllByRole('status')
       fireEvent.click(screen.getByRole('button', { name: 'Add' }))
-      expect(await screen.findByText('Added.')).toBeTruthy()
+      await waitFor(() => expect(statuses.map((node) => node.textContent)).toContain('Added.'))
       const body = sent()
       expect(body).toStrictEqual({
         id: body.id,

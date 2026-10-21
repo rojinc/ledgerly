@@ -132,10 +132,10 @@ function House({
         <DeleteWithoutAdmin group={group} personId={me.personId} />
       )}
       {/* Mounted from the start, so the announcement is read out when it changes. */}
-      <p role="status" className="text-sm text-muted-foreground empty:hidden">
+      <p role="status" className="text-sm text-muted-foreground empty:sr-only">
         {newRole && `Your role here is now ${ROLE_LABEL[newRole]}.`}
       </p>
-      <p role="status" className="text-sm text-muted-foreground empty:hidden">
+      <p role="status" className="text-sm text-muted-foreground empty:sr-only">
         {unarchived && !archived ? UNARCHIVED_NEWS : ''}
       </p>
       {/* #180. `role` is unset in an archived house. */}
@@ -343,7 +343,7 @@ function MemberRow({
       )}
       {/* Mounted with the button, so the news is read out. */}
       {invitable && (
-        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
           {invited ? inviteSentText(invited) : ''}
         </p>
       )}

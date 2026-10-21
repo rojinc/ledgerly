@@ -183,15 +183,18 @@ function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
       }}
       className="flex flex-col gap-4"
     >
-      <Alert>We sent a 6-digit code to {email}.</Alert>
+      <Alert id="code-sent">We sent a 6-digit code to {email}.</Alert>
       {verifyCode.isError && (
         <Alert variant="destructive">{authErrorMessage(verifyCode.error)}</Alert>
       )}
       <div className="flex flex-col gap-2">
         <Label htmlFor="code">Code</Label>
+        {/* The form it replaced is gone: focus goes to the code, which reads out where it went (#539). */}
         <Input
+          ref={focusOnMount}
           id="code"
           name="code"
+          aria-describedby="code-sent"
           inputMode="numeric"
           autoComplete="one-time-code"
           pattern="[0-9]{6}"

@@ -112,6 +112,18 @@ describe('LoginPage', () => {
     expect(others).toHaveBeenCalledTimes(1)
   })
 
+  it('focuses the Code field, which says where the code went (#539)', async () => {
+    vi.mocked(account.createEmailToken).mockResolvedValue({ userId: 'u1' } as never)
+    renderAt('/login')
+    fireEvent.click(screen.getByRole('button', { name: 'Email code' }))
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'sam@example.com' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Email me a code' }))
+    const code = await screen.findByLabelText('Code')
+    expect(document.activeElement).toBe(code)
+    const sent = document.getElementById(code.getAttribute('aria-describedby') ?? '')
+    expect(sent?.textContent).toBe('We sent a 6-digit code to sam@example.com.')
+  })
+
   it('shows a failure to sign out the others, and tries again', async () => {
     signIn.mockResolvedValue({} as never)
     others.mockRejectedValueOnce(new TypeError('Failed to fetch')).mockResolvedValue(1)

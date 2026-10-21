@@ -363,7 +363,7 @@ function ScheduleRow({
         </p>
       )}
       {/* Mounted from the start, so a resume is read out. */}
-      <p role="status" className="text-sm empty:hidden">
+      <p role="status" className="text-sm empty:sr-only">
         {note}
       </p>
       {open === 'pause' && (

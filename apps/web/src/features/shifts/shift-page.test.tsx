@@ -648,6 +648,8 @@ describe('ShiftPage', () => {
     })
 
     type('Description', 'Late shift')
+    // Mounted from the start, so the announcement is read out (#539).
+    const statuses = screen.getAllByRole('status')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(call).toHaveBeenCalledWith('ledger', 'PATCH', '/transactions/t1', {
@@ -658,7 +660,7 @@ describe('ShiftPage', () => {
       description: 'Late shift',
       shift: storedShift,
     })
-    expect(await screen.findByText('Saved.')).toBeTruthy()
+    await waitFor(() => expect(statuses.map((node) => node.textContent)).toContain('Saved.'))
     expect(screen.getByRole('heading', { name: 'Late shift' })).toBeTruthy()
   })
 

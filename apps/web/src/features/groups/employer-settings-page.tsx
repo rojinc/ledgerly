@@ -141,7 +141,7 @@ export function EmployerSettingsPage() {
       </h1>
       {/* Mounted with the group, so the news is read out. */}
       {group.data && (
-        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
           {unarchived && !group.data.archivedAt ? UNARCHIVED_NEWS : ''}
         </p>
       )}
