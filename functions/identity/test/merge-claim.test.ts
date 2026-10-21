@@ -8,11 +8,14 @@ import {
   account,
   BEFORE,
   beforeCommit,
+  beforeStaging,
   call,
   type Fakes,
+  failure,
   fakes,
   NOW,
   placeholderRow,
+  updateRow,
 } from './harness'
 
 // Sam (pSam, with an account) verifies a phone that Sammy (pP), a placeholder, holds: Sammy is
@@ -1732,6 +1735,44 @@ describe('POST /claim, merging a placeholder', () => {
     })
     expect(services.db.rows('members').filter((row) => row.personId === 'pP')).toHaveLength(2)
   })
+
+  // #550: deletion step 2 lands after the claim looked Sam up, before step 1 stages or after.
+  it.each(['staging', 'commit'] as const)(
+    'marks nothing into an account whose deletion lands at step 1’s %s, and answers NOT_FOUND',
+    async (at) => {
+      const typed = {
+        $id: 'iTyped',
+        key: 'email:sammy@example.com',
+        type: 'email',
+        personId: 'pP',
+        verified: false,
+      }
+      const services = house({ identities: [typed] })
+      const sammy = () => services.db.rows('persons').find((row) => row.$id === 'pP')
+      const before = sammy()
+      const deletion = () =>
+        updateRow(services.db, 'persons', 'pSam', {
+          deletedAt: '2026-10-18T00:00:00.000Z',
+          rev: 'rDeleted',
+        })
+      if (at === 'staging') {
+        beforeStaging(
+          services.db,
+          (operations) => operations.includes('"mergedInto":"pSam"'),
+          deletion,
+        )
+      } else beforeCommit(services.db, deletion)
+      expect(await failure(services, 'POST', '/claim')).toEqual({
+        status: 404,
+        code: 'NOT_FOUND',
+        message: 'Set up your account first.',
+      })
+      // Nothing is written for Sammy: a mark landing after deletion step 5 would leave Sam's
+      // verified phone on a Sammy merged into a deleted Sam, and no later step deletes it.
+      expect(sammy()).toEqual(before)
+      expect(namingSammy(services).identities).toEqual(['iPhone', 'iTyped'])
+    },
+  )
 
   it('never carries on a merge of a person who has an account now, or was deleted', async () => {
     for (const change of [{ userId: 'u9' }, { deletedAt: '2026-10-18T00:00:00.000Z' }]) {
