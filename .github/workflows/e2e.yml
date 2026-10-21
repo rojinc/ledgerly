@@ -28,6 +28,9 @@ jobs:
     # The install, then the suite's own 10 minutes (playwright.config.ts), with room for its
     # teardown: a job stopped before then leaves the run's users in dev.
     timeout-minutes: 25
+    # The e2e key is in this environment, which only main can use. A run after Deploy runs on
+    # main, the default branch, so it gets the key; Run workflow on another branch doesn't (#579).
+    environment: e2e
     # The deploy's own secrets name the dev project. The dev-only key (#78) is passed only to the
     # step that runs the flows, never to the install. There it reaches npm and Playwright, but not
     # the Vite server (playwright.config.ts).

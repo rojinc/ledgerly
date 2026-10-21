@@ -37,7 +37,7 @@ The config file lists the resource files through the CLI's `includes` field. `ap
 
 `e2e-mock.yml`, on a pull request as `ci.yml` is (the same events, drafts and paths): the [user flows](testing.md#on-the-mock) in Chromium against `packages/e2e-mock`, an in-repo mock of the Appwrite API. Steps: `npm ci` → install Chromium → `npm run test:e2e:mock -w @ledgerly/web`, which builds the mock and runs every flow; the report and the mock's log are kept when it fails. Read-only, no secrets, 15 minutes.
 
-`e2e.yml`: after each successful Deploy of `main`, and on **Run workflow**, the [user flows](testing.md#end-to-end) in Chromium against dev.
+`e2e.yml`: after each successful Deploy of `main`, and on **Run workflow**, the [user flows](testing.md#end-to-end) in Chromium against dev. Its key is in the `e2e` environment, and the deploy's in the `deploy` environment. Only `main` can use either, so a workflow on another branch, or **Run workflow** on one, never gets a key ([#579](https://github.com/rojinc/ledgerly/issues/579)). Neither environment has required reviewers, so a merge still deploys without waiting for a person.
 
 `reads.yml`: every 8 hours (`17 */8 * * *`) on `main`, and on **Run workflow** for the owner's first run: [the reads job](nightly-check.md#after-the-two-weeks), which reads every function's error lines and the nightly check's, and posts on #581 when one needs a look. Its key (`execution.read` only) is in the `reads` environment, which only `main` can use. Its permissions are `contents: read` and `issues: write`, with no `npm ci`, and 5 minutes.
 

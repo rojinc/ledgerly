@@ -27,6 +27,9 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # The deploy key is in this environment, which only main can use, so a workflow on another
+    # branch, or Run workflow on one, never gets it (#579).
+    environment: deploy
     # The API key is passed only to the steps that need it, never to npm or the build.
     env:
       CONFIG: appwrite.config.json
