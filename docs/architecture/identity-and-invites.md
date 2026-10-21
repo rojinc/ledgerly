@@ -171,7 +171,7 @@ A merge cut off partway carries on within about an hour, even if U never calls `
 
 **Runs that overlap are safe.** This job, U's own `/claim` and `account`'s hourly job can reach the same merge at once; two runs of this job can't, since its timeout is far under the hour. Every merge write is staged, then checked against the stored rows, so a change another run made first fails the batch, which runs again and finds it done. Steps 2 and 3 guard U's person row and check `deletedAt`, so a deletion that starts meanwhile fails one of the two commits ([deleting an account](#deleting-an-account-m4), step 2).
 
-U didn't call it, but U started the merge by verifying the key, so finishing it is U's own action ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). U isn't told which groups they joined. Accepted for v1: a merge that can never finish is tried every hour, and its log line is the alert.
+U didn't call it, but U started the merge by verifying the key, so finishing it is U's own action ([D-016](decisions.md#d-016-being-added-to-a-group-doesnt-make-you-a-member-you-join)). U isn't told which groups they joined. Accepted for v1: a merge that can never finish is tried every hour, and its log line is the alert. That line (`merge_carries_on`) is a `log`, not an error, so it shows in the run's `.logs`, not its `.errors`; the nightly-check read lists it ([nightly check](../engineering/nightly-check.md#d-merges-that-dont-finish)).
 
 ## Invites
 
