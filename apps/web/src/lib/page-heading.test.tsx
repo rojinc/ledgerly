@@ -1,0 +1,180 @@
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useEffect, useState } from 'react'
+import { createMemoryRouter, Link, Outlet, RouterProvider, useSearchParams } from 'react-router'
+import { afterEach, describe, expect, it } from 'vitest'
+import { followPageHeading } from './page-heading'
+
+/** Shows the month it's on, as the calendar does, and a link of its own to another page. */
+function PageA() {
+  const [params] = useSearchParams()
+  return (
+    <>
+      <h1>Page A</h1>
+      <p>{params.get('month') ?? 'This month'}</p>
+      <Link to="/b">On to B</Link>
+    </>
+  )
+}
+
+/** Shows its h1 only after a moment, as a page does once its data is read. */
+function LatePage() {
+  const [ready, setReady] = useState(false)
+  useEffect(() => {
+    const timer = setTimeout(() => setReady(true), 20)
+    return () => clearTimeout(timer)
+  }, [])
+  return ready ? <h1>Late page</h1> : <p>Loading…</p>
+}
+
+const routes = [
+  {
+    element: (
+      <>
+        <nav>
+          <Link to="/b">To B</Link>
+          <Link to="/late">To late</Link>
+          <Link to="/form">To form</Link>
+          <Link to="/a?month=2026-11">Next month</Link>
+          <Link to="/none">To none</Link>
+        </nav>
+        <Outlet />
+      </>
+    ),
+    children: [
+      { path: 'a', element: <PageA /> },
+      { path: 'b', element: <h1>Page B</h1> },
+      { path: 'late', element: <LatePage /> },
+      {
+        path: 'form',
+        element: (
+          <>
+            <h1>Form page</h1>
+            <input aria-label="Name" ref={(input) => input?.focus()} />
+          </>
+        ),
+      },
+      { path: 'none', element: <p>No heading</p> },
+      { path: 'home', element: <h1 data-title="Home">Hi, Sam</h1> },
+    ],
+  },
+]
+
+let stop = () => {}
+
+function renderAt(path: string) {
+  const router = createMemoryRouter(routes, { initialEntries: [path] })
+  const root = document.createElement('div')
+  document.body.append(root)
+  stop = followPageHeading(router, root)
+  render(<RouterProvider router={router} />, { container: root })
+}
+
+/** Clicks a link from the keyboard's place: focused first, as a Tab and Enter leave it. */
+function follow(name: string) {
+  const link = screen.getByRole('link', { name })
+  link.focus()
+  fireEvent.click(link)
+  return link
+}
+
+describe('followPageHeading (#539)', () => {
+  afterEach(() => {
+    stop()
+    cleanup()
+    document.body.innerHTML = ''
+    document.title = ''
+  })
+
+  it('names the tab after the h1, and leaves focus alone on the first page', async () => {
+    renderAt('/a')
+    await waitFor(() => expect(document.title).toBe('Page A · Ledgerly'))
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('focuses the next page’s h1, so where it went is read out', async () => {
+    renderAt('/a')
+    follow('To B')
+    const heading = await screen.findByRole('heading', { name: 'Page B' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    expect(heading.getAttribute('tabindex')).toBe('-1')
+    expect(document.title).toBe('Page B · Ledgerly')
+  })
+
+  it('focuses the h1 after a link on the page, which is gone with it', async () => {
+    renderAt('/a')
+    follow('On to B')
+    const heading = await screen.findByRole('heading', { name: 'Page B' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+  })
+
+  it('focuses it once: a later change on the page leaves focus alone', async () => {
+    renderAt('/a')
+    follow('To B')
+    const heading = await screen.findByRole('heading', { name: 'Page B' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    // A click on the page's background, then a refresh of what's on it.
+    heading.blur()
+    heading.after(document.createElement('p'))
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+    expect(document.activeElement).toBe(document.body)
+  })
+
+  it('waits for an h1 that comes once the page has loaded', async () => {
+    renderAt('/a')
+    follow('To late')
+    await waitFor(() => expect(document.title).toBe('Ledgerly'))
+    const heading = await screen.findByRole('heading', { name: 'Late page' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+    expect(document.title).toBe('Late page · Ledgerly')
+  })
+
+  it('leaves focus where the new page put it', async () => {
+    renderAt('/a')
+    follow('To form')
+    await waitFor(() => expect(document.title).toBe('Form page · Ledgerly'))
+    expect(document.activeElement).toBe(screen.getByLabelText('Name'))
+  })
+
+  it('leaves focus where the person moved it while the page loaded', async () => {
+    renderAt('/a')
+    follow('To late')
+    const other = screen.getByRole('link', { name: 'To B' })
+    other.focus()
+    await screen.findByRole('heading', { name: 'Late page' })
+    await waitFor(() => expect(document.title).toBe('Late page · Ledgerly'))
+    expect(document.activeElement).toBe(other)
+  })
+
+  it('keeps focus on a query change, which stays on the page', async () => {
+    renderAt('/a')
+    await waitFor(() => expect(document.title).toBe('Page A · Ledgerly'))
+    const link = follow('Next month')
+    expect(await screen.findByText('2026-11')).toBeTruthy()
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+    expect(document.activeElement).toBe(link)
+    expect(screen.getByRole('heading', { name: 'Page A' }).hasAttribute('tabindex')).toBe(false)
+  })
+
+  it('names a page without an h1 just Ledgerly', async () => {
+    renderAt('/a')
+    await waitFor(() => expect(document.title).toBe('Page A · Ledgerly'))
+    follow('To none')
+    await waitFor(() => expect(document.title).toBe('Ledgerly'))
+  })
+
+  it('names the tab with the h1’s data-title where it has one', async () => {
+    renderAt('/home')
+    await waitFor(() => expect(document.title).toBe('Home · Ledgerly'))
+  })
+
+  it('stops when asked', async () => {
+    renderAt('/a')
+    await waitFor(() => expect(document.title).toBe('Page A · Ledgerly'))
+    stop()
+    const link = follow('To B')
+    await screen.findByRole('heading', { name: 'Page B' })
+    await act(() => new Promise((resolve) => setTimeout(resolve, 20)))
+    expect(document.title).toBe('Page A · Ledgerly')
+    expect(document.activeElement).toBe(link)
+  })
+})

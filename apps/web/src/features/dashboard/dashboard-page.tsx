@@ -50,7 +50,13 @@ export function DashboardPage() {
   const heading = useRef<HTMLHeadingElement>(null)
   return (
     <div className="flex flex-col gap-8">
-      <h1 ref={heading} tabIndex={-1} className="text-2xl font-semibold outline-none">
+      {/* The tab says where this is, not the greeting (#539). */}
+      <h1
+        ref={heading}
+        tabIndex={-1}
+        data-title="Home"
+        className="text-2xl font-semibold outline-none"
+      >
         Hi{user?.name ? `, ${user.name}` : ''}
       </h1>
       {groups.data ? (
