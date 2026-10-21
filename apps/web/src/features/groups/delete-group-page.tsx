@@ -167,7 +167,10 @@ function DeleteGroup({ group }: { group: Groups }) {
         <p className="text-sm">
           A receipt that’s also on another group’s records stays there. The group is deleted with
           its invoices, so{' '}
-          <Link to="/export" className="underline underline-offset-4">
+          <Link
+            to={`/export?groupId=${encodeURIComponent(group.$id)}`}
+            className="underline underline-offset-4"
+          >
             export its records
           </Link>{' '}
           first if you need them.

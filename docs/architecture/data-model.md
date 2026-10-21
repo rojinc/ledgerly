@@ -192,7 +192,7 @@ Indexes:
 
 | Name | Columns | Used by |
 | --- | --- | --- |
-| `idx_group_date` | groupId, date | calendar, history |
+| `idx_group_date` | groupId, date | calendar, history, export |
 | `idx_group_status_date` | groupId, status, date | due bills |
 | `idx_group_statement_date` | groupId, statementId, date | statements sweep (unlocked rows have `statementId` null), so it doesn't read locked history |
 | `idx_schedule_date` | scheduleId, date | schedule edits |

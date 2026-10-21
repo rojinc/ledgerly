@@ -1,7 +1,9 @@
 import { isLocalDate } from '@ledgerly/core/dates/local-date'
 import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups } from '@ledgerly/core/generated/rows'
+import { useQuery } from '@tanstack/react-query'
 import { type FormEvent, useEffect, useRef, useState } from 'react'
+import { useSearchParams } from 'react-router'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
@@ -9,7 +11,14 @@ import { useCurrentUser } from '../auth/use-current-user'
 import { useGroupName, useSortedByName } from '../groups/use-group-name'
 import { useGroups } from '../groups/use-groups'
 import { usePerson, useProfile } from '../profile/use-profile'
-import { download, fileUrl, groupExport, myRecordsExport, profileExport } from './export-data'
+import {
+  download,
+  fileUrl,
+  groupDates,
+  groupExport,
+  myRecordsExport,
+  profileExport,
+} from './export-data'
 
 // Long names make file names some systems refuse: 255 bytes is the usual limit, and the dates
 // and `.csv` take 29.
@@ -62,7 +71,10 @@ function GroupOption({ group }: { group: Groups }) {
   )
 }
 
-/** `/export`: a group's records for a date range (F-72), and the user's own data (F-06). */
+/**
+ * `/export`: a group's records for a date range (F-72), and the user's own data (F-06).
+ * `?groupId=`, from a group's delete screen, picks that group and all its dates.
+ */
 export function ExportPage() {
   const groups = useGroups()
   return (
@@ -92,17 +104,32 @@ export function ExportPage() {
 
 function GroupExport({ groups }: { groups: Groups[] }) {
   const sorted = useSortedByName(groups)
-  const [groupId, setGroupId] = useState('')
+  const linked = useSearchParams()[0].get('groupId')
+  const [groupId, setGroupId] = useState(linked ?? '')
   // `groups` isn't empty here.
   const group = (sorted.find((item) => item.$id === groupId) ?? sorted[0]) as Groups
   // The name the app shows: a pair is named by its other member (#145).
   const name = useGroupName(group)
-  // Defaults, in the group's own time zone: the start of this year to today.
+  // Before a delete, the whole group: its first transaction to its last, or today (#535).
+  const whole = group.$id === linked
+  const dates = useQuery({
+    queryKey: ['exportDates', group.$id],
+    queryFn: () => groupDates(group.$id),
+    enabled: whole,
+    // A failed read has no data, so it would read again on focus and keep Download waiting:
+    // the page says to reload instead.
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
+  const finding = whole && dates.isPending
+  const span = whole ? dates.data : undefined
+  // Defaults, in the group's own time zone: the start of this year to today, or the group's first
+  // transaction to the later of its last and today.
   const today = localToday(group.timezone, new Date())
   const [start, setStart] = useState<string>()
   const [end, setEnd] = useState<string>()
-  const from = start ?? `${today.slice(0, 4)}-01-01`
-  const to = end ?? today
+  const from = start ?? span?.first ?? `${today.slice(0, 4)}-01-01`
+  const to = end ?? (span && span.last > today ? span.last : today)
   const [errors, setErrors] = useState<{ from?: string; to?: string }>({})
   const [failed, setFailed] = useState('')
   const [busy, setBusy] = useState(false)
@@ -112,7 +139,7 @@ function GroupExport({ groups }: { groups: Groups[] }) {
 
   const submit = async (event: FormEvent) => {
     event.preventDefault()
-    if (busy) return
+    if (busy || finding) return
     const found = {
       from: !isLocalDate(from)
         ? 'Enter a date'
@@ -153,6 +180,12 @@ function GroupExport({ groups }: { groups: Groups[] }) {
         Every transaction in the dates you pick, with each person’s part.
       </p>
       {failed && <Alert variant="destructive">{failed}</Alert>}
+      {whole && dates.isError && (
+        <Alert variant="destructive">
+          We couldn’t find this group’s first and last dates, so these are this year’s. Change them,
+          or reload the page to try again.
+        </Alert>
+      )}
       <SelectField
         id="exportGroup"
         label="Group"
@@ -183,8 +216,8 @@ function GroupExport({ groups }: { groups: Groups[] }) {
           error={errors.to ? { type: 'validate', message: errors.to } : undefined}
         />
       </div>
-      <Button type="submit" className="self-start" aria-disabled={busy}>
-        {busy ? 'Making the file…' : 'Download CSV'}
+      <Button type="submit" className="self-start" aria-disabled={busy || finding}>
+        {busy ? 'Making the file…' : finding ? 'Finding its dates…' : 'Download CSV'}
       </Button>
       <p role="status" className="text-sm break-words empty:sr-only">
         {done}

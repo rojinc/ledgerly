@@ -93,14 +93,14 @@ afterEach(() => {
 })
 
 describe('DeleteGroupPage', () => {
-  it('says what goes, links the export, and waits for DELETE', async () => {
+  it('says what goes, links this group’s export, and waits for DELETE', async () => {
     renderPage()
     await loaded()
     expect(screen.getByRole('region', { name: 'What’s deleted' }).textContent).toMatch(
       /final ones included/,
     )
     expect(screen.getByRole('link', { name: 'export its records' }).getAttribute('href')).toBe(
-      '/export',
+      '/export?groupId=g1',
     )
     expect(screen.getByRole('link', { name: 'Back to the group' }).getAttribute('href')).toBe(
       '/groups/g1',

@@ -22,6 +22,8 @@ export const NOT_LIVE = ['currentUser', 'bootstrap', 'profile', 'person'] as con
 // guide decides once per visit (#52), so someone else's first entry shows on the next one. Nor
 // the schedule keys (features/schedules/: `schedules`, `schedule`, `schedulePreview`): no
 // channel carries schedules, so they're read on each visit and refreshed after a change (#30).
+// Nor `exportDates` (features/export/): a delete screen's link reads them for an archived group,
+// which gets no new transactions (#535).
 
 /** How long after the last event the collected keys are refreshed. */
 export const FLUSH_MS = 300
