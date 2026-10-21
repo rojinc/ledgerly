@@ -35,9 +35,10 @@ Run the drill once before launch, and again after any change to the plan or the 
 - **Give the script the key** without it reaching your shell history:
 
   ```bash
+  read -r DATABASE_ID   # the database to check: drill-YYYYMMDD in 1a, main in 2c
   read -rs APPWRITE_API_KEY && export APPWRITE_API_KEY
   export APPWRITE_ENDPOINT=https://syd.cloud.appwrite.io/v1 APPWRITE_PROJECT_ID=ledgerly-dev
-  node scripts/restore-check.mjs --database-id <the restored database's ID>
+  node scripts/restore-check.mjs --database-id "$DATABASE_ID"
   unset APPWRITE_API_KEY
   ```
 
@@ -75,7 +76,7 @@ Post on #567: the plan, the policy and its retention. Then the lead updates [env
 
 1. **The owner** takes a **Manual Backup** of `main`, and waits until it's completed.
 2. **The owner** restores it: on the backup, the options menu → **Restore**. Give it the name and ID `drill-<YYYYMMDD>` (today's date). Wait for the restore to finish.
-3. **The lead** runs the check against it (as in [Before you start](#before-you-start)), with `--database-id drill-<YYYYMMDD>`.
+3. **The lead** runs the check against it (as in [Before you start](#before-you-start)), giving `drill-<YYYYMMDD>` as the database.
 4. **The owner deletes `drill-<YYYYMMDD>`** as soon as the check finishes, pass or fail, in the same sitting and before the hold is lifted. It's a second copy of everyone's rows. Note the time it was deleted.
 
 The check prints a line per table with its rows in the copy and in `main`, then a line each for the balances, the statement PDFs, the persons whose user is gone and the groups whose team is gone, each followed by the IDs it lists, then a verdict: `restore check <ID>: PASS`, or the number to act on. Appwrite may cap a table's count at 5,000, so a count is a guide, not a proof.
@@ -100,11 +101,12 @@ This proves the path a real recovery uses, on rows nobody needs. It's the one ti
 5. **If the console didn't restore in place,** use the API. It restores in place when no new ID is given (`createRestoration` in the SDK's `Backups` service). It needs a key with the backups scope that the error names:
 
    ```bash
+   read -r ARCHIVE_ID   # the backup's ID, from the Backups tab
    read -rs APPWRITE_API_KEY && export APPWRITE_API_KEY
    curl -sS -X POST https://syd.cloud.appwrite.io/v1/backups/restoration \
      -H 'Content-Type: application/json' -H 'X-Appwrite-Project: ledgerly-dev' \
      -H "X-Appwrite-Key: $APPWRITE_API_KEY" \
-     -d '{"archiveId":"<the backup ID>","services":["databases"]}' | jq '{status, options}'
+     -d "{\"archiveId\":\"$ARCHIVE_ID\",\"services\":[\"databases\"]}" | jq '{status, options}'
    unset APPWRITE_API_KEY
    ```
 
@@ -149,7 +151,8 @@ A restore brings back the rows of every account and group deleted since the back
 - **A person "to mark"** (the user is gone and no `deletedAt`): the account was deleted after the backup. Write on its row exactly the mark that `account POST /delete`'s step 2 writes, `deletedAt`, "Former member" and a fresh `rev` (`delete-account.ts`, `markDeleted`), and the hourly run's account pass does steps 3–7. Step 3 and step 7 count a user who is already gone as done ([order](../architecture/identity-and-invites.md#order)). Step 4 purges, or keeps, each of its groups as the deletion did, so a group purged with that account goes too.
 
   ```bash
-  appwrite tablesdb update-row --database-id main --table-id persons --row-id <person ID> \
+  read -r PERSON_ID   # one "person to mark" ID from the check
+  appwrite tablesdb update-row --database-id main --table-id persons --row-id "$PERSON_ID" \
     --data "{\"deletedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"displayName\":\"Former member\",\"rev\":\"$(openssl rand -hex 10)\"}" \
     --json | jq -r '.["$id"]'
   ```
@@ -157,8 +160,10 @@ A restore brings back the rows of every account and group deleted since the back
 - **Then run the check again** after the next hourly run. A group still "to mark" was deleted on its own ([deleting a group](../architecture/identity-and-invites.md#deleting-a-group)). Write on it exactly the mark that `account POST /groups/{id}/delete`'s step 2 writes (`delete-group.ts`): `deletingAt`, `deletingBy` and a fresh `rev`. `deletingBy` is the person ID of a member row the group still has, its admin's if it has one. The hourly run's group pass then purges it, ending with that member's row.
 
   ```bash
-  appwrite tablesdb update-row --database-id main --table-id groups --row-id <group ID> \
-    --data "{\"deletingAt\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"deletingBy\":\"<person ID>\",\"rev\":\"$(openssl rand -hex 10)\"}" \
+  read -r GROUP_ID      # one "group to mark" ID from the check
+  read -r DELETING_BY   # the person ID of a member row it still has
+  appwrite tablesdb update-row --database-id main --table-id groups --row-id "$GROUP_ID" \
+    --data "{\"deletingAt\":\"$(date -u +%Y-%m-%dT%H:%M:%S.000Z)\",\"deletingBy\":\"$DELETING_BY\",\"rev\":\"$(openssl rand -hex 10)\"}" \
     --json | jq -r '.["$id"]'
   ```
 
