@@ -11,6 +11,7 @@ import { requireMember } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { randomId } from '@ledgerly/server/identity/random-id'
 import { Raced } from '@ledgerly/server/ledger/transactions'
+import { hasJoinedAdmin } from '../groups'
 import { parseBody } from '../parse-body'
 import { purge } from '../purge'
 import { getRowOrNull, isAppwriteError } from '../rows'
@@ -34,11 +35,20 @@ export async function deleteGroup(
   body: unknown,
 ): Promise<DeleteGroupResult> {
   parseBody(deleteGroupBodySchema, body)
-  // After the team is gone too: an admin's row is `active`, and only a `left` row needs the team.
-  const { person, group } = await requireMember(services.db, services.teams, userId, groupId, {
-    roles: ['admin'],
-    allowArchived: true,
-  })
+  // Only a `left` row needs the team, so once it's gone a `left` caller's retry is NOT_A_MEMBER,
+  // and the hourly group pass finishes the purge.
+  const { person, member, group } = await requireMember(
+    services.db,
+    services.teams,
+    userId,
+    groupId,
+    { allowArchived: true },
+  )
+  // An admin, or anyone in a group with no joined admin, whatever their role, so its last
+  // person can still delete it (#486). Anyone else gets requireMember's role refusal.
+  if (member.role !== 'admin' && (await hasJoinedAdmin(services.db, groupId))) {
+    throw new AppError('FORBIDDEN', "Your role in this group can't do this.")
+  }
   let deleting = group as DeletingGroup
   if (!group.deletingAt) {
     await requireRecentSignIn(services, userId, sessionId, 'delete this group')

@@ -2,7 +2,7 @@ import type { Members } from '@ledgerly/core/generated/rows'
 import { emptyBodySchema } from '@ledgerly/core/schemas/common'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { TABLES } from '@ledgerly/server/appwrite/tables'
-import { removeFromTeam } from '@ledgerly/server/appwrite/teams'
+import { othersInTeam, removeFromTeam } from '@ledgerly/server/appwrite/teams'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { leftOnTheirOwn } from '@ledgerly/server/auth/left-on-their-own'
 import { requireMember } from '@ledgerly/server/auth/require-member'
@@ -51,6 +51,11 @@ export async function leaveGroup(
     // left, even if a share landed on them since. Someone who moved out settles up first, and
     // their leave is recorded too, so it's final for this row (permissions.md#leaving-a-group).
     if (!(await leftOnTheirOwn(db, groupId, person.$id, member.$createdAt))) {
+      // The last person in an archived group's team stays, or deletes it (#486): once they're
+      // out of the team, nobody can read its rows. Two such leaves at once can both pass.
+      if (group.archivedAt && !(await othersInTeam(teams, groupId, userId))) {
+        throw invalid("You're the last person in this group. Delete it instead, or stay.")
+      }
       await conflictAsTryAgain(() =>
         withTransaction(db, async (tx) => {
           // A guard write (a fresh `rev`): a move back in racing this leave fails one of them.
