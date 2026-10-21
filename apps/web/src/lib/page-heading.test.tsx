@@ -178,3 +178,73 @@ describe('followPageHeading (#539)', () => {
     expect(document.activeElement).toBe(link)
   })
 })
+
+// In a browser, the router renders a move in a transition, so the old page can render again (a
+// form after its save) before the new one is on the page: a step that act() would flush away.
+// Here the router and the page are driven by hand, in that order (#547).
+describe('followPageHeading, when the old page renders again first (#539)', () => {
+  type Subscriber = Parameters<Parameters<typeof followPageHeading>[0]['subscribe']>[0]
+  let subscribers: Subscriber[] = []
+  let root: HTMLElement
+  let stopIt = () => {}
+
+  /** A page at `/a`, with focus on its form's button, as after a click on Save. */
+  function start(page: string) {
+    root = document.createElement('div')
+    root.innerHTML = page
+    document.body.append(root)
+    const router = {
+      state: { location: { pathname: '/a' } },
+      subscribe: (subscriber: Subscriber) => {
+        subscribers.push(subscriber)
+        return () => {
+          subscribers = subscribers.filter((s) => s !== subscriber)
+        }
+      },
+    } as unknown as Parameters<typeof followPageHeading>[0]
+    stopIt = followPageHeading(router, root)
+    root.querySelector('button')?.focus()
+  }
+
+  /** The router's move: its state changes before React renders the new page. */
+  function moveTo(pathname: string) {
+    for (const subscriber of subscribers) {
+      subscriber({ location: { pathname } } as never, {} as never)
+    }
+  }
+
+  /** Lets the observer see what changed, as the browser does between the two renders. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+  afterEach(() => {
+    stopIt()
+    subscribers = []
+    document.body.innerHTML = ''
+  })
+
+  it('waits past the old page’s h1, and focuses the new page’s', async () => {
+    start('<h1>New lend &amp; borrow</h1><p>Adding…</p><button>Add</button>')
+    moveTo('/b')
+    // The old page renders its saved state before the new page is there.
+    const status = root.querySelector('p') as HTMLElement
+    status.textContent = 'Added.'
+    await settle()
+    expect(document.activeElement).toBe(root.querySelector('button'))
+    root.innerHTML = '<h1>Sam</h1>'
+    await settle()
+    expect(document.activeElement).toBe(root.querySelector('h1'))
+    expect(document.title).toBe('Sam · Ledgerly')
+  })
+
+  it('focuses the same h1 node once its text is the new page’s', async () => {
+    start('<h1>Flat 3</h1><button>Open Flat 4</button>')
+    const h1 = root.querySelector('h1') as HTMLElement
+    moveTo('/b')
+    await settle()
+    expect(document.activeElement).not.toBe(h1)
+    // The same route component: React keeps the node and changes its text.
+    h1.textContent = 'Flat 4'
+    await settle()
+    expect(document.activeElement).toBe(h1)
+  })
+})
