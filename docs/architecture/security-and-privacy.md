@@ -102,13 +102,14 @@ For v1 ([#50](https://github.com/rojinc/ledgerly/issues/50); the owner's legal r
 | --- | --- | --- |
 | Appwrite API key (deploy) | GitHub Actions secret per environment | CI deploy |
 | `E2E_APPWRITE_API_KEY` (the dev project, `users.read` and `users.write`) | GitHub Actions secret; for a person the owner gives it to, their own `.env.local` | e2e: creates and verifies test users, then labels them `e2e` and blocks them at teardown, for the `account` job to delete, which deletes only a labelled user whose address, and every identity of whose person, is a run's test address ([finishing purges](identity-and-invites.md#finishing-purges)). Those checks guard against mistakes, not against the key: it can already act as any user. It deletes outright a user it can't label and block, as before ([testing](../engineering/testing.md#end-to-end)). Dev has real users, so it can read and change any of them: it's handled like the deploy key. |
+| `APPWRITE_READS_KEY` (the dev project, `execution.read` only, with an expiry the owner sets) | GitHub Actions secret in the `reads` environment, which only `main` can use | the [reads job](../engineering/nightly-check.md#after-the-two-weeks), every 8 hours after M4: it reads each function's run records (paths, statuses and log lines, which hold IDs and error names only). It can't read a table, a user or a file, or list functions, whose variables `functions.read` could return ([#568](https://github.com/rojinc/ledgerly/issues/568)). |
 | Resend API key | Appwrite project variable `RESEND_API_KEY` | functions |
 | SMS provider keys (after v1, [#40](https://github.com/rojinc/ledgerly/issues/40)) | Appwrite project variables | `identity` |
 | Sentry DSN (M4) | Project variable / Vite env | functions, web |
 | Stripe restricted key, once billing is built ([billing](billing.md#security-and-privacy)) | Function variable `STRIPE_SECRET_KEY` on `billing` and `account` only (each its own restricted key), not a project variable; test mode on dev, live on prod | `billing`, `account` |
 | Stripe webhook signing secret, only if the webhook design is chosen ([billing](billing.md#if-the-lead-picks-the-webhook-instead)) | Function variable `STRIPE_WEBHOOK_SECRET` on `stripe-webhook` only | `stripe-webhook` |
 
-Functions use the **per-execution key** in `x-appwrite-key` for database access. Long-lived keys exist only for CI: the deploy key, scoped to what deploys need, and the e2e key, scoped to users. The e2e key also reaches a developer's machine only if the owner gives it to them, for local runs.
+Functions use the **per-execution key** in `x-appwrite-key` for database access. Long-lived keys exist only for CI: the deploy key, scoped to what deploys need, the e2e key, scoped to users, and the reads key, scoped to the functions' runs. The e2e key also reaches a developer's machine only if the owner gives it to them, for local runs.
 
 ## Security review rule
 

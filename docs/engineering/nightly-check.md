@@ -173,7 +173,22 @@ Post one comment per read on #299, in this form:
 - **The 2 weeks are done** when passing reads cover 14 days without a break: each read starts at the `to` of the one before, and none failed. **A failed read starts the count again** from its `to`.
 - AI A keeps the count in #299's section 1 at each sweep.
 
-**At the end:** the owner deletes the key, and the lead ticks the criterion in #299.
+**At the end:** the owner deletes the key, and the lead ticks the criterion in #299. From then on, [the reads job](#after-the-two-weeks) reads every 8 hours.
+
+## After the two weeks
+
+**The reads job** ([`.github/workflows/reads.yml`](../../.github/workflows/reads.yml), [#568](https://github.com/rojinc/ledgerly/issues/568)) keeps reading A and B, and the [error lines](error-lines.md), with the script, so a failure still reaches someone after the lead's reads stop. **Nobody runs it by hand:** it runs every 8 hours, at 00:17, 08:17 and 16:17 UTC, and **Run workflow** is for the owner's first run only.
+
+- **Its key** has `execution.read` only, and is kept in the `reads` environment, which only `main` can use ([secrets](../architecture/security-and-privacy.md#secrets-inventory)). It reads no table, so the job leaves out C: its line says `overdue not read`, and its PASS is A's and B's.
+- **What it calls:** `GET /functions/{id}/executions` for each of the script's six functions, with `execution.read`, and nothing else in Appwrite. The function IDs are the script's own list, never read from Appwrite: listing functions needs `functions.read`, which can return their variables, so the key never gets it. On GitHub, it reads, comments on and edits one issue, with the run's own token (`issues: write`).
+- **Its state is one line in the body of [#581](https://github.com/rojinc/ledgerly/issues/581),** the pinned reads issue, which only collaborators can edit: `Last read: to <time> · nightly <verdict> · errors <verdict> · at <time>`. Each read starts at that `to` and ends 20 minutes ago, and the job rewrites the line after a read that ran. A comment is never read.
+  - **A `to` over 23 hours old,** or a line that isn't one the job wrote, starts the read 23 hours ago, the oldest the logs reach, and the comment says which hours weren't read.
+  - **The issue's title** is checked before every write, so the job never acts on another issue.
+  - **Edit the body between runs:** a run writes back the body it read at its start, so an edit made in the seconds it runs is lost.
+- **It posts on #581** when a read exits 1, when it couldn't read (`FETCH FAILED`, `STOPPED`), when a run is still waiting at two reads running (`TOO EARLY`), or when it couldn't start from the last read. The comment holds the script's lines, without the `Post on` headers. The run then fails too, so GitHub's own notice goes to the account that last changed the `cron` line.
+- **The state moves only after a read that ran,** and after its comment. So a read that couldn't fetch, or a comment GitHub refused, is read again next time.
+- **The lead triages each comment** by the [error lines' verdict](error-lines.md#the-verdict), and replies with what was done: a `bug` issue for STUCK, a closer look for LOOK, a shorter interval for INCOMPLETE or a capped function, and the key for `FETCH FAILED`. Nothing resets, since there's no count after M4, and a problem that lasts is posted at every read until its fix is deployed.
+- **If it stops:** GitHub turns off a public repo's scheduled workflows after 60 days without commits. #581's line shows it, since its `to` stops moving, and the owner turns the workflow back on (Actions → Reads → Enable workflow).
 
 ## Not covered
 

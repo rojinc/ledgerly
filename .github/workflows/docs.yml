@@ -38,5 +38,6 @@ jobs:
       - run: node scripts/check-links.mjs
 
       # The nightly-check and error-line reads' script, against the jq blocks in nightly-check.md
-      # and error-lines.md (#553), which a docs-only PR can change. jq is on the runner's image.
-      - run: node --test scripts/reads.test.mjs
+      # and error-lines.md (#553), which a docs-only PR can change, and the reads job's state and
+      # posts (#568). Built-ins only, so no `npm ci`. jq is on the runner's image.
+      - run: node --test scripts/reads.test.mjs scripts/reads-job.test.mjs

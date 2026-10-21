@@ -202,7 +202,8 @@ export function nightlyC(groups, stale) {
 /**
  * The nightly check's result line (nightly-check.md#the-result) from A's, B's and C's lines, and
  * then the lines to post on #96. `pending` is the last read's pending group IDs. `tooEarly` says a
- * run hadn't finished, so there's nothing to post yet.
+ * run hadn't finished, so there's nothing to post yet. `c` is null when C wasn't read: the line
+ * then says `overdue not read`, and the verdict is A's and B's.
  */
 export function nightlyResult(a, b, c, { from, to, pending = [] }) {
   const counts = (line, re) =>
@@ -216,7 +217,7 @@ export function nightlyResult(a, b, c, { from, to, pending = [] }) {
     /logged (?<logged>\d+) of (?<runs>\d+) runs · findings (?<findings>\d+) · failed (?<failed>\d+) · cut off (?<cut>\d+) · removed (?<removed>\d+)/,
   )
   // A group is pending while a purge deletes it, or once archived, but not at two reads in a row.
-  const overdue = c.map((line) => {
+  const overdue = (c ?? []).map((line) => {
     const { id, deleting, archived } = line.match(
       /^overdue (?<id>\S+) due \S+ deleting (?<deleting>\S+) archived (?<archived>\S+)$/,
     ).groups
@@ -235,7 +236,7 @@ export function nightlyResult(a, b, c, { from, to, pending = [] }) {
   return {
     tooEarly: a.slice(1).some((line) => /^not ok \S+ \S+ (waiting|processing) /.test(line)),
     pass,
-    line: `${from} → ${to} · runs ${A.runs}, not ok ${A.notok}, longest gap ${A.gap} min, longest run ${A.run} s · logged ${B.logged} of ${B.runs} · findings ${B.findings} · failed ${B.failed} · cut off ${B.cut} · removed ${B.removed} · overdue ${overdue.length} · pending ${pendingIds.length > 0 ? pendingIds.join(', ') : 'none'} · ${pass ? 'PASS' : 'FAIL'}`,
+    line: `${from} → ${to} · runs ${A.runs}, not ok ${A.notok}, longest gap ${A.gap} min, longest run ${A.run} s · logged ${B.logged} of ${B.runs} · findings ${B.findings} · failed ${B.failed} · cut off ${B.cut} · removed ${B.removed} · ${c === null ? 'overdue not read' : `overdue ${overdue.length} · pending ${pendingIds.length > 0 ? pendingIds.join(', ') : 'none'}`} · ${pass ? 'PASS' : 'FAIL'}`,
     notes: [
       ...a.slice(1),
       ...b.slice(1),
@@ -388,7 +389,15 @@ const errorType = (body) =>
  * Read-only GETs to the Appwrite API, paging as the runbooks do. Never prints the key, and never a
  * reply's body: a reply that isn't JSON, or has no `list` array, is a FETCH FAILED.
  */
-export async function fetchReads({ endpoint, project, key, from, stale, orderBy = '$createdAt' }) {
+export async function fetchReads({
+  endpoint,
+  project,
+  key,
+  from,
+  stale,
+  orderBy = '$createdAt',
+  overdue = true,
+}) {
   const get = async (what, path, queries, list) => {
     const url = new URL(endpoint.replace(/\/$/, '') + path)
     for (const query of queries) url.searchParams.append('queries[]', JSON.stringify(query))
@@ -457,7 +466,9 @@ export async function fetchReads({ endpoint, project, key, from, stale, orderBy 
       if (executions.length < 100 || at(executions.at(-1)) < from) break
     }
   }
-  // The nightly check's C: groups overdue now.
+  // The nightly check's C: groups overdue now. Left out, it reads no table (`rows.read`), as the
+  // reads job's key can't (#568).
+  if (!overdue) return { runs, groups: null, capped: capped.map((fn) => ` ${fn}`).join('') }
   const groups = []
   for (const [what, query] of [
     ['groups', { method: 'lessThan', attribute: 'nextCheckAt', values: [stale] }],
@@ -482,7 +493,7 @@ export async function read(args, env = process.env, now = Date.now()) {
     lines: [
       problem,
       "Use: node scripts/reads.mjs --from <the last result's \"to\"> [--pending '<IDs>']",
-      '       (--fetch [--to <time>] [--order-by-id]',
+      '       (--fetch [--to <time>] [--order-by-id] [--skip-overdue]',
       "        | --runs <file> --groups <file> --to <the blocks' \"$TO\"> [--capped '<functions>'])",
     ],
     code: 2,
@@ -500,6 +511,7 @@ export async function read(args, env = process.env, now = Date.now()) {
         capped: { type: 'string' },
         fetch: { type: 'boolean' },
         'order-by-id': { type: 'boolean' },
+        'skip-overdue': { type: 'boolean' },
       },
     }))
   } catch (error) {
@@ -521,6 +533,9 @@ export async function read(args, env = process.env, now = Date.now()) {
         .split(/[\s,]+/)
         .join(' ')}`
     : ''
+  if (values['skip-overdue'] && (!values.fetch || values.pending)) {
+    return usage('--skip-overdue is for --fetch, and leaves out C, which --pending is for.')
+  }
   if (values.fetch) {
     const { APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_API_KEY } = env
     if (!APPWRITE_ENDPOINT || !APPWRITE_PROJECT_ID || !APPWRITE_API_KEY) {
@@ -540,6 +555,7 @@ export async function read(args, env = process.env, now = Date.now()) {
         from,
         stale,
         orderBy: values['order-by-id'] ? '$id' : '$createdAt',
+        overdue: !values['skip-overdue'],
       }))
     } catch (error) {
       if (error instanceof FetchFailed) return { lines: [error.message], code: 2 }
@@ -567,7 +583,7 @@ export async function read(args, env = process.env, now = Date.now()) {
   const nightly = nightlyResult(
     nightlyA(runs, from, to),
     nightlyB(runs, from, to),
-    nightlyC(groups, stale),
+    groups === null ? null : nightlyC(groups, stale),
     {
       from,
       to,

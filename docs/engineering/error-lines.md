@@ -180,5 +180,5 @@ AI A notes it in #299's section 1 at each sweep, with the nightly check's count.
 - **`warn` lines,** such as a merge that left a row: they're worth a look, not a failure. Read them by hand if one of these lines points to them.
 - **A failure whose logs are gone,** which is why the read comes within 23 hours, as the nightly check does, and `logged` counts the runs that still have their lines.
 - **A gap that spans two reads,** for `statements`, `account` or `identity`. If the page that reaches back past `FROM` holds only requests before it, the gap is measured from `FROM`. The scheduler's gaps are exact in the nightly check's A.
-- **After M4's two weeks,** the owner deletes the key ([nightly check](nightly-check.md)), and these reads stop with it. Whether to keep reading the error lines after that is the lead's call.
+- **After M4's two weeks,** the owner deletes the key ([nightly check](nightly-check.md)), and the lead's reads stop with it. [The reads job](nightly-check.md#after-the-two-weeks) keeps reading these lines every 8 hours, and posts on #581 when one needs a look.
 - **The web app's errors:** they stay in the browser, and nothing reports them in v1 (Sentry is cut, [#51](https://github.com/rojinc/ledgerly/issues/51)).
