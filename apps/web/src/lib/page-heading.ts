@@ -4,10 +4,10 @@ type Router = Pick<ReturnType<typeof createBrowserRouter>, 'state' | 'subscribe'
 
 /**
  * Names the tab after the page's one h1 ("History · Ledgerly"), or its `data-title` where the h1
- * greets rather than names the page, and once the router moves to
- * another page, focuses that h1, so a screen reader says where it went (#539). A query change (a
- * calendar month, a filter) stays on the same page. Focus the page or the person moved meanwhile
- * stays where it is. Returns a function that stops it.
+ * greets rather than names the page. Once the router moves to another page, it focuses that h1,
+ * so a screen reader says where it went (#539). A query change (a calendar month, a filter) stays
+ * on the same page. Focus the page or the person moved meanwhile stays where it is. Returns a
+ * function that stops it.
  */
 export function followPageHeading(router: Router, root: HTMLElement): () => void {
   let pathname = router.state.location.pathname
