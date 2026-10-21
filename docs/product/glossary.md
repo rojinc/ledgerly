@@ -38,7 +38,7 @@ Use these words exactly as defined here, in code, the UI and docs. If you need a
 | **Draft / Final / Void** | Statement states. Final statements are locked; void ones are cancelled but kept. |
 | **Locked** | A transaction included in a final statement. It cannot be edited or voided. |
 | **Adjustment** | A correcting transaction with explicit shares. The only way to fix a locked transaction. |
-| **Settle up** | Payments that bring balances back to zero. **Suggested transfers** are the fewest payments needed. |
+| **Settle up** | Payments that bring balances back to zero. **Suggested transfers** are a few payments that do it: at most one fewer than the people who owe or are owed, though not always the fewest possible. |
 | **Activity** | The append-only log of who did what in a group. |
 | **Local date** | A calendar date as text, `YYYY-MM-DD`, in the group's timezone. |
 | **Cents** | Integer amounts in the smallest currency unit. $12.34 is `1234`. |
