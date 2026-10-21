@@ -340,3 +340,66 @@ describe('POST /groups/{id}/archive', () => {
     expect(services.db.rows('activity')).toEqual([])
   })
 })
+
+describe('an invoice whose worker deleted their account (#519)', () => {
+  // g2's worker, p9, deleted their account `minutes` ago; p1, the employer made admin, archives.
+  function workerGone(
+    minutes: number | null | 'garbled',
+    statements = [statement('st1', 'finalizing')],
+  ) {
+    const deletedAt =
+      minutes === 'garbled'
+        ? 'not a date'
+        : minutes === null
+          ? null
+          : new Date(NOW.getTime() - minutes * 60 * 1000).toISOString()
+    return fakes(
+      {
+        persons: [person(1), person(9, { userId: null, deletedAt })],
+        groups: [group('g2', 'employer', { nextCloseAt: CLOSE_AT, ownerPersonId: 'p9' })],
+        members: [
+          member('m1', 'g2', 'p1', 'admin', 'active'),
+          member('m9', 'g2', 'p9', 'viewer', 'left', { displayName: 'Former member' }),
+        ],
+        statements,
+      },
+      { g2: ['u1'] },
+    )
+  }
+
+  it('archives over it once their deletion is more than an hour old, and it stays finalizing', async () => {
+    const services = workerGone(61)
+    expect(await ok(services, 'POST', '/groups/g2/archive')).toMatchObject({
+      archivedAt: NOW.toISOString(),
+      nextCloseAt: null,
+    })
+    expect(services.db.rows('statements')).toEqual([
+      expect.objectContaining({ $id: 'st1', status: 'finalizing' }),
+    ])
+    expect(services.db.rows('activity')).toEqual([
+      expect.objectContaining({ actorPersonId: 'p1', action: 'group.archived' }),
+    ])
+  })
+
+  it.each([
+    ['within the hour of their deletion', 60, [statement('st1', 'finalizing')]],
+    ['when they haven’t deleted their account', null, [statement('st1', 'finalizing')]],
+    // It fails closed.
+    ['when their deletedAt doesn’t parse', 'garbled', [statement('st1', 'finalizing')]],
+    ['for a finalizing divide', 61, [{ ...statement('st1', 'finalizing'), type: 'divide' }]],
+    // Rule 5 keeps it to one, but another one would still be finishable.
+    [
+      'with another statement finalizing too',
+      61,
+      [statement('st1', 'finalizing'), { ...statement('st2', 'finalizing'), type: 'divide' }],
+    ],
+  ] as const)('still refuses %s', async (_, minutes, statements) => {
+    const services = workerGone(minutes, [...statements])
+    expect(await failure(services, 'POST', '/groups/g2/archive')).toEqual({
+      status: 409,
+      code: 'CONFLICT',
+      message: FINALIZING,
+    })
+    expect(services.db.rows('groups')[0]).toMatchObject({ archivedAt: null, nextCloseAt: CLOSE_AT })
+  })
+})

@@ -11,10 +11,11 @@ import { finalizeStatementBodySchema } from '@ledgerly/core/schemas/statements'
 import { checkSnapshot } from '@ledgerly/core/statements/snapshot'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
-import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { requireMemberOf } from '@ledgerly/server/auth/require-member'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { logProblem } from '@ledgerly/server/http/log'
+import { randomId } from '@ledgerly/server/identity/random-id'
 import { renderDividePdf } from '@ledgerly/server/pdf/divide-pdf'
 import { renderInvoicePdf } from '@ledgerly/server/pdf/invoice-pdf'
 import { Query } from 'node-appwrite'
@@ -77,10 +78,8 @@ export async function finalizeStatement(
   if (statement.status === 'void') throw invalid('A void statement can’t be finalized.')
   // Before step 1, on a resume too, for the job as for an admin: with its worker's account
   // deleted, an invoice couldn't be numbered, and an issued one would lack their business
-  // details. It stays as it is (#503).
-  if (statement.type === 'invoice' && statement.status !== 'final') {
-    await requireIssuerAccount(db, group)
-  }
+  // details. It stays as it is (#503). Steps 2 and 6 check again (#519).
+  if (statement.type === 'invoice' && statement.status !== 'final') await issuerOf(db, group)
   let current = statement
   return conflictAsTryAgain(async () => {
     if (current.status !== 'final') {
@@ -101,19 +100,46 @@ export async function finalizeStatement(
   })
 }
 
-/** An invoice's issuer, the worker who owns the employer group, still has an account. */
-async function requireIssuerAccount(db: Db, group: Groups): Promise<void> {
+/**
+ * An invoice's issuer, the worker who owns the employer group, unless they've deleted their
+ * account: `deletedAt` is set at its point of no return and never cleared, before their profile
+ * and `userId` go (identity-and-invites.md#order).
+ */
+async function issuerOf(db: Db, group: Groups): Promise<Persons> {
   const issuer = await db.getRow<Persons>({
     databaseId: DATABASE_ID,
     tableId: TABLES.persons,
     rowId: group.ownerPersonId,
   })
-  if (!issuer.userId) {
-    throw new AppError(
-      'CONFLICT',
-      'The worker has deleted their account, so this invoice can’t be finalized.',
-    )
+  if (issuer.deletedAt) throw issuerDeleted()
+  return issuer
+}
+
+/**
+ * A guard write on the issuer's person row (a fresh `rev`), for steps 2 and 6, whose transaction
+ * then checks, after staging, that they haven't deleted their account. A deletion that passes
+ * its point of no return later fails that commit (identity-and-invites.md#order), so no number
+ * is taken and nothing is issued after it (#519).
+ */
+function issuerGuard(group: Groups): Write {
+  return {
+    action: 'update',
+    tableId: TABLES.persons,
+    rowId: group.ownerPersonId,
+    data: { rev: randomId() },
   }
+}
+
+async function requireIssuerStill(db: Db, group: Groups): Promise<void> {
+  const stored = await getRowOrNull<Persons>(db, TABLES.persons, group.ownerPersonId)
+  if (!stored || stored.deletedAt) throw issuerDeleted()
+}
+
+function issuerDeleted(): AppError {
+  return new AppError(
+    'CONFLICT',
+    'The worker has deleted their account, so this invoice can’t be finalized.',
+  )
 }
 
 /** statements.md#core-rules, rule 5: periods lock in order. */
@@ -164,17 +190,13 @@ async function startFinalizing(db: Db, group: Groups, statement: Statements): Pr
  * one worker can't take the same number.
  */
 async function numberInvoice(db: Db, group: Groups, statement: Statements): Promise<Statements> {
-  const person = await db.getRow<Persons>({
-    databaseId: DATABASE_ID,
-    tableId: TABLES.persons,
-    rowId: group.ownerPersonId,
-  })
-  if (!person.userId) throw new Error('An invoice issuer always has an account')
-  const profile = await db.getRow<Profiles>({
-    databaseId: DATABASE_ID,
-    tableId: TABLES.profiles,
-    rowId: person.userId,
-  })
+  // Again (the commit checks once more, issuerGuard), so a run that began before their deletion
+  // can't number it after (#519).
+  const person = await issuerOf(db, group)
+  const profile = person.userId
+    ? await getRowOrNull<Profiles>(db, TABLES.profiles, person.userId)
+    : null
+  if (!profile) throw issuerDeleted()
   const number = profile.lastInvoiceNumber + 1
   const displayNumber = `${profile.invoicePrefix}${String(number).padStart(4, '0')}`
   await withTransaction(db, async (tx) => {
@@ -191,6 +213,7 @@ async function numberInvoice(db: Db, group: Groups, statement: Statements): Prom
         rowId: statement.$id,
         data: { number, displayNumber },
       },
+      issuerGuard(group),
     )
     const [stored, row] = await Promise.all([
       getRowOrNull<Profiles>(db, TABLES.profiles, profile.$id),
@@ -199,6 +222,7 @@ async function numberInvoice(db: Db, group: Groups, statement: Statements): Prom
     if (stored?.lastInvoiceNumber !== profile.lastInvoiceNumber || row?.number !== null) {
       throw tryAgain()
     }
+    await requireIssuerStill(db, group)
   })
   return { ...statement, number, displayNumber }
 }
@@ -243,11 +267,16 @@ async function lockAndIssue(
   const issuedOn = localToday(group.timezone, now)
   const dueOn = snapshot.invoice ? addDays(issuedOn, snapshot.invoice.paymentTermsDays) : null
   if (snapshot.invoice && dueOn) snapshot.invoice.dueOn = dueOn
-  return updateStatement(db, statement, {
-    snapshotJson: JSON.stringify(snapshot),
-    issuedOn,
-    dueOn,
-  })
+  // Step 6, invoices: the issuer again, since the snapshot may lack their business details if
+  // their deletion ran meanwhile (#519). The statement stays `finalizing`, with its locks.
+  const invoice = statement.type === 'invoice'
+  return updateStatement(
+    db,
+    statement,
+    { snapshotJson: JSON.stringify(snapshot), issuedOn, dueOn },
+    invoice ? [issuerGuard(group)] : [],
+    invoice ? () => requireIssuerStill(db, group) : undefined,
+  )
 }
 
 /**
