@@ -10,7 +10,11 @@ import type {
 } from '@ledgerly/core/generated/rows'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { businessDetailsSchema } from '@ledgerly/core/schemas/identity'
-import { type StatementSnapshot, statementSnapshotSchema } from '@ledgerly/core/schemas/statements'
+import {
+  type SnapshotBusiness,
+  type StatementSnapshot,
+  statementSnapshotSchema,
+} from '@ledgerly/core/schemas/statements'
 import { type Net, netsFromShares } from '@ledgerly/core/settle/nets'
 import {
   buildStatementSnapshot,
@@ -19,6 +23,7 @@ import {
 } from '@ledgerly/core/statements/snapshot'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
+import type { LogBusinessField } from '@ledgerly/server/http/log'
 import { Query } from 'node-appwrite'
 import { z } from 'zod'
 import { chunks, getRowOrNull, invalid, listAll } from './shared'
@@ -60,7 +65,13 @@ export async function computeSnapshot(
   period: DateRange,
   now: Date,
   statementId?: string,
-): Promise<{ snapshot: StatementSnapshot; unlockedIds: string[]; membership: Membership }> {
+): Promise<{
+  snapshot: StatementSnapshot
+  unlockedIds: string[]
+  membership: Membership
+  /** The issuer's business details it left out, which finalize logs (#543). */
+  businessDropped: LogBusinessField[]
+}> {
   const type = statementTypeOf(group)
   const [members, unlocked, locked, previous] = await Promise.all([
     listAll<Members>(db, TABLES.members, [Query.equal('groupId', group.$id)]),
@@ -96,6 +107,7 @@ export async function computeSnapshot(
     ],
     inGroup,
   )
+  const invoice = type === 'invoice' ? await invoiceParties(db, group, members) : undefined
   const snapshot = buildStatementSnapshot({
     group: {
       id: group.$id,
@@ -110,13 +122,14 @@ export async function computeSnapshot(
     lines: transactions.map((row) =>
       lineOf(row, mergedShares(shares.get(row.$id) ?? [], inGroup, mergedInto)),
     ),
-    ...(type === 'invoice' ? await invoiceParties(db, group, members) : {}),
+    ...invoice?.parties,
     generatedAt: now.toISOString(),
   })
   return {
     snapshot,
     unlockedIds: unlocked.map((row) => row.$id),
     membership: { inGroup, mergedInto },
+    businessDropped: invoice?.dropped ?? [],
   }
 }
 
@@ -236,7 +249,8 @@ function lineOf(row: Transactions, shares: readonly Line['shares'][number][]): L
 
 /**
  * An invoice's issuer (the worker who owns the employer group, with their business details)
- * and recipient (the employer, at the group's billing emails), and the payment terms.
+ * and recipient (the employer, at the group's billing emails), and the payment terms; and the
+ * business details it left out (`businessOf`).
  */
 async function invoiceParties(db: Db, group: Groups, members: readonly Members[]) {
   const settings = groupSettingsSchema.parse(JSON.parse(group.settingsJson))
@@ -247,19 +261,48 @@ async function invoiceParties(db: Db, group: Groups, members: readonly Members[]
   const profile = person?.userId
     ? await getRowOrNull<Profiles>(db, TABLES.profiles, person.userId)
     : null
+  const { business, dropped } = businessOf(profile?.businessJson ?? null)
   return {
-    issuer: worker && {
-      personId: worker.personId,
-      name: worker.displayName,
-      business: profile?.businessJson
-        ? businessDetailsSchema.parse(JSON.parse(profile.businessJson))
-        : {},
+    parties: {
+      issuer: worker && { personId: worker.personId, name: worker.displayName, business },
+      recipient: employer && {
+        personId: employer.personId,
+        name: employer.displayName,
+        emails: settings.recipients,
+      },
+      paymentTermsDays: settings.paymentTermsDays,
     },
-    recipient: employer && {
-      personId: employer.personId,
-      name: employer.displayName,
-      emails: settings.recipients,
-    },
-    paymentTermsDays: settings.paymentTermsDays,
+    dropped,
   }
+}
+
+/**
+ * The issuer's business details as a snapshot keeps them (statements.md#snapshot, #543): each
+ * field that passes today's rule for it, the bank only whole, and the names of those left out. A
+ * later, stricter rule never stops a snapshot from being built.
+ */
+function businessOf(json: string | null): {
+  business: SnapshotBusiness
+  dropped: LogBusinessField[]
+} {
+  if (!json) return { business: {}, dropped: [] }
+  let stored: unknown
+  try {
+    stored = JSON.parse(json)
+  } catch {
+    return { business: {}, dropped: ['json'] }
+  }
+  if (typeof stored !== 'object' || stored === null || Array.isArray(stored)) {
+    return { business: {}, dropped: ['json'] }
+  }
+  const business: Record<string, unknown> = {}
+  const dropped: LogBusinessField[] = []
+  for (const [field, rule] of Object.entries(businessDetailsSchema.shape)) {
+    const value = (stored as Record<string, unknown>)[field]
+    if (value === undefined) continue
+    const read = rule.safeParse(value)
+    if (read.success) business[field] = read.data
+    else dropped.push(field as LogBusinessField)
+  }
+  return { business: business as SnapshotBusiness, dropped }
 }

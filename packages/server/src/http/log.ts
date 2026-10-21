@@ -1,4 +1,5 @@
 import { idSchema } from '@ledgerly/core/schemas/common'
+import { type BusinessDetails, businessDetailsSchema } from '@ledgerly/core/schemas/identity'
 import type { SnapshotProblem } from '@ledgerly/core/statements/snapshot'
 import { AppwriteException } from 'node-appwrite'
 import { EmailError } from '../email/send-email'
@@ -56,6 +57,7 @@ export type LogEvent =
   | 'receipt_row_listed'
   | 'transaction_changes_failed'
   | 'transaction_changes_skipped'
+  | 'invoice_business_dropped'
 
 /**
  * How each event is written. Most are problems, written with `console.error`: until alerting
@@ -86,7 +88,15 @@ const LEVELS: Partial<Record<LogEvent, 'log' | 'warn'>> = {
   receipt_cleanup_behind: 'warn',
   receipt_cleanup_tied: 'warn',
   transaction_changes_skipped: 'warn',
+  invoice_business_dropped: 'warn',
 }
+
+/**
+ * A business detail an invoice's snapshot left out (statements.md#snapshot), by the Profile's
+ * field name, or `json` when the stored JSON doesn't read: never its value.
+ */
+export type LogBusinessField = keyof BusinessDetails | 'json'
+const BUSINESS_FIELDS = new Set<string>([...Object.keys(businessDetailsSchema.shape), 'json'])
 
 /** What the password notice did (identity-and-invites.md#password-notice). */
 export type NoticeOutcome = 'sent' | 'stale' | 'unverified' | 'gone' | 'failed'
@@ -162,6 +172,7 @@ export type LogFields = {
   rowId?: string
   table?: 'members' | 'shares'
   problems?: readonly SnapshotProblem[]
+  businessFields?: readonly LogBusinessField[]
   identityType?: 'email' | 'phone'
   rule?: LogRule
   outcome?: NoticeOutcome | ChangeNoticeOutcome
@@ -184,8 +195,8 @@ export type LogFields = {
 /**
  * Writes one JSON line for something that happened inside a route: `{ fn, event, groupId?,
  * statementId?, transactionId?, profileId?, personId?, reminderId?, userId?, membershipId?,
- * scheduleId?, intoPersonId?, rowId?, table?, problems?, identityType?, rule?, outcome?, count?,
- * counts?, cause? }`, at the event's
+ * scheduleId?, intoPersonId?, rowId?, table?, problems?, businessFields?, identityType?, rule?,
+ * outcome?, count?, counts?, cause? }`, at the event's
  * level (`LEVELS`). Only row IDs, fixed names, counts and error names, never text that could quote
  * what someone typed (security-and-privacy.md). A value passed as an ID that isn't shaped like one
  * is written as `invalid`.
@@ -210,6 +221,8 @@ export function logProblem(event: LogEvent, fields: LogFields = {}): void {
     rowId: id(rowId),
     table,
     problems,
+    // Pinned at run time too, as a cast could pass any text.
+    businessFields: fields.businessFields?.filter((field) => BUSINESS_FIELDS.has(field)),
     identityType,
     rule,
     outcome,

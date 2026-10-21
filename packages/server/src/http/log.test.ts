@@ -283,6 +283,23 @@ group('logProblem', () => {
     expect(lines()[0]).not.toHaveProperty('cause')
   })
 
+  it('writes the business fields an invoice left out only by their names, as a warning (#543)', () => {
+    logProblem('invoice_business_dropped', {
+      groupId: 'job',
+      statementId: 'st1',
+      // A value cast to a name is never written.
+      businessFields: ['abn', 'bank', 'json', 'Sam Cleans' as 'abn'],
+    })
+    expect(lines()[0]).toEqual({
+      fn: 'unknown',
+      event: 'invoice_business_dropped',
+      groupId: 'job',
+      statementId: 'st1',
+      businessFields: ['abn', 'bank', 'json'],
+    })
+    expect(levels()).toEqual(['warn'])
+  })
+
   it('names an error that is undefined', () => {
     logProblem('draft_failed', { groupId: 'g1', error: undefined })
     expect(lines()[0]?.cause).toBe('undefined')

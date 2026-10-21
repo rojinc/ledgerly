@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   acmeJoins,
   archiveJob,
+  BUSINESS,
   beforeStaging,
   commitNow,
   expectHiddenFromDan,
@@ -16,6 +17,7 @@ import {
   op,
   payment,
   rowsOf,
+  samProfile,
   shift,
   snapshotClosing,
   statement,
@@ -43,9 +45,9 @@ const october = () =>
 
 // September's final invoice says Acme owes $50.00, but no locked share backs that up, so
 // finalizing October's s1 fails its check.
-const failingCheck = () =>
-  fakes(
-    rowsOf(shift('s1', '2026-10-02', 240), {
+const failingCheck = (extra: Parameters<typeof fakes>[0] = {}) =>
+  fakes({
+    ...rowsOf(shift('s1', '2026-10-02', 240), {
       statements: [
         statement('st-sep', {
           periodStart: '2026-09-01',
@@ -59,7 +61,8 @@ const failingCheck = () =>
         statement('st1'),
       ],
     }),
-  )
+    ...extra,
+  })
 
 // Acme's shares in `part` name acme-old instead: a merge hasn't moved them yet.
 const asOld = (part: ReturnType<typeof shift>) => ({
@@ -162,6 +165,69 @@ describe('POST /statements/{id}/finalize', () => {
       },
     ])
     expect(services.sent).toEqual([])
+  })
+
+  it('leaves out the business details today’s rules refuse, and says which once it’s stored (#543)', async () => {
+    const warnings: string[] = []
+    vi.spyOn(console, 'warn').mockImplementation((line: string) => {
+      warnings.push(line)
+    })
+    const odd = {
+      ...BUSINESS,
+      abn: 'not-an-abn',
+      bank: { ...BUSINESS.bank, bsb: '12' },
+      phone: null,
+    }
+    const services = fakes({ ...october(), profiles: [samProfile(JSON.stringify(odd))] })
+    const final = await finalize(services)
+    expect(final.status).toBe('final')
+    const snapshot = JSON.parse(final.snapshotJson) as StatementSnapshot
+    expect(snapshot.issuer?.business).toEqual({
+      businessName: 'Sam Cleans',
+      email: 'sam@example.com',
+    })
+    expect(warnings.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({
+        event: 'invoice_business_dropped',
+        groupId: 'job',
+        statementId: 'st1',
+        businessFields: ['abn', 'phone', 'bank'],
+      }),
+    ])
+    // Field names only: never a value, the ones left out included.
+    expect(warnings.join()).not.toMatch(/not-an-abn|Sam Lee|062000/)
+    expect(errors).toEqual([])
+  })
+
+  it.each([
+    ['doesn’t parse', '{'],
+    ['is a list', '["Sam Cleans"]'],
+    ['is text', '"Sam Cleans"'],
+    ['is null', 'null'],
+  ])('names the JSON when the stored details %s (#543)', async (_case, businessJson) => {
+    const warnings: string[] = []
+    vi.spyOn(console, 'warn').mockImplementation((line: string) => {
+      warnings.push(line)
+    })
+    const final = await finalize(fakes({ ...october(), profiles: [samProfile(businessJson)] }))
+    expect((JSON.parse(final.snapshotJson) as StatementSnapshot).issuer?.business).toEqual({})
+    expect(warnings.map((line) => JSON.parse(line).businessFields)).toEqual([['json']])
+  })
+
+  it('says nothing about business details when they all read, or there are none (#543)', async () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    await finalize(fakes(october()))
+    await finalize(fakes({ ...october(), profiles: [samProfile(null)] }))
+    await finalize(fakes({ ...october(), profiles: [samProfile('')] }))
+    expect(warnings).not.toHaveBeenCalled()
+  })
+
+  it('says nothing about business details when its check fails and it goes back to draft (#543)', async () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const services = failingCheck({ profiles: [samProfile('{')] })
+    const response = await failure(services, 'POST', '/statements/st1/finalize', { send: false })
+    expect(response.code).toBe('INVARIANT_VIOLATION')
+    expect(warnings).not.toHaveBeenCalled()
   })
 
   it('stages the group row with the finalizing status, for the ledger (ledger.md#concurrency)', async () => {
@@ -569,7 +635,9 @@ describe('POST /statements/{id}/finalize', () => {
   )
 
   it('checks the issuer again at step 6: CONFLICT, finalizing and never issued (#519)', async () => {
-    const services = fakes(october())
+    // With details a rule refuses: nothing is stored, so nothing is said about them (#543).
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const services = fakes({ ...october(), profiles: [samProfile('{')] })
     // Their deletion lands after step 2 numbered it, before step 4 locks.
     beforeStaging(services.db, [op('persons', 'sam', { deletedAt: DELETED_AT })], 3)
     expect(
@@ -581,6 +649,7 @@ describe('POST /statements/{id}/finalize', () => {
       issuedOn: null,
       pdfFileId: null,
     })
+    expect(warnings).not.toHaveBeenCalled()
   })
 
   it.each([
@@ -589,13 +658,16 @@ describe('POST /statements/{id}/finalize', () => {
   ])(
     'fails the commit when their deletion lands after %s stages, before it commits (#519)',
     async (_, text, left) => {
-      const services = fakes(october())
+      const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {})
+      const services = fakes({ ...october(), profiles: [samProfile('{')] })
       // Its guard write on Sam's person row: a deletion committing first fails this commit.
       beforeCommitOf(services, text, [op('persons', 'sam', { deletedAt: DELETED_AT })])
       expect(
         await failure(services, 'POST', '/statements/st1/finalize', { send: false }),
       ).toMatchObject({ status: 409, code: 'CONFLICT' })
       expect(stored(services)).toMatchObject({ status: 'finalizing', ...left })
+      // A step 6 that doesn't commit says nothing about the business details (#543).
+      expect(warnings).not.toHaveBeenCalled()
     },
   )
 
