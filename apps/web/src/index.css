@@ -19,6 +19,11 @@ body {
   @apply bg-background text-foreground antialiased;
 }
 
+/* A page's h1 takes focus only to be read out (#539): it's no control, so no ring. */
+h1[tabindex="-1"]:focus {
+  outline: none;
+}
+
 /*
  * A shadow at each edge of a sideways-scrolling region where more is hidden (#502). Each shadow
  * stays at its edge, under a cover that scrolls with the content, so the cover hides it at the
