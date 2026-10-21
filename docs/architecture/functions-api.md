@@ -252,7 +252,7 @@ Every 60 minutes (`interval: 60`), sent as `POST /` with the `schedule` trigger:
 | --- | --- |
 | `VALIDATION_FAILED` | The body isn't `{ confirm: 'DELETE' }` |
 | `NOT_FOUND` | No person names the caller, as for identity's routes: "Set up your account first." |
-| `FORBIDDEN`, `details: { reason: 'reauth' }` | The caller's session (from the JWT's session ID, loaded with `users.listSessions`) was created more than `REAUTH_WINDOW_MINUTES` (10) ago, or can't be found. The app asks them to sign in again and retries. |
+| `FORBIDDEN`, `details: { reason: 'reauth' }` | The caller's session (from the JWT's session ID, loaded with `users.listSessions`) was created more than `REAUTH_WINDOW_MINUTES` (10) ago, or can't be found. The app signs them out and brings them back to the delete screen through the sign-in page, where they confirm again. |
 | `FORBIDDEN`, `details: { reason: 'recent_password_change' }` | The user's `passwordUpdate` is less than `RECENT_PASSWORD_CHANGE_HOURS` (24) old. The app says when they can try again. |
 | `CONFLICT` | A timer they started is running in a group that isn't archived |
 | `CONFLICT` | A statement is being finalized in a group where they're the only joined admin, other than an invoice whose issuer has deleted their account: "A statement is being finalized. Finish it first." |
