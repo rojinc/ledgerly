@@ -65,6 +65,59 @@ describe('PATCH /profile', () => {
     expect(services.db.rows('profiles')[0]).not.toHaveProperty('displayName')
   })
 
+  describe("once the account's deletion has passed its point of no return", () => {
+    const setUpFirst = { status: 404, code: 'NOT_FOUND', message: 'Set up your account first.' }
+    // Deletion step 2 (identity-and-invites.md#order). The profile stays until step 5.
+    const deletion = (services: ReturnType<typeof fakes>) => () =>
+      updateRow(services.db, 'persons', 'pSam', {
+        deletedAt: NOW.toISOString(),
+        displayName: 'Former member',
+      })
+
+    it('writes no name, and nothing else, for a person already deleted', async () => {
+      const services = withProfile()
+      await deletion(services)()
+      const before = structuredClone(services.db.rows('profiles'))
+      expect(
+        await failure(services, 'PATCH', '/profile', { displayName: 'Sam', region: 'AU-VIC' }),
+      ).toEqual(setUpFirst)
+      expect(services.db.rows('persons')[0]?.displayName).toBe('Former member')
+      expect(services.db.rows('profiles')).toEqual(before)
+    })
+
+    it('changes no other field either, as from step 5 when the profile is gone', async () => {
+      const services = withProfile()
+      await deletion(services)()
+      const before = structuredClone(services.db.rows('profiles'))
+      expect(await failure(services, 'PATCH', '/profile', { region: 'AU-VIC' })).toEqual(setUpFirst)
+      expect(services.db.rows('profiles')).toEqual(before)
+    })
+
+    it('writes no name when the deletion passes it after the lookup, before staging', async () => {
+      const services = withProfile()
+      beforeStaging(
+        services.db,
+        (operations) => operations.includes('"tableId":"persons"'),
+        deletion(services),
+      )
+      expect(await failure(services, 'PATCH', '/profile', { displayName: 'Sam' })).toEqual(
+        setUpFirst,
+      )
+      expect(services.db.rows('persons')[0]?.displayName).toBe('Former member')
+    })
+
+    it('says CONFLICT, try again, when the deletion passes it after staging', async () => {
+      const services = withProfile()
+      beforeCommit(services.db, deletion(services))
+      expect(await failure(services, 'PATCH', '/profile', { displayName: 'Sam' })).toEqual({
+        status: 409,
+        code: 'CONFLICT',
+        message: TRY_AGAIN,
+      })
+      expect(services.db.rows('persons')[0]?.displayName).toBe('Former member')
+    })
+  })
+
   it('stores business details as JSON, and replaces them as a whole', async () => {
     const services = withProfile()
     const first = await patch(services, {
@@ -278,5 +331,25 @@ describe('PATCH /profile', () => {
     expect(await failure(withProfile(), 'PATCH', '/profile', {}, null)).toMatchObject({
       code: 'UNAUTHENTICATED',
     })
+  })
+
+  it('is NOT_FOUND for a profile whose person is gone, as create-group answers', async () => {
+    const services = fakes({
+      profiles: [
+        {
+          $id: 'u1',
+          personId: 'pGone',
+          timezone: 'Australia/Sydney',
+          region: 'AU-NSW',
+          currency: 'AUD',
+          summaryFrequency: 'none',
+        },
+      ],
+    })
+    expect(await failure(services, 'PATCH', '/profile', { region: 'AU-VIC' })).toMatchObject({
+      status: 404,
+      code: 'NOT_FOUND',
+    })
+    expect(services.db.rows('profiles')[0]?.region).toBe('AU-NSW')
   })
 })

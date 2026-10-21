@@ -65,14 +65,14 @@ F-06 and F-72 ([#50](https://github.com/rojinc/ledgerly/issues/50)). The export 
 | File | One row per | Columns |
 | --- | --- | --- |
 | A group's CSV, for a date range | share; a transaction with no shares gets one row with empty person columns | `date,status,kind,description,category,currency,total,person,given,received,net` |
-| `my-records.csv` | the user's own share, across their groups | `group,groupType,date,kind,description,category,currency,total,given,received,net` |
+| `my-records.csv` | the user's own share, across their groups; `group` names a pair by its other member, as the app does ([#145](https://github.com/rojinc/ledgerly/issues/145)) | `group,groupType,date,kind,description,category,currency,total,given,received,net` |
 | `profile.csv` | profile field | `field,value`: the profile, business details, and the account's own email and phone |
 
 Rules, in `packages/core/src/export/`:
 
 - **Money** is a decimal string made from integer cents with the currency's digits (`-12.30`, `0.05`; JPY `1234`), never through a float. **Dates** are the stored `YYYY-MM-DD`. `person` is the member's display name in that group.
 - **RFC 4180:** CRLF line ends, a UTF-8 byte order mark, quotes doubled, and quotes around any field holding `,`, `"`, CR or LF.
-- **Spreadsheet formulas:** a text cell starting with `=`, `+`, `-`, `@` (or their full-width forms `＝＋－＠`), after any leading whitespace, or with a tab, CR or LF, gets a leading `'`, so opening the file never runs a formula someone typed. Names, descriptions, categories and profile values are all text cells; money cells never get one.
+- **Spreadsheet formulas:** a text cell starting with `=`, `+`, `-`, `@` (or their full-width forms `＝＋－＠`), after any leading whitespace, or starting with a tab, CR or LF, gets a leading `'`, so opening the file never runs a formula someone typed. Names, descriptions, categories and profile values are all text cells; money cells never get one.
 - Any member can export a group they can read, viewers and people who moved out included. Nothing is written or uploaded.
 - **A group's records are one consistent read:** the group's `rev` is read before and after the pages, and everything is read again if it changed (ledger.md#concurrency) or a page's cursor row was deleted mid-read (`general_cursor_not_found`). That's 3 reads in all, whatever the cause, before the export fails, as `GET /balances` does. `my-records.csv` reads again only for a lost cursor, within the same 3.
 - **What a spreadsheet does on opening** is outside the file: Excel may drop the leading zeros of a BSB or account number, show an ABN in scientific notation, read a text like `1/2` as a date, or read `12.30` wrongly where the decimal separator is a comma. The values in the file are exact; CSV has no way to mark a column as text.

@@ -1,13 +1,15 @@
 import { nextSummaryAt } from '@ledgerly/core/dates/summary-period'
-import type { Profiles } from '@ledgerly/core/generated/rows'
+import type { Persons, Profiles } from '@ledgerly/core/generated/rows'
 import { updateProfileBodySchema } from '@ledgerly/core/schemas/identity'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { type Write, withTransaction } from '@ledgerly/server/appwrite/transaction'
 import { AppError } from '@ledgerly/server/http/app-error'
 import { parseBody } from '../parse-body'
-import { conflictAsTryAgain, getRowOrNull, SET_UP_FIRST, tryAgain } from '../rows'
+import { conflictAsTryAgain, getRowOrNull, guardPerson, SET_UP_FIRST, tryAgain } from '../rows'
 import type { Services } from '../services'
+
+const setUpFirst = () => new AppError('NOT_FOUND', SET_UP_FIRST)
 
 /** `identity PATCH /profile`: changes only the fields given, and returns the profile row. */
 export async function updateProfile(
@@ -17,7 +19,10 @@ export async function updateProfile(
 ): Promise<Profiles> {
   const { displayName, business, hoursCap, ...columns } = parseBody(updateProfileBodySchema, body)
   const profile = await getRowOrNull<Profiles>(db, TABLES.profiles, userId)
-  if (!profile) throw new AppError('NOT_FOUND', SET_UP_FIRST)
+  const person = profile && (await getRowOrNull<Persons>(db, TABLES.persons, profile.personId))
+  // A person being deleted is no person (identity-and-invites.md#order): the profile outlives
+  // step 2, and is gone from step 5, so the answer is the same the whole way through.
+  if (!profile || !person || person.deletedAt) throw setUpFirst()
   const data: Record<string, unknown> = { ...columns }
   if (business !== undefined) data.businessJson = JSON.stringify(business)
   // F-82 (#53): the three columns are set together, or all emptied by `null`. The stored limit
@@ -58,6 +63,10 @@ export async function updateProfile(
     await conflictAsTryAgain(() =>
       withTransaction(db, async (tx) => {
         await tx.write(...writes)
+        // A deleted person's row keeps "Former member" for good (identity-and-invites.md#order),
+        // so a name is never written after step 2: one that passed it since the read above is
+        // refused here, and one that passes it later fails this commit.
+        if (displayName !== undefined) await guardPerson(tx, db, profile.personId, setUpFirst)
         if (!changesProfile) return
         // Stage, then check (transaction.ts): nextSummaryAt above follows the frequency and
         // timezone read before staging, which another PATCH may have changed since. Read the
