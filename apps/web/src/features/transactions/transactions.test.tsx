@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import {
   act,
   cleanup,
+  createEvent,
   fireEvent,
   render,
   renderHook,
@@ -12,7 +13,9 @@ import {
 } from '@testing-library/react'
 import { Query } from 'appwrite'
 import type { ReactNode } from 'react'
-import { createMemoryRouter, RouterProvider } from 'react-router'
+import { createMemoryRouter } from 'react-router'
+// The app's, from main.tsx, whose navigations can flushSync.
+import { RouterProvider } from 'react-router/dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { callFunction, type Result } from '../../lib/api'
 import { tablesDB } from '../../lib/appwrite'
@@ -1547,6 +1550,32 @@ describe('HistoryPage', () => {
         ]),
       )
     })
+  })
+
+  it('keeps a kind picked just before a search, before the page has rendered it', async () => {
+    mockGroups(acme)
+    mockRows()
+    const { router } = renderAt('/transactions?groupId=g1')
+    const kind = await screen.findByLabelText('Kind')
+    // Outside act(), as a person's events are: the router renders each change in a transition,
+    // so the search comes before the page has rendered the kind.
+    kind.dispatchEvent(createEvent.change(kind, { target: { value: 'payment' } }))
+    const search = screen.getByLabelText('Search descriptions')
+    search.dispatchEvent(createEvent.change(search, { target: { value: 'rent' } }))
+    await waitFor(() => expect(router.state.location.search).toContain('q=rent'))
+    expect(new URLSearchParams(router.state.location.search).get('kind')).toBe('payment')
+  })
+
+  it('keeps a group picked just before a kind, before the page has rendered it', async () => {
+    mockGroups(acme)
+    mockRows()
+    const { router } = renderAt('/transactions')
+    const group = await screen.findByLabelText('Group')
+    group.dispatchEvent(createEvent.change(group, { target: { value: 'g1' } }))
+    const kind = screen.getByLabelText('Kind')
+    kind.dispatchEvent(createEvent.change(kind, { target: { value: 'payment' } }))
+    await waitFor(() => expect(router.state.location.search).toContain('kind=payment'))
+    expect(new URLSearchParams(router.state.location.search).get('groupId')).toBe('g1')
   })
 
   it('offers Add to those who keep the records, but not to a viewer or in an archived group', async () => {

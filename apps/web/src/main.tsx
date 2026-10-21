@@ -1,7 +1,9 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createBrowserRouter, RouterProvider } from 'react-router'
+import { createBrowserRouter } from 'react-router'
+// react-router/dom's, so a navigation's `flushSync` works (History's filters).
+import { RouterProvider } from 'react-router/dom'
 import { followPageHeading } from './lib/page-heading'
 import { routes } from './routes'
 import './index.css'
