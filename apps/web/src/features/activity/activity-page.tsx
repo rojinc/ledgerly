@@ -1,5 +1,5 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
-import type { ReactNode } from 'react'
+import { type ReactNode, useId } from 'react'
 import { Link, useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
 import { SelectField } from '../../ui/field'
@@ -85,6 +85,8 @@ export function ActivityPage() {
 }
 
 function Feed({ group }: { group: Groups }) {
+  // Each "View transaction" is described by its entry (#539).
+  const entryId = useId()
   const activity = useActivity(group.$id)
   // Names only from this group's member rows: never persons, identities or the Teams API.
   const members = useMembers(group.$id)
@@ -123,7 +125,7 @@ function Feed({ group }: { group: Groups }) {
       <ul className="divide-y divide-border rounded-md border border-border">
         {entries.map((entry) => (
           <li key={entry.$id} className="flex flex-col gap-1 px-3 py-2">
-            <p className="break-words">
+            <p id={`${entryId}-${entry.$id}`} className="break-words">
               {/* A member row names no one (#50): its person's current name comes first. */}
               {entry.subjectPersonId
                 ? `${names.get(entry.subjectPersonId) ?? 'A former member'} ${entry.summary}`
@@ -139,6 +141,7 @@ function Feed({ group }: { group: Groups }) {
             {entry.transactionId && (
               <Link
                 to={`/transactions/${entry.transactionId}`}
+                aria-describedby={`${entryId}-${entry.$id}`}
                 className="self-start text-sm underline underline-offset-4"
               >
                 View transaction

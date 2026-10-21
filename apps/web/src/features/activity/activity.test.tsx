@@ -178,6 +178,9 @@ describe('ActivityPage', () => {
     const items = await screen.findAllByRole('listitem')
     const link = within(items[0] as HTMLElement).getByRole('link', { name: 'View transaction' })
     expect(link.getAttribute('href')).toBe('/transactions/t1')
+    // Every entry's link says "View transaction": its entry describes it (#539).
+    const described = document.getElementById(link.getAttribute('aria-describedby') ?? '')
+    expect(described).toBe((items[0] as HTMLElement).querySelector('p'))
     expect(within(items[1] as HTMLElement).queryByRole('link')).toBeNull()
   })
 

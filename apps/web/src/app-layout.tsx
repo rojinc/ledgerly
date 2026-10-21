@@ -59,13 +59,22 @@ export function AppLayout() {
   )
   return (
     <div className={cn('flex min-h-dvh flex-col', wide && 'pl-56')}>
+      {/* The first Tab stop, past the menu to the page, shown only while focused: the browser
+          focuses <main>, which takes focus from a link (#539). */}
+      <a
+        href="#main"
+        className="sr-only rounded-md bg-background text-sm font-medium outline-none focus:not-sr-only focus:fixed focus:px-3 focus:py-2 focus:top-2 focus:left-2 focus:z-50 focus:ring-2 focus:ring-ring"
+      >
+        Skip to content
+      </a>
       {wide ? (
-        // Scrolls on a short screen (a phone on its side), so Log out can always be reached.
-        <div className="fixed inset-y-0 left-0 flex w-56 flex-col gap-4 overflow-y-auto border-r border-border bg-background px-3 py-4">
+        // Scrolls on a short screen (a phone on its side), so Log out can always be reached. A
+        // header, as on a phone, so the brand is inside a landmark (#539).
+        <header className="fixed inset-y-0 left-0 flex w-56 flex-col gap-4 overflow-y-auto border-r border-border bg-background px-3 py-4">
           <span className="px-3 font-semibold">Ledgerly</span>
           <NavList className="flex-1" />
           {logOutButton}
-        </div>
+        </header>
       ) : (
         <PhoneMenu logOut={logOutButton} />
       )}
@@ -75,7 +84,11 @@ export function AppLayout() {
         </Alert>
       )}
       <VerifyEmailBanner />
-      <main className="mx-auto w-full max-w-3xl flex-1 px-4 py-6">
+      <main
+        id="main"
+        tabIndex={-1}
+        className="mx-auto w-full max-w-3xl flex-1 px-4 py-6 outline-none"
+      >
         <Outlet />
       </main>
     </div>

@@ -3,7 +3,7 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import type { Groups, Schedules } from '@ledgerly/core/generated/rows'
 import { scheduleEnd } from '@ledgerly/core/recurrence/schedule-end'
 import type { ScheduleInput } from '@ledgerly/core/schemas/scheduler'
-import { type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useEffect, useId, useRef, useState } from 'react'
 import { flushSync } from 'react-dom'
 import { Link, useLocation, useNavigate, useSearchParams } from 'react-router'
 import { Button } from '../../ui/button'
@@ -229,6 +229,8 @@ function ScheduleRow({
   const ended = hasEnded(schedule, today)
   const { pausedFrom } = schedule
   const [open, setOpen] = useState<'end' | 'pause'>()
+  // Every row has the same buttons: each is described by its schedule's name (#539).
+  const nameId = useId()
   const resume = useResumeSchedule(schedule)
   const save = useSaveSchedule(false)
   const [note, setNote] = useState('')
@@ -250,7 +252,7 @@ function ScheduleRow({
     <li className="flex flex-col gap-2 px-4 py-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="font-medium break-words">
+          <p id={nameId} className="font-medium break-words">
             {mayChange && !ended ? (
               <Link
                 to={`/schedules/${schedule.$id}`}
@@ -276,6 +278,7 @@ function ScheduleRow({
               <Button
                 variant="outline"
                 size="sm"
+                aria-describedby={nameId}
                 aria-disabled={save.isPending}
                 onClick={() => {
                   if (save.isPending) return
@@ -301,6 +304,7 @@ function ScheduleRow({
                     ref={resumeButton}
                     variant="outline"
                     size="sm"
+                    aria-describedby={nameId}
                     aria-disabled={resume.isPending}
                     onClick={() => {
                       if (resume.isPending) return
@@ -325,6 +329,7 @@ function ScheduleRow({
                       ref={pauseButton}
                       variant="outline"
                       size="sm"
+                      aria-describedby={nameId}
                       onClick={() => {
                         setNote('')
                         setOpen('pause')
@@ -338,6 +343,7 @@ function ScheduleRow({
                   ref={endButton}
                   variant="outline"
                   size="sm"
+                  aria-describedby={nameId}
                   onClick={() => {
                     // A resume on its way finishes first, so what it says isn't lost.
                     if (resume.isPending) return
