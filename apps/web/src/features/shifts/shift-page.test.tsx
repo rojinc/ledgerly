@@ -646,10 +646,11 @@ describe('ShiftPage', () => {
       tableId: 'transactions',
       rowId: 't1',
     })
+    // Mounted from the start, so the announcement is read out (#539), and empty until a save.
+    const statuses = screen.getAllByRole('status')
+    expect(statuses.map((node) => node.textContent)).not.toContain('Saved.')
 
     type('Description', 'Late shift')
-    // Mounted from the start, so the announcement is read out (#539).
-    const statuses = screen.getAllByRole('status')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(call).toHaveBeenCalledWith('ledger', 'PATCH', '/transactions/t1', {

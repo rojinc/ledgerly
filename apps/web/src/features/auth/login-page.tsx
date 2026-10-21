@@ -132,6 +132,8 @@ function PasswordForm({ onSignedIn }: { onSignedIn: () => void }) {
 
 function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
   const [email, setEmail] = useState('')
+  // Back from the code step, whose form had focus: focus goes to the email (#539).
+  const [back, setBack] = useState(false)
   const sendCode = useMutation({
     mutationFn: (address: string) =>
       account.createEmailToken({ userId: ID.unique(), email: address }),
@@ -158,6 +160,7 @@ function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
         <div className="flex flex-col gap-2">
           <Label htmlFor="code-email">Email</Label>
           <Input
+            ref={back ? focusOnMount : undefined}
             id="code-email"
             type="email"
             autoComplete="email"
@@ -205,7 +208,13 @@ function EmailCodeForm({ onSignedIn }: { onSignedIn: () => void }) {
       <Button type="submit" aria-disabled={verifyCode.isPending}>
         {verifyCode.isPending ? 'Checking…' : 'Log in'}
       </Button>
-      <Button variant="link" onClick={() => sendCode.reset()}>
+      <Button
+        variant="link"
+        onClick={() => {
+          setBack(true)
+          sendCode.reset()
+        }}
+      >
         Use a different email
       </Button>
     </form>

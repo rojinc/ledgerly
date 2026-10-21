@@ -122,6 +122,17 @@ describe('LoginPage', () => {
     expect(document.activeElement).toBe(code)
     const sent = document.getElementById(code.getAttribute('aria-describedby') ?? '')
     expect(sent?.textContent).toBe('We sent a 6-digit code to sam@example.com.')
+    // And back: the email form replaces the code's, so focus goes to the email.
+    fireEvent.click(screen.getByRole('button', { name: 'Use a different email' }))
+    expect(document.activeElement).toBe(screen.getByLabelText('Email'))
+  })
+
+  it('leaves focus alone on the first email form', () => {
+    renderAt('/login')
+    const toggle = screen.getByRole('button', { name: 'Email code' })
+    toggle.focus()
+    fireEvent.click(toggle)
+    expect(document.activeElement).toBe(toggle)
   })
 
   it('shows a failure to sign out the others, and tries again', async () => {
