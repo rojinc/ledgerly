@@ -3,7 +3,7 @@ import { localToday } from '@ledgerly/core/dates/time-zone'
 import { test } from '@playwright/test'
 import { expectPlannedShifts } from './calendar'
 import { runId, testEmail } from './dev-project'
-import { addEmployer, archiveEmployer } from './employer'
+import { addEmployer, archiveEmployer, expectEmployerSettings } from './employer'
 import { addWeeklyShift } from './schedule'
 import { logIn, setupUser } from './users'
 
@@ -22,7 +22,9 @@ test('a skipped date has no planned shift, and the weeks either side still do', 
   test.slow()
   await logIn(page, setupUser('dee'))
   await page.goto('/groups/new-employer')
-  groupId = await addEmployer(page, `Dee Co ${runId()}`, testEmail('dee-billing'))
+  const employer = `Dee Co ${runId()}`
+  groupId = await addEmployer(page, employer, testEmail('dee-billing'))
+  await expectEmployerSettings(page, employer)
   const today = localToday(ZONE, new Date())
   const skipped = addDays(today, 14)
   await addWeeklyShift(page, groupId, today, addDays(today, 28), [skipped])
