@@ -54,6 +54,31 @@ export function TextField({
   )
 }
 
+/** For text that may run to more than one line, such as a note: Enter starts a new line. */
+export function TextareaField({
+  label,
+  hint,
+  error,
+  className,
+  ...props
+}: Omit<FieldProps, 'children'> & ComponentProps<'textarea'>) {
+  return (
+    <Field id={props.id} label={label} hint={hint} error={error}>
+      {(aria) => (
+        <textarea
+          rows={3}
+          className={cn(
+            'w-full rounded-md border border-input bg-background px-3 py-2 text-base outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 aria-invalid:border-destructive',
+            className,
+          )}
+          {...props}
+          {...aria}
+        />
+      )}
+    </Field>
+  )
+}
+
 export function SelectField({
   label,
   hint,

@@ -11,7 +11,7 @@ import { useNavigate } from 'react-router'
 import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
-import { SelectField, TextField } from '../../ui/field'
+import { SelectField, TextareaField, TextField } from '../../ui/field'
 import {
   defaultTicks,
   type HouseExpenseValues,
@@ -488,7 +488,12 @@ export function HouseExpenseForm({
         members={members}
         currency={group.currency}
       />
-      <TextField id="note" label="Note (optional)" error={errors.note} {...form.register('note')} />
+      <TextareaField
+        id="note"
+        label="Note (optional)"
+        error={errors.note}
+        {...form.register('note')}
+      />
       <div className="flex flex-wrap gap-3">
         <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : edit ? 'Save' : 'Add'}

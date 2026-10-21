@@ -141,27 +141,27 @@ export function HouseHistory({
             const status = statusText(row)
             return (
               <li key={row.$id}>
+                {/* The details run under the amount too, so a long amount doesn't squeeze them at
+                    375 px (#502). The DOM order is unchanged, so the link's name is too. */}
                 <Link
                   to={`/transactions/${row.$id}`}
-                  className="flex items-start justify-between gap-3 px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
+                  className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                 >
-                  <span className="min-w-0">
-                    <span
-                      className={`block font-medium break-words ${row.status === 'void' ? 'line-through' : ''}`}
-                    >
-                      {row.description || KIND_LABEL[row.kind]}
-                    </span>
-                    <span className="block text-sm break-words text-muted-foreground">
-                      {[
-                        formatDate(row.date),
-                        paidBy.length > 0 && `Paid by ${list.format(paidBy)}`,
-                        status,
-                      ]
-                        .filter(Boolean)
-                        .join(' · ')}
-                    </span>
+                  <span
+                    className={`font-medium break-words ${row.status === 'void' ? 'line-through' : ''}`}
+                  >
+                    {row.description || KIND_LABEL[row.kind]}
                   </span>
-                  <span className="shrink-0 tabular-nums">
+                  <span className="col-span-2 text-sm break-words text-muted-foreground">
+                    {[
+                      formatDate(row.date),
+                      paidBy.length > 0 && `Paid by ${list.format(paidBy)}`,
+                      status,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')}
+                  </span>
+                  <span className="col-start-2 row-start-1 tabular-nums">
                     {formatMoney(row.totalCents, group.currency)}
                   </span>
                 </Link>

@@ -409,20 +409,24 @@ describe('NewTransactionPage, house expense', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe('/transactions/x9'))
   })
 
-  it('sends another payer, and the people ticked in personId order', async () => {
+  it('sends another payer, the people ticked in personId order, and a two-line note', async () => {
     call.mockResolvedValue(ok({ transaction: row('x9'), shares: [] }))
     await open()
     fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '40' } })
     fireEvent.change(screen.getByLabelText('Paid by'), { target: { value: 'bob' } })
     fireEvent.click(screen.getByLabelText('Bob'))
-    fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: 'Market' } })
+    // A textarea, so Enter starts a new line (#502).
+    expect(screen.getByLabelText('Note (optional)').tagName).toBe('TEXTAREA')
+    fireEvent.change(screen.getByLabelText('Note (optional)'), {
+      target: { value: 'Market\nstall 4' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     const body = call.mock.calls[0]?.[3] as Record<string, unknown>
     expect(body).toMatchObject({
       payers: [{ personId: 'bob', cents: 4000 }],
       split: { mode: 'equal', personIds: ['alice', 'cara'] },
-      note: 'Market',
+      note: 'Market\nstall 4',
     })
     expect(body).not.toHaveProperty('category')
   })
@@ -1135,7 +1139,8 @@ describe('NewTransactionPage, personal income and expense (#402)', () => {
     fireEvent.change(screen.getByLabelText('Amount (AUD)'), { target: { value: '19.99' } })
     fireEvent.change(screen.getByLabelText('Description'), { target: { value: ' Refund ' } })
     fireEvent.change(screen.getByLabelText('Category'), { target: { value: 'other' } })
-    fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: 'ATO' } })
+    expect(screen.getByLabelText('Note (optional)').tagName).toBe('TEXTAREA')
+    fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: 'ATO\nref 7' } })
     fireEvent.click(screen.getByRole('button', { name: 'Add' }))
     await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
     expect(call.mock.calls[0]?.slice(0, 3)).toEqual(['ledger', 'POST', '/transactions'])
@@ -1146,7 +1151,7 @@ describe('NewTransactionPage, personal income and expense (#402)', () => {
       description: 'Refund',
       totalCents: 1999,
       category: 'other',
-      note: 'ATO',
+      note: 'ATO\nref 7',
       ...parts,
     })
     await waitFor(() => expect(router.state.location.pathname).toBe('/transactions/x5'))
@@ -1169,6 +1174,8 @@ describe('HistoryPage, the personal group (#402)', () => {
       '/transactions/t2',
       '/transactions/t1',
     ])
+    // The DOM order stays description, details, amount, so a link's name is unchanged (#502).
+    expect(links[1]?.textContent).toMatch(/^Groceries2026-10-17 · Expense · PostedA?\$40\.00$/)
     expect(within(list).getByText('2026-10-18 · Income · Posted')).toBeTruthy()
     expect(within(list).getByText('2026-10-17 · Expense · Posted')).toBeTruthy()
     expect(listCalls().find((params) => params.tableId === 'transactions')?.queries).toContain(

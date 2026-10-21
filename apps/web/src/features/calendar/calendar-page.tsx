@@ -165,13 +165,16 @@ function MonthView({
     <>
       <ul aria-label="Groups" className="flex flex-wrap gap-x-4 gap-y-1 text-sm">
         {groups.data.map((group) => (
-          <li key={group.$id} className="flex items-center gap-1.5">
+          // A long name wraps rather than widening the page at 375 px (#502).
+          <li key={group.$id} className="flex min-w-0 items-center gap-1.5">
             <span
               aria-hidden="true"
-              className="size-3 rounded-sm"
+              className="size-3 shrink-0 rounded-sm"
               style={{ backgroundColor: colours.get(group.$id) }}
             />
-            <GroupName group={group} />
+            <span className="min-w-0 break-words">
+              <GroupName group={group} />
+            </span>
           </li>
         ))}
       </ul>

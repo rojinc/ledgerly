@@ -17,3 +17,21 @@
 body {
   @apply bg-background text-foreground antialiased;
 }
+
+/*
+ * A shadow at each edge of a sideways-scrolling region where more is hidden (#502). Each shadow
+ * stays at its edge, under a cover that scrolls with the content, so the cover hides it at the
+ * start and the end, and whenever everything fits. The covers are the page's background, so the
+ * region must sit on it.
+ */
+@utility scroll-shadow {
+  background:
+    linear-gradient(to right, var(--color-background) 30%, transparent) left / 2.5rem 100% no-repeat
+    local,
+    linear-gradient(to left, var(--color-background) 30%, transparent) right / 2.5rem 100% no-repeat
+    local,
+    radial-gradient(farthest-side at 0 50%, oklch(0 0 0 / 0.15), transparent) left / 0.75rem 100%
+    no-repeat scroll,
+    radial-gradient(farthest-side at 100% 50%, oklch(0 0 0 / 0.15), transparent) right / 0.75rem
+    100% no-repeat scroll;
+}
