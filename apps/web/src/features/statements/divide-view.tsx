@@ -71,7 +71,7 @@ export function DivideView({
             can scroll it too (WCAG 2.1.1). */}
         <section
           aria-label="Balances table"
-          className="overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="relative overflow-x-auto outline-none focus-visible:ring-2 focus-visible:ring-ring"
           // biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must be reachable by keyboard
           tabIndex={0}
         >

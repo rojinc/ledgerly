@@ -282,7 +282,7 @@ function GroupSummary({ group }: { group: Groups }) {
         <h2 id="balance-heading" className="text-sm text-muted-foreground">
           Balance with {group.name}
         </h2>
-        <p className="text-xl font-semibold" aria-live="polite">
+        <p className="text-xl font-semibold break-words" aria-live="polite">
           {balance}
         </p>
       </div>
@@ -375,7 +375,7 @@ function History({
                     >
                       {row.description}
                     </span>
-                    <span className="block truncate text-sm text-muted-foreground">
+                    <span className="block text-sm text-muted-foreground">
                       {row.date} · {KIND_LABEL[row.kind]} · {STATUS_LABEL[row.status]}
                     </span>
                     {/* A line of its own, so the status still fits at 375 px. */}

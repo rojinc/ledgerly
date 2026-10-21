@@ -123,7 +123,7 @@ function GroupRow({ group }: { group: Groups }) {
   return (
     <li className="flex items-center justify-between gap-3 px-4 py-3">
       <div className="min-w-0">
-        <p className="truncate font-medium">
+        <p className="font-medium break-words">
           {to ? (
             <Link to={to} className="underline-offset-4 hover:underline">
               {name}
