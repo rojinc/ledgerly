@@ -180,9 +180,28 @@ async function neverAttached(run: Run, from: number): Promise<boolean> {
       run.claimed.add(file.$id)
       if (await deleteUnlisted(run, { $id: file.$id, transactionIds: null })) gone.add(file.$id)
     }
-    if (page.length < PAGE) break
+    // A pass stopped mid-page queries nothing more, a tie check included.
+    if (stopped || page.length < PAGE) break
     // A deleted file can't be a cursor. If this page is all gone, the same cursor finds the next.
-    after = page.findLast((file) => !gone.has(file.$id))?.$id ?? after
+    const cursor = page.findLast((file) => !gone.has(file.$id))
+    if (!cursor) continue
+    after = cursor.$id
+    // Appwrite's cursor may not follow $id among files at one millisecond, so a file tied with
+    // it could be left off the next page (#382). The files at its time, listed with no cursor,
+    // show a tie: it holds `through` before it, and the next run lists the tie from the top.
+    let tied: BucketFile[]
+    try {
+      const at = Date.parse(cursor.$createdAt)
+      tied = await files.listFiles({ from: new Date(at - 1).toISOString(), to: cursor.$createdAt })
+    } catch (error) {
+      run.fail(error)
+      leave(last)
+      stopped = true
+      break
+    }
+    // A whole page at one millisecond would hold `through` there for good: keep the cursor.
+    if (tied.length >= PAGE) logProblem('receipt_cleanup_tied', { counts: run.counts })
+    else if (tied.some((file) => file.$id !== cursor.$id)) leave(cursor)
   }
   const next = open === undefined ? to : open - 1
   if (next > from) {

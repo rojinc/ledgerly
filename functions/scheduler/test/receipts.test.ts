@@ -115,7 +115,7 @@ const step5 = (seed: Parameters<typeof fakes>[0] = {}, through = ago(hours(72)))
   fakes({ checkpoints: [checkpointAt(through)], ...seed })
 const through = (services: Fakes) =>
   (services.db.rows('checkpoints')[0] as { through?: string } | undefined)?.through
-const justBefore = (time: string) => new Date(Date.parse(time) - 1).toISOString()
+const justBefore = (time: string, ms = 1) => new Date(Date.parse(time) - ms).toISOString()
 
 describe('step 5: before the backfill', () => {
   it('does nothing until the backfill has made its checkpoint', async () => {
@@ -200,10 +200,15 @@ describe('step 5: never-attached files', () => {
     }
     services.files.upload('zTarget', ago(hours(30)))
     services.outOfTime = () => !services.files.stored.has('zTarget')
+    const listFiles = vi.spyOn(services.files, 'listFiles')
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 0 })
     expect(services.files.stored.has('zTarget')).toBe(false)
     // The next run starts just before the first upload this one didn't reach.
     expect(through(services)).toBe(justBefore(ago(hours(25))))
+    // Stopped mid-page, it queries nothing more: no tie check at its full page's end (#382).
+    expect(listFiles).toHaveBeenCalledTimes(1)
+    expect(logged(warns).map((line) => line.event)).toEqual(['receipt_cleanup_behind'])
   })
 
   it('keeps the checkpoint before a file it couldn’t make a row for, and tries it again', async () => {
@@ -287,15 +292,160 @@ describe('step 5: never-attached files', () => {
         row(`a${String(index).padStart(3, '0')}`, { transactionIds: ['t1'] }),
       ),
     })
+    // A millisecond apart, so no page boundary falls inside a tie (#382).
     for (let index = 0; index < 150; index++) {
-      services.files.upload(`a${String(index).padStart(3, '0')}`, ago(hours(30)))
+      services.files.upload(
+        `a${String(index).padStart(3, '0')}`,
+        justBefore(ago(hours(30)), 150 - index),
+      )
     }
     services.files.upload('z1', ago(hours(30)))
     const listFiles = vi.spyOn(services.files, 'listFiles')
     expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 0 })
     expect(services.files.stored.has('z1')).toBe(false)
-    // A short page is the last.
-    expect(listFiles).toHaveBeenCalledTimes(2)
+    // Two pages, with the tie check at their boundary. A short page is the last.
+    expect(listFiles).toHaveBeenCalledTimes(3)
+    // No tie, so the checkpoint moves to the end of the window.
+    expect(through(services)).toBe(ago(hours(24)))
+  })
+})
+
+describe('step 5: a page boundary inside a tie (#382)', () => {
+  // 99 attached files, then two at T: b5, attached, ends the first page and is its cursor; z9,
+  // never attached, sorts after it by $id but was uploaded first.
+  const T = ago(hours(30))
+  function tiedAtBoundary(tieBreak: 'id' | 'upload') {
+    const attached = Array.from({ length: 99 }, (_, index) => `a${String(index).padStart(3, '0')}`)
+    const services = step5({
+      receiptFiles: [...attached, 'b5'].map((id) => row(id, { transactionIds: ['t1'] })),
+    })
+    services.files.tieBreak = tieBreak
+    services.files.upload('z9', T)
+    for (const [index, id] of attached.entries()) {
+      services.files.upload(id, justBefore(T, 99 - index))
+    }
+    services.files.upload('b5', T)
+    return services
+  }
+
+  it('holds the checkpoint before the tie, so the next run deletes a file the cursor skipped', async () => {
+    const services = tiedAtBoundary('upload')
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 0, skipped: 0, failed: 0 })
+    expect(services.files.stored.has('z9')).toBe(true)
+    expect(through(services)).toBe(justBefore(T))
+    // The next run's window starts at the tie, which its first page lists with no cursor.
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 0 })
+    expect(services.files.stored.has('z9')).toBe(false)
+  })
+
+  it('deletes it in the same run when the cursor follows $id, and still holds the checkpoint', async () => {
+    const services = tiedAtBoundary('id')
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 0 })
+    expect(through(services)).toBe(justBefore(T))
+    // Pass 1 finds nothing more at the tie (pass 2 counts z9's gone file as skipped).
+    expect(await cleanUpReceipts(services)).toMatchObject({ deleted: 0, failed: 0 })
+    expect(through(services)).toBe(ago(hours(24)))
+  })
+
+  it('keeps the cursor when a whole page shares one millisecond, and says so', async () => {
+    const attached = Array.from({ length: 100 }, (_, index) => `a${String(index).padStart(3, '0')}`)
+    const services = step5({
+      receiptFiles: attached.map((id) => row(id, { transactionIds: ['t1'] })),
+    })
+    for (const id of attached) services.files.upload(id, T)
+    services.files.upload('z9', T)
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 0 })
+    // Holding would stop the checkpoint at the tie for good, so it moves on.
+    expect(through(services)).toBe(ago(hours(24)))
+    // Counts only.
+    expect(logged(warns)).toEqual([
+      {
+        fn: 'unknown',
+        event: 'receipt_cleanup_tied',
+        counts: { deleted: 0, skipped: 0, failed: 0 },
+      },
+    ])
+  })
+
+  it('checks no tie after a page it deleted entirely, which keeps the cursor it had', async () => {
+    // 100 attached files, then 101 never attached, each a millisecond apart: the second page is
+    // all deleted, so the third lists after the first page's cursor again, already checked.
+    const attached = Array.from({ length: 100 }, (_, index) => `a${String(index).padStart(3, '0')}`)
+    const unlisted = Array.from({ length: 101 }, (_, index) => `z${String(index).padStart(3, '0')}`)
+    const services = step5({
+      receiptFiles: attached.map((id) => row(id, { transactionIds: ['t1'] })),
+    })
+    for (const [index, id] of [...attached, ...unlisted].entries()) {
+      services.files.upload(id, justBefore(T, 201 - index))
+    }
+    const listFiles = vi.spyOn(services.files, 'listFiles')
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 101, skipped: 0, failed: 0 })
+    // Three pages, and one tie check, after the first.
+    expect(listFiles).toHaveBeenCalledTimes(4)
+    expect(through(services)).toBe(ago(hours(24)))
+  })
+
+  it('checks the cursor’s own millisecond, not the deleted files after it on its page', async () => {
+    // 98 attached files, then b (attached) at T − 1 ms, z (never attached) at T, y (attached) at
+    // T + 1 ms. The first page ends with z, deleted, so b is its cursor, with nothing tied.
+    const attached = Array.from({ length: 98 }, (_, index) => `a${String(index).padStart(3, '0')}`)
+    const services = step5({
+      receiptFiles: [...attached, 'b', 'y'].map((id) => row(id, { transactionIds: ['t1'] })),
+    })
+    for (const [index, id] of attached.entries())
+      services.files.upload(id, justBefore(T, 99 - index))
+    services.files.upload('b', justBefore(T))
+    services.files.upload('z', T)
+    services.files.upload('y', new Date(Date.parse(T) + 1).toISOString())
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 0 })
+    expect(through(services)).toBe(ago(hours(24)))
+  })
+
+  it('holds the checkpoint before the cursor’s tie, even when deleted files follow it', async () => {
+    // As above, with b1 and b2 both at T − 1 ms: the cursor, b2, is tied.
+    const attached = Array.from({ length: 97 }, (_, index) => `a${String(index).padStart(3, '0')}`)
+    const services = step5({
+      receiptFiles: [...attached, 'b1', 'b2', 'y'].map((id) => row(id, { transactionIds: ['t1'] })),
+    })
+    for (const [index, id] of attached.entries())
+      services.files.upload(id, justBefore(T, 99 - index))
+    services.files.upload('b1', justBefore(T))
+    services.files.upload('b2', justBefore(T))
+    services.files.upload('z', T)
+    services.files.upload('y', new Date(Date.parse(T) + 1).toISOString())
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 1, skipped: 0, failed: 0 })
+    expect(through(services)).toBe(justBefore(T, 2))
+  })
+
+  it('holds the checkpoint for a tie one short of a whole page', async () => {
+    // x at T − 1 ms, then 99 at T: the page ends inside the tie, which isn't a whole page.
+    const tied = Array.from({ length: 99 }, (_, index) => `t${String(index).padStart(3, '0')}`)
+    const services = step5({
+      receiptFiles: ['x', ...tied, 'y'].map((id) => row(id, { transactionIds: ['t1'] })),
+    })
+    services.files.upload('x', justBefore(T))
+    for (const id of tied) services.files.upload(id, T)
+    services.files.upload('y', new Date(Date.parse(T) + 1).toISOString())
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 0, skipped: 0, failed: 0 })
+    expect(through(services)).toBe(justBefore(T))
+    expect(logged(warns)).toEqual([])
+  })
+
+  it('ends the pass when the tie check fails, with the checkpoint before the tie', async () => {
+    const services = tiedAtBoundary('id')
+    const listFiles = services.files.listFiles.bind(services.files)
+    vi.spyOn(services.files, 'listFiles').mockImplementation(async (page) => {
+      if (page.to === T) throw new AppwriteException('Storage is down', 503, 'general_unknown')
+      return listFiles(page)
+    })
+    const warns = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await cleanUpReceipts(services)).toEqual({ deleted: 0, skipped: 0, failed: 1 })
+    expect(services.files.stored.has('z9')).toBe(true)
+    expect(through(services)).toBe(justBefore(T))
+    // The pass ended there, so it says it's behind.
+    expect(logged(warns).map((line) => line.event)).toEqual(['receipt_cleanup_behind'])
   })
 })
 

@@ -66,9 +66,18 @@ export function fakes(
 /** Storage's receipts bucket, in memory: file IDs and when they were uploaded. */
 export class FakeBucket implements ReceiptsBucket {
   readonly stored = new Map<string, string>()
+  // The order files were uploaded in.
+  private readonly uploads = new Map<string, number>()
+  private uploaded = 0
+  /**
+   * How a cursor orders files at one millisecond: by `$id`, as step 5 asks, or by upload, as an
+   * older Appwrite might (#382). Listing always sorts by `$id`.
+   */
+  tieBreak: 'id' | 'upload' = 'id'
 
   upload(fileId: string, createdAt: string): void {
     this.stored.set(fileId, createdAt)
+    this.uploads.set(fileId, this.uploaded++)
   }
 
   async listFiles(page: { from: string; to: string; after?: string }): Promise<BucketFile[]> {
@@ -78,11 +87,18 @@ export class FakeBucket implements ReceiptsBucket {
     }
     // Oldest first, then by ID, as step 5 asks for.
     const key = ({ $id, $createdAt }: BucketFile) => `${$createdAt}|${$id}`
-    const cursor = page.after === undefined ? undefined : this.stored.get(page.after)
+    const after = ({ $id, $createdAt }: BucketFile) =>
+      this.tieBreak === 'id'
+        ? key({ $id, $createdAt })
+        : `${$createdAt}|${String(this.uploads.get($id)).padStart(9, '0')}`
+    const cursor =
+      page.after === undefined
+        ? undefined
+        : { $id: page.after, $createdAt: this.stored.get(page.after) ?? '' }
     return [...this.stored]
       .map(([$id, $createdAt]) => ({ $id, $createdAt }))
       .filter(({ $createdAt }) => $createdAt > page.from && $createdAt <= page.to)
-      .filter((file) => cursor === undefined || key(file) > `${cursor}|${page.after}`)
+      .filter((file) => cursor === undefined || after(file) > after(cursor))
       .sort((a, b) => (key(a) < key(b) ? -1 : 1))
       .slice(0, PAGE)
   }
