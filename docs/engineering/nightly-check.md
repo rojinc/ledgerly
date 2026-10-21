@@ -149,6 +149,7 @@ Post one comment per read on #299, in this form:
 
 - **PASS** needs A, B and C to pass. Anything else is FAIL, with the IDs on #96. A read that's too early (A) isn't posted.
 - **`pending`** lists the pending groups' IDs, so the next read can tell.
+- **Then read every function's error lines** in the same shell, with the same `FROM` and `TO` ([error lines](error-lines.md)). Post its line in the same comment, under this one. It never changes this count.
 - **The 2 weeks are done** when passing reads cover 14 days without a break: each read starts at the `to` of the one before, and none failed. **A failed read starts the count again** from its `to`.
 - AI A keeps the count in #299's section 1 at each sweep.
 
