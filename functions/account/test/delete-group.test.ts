@@ -574,6 +574,27 @@ describe('POST /groups/{id}/delete: a group with no joined admin', () => {
     expectPurged(services)
   })
 
+  // AI E's S1 on #508: the route now opens to non-admins, so its sign-in rules are pinned for them.
+  it.each([
+    ['an active viewer', { role: 'viewer' }],
+    ['someone who moved out, still in the team', MOVED_OUT],
+  ] as const)('asks %s to sign in again, as it asks an admin', async (_case, row) => {
+    const services = world()
+    await setRow(services, 'members', 'h2-p1', row)
+    services.users = new FakeUsers([
+      account({ sessions: [{ $id: 's1', $createdAt: minutesAgo(10.001) }] }),
+    ])
+    const before = state(services)
+    expect(await refused(services, { sessionId: 's1' })).toEqual({
+      status: 403,
+      code: 'FORBIDDEN',
+      details: { reason: 'reauth' },
+    })
+    services.users = new FakeUsers([account({ passwordUpdate: minutesAgo(1) })])
+    expect((await refused(services)).details).toEqual({ reason: 'recent_password_change' })
+    expect(state(services)).toEqual(before)
+  })
+
   it('checks the role before the group: a viewer of an unarchived group with an admin gets FORBIDDEN', async () => {
     const services = world()
     await setRow(services, 'members', 'h2-p1', { role: 'viewer' })
