@@ -24,7 +24,7 @@ Every run also writes one line for its request, with `route` and `status` ([conv
 
 A group that's due is checked, logged as one of the events above, put off as `busy` (tried an hour later, with no line), skipped while a purge deletes it, or not reached because the budget ran out first. The last three stay due with no line. **So the runs' lines, plus the groups still overdue now (C), cover every group.**
 
-**How long the logs are kept.** Appwrite keeps execution logs for 24 hours on the Free plan and 7 days on Pro ([executions](https://appwrite.io/docs/products/functions/executions)). `ledgerly-dev`'s organisation is on the GitHub Student Pack plan ([function settings](environments-and-deploys.md#function-settings)), whose retention isn't documented. Until the owner confirms it ([#3](https://github.com/rojinc/ledgerly/issues/3)), plan for Free's 24 hours, the shortest: **read within 23 hours of the last read's `to`.** A run whose logs are gone can't be confirmed.
+**How long the logs are kept.** Appwrite keeps execution logs for 24 hours on the Free plan and 7 days on Pro ([executions](https://appwrite.io/docs/products/functions/executions)). `ledgerly-dev`'s organisation is on the GitHub Student Pack plan ([function settings](environments-and-deploys.md#function-settings)), whose retention isn't documented. Until the owner confirms it ([#3](https://github.com/rojinc/ledgerly/issues/3)), plan for Free's 24 hours, the shortest: **read within 23 hours of the last read's `to`.** A run whose logs are gone can't be confirmed, and B shows it: that run isn't counted as logged, so the read fails.
 
 ## Before you start
 
@@ -34,7 +34,7 @@ A group that's due is checked, logged as one of the events above, put off as `bu
 
 ## A read
 
-Set the window. `FROM` is the `to` of the last result posted on #299. The first read starts at Deploy run 174's `DEPLOYED_AT`, and **the lead runs it before 02:40Z on 2026-10-22**, while the first runs' logs are still kept. `TO` is 20 minutes ago, so every run in the window has finished: a run can take up to 15 minutes.
+Set the window. `FROM` is the `to` of the last result posted on #299. The first read starts at Deploy run 174's `DEPLOYED_AT`, and **the lead runs it on 2026-10-21 at about 08:00Z**: it confirms those first hours, and its `logged N of N` shows at once whether the logs last that long. The next read comes within 23 hours of its `to`. `TO` is 20 minutes ago, so every run in the window has finished: a run can take up to 15 minutes.
 
 ```bash
 FROM=2026-10-21T02:38:27Z                     # the last result's "to"
@@ -56,7 +56,7 @@ for offset in 0 100 200; do
 done
 ```
 
-- **`FETCH FAILED`:** stop, and post the CLI's error on #96. A read without every page can't pass.
+- **`FETCH FAILED`:** stop, delete the runs (`rm -f "$RUNS"`), and post the CLI's error on #96. A read without every page can't pass.
 - **The server refuses the order:** use `{"method":"orderDesc","attribute":"$id"}`, as in [4a](first-deploy.md#4a-the-hourly-runs).
 
 To read one run's lines, for A's or B's "if it fails", print only these fields:
@@ -83,11 +83,10 @@ jq -rs --arg from "$FROM" --arg to "$TO" '
 
 The longest gap is measured from the last run before the window, so a gap across two reads counts whole.
 
-- **Pass:** `not ok 0`, a window under 23 hours, and a longest gap of at most 125 minutes: one run Appwrite skipped is fine, since the groups due then stay due for the next run.
+- **Pass:** `not ok 0`, and a longest gap of at most 125 minutes: one run Appwrite skipped is fine, since the groups due then stay due for the next run.
 - **Too early:** a `not ok` run that's `waiting` or `processing` hasn't finished. Run the read again later with the same `FROM`.
 - **If it fails:**
   - **A run `failed`, or not 200:** read its lines (above) and post the execution ID and what they print on #96. A run that failed part way may have lost the lines of the groups it checked, so the window can't be confirmed.
-  - **A window too long:** its oldest runs' logs may be gone, so it can't be confirmed.
   - **A longer gap, or no runs:** the scheduler didn't run for 2 hours or more. Post the times on #96.
 - **A longest run of 700 s or more** means a run used most of its budget, and groups after it may have waited for the next run. It isn't a fail, since C shows any group still waiting. Post it if it repeats.
 
