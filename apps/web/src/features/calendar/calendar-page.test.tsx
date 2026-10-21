@@ -1,6 +1,6 @@
 import type { Groups } from '@ledgerly/core/generated/rows'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { tablesDB } from '../../lib/appwrite'
@@ -242,6 +242,26 @@ describe('CalendarPage', () => {
     renderAt('/calendar')
     expect(await screen.findByText('Morning shift')).toBeTruthy()
     expect(screen.getByRole('heading', { name: /October 2026/ })).toBeTruthy()
+  })
+
+  it('names the page while the month waits on the profile’s zone, and keeps that h1 once it loads', () => {
+    profileHook.mockReturnValue({
+      data: undefined,
+      isError: false,
+    } as ReturnType<typeof useProfile>)
+    const router = renderAt('/calendar')
+    const h1 = screen.getByRole('heading', { level: 1, name: 'Calendar' })
+    expect(screen.getByRole('status').textContent).toBe('Loading…')
+    expect(screen.queryByRole('button', { name: 'Previous month' })).toBeNull()
+
+    // The zone arrives: the same h1 node stays, so focus a move put on it stays too.
+    profileHook.mockReturnValue({
+      data: { timezone: 'Australia/Sydney' },
+      isError: false,
+    } as ReturnType<typeof useProfile>)
+    act(() => void router.navigate('/calendar'))
+    expect(screen.getByRole('heading', { name: /October 2026/ })).toBeTruthy()
+    expect(screen.getByRole('heading', { level: 1, name: 'Calendar' })).toBe(h1)
   })
 
   it('gives every group its own colour, by its place in the list', () => {

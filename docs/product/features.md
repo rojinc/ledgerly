@@ -13,6 +13,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-05 | Phone verification (optional). Needed to claim records made with your phone number. Cut from v1: it waits on the owner's SMS provider ([#176](https://github.com/rojinc/ledgerly/issues/176), [#175](https://github.com/rojinc/ledgerly/issues/175)). | M3, cut |
 | F-06 | Delete account and export your data. | M4 |
 | F-07 | Getting started: the dashboard asks what you want to track until you've recorded something. | M4 |
+| F-08 | Privacy policy and terms of use pages, signed in or out, linked from sign-up, sign-in, an invite and Profile. Signing up, or asking for an email code, says it agrees to them; nothing is recorded until the lawyer says so ([#566](https://github.com/rojinc/ledgerly/issues/566)). Their text is the owner's and the lawyer's (#54). | M4 |
 
 ## Groups (shared by every module)
 

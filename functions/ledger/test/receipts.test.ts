@@ -1,5 +1,6 @@
-import { AppwriteException } from 'node-appwrite'
+import { AppwriteException, type Models, type Storage } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { receiptsBucket } from '../src/receipts'
 import { call, expense, filesOf, NOW, rows, seed } from './harness'
 
 beforeEach(() => {
@@ -551,5 +552,69 @@ describe('a receipt change that raced another request', () => {
       { before: [], after: ['f2'] },
       { before: ['f2'], after: ['f1'] },
     ])
+  })
+})
+
+// The real adapter over a stub Storage: the tests above use a fake Files, and the e2e mock its own.
+describe('the receipts bucket', () => {
+  const file = (fields: Partial<Models.File> = {}) =>
+    ({
+      $id: 'f1',
+      mimeType: 'image/png',
+      $permissions: UPLOADED,
+      chunksTotal: 2,
+      chunksUploaded: 2,
+      ...fields,
+    }) as Models.File
+  const stub = (fields: Partial<Record<'getFile' | 'updateFile', unknown>>) =>
+    ({ getFile: vi.fn(), updateFile: vi.fn(), ...fields }) as unknown as Storage
+
+  it('reads a file, complete only once all its chunks are uploaded', async () => {
+    const getFile = vi
+      .fn()
+      .mockResolvedValueOnce(file())
+      .mockResolvedValueOnce(file({ chunksUploaded: 1 }))
+    const bucket = receiptsBucket(stub({ getFile }))
+    expect(await bucket.getFile('f1')).toEqual({
+      mimeType: 'image/png',
+      permissions: UPLOADED,
+      complete: true,
+    })
+    expect(getFile).toHaveBeenCalledWith({ bucketId: 'receipts', fileId: 'f1' })
+    // An unfinished upload: its remaining chunks could still change it.
+    expect(await bucket.getFile('f1')).toMatchObject({ complete: false })
+  })
+
+  it('replaces a file’s permissions, and returns the file as it is then', async () => {
+    const updateFile = vi.fn().mockResolvedValue(file({ $permissions: TEAM, chunksUploaded: 1 }))
+    const bucket = receiptsBucket(stub({ updateFile }))
+    expect(await bucket.updateFile('f1', TEAM)).toEqual({
+      mimeType: 'image/png',
+      permissions: TEAM,
+      complete: false,
+    })
+    expect(updateFile).toHaveBeenCalledWith({
+      bucketId: 'receipts',
+      fileId: 'f1',
+      permissions: TEAM,
+    })
+  })
+
+  it('says a file this bucket hasn’t got is missing, and passes any other failure on', async () => {
+    const gone = new AppwriteException('Not found', 404, 'storage_file_not_found')
+    const noBucket = new AppwriteException('Not found', 404, 'storage_bucket_not_found')
+    const down = new Error('socket hang up')
+    const getFile = vi
+      .fn()
+      .mockRejectedValueOnce(gone)
+      .mockRejectedValueOnce(noBucket)
+      .mockRejectedValueOnce(down)
+    const updateFile = vi.fn().mockRejectedValueOnce(gone).mockRejectedValueOnce(noBucket)
+    const bucket = receiptsBucket(stub({ getFile, updateFile }))
+    expect(await bucket.getFile('f1')).toBeUndefined()
+    await expect(bucket.getFile('f1')).rejects.toBe(noBucket)
+    await expect(bucket.getFile('f1')).rejects.toBe(down)
+    expect(await bucket.updateFile('f1', TEAM)).toBeUndefined()
+    await expect(bucket.updateFile('f1', TEAM)).rejects.toBe(noBucket)
   })
 })

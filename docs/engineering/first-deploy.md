@@ -301,10 +301,4 @@ appwrite tablesdb get-row --database-id main --table-id checkpoints --row-id tra
 
 ## Not in this runbook
 
-#299 section 5's other checks are by hand, with a test account in the app, or in the console. They stay on #299:
-- the password events (#289) and the auth settings (#316);
-- placeholders with two identities (#304);
-- the bundle sizes (#270);
-- the invite flows (#371, #403 item 5);
-- history across groups (#424);
-- a wrong address counted once (#274).
+#299 section 5's other checks are by hand, with test accounts in the app, or in the console: they're in [dev checks](dev-checks.md) ([#569](https://github.com/rojinc/ledgerly/issues/569)), which uses steps 3b, 3c, 4a and 4b here as they are.

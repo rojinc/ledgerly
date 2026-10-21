@@ -30,6 +30,18 @@ async function verify(page: Page, name: string, email: string) {
 test('signs up, is verified, and lands on the dashboard with the guide', async ({ page }) => {
   const name = testName('Pat')
   const email = testEmail('signup')
+  // What signing up agrees to is a page away, and Back returns (#566).
+  await test.step('opens the terms from sign-up, and comes back', async () => {
+    await page.goto('/signup')
+    await page.getByRole('link', { name: 'Terms of use', exact: true }).click()
+    await expect(
+      page.getByRole('heading', { level: 1, name: 'Terms of use', exact: true }),
+    ).toBeVisible()
+    await page.goBack()
+    await expect(
+      page.getByRole('heading', { level: 1, name: 'Create your account', exact: true }),
+    ).toBeVisible()
+  })
   await signUp(page, name, email)
   await verify(page, name, email)
   await expect(

@@ -160,6 +160,10 @@ describe('InvitePage', () => {
     // Replaced, so Back doesn't bring the token back into the address bar.
     expect(router.state.historyAction).toBe('REPLACE')
     expect(sessionStorage.getItem('ledgerly.inviteToken')).toBe(TOKEN)
+    // Signing up from here agrees to them (#566).
+    expect((await screen.findByRole('link', { name: 'Terms of use' })).getAttribute('href')).toBe(
+      '/terms',
+    )
     fireEvent.click(await screen.findByRole('link', { name: 'Log in' }))
     expect(await screen.findByText('Login from /invite')).toBeTruthy()
     expect(call).not.toHaveBeenCalled()

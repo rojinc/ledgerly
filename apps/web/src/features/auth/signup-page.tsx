@@ -7,6 +7,7 @@ import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
 import { Input } from '../../ui/input'
 import { Label } from '../../ui/label'
+import { AgreeNotice } from '../legal/legal-links'
 import { AuthCard } from './auth-card'
 import { authErrorMessage } from './auth-error'
 import { useSignedIn } from './use-signed-in'
@@ -67,6 +68,7 @@ export function SignupPage() {
         <Button type="submit" aria-disabled={signup.isPending}>
           {signup.isPending ? 'Creating account…' : 'Create account'}
         </Button>
+        <AgreeNotice />
       </form>
       <p className="text-center text-sm text-muted-foreground">
         Already have an account?{' '}

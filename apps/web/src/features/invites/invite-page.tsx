@@ -11,6 +11,7 @@ import { authErrorMessage } from '../auth/auth-error'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { verificationUrl } from '../auth/verify-email-page'
+import { LegalLinks } from '../legal/legal-links'
 
 /** `identity POST /invites/accept`'s answer (functions-api.md#identity). */
 type AcceptResult = { groupId: string } | { needsVerification: 'email' | 'phone' }
@@ -157,6 +158,7 @@ function SignedOut() {
           Log in
         </Link>
       </div>
+      <LegalLinks className="text-center" />
     </>
   )
 }

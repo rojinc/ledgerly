@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import { Link } from 'react-router'
 import { useCurrentUser } from '../auth/use-current-user'
 import { BusinessForm } from './business-form'
@@ -17,45 +18,58 @@ export function ProfilePage() {
   const person = usePerson(personId)
   const update = useUpdateProfile(userId, personId)
 
+  let content: ReactNode
   if (profile.isError || person.isError) {
-    return (
+    content = (
       <p role="alert" className="text-destructive">
         We couldn’t load your profile. Reload the page to try again.
       </p>
     )
-  }
-  if (!profile.data || !person.data) {
-    return (
+  } else if (!profile.data || !person.data) {
+    content = (
       <p role="status" className="text-muted-foreground">
         Loading…
       </p>
     )
+  } else {
+    content = (
+      <>
+        <ProfileForm
+          profile={profile.data}
+          displayName={person.data.displayName}
+          onSave={update.mutateAsync}
+        />
+        <BusinessForm profile={profile.data} onSave={update.mutateAsync} />
+        <HoursCapForm profile={profile.data} onSave={update.mutateAsync} />
+        <EmailSettingsForm profile={profile.data} onSave={update.mutateAsync} />
+        <EmailSection />
+        <PasswordSection />
+        <OtherDevicesSection />
+        <section aria-labelledby="your-data-heading" className="flex flex-col gap-2">
+          <h2 id="your-data-heading" className="text-lg font-semibold">
+            Your data
+          </h2>
+          <Link to="/export" className="self-start text-sm underline underline-offset-4">
+            Export your data
+          </Link>
+          <Link to="/account/delete" className="self-start text-sm underline underline-offset-4">
+            Delete your account
+          </Link>
+          <Link to="/terms" className="self-start text-sm underline underline-offset-4">
+            Terms of use
+          </Link>
+          <Link to="/privacy" className="self-start text-sm underline underline-offset-4">
+            Privacy policy
+          </Link>
+        </section>
+      </>
+    )
   }
+  // The h1 in every state, so the tab is named and a move's focus has somewhere to go meanwhile.
   return (
     <div className="flex flex-col gap-10">
       <h1 className="text-2xl font-semibold">Profile</h1>
-      <ProfileForm
-        profile={profile.data}
-        displayName={person.data.displayName}
-        onSave={update.mutateAsync}
-      />
-      <BusinessForm profile={profile.data} onSave={update.mutateAsync} />
-      <HoursCapForm profile={profile.data} onSave={update.mutateAsync} />
-      <EmailSettingsForm profile={profile.data} onSave={update.mutateAsync} />
-      <EmailSection />
-      <PasswordSection />
-      <OtherDevicesSection />
-      <section aria-labelledby="your-data-heading" className="flex flex-col gap-2">
-        <h2 id="your-data-heading" className="text-lg font-semibold">
-          Your data
-        </h2>
-        <Link to="/export" className="self-start text-sm underline underline-offset-4">
-          Export your data
-        </Link>
-        <Link to="/account/delete" className="self-start text-sm underline underline-offset-4">
-          Delete your account
-        </Link>
-      </section>
+      {content}
     </div>
   )
 }

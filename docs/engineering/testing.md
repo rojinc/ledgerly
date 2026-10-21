@@ -91,6 +91,7 @@ Every v1 behaviour in [features](../product/features.md), and the spec that driv
 | F-04 business details on an invoice | *to come* | |
 | F-06 delete account; export your data | `account-delete`: deletion, then `profile.csv` and `my-records.csv` | |
 | F-07 the getting-started guide | `flow-1` (*dev-only*), `flow-2`; step 2 *to come* | Hide: `getting-started` |
+| F-08 privacy policy and terms pages | `flow-1` (*dev-only*): Terms of use from sign-up, and Back; `email-settings`: Profile's Privacy policy link | The renderer, the pages signed in and out, and every link: `markdown`, `legal-page`, `signup-page`, `login-page`, `invite-page`, `profile-page` |
 | F-10 create each group type | `flow-2`, `flow-6`, `flow-9` | |
 | F-11 add by email; a per-group name | `account-delete`, `flow-9`; the rename *to come* | By phone and roles: `groups/test/add-member`, `update-member`: no flow types a number |
 | F-12 not joined | `flow-9` (unregistered), `account-delete` (registered) | |

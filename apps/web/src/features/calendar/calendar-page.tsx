@@ -77,41 +77,42 @@ export function CalendarPage() {
   const grid = month ? monthGrid(month) : undefined
   const selected = chosen && grid && chosen >= grid.start && chosen <= grid.end ? chosen : undefined
 
-  if (!month) {
-    return (
-      <p role="status" className="text-muted-foreground">
-        Loading…
-      </p>
-    )
-  }
-
   const go = (next: Month, nextDay?: LocalDate) =>
     setParams(nextDay ? { month: next, day: nextDay } : { month: next })
 
+  // The h1 while the month waits on the profile's zone too, so the tab is named meanwhile.
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-2xl font-semibold">Calendar</h1>
-        <div className="flex items-center gap-1">
-          <Button variant="outline" size="sm" onClick={() => go(shiftMonth(month, -1))}>
-            <span aria-hidden="true">‹</span>
-            <span className="sr-only">Previous month</span>
-          </Button>
-          <h2 aria-live="polite" className="min-w-36 text-center font-medium">
-            {formatDay(`${month}-01` as LocalDate, { month: 'long', year: 'numeric' })}
-          </h2>
-          <Button variant="outline" size="sm" onClick={() => go(shiftMonth(month, 1))}>
-            <span aria-hidden="true">›</span>
-            <span className="sr-only">Next month</span>
-          </Button>
-          {today && (
-            <Button variant="ghost" size="sm" onClick={() => go(monthOf(today), today)}>
-              Today
+        {month && (
+          <div className="flex items-center gap-1">
+            <Button variant="outline" size="sm" onClick={() => go(shiftMonth(month, -1))}>
+              <span aria-hidden="true">‹</span>
+              <span className="sr-only">Previous month</span>
             </Button>
-          )}
-        </div>
+            <h2 aria-live="polite" className="min-w-36 text-center font-medium">
+              {formatDay(`${month}-01` as LocalDate, { month: 'long', year: 'numeric' })}
+            </h2>
+            <Button variant="outline" size="sm" onClick={() => go(shiftMonth(month, 1))}>
+              <span aria-hidden="true">›</span>
+              <span className="sr-only">Next month</span>
+            </Button>
+            {today && (
+              <Button variant="ghost" size="sm" onClick={() => go(monthOf(today), today)}>
+                Today
+              </Button>
+            )}
+          </div>
+        )}
       </div>
-      <MonthView month={month} today={today} selected={selected} onSelect={(d) => go(month, d)} />
+      {month ? (
+        <MonthView month={month} today={today} selected={selected} onSelect={(d) => go(month, d)} />
+      ) : (
+        <p role="status" className="text-muted-foreground">
+          Loading…
+        </p>
+      )}
     </div>
   )
 }
