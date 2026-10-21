@@ -1,0 +1,22 @@
+{
+  "name": "@ledgerly/e2e-mock",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:mock": "node build.mjs",
+    "typecheck": "tsc --noEmit -p ."
+  },
+  "dependencies": {
+    "@ledgerly/fn-account": "*",
+    "@ledgerly/fn-groups": "*",
+    "@ledgerly/fn-identity": "*",
+    "@ledgerly/fn-ledger": "*",
+    "@ledgerly/fn-scheduler": "*",
+    "@ledgerly/fn-statements": "*",
+    "@ledgerly/server": "*",
+    "node-appwrite": "^30.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2"
+  }
+}

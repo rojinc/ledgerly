@@ -1,4 +1,5 @@
 import type { Statements } from '@ledgerly/core/generated/rows'
+import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { type Email, EmailError } from '@ledgerly/server/email/send-email'
 import { AppwriteException } from 'node-appwrite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -272,6 +273,39 @@ describe('the statements job, with autoSend on', () => {
       `invoice/${invoice?.$id}/first/copy`,
     ])
     expect(invoices(services)[0]?.sentAt).toBe(services.now.toISOString())
+  })
+
+  it('sends an invoice whose stored business details a later rule refuses, as Send does (#543)', async () => {
+    const services = octoberDue()
+    // The first run's send fails, so the window is still open for the next run's.
+    const send = services.sendEmail
+    failing(services, (email) =>
+      isInvoice(email)
+        ? new EmailError('Resend could not be reached: timeout', 'timeout')
+        : undefined,
+    )
+    await runJob(services)
+    const [invoice] = invoices(services)
+    const snapshot = JSON.parse(invoice?.snapshotJson ?? '') as StatementSnapshot
+    const issuer = snapshot.issuer && {
+      ...snapshot.issuer,
+      business: { businessName: 'Sam Cleans', abn: '1' },
+    }
+    await commitNow(services.db, [
+      op('statements', invoice?.$id ?? '', {
+        snapshotJson: JSON.stringify({ ...snapshot, issuer }),
+      }),
+    ])
+    services.sendEmail = send
+    services.now = new Date(NOW.getTime() + HOUR_MS)
+    await runJob(services)
+    expect(keys(services).filter(isInvoiceKey)).toEqual([
+      `invoice/${invoice?.$id}/first/employer`,
+      `invoice/${invoice?.$id}/first/copy`,
+    ])
+    expect(services.sent.find(isInvoice)?.subject).toContain('Sam Cleans')
+    expect(invoices(services)[0]?.sentAt).toBe(services.now.toISOString())
+    expect(logged().map((line) => line.event)).toEqual(['auto_send_failed'])
   })
 
   it.each([

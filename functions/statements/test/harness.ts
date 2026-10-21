@@ -32,11 +32,16 @@ export class FakeFiles implements Files {
 
 export type Fakes = Services & { db: FakeDb; files: FakeFiles; sent: Email[] }
 
+/** Every business field the Profile takes, so each one goes through `businessOf` (#543). */
 export const BUSINESS = {
   businessName: 'Sam Cleans',
   abn: '51824753556',
+  address: '1 Example St, Sydney NSW 2000',
   email: 'sam@example.com',
+  phone: '+61 400 000 000',
   bank: { accountName: 'Sam Lee', bsb: '062000', accountNumber: '12345678' },
+  payId: 'sam@example.com',
+  invoiceNotes: 'Thanks for your business.',
 }
 
 const groupRow = (id: string, type: string, settings: object, extra: object = {}): Row => ({

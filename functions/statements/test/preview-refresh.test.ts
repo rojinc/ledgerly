@@ -97,15 +97,11 @@ describe('POST /statements/preview', () => {
   })
 
   it.each([
-    [
-      'a field today’s rule refuses',
-      { ...BUSINESS, abn: '1' },
-      { businessName: 'Sam Cleans', email: 'sam@example.com', bank: BUSINESS.bank },
-    ],
+    ['a field today’s rule refuses', { ...BUSINESS, abn: '1' }, { ...BUSINESS, abn: undefined }],
     [
       'the whole bank when one part is refused',
       { ...BUSINESS, bank: { ...BUSINESS.bank, bsb: '12' } },
-      { businessName: 'Sam Cleans', abn: '51824753556', email: 'sam@example.com' },
+      { ...BUSINESS, bank: undefined },
     ],
     ['every field when the JSON isn’t an object', ['Sam Cleans'], {}],
     [

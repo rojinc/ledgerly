@@ -3,6 +3,7 @@ import type { StatementSnapshot } from '@ledgerly/core/schemas/statements'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   archiveJob,
+  BUSINESS,
   beforeStaging,
   call,
   commitNow,
@@ -16,6 +17,7 @@ import {
   ok,
   op,
   rowsOf,
+  samProfile,
   shift,
   snapshotClosing,
   statement,
@@ -87,6 +89,18 @@ describe('POST /statements/close', () => {
       send: false,
     })
     expect(final).toMatchObject({ status: 'final', displayNumber: 'INV-0010' })
+  })
+
+  it('keeps the business details that read, and logs nothing, as a draft does (#543)', async () => {
+    const warnings = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const services = midNovember()
+    const { businessJson } = samProfile(JSON.stringify({ ...BUSINESS, abn: '1' }))
+    await commitNow(services.db, [op('profiles', 'u-sam', { businessJson })])
+    const draft = await close(services)
+    expect(snapshotOf(draft).issuer?.business).toEqual({ ...BUSINESS, abn: undefined })
+    expect(warnings).not.toHaveBeenCalled()
+    expect(errors).not.toHaveBeenCalled()
   })
 
   it('leaves the draft for the admin when the group auto-finalizes', async () => {

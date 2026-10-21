@@ -126,11 +126,44 @@ describe('FakeDb reads', () => {
     expect(rows.map((row) => row.$id)).toEqual(['i3', 'i2', 'i1'])
   })
 
+  it('matches `contains` on text as dev does: any case, mid-text, every character literal (#424)', async () => {
+    const db = new FakeDb({
+      transactions: [
+        { $id: 't1', description: 'Shift at the cafe' },
+        { $id: 't2', description: 'Night SHIFT' },
+        { $id: 't3', description: 'Rent, 100%' },
+        { $id: 't4', description: null },
+      ],
+    })
+    expect(await ids(db, [Query.contains('description', 'shift')])).toEqual(['t1', 't2'])
+    expect(await ids(db, [Query.contains('description', 'SHIFT')])).toEqual(['t1', 't2'])
+    expect(await ids(db, [Query.contains('description', 'the caf')])).toEqual(['t1'])
+    expect(await ids(db, [Query.contains('description', '%')])).toEqual(['t3'])
+    expect(await ids(db, [Query.contains('description', '_')])).toEqual([])
+    expect(await ids(db, [Query.contains('description', ['cafe', 'rent'])])).toEqual(['t1', 't3'])
+  })
+
+  it('matches `contains` on an array column when it holds one of the values', async () => {
+    const db = new FakeDb({
+      persons: [
+        { $id: 'p1', mergeGroupIds: ['g1', 'g2'] },
+        { $id: 'p2', mergeGroupIds: ['g3'] },
+        { $id: 'p3', mergeGroupIds: [] },
+      ],
+    })
+    const { rows } = await db.listRows({
+      databaseId: 'main',
+      tableId: 'persons',
+      queries: [Query.contains('mergeGroupIds', ['g2', 'g3'])],
+    })
+    expect(rows.map((row) => row.$id)).toEqual(['p1', 'p2'])
+  })
+
   it('refuses queries it does not model, instead of ignoring them', async () => {
     const db = transactions()
     await expect(
-      db.listRows({ ...DB, queries: [Query.contains('description', 'rent')] }),
-    ).rejects.toThrow('FakeDb does not support the "contains" query')
+      db.listRows({ ...DB, queries: [Query.search('description', 'rent')] }),
+    ).rejects.toThrow('FakeDb does not support the "search" query')
   })
 
   it('refuses an `equal` with no values, as Appwrite does', async () => {

@@ -34,7 +34,26 @@ A group that's due is checked, logged as one of the events above, put off as `bu
 
 ## A read
 
-Set the window. `FROM` is the `to` of the last result posted on #299. The first read starts at Deploy run 174's `DEPLOYED_AT`, and **the lead runs it on 2026-10-21 at about 08:00Z**: it confirms those first hours, and its `logged N of N` shows at once whether the logs last that long. The next read comes within 23 hours of its `to`. `TO` is 20 minutes ago, so every run in the window has finished: a run can take up to 15 minutes.
+**With the script** ([`scripts/reads.mjs`](../../scripts/reads.mjs), [#553](https://github.com/rojinc/ledgerly/issues/553)): it runs A, B and C below, and then the [error lines](error-lines.md) read, as this page's blocks define them. It prints the two lines to post on #299, then any lines to post on #96.
+
+```bash
+APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… \
+  node scripts/reads.mjs --from <the last result's to> --fetch
+```
+
+- **`--fetch`** makes the same read-only queries as the blocks below, with the read key, and never prints the key. If the server refuses the order, add `--order-by-id`, as the blocks' own fallback does. Or fetch with the blocks, and pass the files instead, taking them before the blocks' `rm "$RUNS"`:
+  - `--runs`: both fetches' `$RUNS` files, this page's and [error lines](error-lines.md#a-read)', joined;
+  - `--groups`: C's rows, as JSON lines (`| jq -c '(.rows // [])[]'`);
+  - `--capped '<functions>'`, if the error-lines fetch printed `CAPPED`.
+  - Copy this page's `$RUNS` before the error-lines fetch, whose `RUNS=$(mktemp)` replaces it. If a fetch printed `FETCH FAILED`, fetch again: the file is short, and the script can't tell.
+- **The window:** `--from` is the last result's `to`. `--to` is 20 minutes ago unless it's given. `--pending '<IDs>'` takes the last result's pending groups, for C.
+- **It exits:**
+  - 0 when this read passes and the error lines are `OK`;
+  - 1 when there's something to post on #96, even on a PASS and `OK` (a removed membership, a merge carried on);
+  - 2 when there's nothing to post yet: a run hasn't finished (`TOO EARLY`), or a fetch failed (`FETCH FAILED`, with the status and the error's type).
+- **The blocks below are the fallback.** `scripts/reads.test.mjs` runs them and the script on the same made-up runs, and checks they print the same lines.
+
+**By hand:** set the window. `FROM` is the `to` of the last result posted on #299. The first read starts at Deploy run 174's `DEPLOYED_AT`, and **the lead runs it on 2026-10-21 at about 08:00Z**: it confirms those first hours, and its `logged N of N` shows at once whether the logs last that long. The next read comes within 23 hours of its `to`. `TO` is 20 minutes ago, so every run in the window has finished: a run can take up to 15 minutes.
 
 ```bash
 FROM=2026-10-21T02:38:27Z                     # the last result's "to"
