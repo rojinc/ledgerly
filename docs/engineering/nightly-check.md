@@ -45,6 +45,7 @@ APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… \
   - `--runs`: both fetches' `$RUNS` files, this page's and [error lines](error-lines.md#a-read)', joined;
   - `--groups`: C's rows, as JSON lines (`| jq -c '(.rows // [])[]'`);
   - `--capped '<functions>'`, if the error-lines fetch printed `CAPPED`.
+  - Copy this page's `$RUNS` before the error-lines fetch, whose `RUNS=$(mktemp)` replaces it. If a fetch printed `FETCH FAILED`, fetch again: the file is short, and the script can't tell.
 - **The window:** `--from` is the last result's `to`. `--to` is 20 minutes ago unless it's given. `--pending '<IDs>'` takes the last result's pending groups, for C.
 - **It exits:**
   - 0 when this read passes and the error lines are `OK`;

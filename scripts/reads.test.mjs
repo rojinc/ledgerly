@@ -143,6 +143,12 @@ describe('the nightly check', () => {
     assert.equal(nightly(hourly('scheduler', run('05:42'))).tooEarly, false)
   })
 
+  it('notes a run of 700 s or more, without failing', () => {
+    const { line, notes } = nightly(hourly('scheduler', run('05:42', { duration: 700 })))
+    assert.match(line, /longest run 700 s · .* PASS$/)
+    assert.deepEqual(notes, ['longest run 700 s: post it on #96 if it repeats'])
+  })
+
   it('gives the runbook’s own example line', () => {
     // Hourly at :42 from 02:42 on the 21st to 01:42 on the 22nd, one of them 165 s long.
     const day = Array.from({ length: 25 }, (_, i) => {
@@ -196,6 +202,42 @@ describe('the error lines', () => {
       'INCOMPLETE',
     )
     assert.equal(errors(everyFunction(), { capped: ' ledger' }).verdict, 'INCOMPLETE')
+  })
+
+  it('read the error lines in `errors`, where console.error writes them', () => {
+    const failing = run('03:10', {
+      fn: 'statements',
+      trigger: 'http',
+      responseStatusCode: 500,
+      logs: '',
+      errors: [
+        { fn: 'statements', event: 'draft_failed', groupId: 'g1' },
+        { fn: 'statements', route: 'POST /drafts', status: 500, code: 'INTERNAL' },
+      ]
+        .map((line) => JSON.stringify(line))
+        .join('\n'),
+    })
+    const result = errors(everyFunction(failing))
+    assert.equal(result.verdict, 'LOOK')
+    assert.match(result.line, / · logged 16 of 16 · error lines 2 in 2 groups · /)
+  })
+
+  it('keep two groups apart by their IDs alone', () => {
+    const twice = run('03:10', {
+      fn: 'statements',
+      lines: [
+        { event: 'draft_failed', groupId: 'g1' },
+        { event: 'draft_failed', groupId: 'g2' },
+      ],
+    })
+    assert.match(errors(everyFunction(twice)).line, / · error lines 2 in 2 groups · /)
+  })
+
+  it('say LOOK, not INCOMPLETE, for a run that failed without a line', () => {
+    const died = run('03:10', { status: 'failed', responseStatusCode: 500, logs: '' })
+    const result = errors(everyFunction(died))
+    assert.equal(result.verdict, 'LOOK')
+    assert.match(result.line, / · not ok 1 · .* · logged 16 of 16 · /)
   })
 
   it('give the runbook’s own example line', () => {
@@ -319,7 +361,10 @@ function mixed(seed) {
         route: pick(['POST /run', 'POST /run', null]),
         status: pick([200, 200, 500]),
       }
-      const logs = random() < 0.1 ? '' : [request, ...lines]
+      // Some lines in `errors`, where `console.error` writes them, and some in `logs`.
+      const all = random() < 0.1 ? [] : [request, ...lines]
+      const toErrors = all.map(() => random() < 0.4)
+      const json = (list) => list.map((line) => JSON.stringify({ fn, ...line })).join('\n')
       const run = {
         $id: `x${seed}-${fn}-${i}`,
         $createdAt: time.toISOString().replace('Z', '+00:00'),
@@ -329,11 +374,13 @@ function mixed(seed) {
         status: pick(['completed', 'completed', 'completed', 'failed', 'waiting']),
         responseStatusCode: pick([200, 200, 200, 500, 403, 0, null]),
         duration: random() * 900,
-        logs:
-          typeof logs === 'string'
-            ? logs
-            : logs.map((line) => JSON.stringify({ fn, ...line })).join('\n'),
-        errors: random() < 0.2 ? 'not json\n[1,2]\n42' : '',
+        logs: json(all.filter((_, i) => !toErrors[i])),
+        errors: [
+          random() < 0.2 ? 'not json\n[1,2]\n42' : '',
+          json(all.filter((_, i) => toErrors[i])),
+        ]
+          .filter((part) => part !== '')
+          .join('\n'),
       }
       runs.push(run, ...(random() < 0.1 ? [{ ...run }] : []))
     }
@@ -468,6 +515,11 @@ describe('the command', () => {
     assert.match(early.lines[2], /, not ok 1, .* · FAIL$/)
     assert.equal((await read(['--from', 'yesterday', ...files([])], {}, NOW)).code, 2)
     assert.equal((await read(['--from', FROM], {}, NOW)).code, 2)
+    const backwards = await read(['--from', TO, '--to', FROM, ...files([])], {}, NOW)
+    assert.deepEqual(
+      [backwards.code, backwards.lines[0]],
+      [2, `--to (${FROM}) has to be after --from.`],
+    )
     assert.equal((await read(['--from', FROM, '--fetch'], {}, NOW)).code, 2)
   })
 
@@ -614,6 +666,85 @@ describe('--fetch', () => {
       assert.deepEqual(failed.lines, [
         'FETCH FAILED scheduler at offset 0: 401 general_unauthorized_scope',
       ])
+    } finally {
+      await api.close()
+    }
+  })
+
+  it('never follows a redirect, so the key never reaches another host', async () => {
+    const elsewhere = []
+    const other = createServer((request, response) => {
+      elsewhere.push(request.headers)
+      response.end('{}')
+    })
+    await new Promise((resolve) => other.listen(0, '127.0.0.1', resolve))
+    const redirect = createServer((request, response) => {
+      response.writeHead(302, {
+        location: `http://127.0.0.1:${other.address().port}${request.url}`,
+      })
+      response.end()
+    })
+    await new Promise((resolve) => redirect.listen(0, '127.0.0.1', resolve))
+    try {
+      const env = {
+        APPWRITE_ENDPOINT: `http://127.0.0.1:${redirect.address().port}/v1`,
+        APPWRITE_PROJECT_ID: 'ledgerly-test',
+        APPWRITE_API_KEY: KEY,
+      }
+      const result = await read(
+        ['--from', FROM, '--fetch'],
+        env,
+        Date.parse('2026-10-21T06:20:00Z'),
+      )
+      assert.deepEqual(result, {
+        lines: ['FETCH FAILED scheduler at offset 0: 302 redirect refused'],
+        code: 2,
+      })
+      assert.deepEqual(elsewhere, [])
+    } finally {
+      await new Promise((resolve) => redirect.close(resolve))
+      await new Promise((resolve) => other.close(resolve))
+    }
+  })
+
+  it('sends the key only over HTTPS, or to this machine', async () => {
+    for (const endpoint of ['http://cloud.example/v1', 'ftp://cloud.example/v1', 'not a url']) {
+      const env = { APPWRITE_ENDPOINT: endpoint, APPWRITE_PROJECT_ID: 'p', APPWRITE_API_KEY: KEY }
+      const result = await read(
+        ['--from', FROM, '--fetch'],
+        env,
+        Date.parse('2026-10-21T06:20:00Z'),
+      )
+      assert.deepEqual(
+        [result.code, result.lines[0]],
+        [2, 'APPWRITE_ENDPOINT has to be an https:// URL.'],
+      )
+    }
+  })
+
+  it('orders by $id with --order-by-id, and reads on past a page that ends at --from', async () => {
+    // 100 account runs from --from on, so the first page's last run is at --from itself.
+    const account = Array.from({ length: 100 }, (_, i) => ({
+      ...run('00:00', { fn: 'account' }),
+      $createdAt: new Date(Date.parse(FROM) + i * 60_000).toISOString().replace('Z', '+00:00'),
+    }))
+    const api = await serve({ runs: [...hourly('scheduler'), ...account], due: [], never: [] })
+    try {
+      await read(
+        ['--from', FROM, '--fetch', '--order-by-id'],
+        api.env,
+        Date.parse('2026-10-21T06:20:00Z'),
+      )
+      const executions = api.requests.filter((r) => r.path.endsWith('/executions'))
+      assert.ok(
+        executions.every((r) =>
+          r.queries.some((q) => q.method === 'orderDesc' && q.attribute === '$id'),
+        ),
+      )
+      assert.equal(
+        api.requests.filter((r) => r.path === '/v1/functions/account/executions').length,
+        2,
+      )
     } finally {
       await api.close()
     }

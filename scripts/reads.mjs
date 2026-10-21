@@ -383,11 +383,16 @@ export async function fetchReads({ endpoint, project, key, from, stale, orderBy 
     for (const query of queries) url.searchParams.append('queries[]', JSON.stringify(query))
     let response
     try {
+      // Never followed: a redirect would carry the key, a custom header, to wherever it points.
       response = await fetch(url, {
         headers: { 'X-Appwrite-Project': project, 'X-Appwrite-Key': key },
+        redirect: 'manual',
       })
     } catch (error) {
       throw new FetchFailed(`FETCH FAILED ${what}: ${error.cause?.code ?? error.name}`)
+    }
+    if (response.type === 'opaqueredirect' || (response.status >= 300 && response.status < 400)) {
+      throw new FetchFailed(`FETCH FAILED ${what}: ${response.status} redirect refused`)
     }
     if (!response.ok) {
       const type = await response.json().then(
@@ -476,6 +481,7 @@ export async function read(args, env = process.env, now = Date.now()) {
   if (!values.from || !TIME.test(values.from) || !TIME.test(to)) {
     return usage('--from, and --to if given, are UTC times such as 2026-10-21T02:38:27Z.')
   }
+  if (to <= values.from) return usage(`--to (${to}) has to be after --from.`)
   const from = values.from
   let runs
   let groups
@@ -489,6 +495,12 @@ export async function read(args, env = process.env, now = Date.now()) {
     const { APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID, APPWRITE_API_KEY } = env
     if (!APPWRITE_ENDPOINT || !APPWRITE_PROJECT_ID || !APPWRITE_API_KEY) {
       return usage('--fetch needs APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID and APPWRITE_API_KEY.')
+    }
+    // The key goes only over HTTPS; plain HTTP only to this machine, as the tests' stand-in is.
+    const endpoint = URL.canParse(APPWRITE_ENDPOINT) ? new URL(APPWRITE_ENDPOINT) : undefined
+    const local = ['127.0.0.1', 'localhost', '[::1]'].includes(endpoint?.hostname ?? '')
+    if (endpoint?.protocol !== 'https:' && !(endpoint?.protocol === 'http:' && local)) {
+      return usage('APPWRITE_ENDPOINT has to be an https:// URL.')
     }
     try {
       ;({ runs, groups, capped } = await fetchReads({
