@@ -173,15 +173,24 @@ describe('ActivityPage', () => {
 
   it('links to the transaction when the entry has one', async () => {
     mockGroups([house])
-    mockRows([entry('a2', { transactionId: 't1' }), entry('a1')])
+    mockRows([
+      entry('a3', { transactionId: 't1' }),
+      entry('a2', { transactionId: 't2' }),
+      entry('a1'),
+    ])
     renderAt('/activity')
     const items = await screen.findAllByRole('listitem')
-    const link = within(items[0] as HTMLElement).getByRole('link', { name: 'View transaction' })
-    expect(link.getAttribute('href')).toBe('/transactions/t1')
-    // Every entry's link says "View transaction": its entry describes it (#539).
-    const described = document.getElementById(link.getAttribute('aria-describedby') ?? '')
-    expect(described).toBe((items[0] as HTMLElement).querySelector('p'))
-    expect(within(items[1] as HTMLElement).queryByRole('link')).toBeNull()
+    const links = screen.getAllByRole('link', { name: 'View transaction' })
+    expect(links.map((link) => link.getAttribute('href'))).toEqual([
+      '/transactions/t1',
+      '/transactions/t2',
+    ])
+    // Every entry's link says "View transaction": its own entry describes it (#539).
+    const described = links.map(
+      (link) => document.getElementById(link.getAttribute('aria-describedby') ?? '')?.textContent,
+    )
+    expect(described).toEqual(['Entry a3', 'Entry a2'])
+    expect(within(items[2] as HTMLElement).queryByRole('link')).toBeNull()
   })
 
   it('never shows changesJson, and reads names only from members', async () => {

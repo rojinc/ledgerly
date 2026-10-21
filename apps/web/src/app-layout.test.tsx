@@ -6,6 +6,14 @@ import { AppLayout } from './app-layout'
 const logOut = { isPending: false, isError: false, mutate: vi.fn() }
 vi.mock('./features/auth/use-log-out', () => ({ useLogOut: () => logOut }))
 vi.mock('./features/auth/verify-email-banner', () => ({ VerifyEmailBanner: () => null }))
+// The notice as it shows after bootstrap linked a group; its own tests are the route guards'.
+vi.mock('./features/auth/linked-groups-notice', () => ({
+  LinkedGroupsNotice: () => (
+    <div role="status">
+      <button type="button">Dismiss</button>
+    </div>
+  ),
+}))
 vi.mock('./lib/realtime', () => ({ useRealtimeSync: () => {} }))
 
 // jsdom has no matchMedia: a screen of a given width, and browser font size, that can change.
@@ -59,9 +67,27 @@ describe('AppLayout, at any width (#539)', () => {
       const skip = screen.getByRole('link', { name: 'Skip to content' })
       // The browser follows it to <main>, which can take focus (jsdom doesn't move focus).
       expect(skip.getAttribute('href')).toBe('#main')
-      expect(screen.getByRole('main').id).toBe('main')
-      expect(screen.getByRole('main').tabIndex).toBe(-1)
+      const main = screen.getByRole('main')
+      expect(main.id).toBe('main')
+      main.focus()
+      expect(document.activeElement).toBe(main)
       expect(within(screen.getByRole('banner')).getByText('Ledgerly')).toBeTruthy()
+    },
+  )
+})
+
+describe('AppLayout, the found-groups notice (#570)', () => {
+  it.each([1280, 900, 375])(
+    'at %i px, comes after the skip link, in the column the menu leaves',
+    (at) => {
+      width = at
+      renderAt('/')
+      const skip = screen.getByRole('link', { name: 'Skip to content' })
+      const notice = screen.getByRole('status')
+      // The skip link is the first Tab stop, whatever shows.
+      expect(skip.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      // Beside the side menu, never under it.
+      expect(notice.closest('.pl-56') !== null).toBe(at >= 768)
     },
   )
 })

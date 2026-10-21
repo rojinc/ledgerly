@@ -150,6 +150,16 @@ describe('ReceiptsSection', () => {
     expect(screen.queryByRole('img')).toBeNull()
   })
 
+  it('says which receipt each Download PDF is for (#570)', async () => {
+    renderSection(row(['pdf1', 'pdf2']))
+    const buttons = await screen.findAllByRole('button', { name: 'Download PDF' })
+    expect(buttons).toHaveLength(2)
+    buttons.forEach((button, index) => {
+      const described = document.getElementById(button.getAttribute('aria-describedby') ?? '')
+      expect(described?.textContent).toBe(`Receipt ${index + 1} of 2 (PDF)`)
+    })
+  })
+
   it('uploads a prepared photo for the group’s team only, then attaches it', async () => {
     prepare.mockResolvedValue({ file: ready })
     createFile.mockResolvedValue({ $id: 'new1' } as never)
