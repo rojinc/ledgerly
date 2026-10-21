@@ -32,6 +32,7 @@ import {
   listAll,
   NO_SUCH_STATEMENT,
   parseBody,
+  snapshotJson,
   snapshotOf,
   statementName,
   teamRead,
@@ -252,6 +253,10 @@ async function lockAndIssue(
     statement.$id,
   )
   await lock(db, statement, unlockedIds)
+  // Dated first, so step 5 checks the snapshot step 6 stores, its schema too (#549).
+  const issuedOn = localToday(group.timezone, now)
+  const dueOn = snapshot.invoice ? addDays(issuedOn, snapshot.invoice.paymentTermsDays) : null
+  if (snapshot.invoice && dueOn) snapshot.invoice.dueOn = dueOn
   const problems = checkSnapshot(snapshot, await lockedBalances(db, group.$id, membership))
   if (problems.length > 0) {
     // Back to draft only if no other run of this finalize got past its check meanwhile: it
@@ -264,16 +269,13 @@ async function lockAndIssue(
       'The statement didn’t add up, so it wasn’t finalized. It is a draft again.',
     )
   }
-  const issuedOn = localToday(group.timezone, now)
-  const dueOn = snapshot.invoice ? addDays(issuedOn, snapshot.invoice.paymentTermsDays) : null
-  if (snapshot.invoice && dueOn) snapshot.invoice.dueOn = dueOn
   // Step 6, invoices: the issuer again, since the snapshot may lack their business details if
   // their deletion ran meanwhile (#519). The statement stays `finalizing`, with its locks.
   const invoice = statement.type === 'invoice'
   const stored = await updateStatement(
     db,
     statement,
-    { snapshotJson: JSON.stringify(snapshot), issuedOn, dueOn },
+    { snapshotJson: snapshotJson(snapshot), issuedOn, dueOn },
     invoice ? [issuerGuard(group)] : [],
     invoice ? () => requireIssuerStill(db, group) : undefined,
   )

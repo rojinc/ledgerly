@@ -502,6 +502,29 @@ describe('POST /statements/{id}/finalize', () => {
     ])
   })
 
+  it('goes back to draft, unlocked, when the schema refuses its snapshot (#549)', async () => {
+    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    const services = fakes({ ...october(), groups: [job({}, { currency: 'aud' })] })
+    const draft = stored(services).snapshotJson
+    const response = await failure(services, 'POST', '/statements/st1/finalize', { send: true })
+    expect(response.code).toBe('INVARIANT_VIOLATION')
+    expect(stored(services)).toMatchObject({
+      status: 'draft',
+      number: 10,
+      issuedOn: null,
+      dueOn: null,
+      pdfFileId: null,
+      sentAt: null,
+      snapshotJson: draft,
+    })
+    expect(locks(services)).toEqual({ s1: null, p1: null, s2: null })
+    expect(services.files.stored.size).toBe(0)
+    expect(services.sent).toEqual([])
+    expect(errors.map((line) => JSON.parse(line))).toEqual([
+      { fn: 'unknown', event: 'snapshot_check_failed', statementId: 'st1', problems: ['schema'] },
+    ])
+  })
+
   it('takes the next number when another invoice took this one meanwhile', async () => {
     const services = fakes(october())
     const stage = services.db.createOperations.bind(services.db)

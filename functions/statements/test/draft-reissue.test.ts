@@ -155,6 +155,20 @@ describe('the statements job (POST /, cron)', () => {
     expect(errors[0]).not.toMatch(/Bakery|Sam|@/)
   })
 
+  it('drafts nothing, and tries again next run, when the schema refuses the snapshot (#549)', async () => {
+    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    const services = fakes({ groups: [job({}, { currency: 'aud' })] })
+    const groups = structuredClone(services.db.rows('groups'))
+    expect(await runJob(services)).toEqual({ drafted: 0, failed: 1 })
+    expect(services.db.rows('statements')).toEqual([])
+    expect(services.db.rows('activity')).toEqual([])
+    // nextCloseAt was staged first, and rolled back with the draft.
+    expect(services.db.rows('groups')).toEqual(groups)
+    expect(errors.map((line) => JSON.parse(line))).toEqual([
+      { fn: 'unknown', event: 'draft_failed', groupId: 'job', cause: 'ZodError' },
+    ])
+  })
+
   it('keeps the draft when the email fails', async () => {
     const services = fakes()
     services.sendEmail = async () => {
@@ -384,6 +398,23 @@ describe('POST /statements/reissue', () => {
     expect(services.db.rows('activity')).toMatchObject([
       { actorPersonId: 'sam', action: 'statement.reissued' },
     ])
+  })
+
+  it('drafts nothing when the schema refuses the snapshot (#549)', async () => {
+    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    const services = fakes({
+      statements: [statement('st-void', { status: 'void' })],
+      groups: [job({}, { currency: 'aud', nextCloseAt: NOVEMBER_CLOSE })],
+    })
+    const groups = structuredClone(services.db.rows('groups'))
+    expect(await failure(services, 'POST', '/statements/reissue', october)).toMatchObject({
+      status: 500,
+      code: 'INTERNAL',
+    })
+    expect(services.db.rows('statements').map((row) => row.$id)).toEqual(['st-void'])
+    expect(services.db.rows('activity')).toEqual([])
+    // Its group guard was staged first, and rolled back with the draft.
+    expect(services.db.rows('groups')).toEqual(groups)
   })
 
   it('gives a retry the same draft', async () => {

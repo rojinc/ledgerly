@@ -305,6 +305,15 @@ describe('checkSnapshot', () => {
     ])
     expect(checkSnapshot(lopsided, fresh)).toEqual(['balanced', 'fresh'])
   })
+
+  it('finds a snapshot its schema refuses, so it is never stored (#549)', () => {
+    // A currency an older rule allowed, copied from the group row as it is.
+    const lowercase = { ...snapshot, group: { ...snapshot.group, currency: 'aud' } }
+    expect(checkSnapshot(lowercase, fresh)).toEqual(['schema'])
+    expect(checkSnapshot({ ...snapshot, extra: true } as StatementSnapshot, fresh)).toEqual([
+      'schema',
+    ])
+  })
 })
 
 describe('mergedClosings (statements.md#core-rules, rule 2)', () => {

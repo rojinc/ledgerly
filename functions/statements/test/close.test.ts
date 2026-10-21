@@ -122,6 +122,21 @@ describe('POST /statements/close', () => {
     expect(errors).toEqual([])
   })
 
+  it('drafts nothing when the schema refuses the snapshot (#549)', async () => {
+    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-11-01', 60), { statements: [octoberFinal] }),
+      groups: [job({}, { currency: 'aud', nextCloseAt: NOVEMBER_CLOSE })],
+    })
+    const body = { groupId: 'job' }
+    expect(await failure(services, 'POST', '/statements/close', body)).toMatchObject({
+      status: 500,
+      code: 'INTERNAL',
+    })
+    expect(services.db.rows('statements').map((row) => row.$id)).toEqual(['st-oct'])
+    expect(services.db.rows('activity')).toEqual([])
+  })
+
   it('takes the end it is given', async () => {
     const draft = await close(midNovember(), { periodEnd: '2026-11-01' })
     expect(draft).toMatchObject({ periodStart: '2026-11-01', periodEnd: '2026-11-01' })
