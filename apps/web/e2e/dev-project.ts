@@ -48,7 +48,8 @@ async function api<T>(method: string, path: string, body?: object): Promise<T> {
   if (!response.ok) {
     // The route and Appwrite's error type only: no address ends up in a log.
     const { type } = (await response.json().catch(() => ({}))) as { type?: string }
-    throw new Error(`${method} ${path.split('?')[0]}: ${response.status} ${type ?? ''}`)
+    const message = `${method} ${path.split('?')[0]}: ${response.status} ${type ?? ''}`
+    throw Object.assign(new Error(message), { status: response.status })
   }
   return (response.status === 204 ? undefined : await response.json()) as T
 }
@@ -102,6 +103,20 @@ export async function userIdByEmail(email: string): Promise<string> {
   const [user] = users
   if (!user) throw new Error('No user has that address yet')
   return user.$id
+}
+
+/**
+ * Where a user the run made stands at teardown: handed over (labelled `e2e` and blocked), gone (a
+ * flow deleted its own account, #525), or still live, which teardown fails on.
+ */
+export async function userState(userId: string): Promise<'handed over' | 'gone' | 'live'> {
+  try {
+    const user = await api<{ labels: string[]; status: boolean }>('GET', `/users/${userId}`)
+    return user.labels.includes(E2E_LABEL) && !user.status ? 'handed over' : 'live'
+  } catch (error) {
+    if ((error as { status?: number }).status === 404) return 'gone'
+    throw error
+  }
 }
 
 /** A run ID as global setup makes it: nothing else is ever used to pick users to hand over. */
