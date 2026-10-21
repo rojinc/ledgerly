@@ -215,7 +215,7 @@ This asks the account function to delete the owner's **personal group**. **For a
 | `FORBIDDEN` with `details.reason` `recent_password_change` | **pass:** the session was found; the password changed in the last day |
 | `FORBIDDEN` with `details.reason` `reauth` | sign out, sign in and run it again at once. **Fail** only if it repeats: the JWT has no `sessionId`, or the session isn't listed. Post on #96 (AI A wrote the check). |
 | `NOT_A_MEMBER` | the ID isn't a group the caller is in: check step 1 |
-| `NOT_FOUND` | no route matched: the ID isn't shaped like one (the placeholder left in), or `account` wasn't redeployed (step 2) |
+| `NOT_FOUND` | no route matched: `account` wasn't redeployed (step 2). A bad ID stops at the snippet's own check first. |
 | "Stopped: not a personal group" | the wrong ID: nothing was sent. Check step 1. |
 | Appwrite's own error (`type` such as `user_unauthorized`), with no `ok` | the call didn't carry the session: run it in the app's tab, signed in |
 | anything else (`UNAUTHENTICATED`, `INTERNAL`, `function_not_found`) | post the code and message on #96 |
@@ -241,6 +241,7 @@ done
 
 - **Pass:** each function has a run with `completed` and `200`, and after two hours a second one about 60 minutes later. `account`'s `200` also shows its users queries (1a) work on the server.
 - **If it fails:**
+  - **An invalid-query error:** the server refuses the `$createdAt` filter. Drop the two `$createdAt` queries, raise the limit to 10, and filter in `jq` instead: `select(.["$createdAt"] > $since)`, with `--arg since "$DEPLOYED_AT"`. 4b's command takes the same change.
   - **No run after 70 minutes:** the interval didn't take. Check the Deploy run's function push for "doesn't support cron schedules" or a skipped function, and [function settings](environments-and-deploys.md#function-settings).
   - **`failed` or a 500:** read that run's log lines, which hold IDs, event names and error names only:
 
@@ -273,7 +274,7 @@ Each finished run prints a `==` line, then one line per email failure. Count the
   - `statements`: `auto_send_failed` or `auto_send_notice_failed`, one of the two;
   - `identity`: `change_notice`.
 
-  Until #476 merges, `statements` can also log `ready_email_failed` once per admin of each statement the run drafted. No email line at all is a pass too: nothing was due to send.
+  Until #476 merges, `statements` can also log `ready_email_failed` once per admin of each statement the run drafted. No email line at all is a pass too, if nothing was due to send. **But if 1b showed a 403 and no step has logged a blocked line after two hours,** check that something was due, such as a bill's reminder or a summary, before calling it a pass. A step that failed some other way would have made 4a's run a 500.
 - **No `==` line** for a function: no finished run since the deploy yet. Wait and run it again.
 - **If it fails:** two or more lines with the same event and a blocked-send cause mean that step didn't stop. Post the function, event and count on #96 (AI A wrote #475). A cause of `EmailError validation_error 400` or `422` is an address Resend refused, which is expected now and then.
 
