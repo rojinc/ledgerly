@@ -66,7 +66,7 @@ F-06 and F-72 ([#50](https://github.com/rojinc/ledgerly/issues/50)). The export 
 | --- | --- | --- |
 | A group's CSV, for a date range | share; a transaction with no shares gets one row with empty person columns | `date,status,kind,description,category,currency,total,person,given,received,net` |
 | `my-records.csv` | the user's own share, across their groups; `group` names a pair by its other member, as the app does ([#145](https://github.com/rojinc/ledgerly/issues/145)) | `group,groupType,date,kind,description,category,currency,total,given,received,net` |
-| `profile.csv` | profile field | `field,value`: their name, the profile, business details, and the account's own email and phone. Empty fields are left out, and so are `nextSummaryAt`, a time the app sets, and `personId`, an internal ID ([#535](https://github.com/rojinc/ledgerly/issues/535)) |
+| `profile.csv` | profile field | `field,value`: their name, the profile, business details, and the account's own email and phone. Empty fields are left out, and so are `nextSummaryAt`, a time the server sets, and `personId`, an internal ID ([#535](https://github.com/rojinc/ledgerly/issues/535)) |
 
 Rules, in `packages/core/src/export/`:
 
