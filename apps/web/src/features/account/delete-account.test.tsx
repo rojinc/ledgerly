@@ -440,10 +440,12 @@ describe('DeleteAccountPage', () => {
     expect(router.state.location.state).toEqual({ from: '/account/delete' })
   })
 
-  it('waits for the user, and says when they can’t be read', () => {
+  it('waits for the user, and says when they can’t be read, under the page’s h1 (#556)', () => {
+    const h1 = () => screen.getByRole('heading', { level: 1 }).textContent
     vi.mocked(useCurrentUser).mockReturnValue({ data: undefined, isPending: true } as never)
     renderPage()
     expect(screen.getByRole('status').textContent).toBe('Loading…')
+    expect(h1()).toBe('Delete your account')
     cleanup()
     vi.mocked(useCurrentUser).mockReturnValue({
       data: undefined,
@@ -452,5 +454,6 @@ describe('DeleteAccountPage', () => {
     } as never)
     renderPage()
     expect(screen.getByRole('alert').textContent).toMatch(/couldn’t reach Ledgerly/)
+    expect(h1()).toBe('Delete your account')
   })
 })

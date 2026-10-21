@@ -1,6 +1,6 @@
 import { expect, type Page, test } from '@playwright/test'
 import { runId, testEmail } from './dev-project'
-import { addEmployer, archiveEmployer } from './employer'
+import { addEmployer, archiveEmployer, expectEmployerSettings } from './employer'
 import { logIn, logInWithToken, setupUser } from './users'
 
 // Deleting an archived group (#429, identity-and-invites.md#deleting-a-group), the first of
@@ -23,6 +23,7 @@ async function archivedEmployer(page: Page, who: 'ann' | 'bea'): Promise<string>
   const name = `Co of ${who} ${runId()}`
   await page.goto('/groups/new-employer')
   groupId = await addEmployer(page, name, testEmail(`${who}-billing`))
+  await expectEmployerSettings(page, name)
   await archiveEmployer(page, groupId)
   archived = true
   // Its admin, with nobody else joined, gets Delete group beside Unarchive.
