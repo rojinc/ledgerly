@@ -505,7 +505,8 @@ describe('POST /statements/{id}/finalize', () => {
   })
 
   it('goes back to draft, unlocked, when the schema refuses its snapshot (#549)', async () => {
-    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    // A currency the schema refuses (for example, one written outside the API): the snapshot
+    // copies it, and no read could parse it back.
     const services = fakes({ ...october(), groups: [job({}, { currency: 'aud' })] })
     const draft = stored(services).snapshotJson
     const response = await failure(services, 'POST', '/statements/st1/finalize', { send: true })

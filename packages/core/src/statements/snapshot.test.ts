@@ -307,12 +307,22 @@ describe('checkSnapshot', () => {
   })
 
   it('finds a snapshot its schema refuses, so it is never stored (#549)', () => {
-    // A currency an older rule allowed, copied from the group row as it is.
+    // A currency the schema refuses (for example, one written outside the API), copied from the
+    // group row as it is.
     const lowercase = { ...snapshot, group: { ...snapshot.group, currency: 'aud' } }
     expect(checkSnapshot(lowercase, fresh)).toEqual(['schema'])
     expect(checkSnapshot({ ...snapshot, extra: true } as StatementSnapshot, fresh)).toEqual([
       'schema',
     ])
+  })
+
+  it('finds a refused snapshot beside the balance checks, not instead of them (#570 P50)', () => {
+    const lopsided = withPeople([
+      employer,
+      { ...worker, openingCents: worker.openingCents + 1, closingCents: worker.closingCents + 1 },
+    ])
+    const both = { ...lopsided, group: { ...lopsided.group, currency: 'aud' } }
+    expect(checkSnapshot(both, fresh)).toEqual(['balanced', 'fresh', 'schema'])
   })
 })
 

@@ -156,7 +156,8 @@ describe('the statements job (POST /, cron)', () => {
   })
 
   it('drafts nothing, and tries again next run, when the schema refuses the snapshot (#549)', async () => {
-    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    // A currency the schema refuses (for example, one written outside the API): the snapshot
+    // copies it, and no read could parse it back.
     const services = fakes({ groups: [job({}, { currency: 'aud' })] })
     const groups = structuredClone(services.db.rows('groups'))
     expect(await runJob(services)).toEqual({ drafted: 0, failed: 1 })
@@ -401,7 +402,8 @@ describe('POST /statements/reissue', () => {
   })
 
   it('drafts nothing when the schema refuses the snapshot (#549)', async () => {
-    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    // A currency the schema refuses (for example, one written outside the API): the snapshot
+    // copies it, and no read could parse it back.
     const services = fakes({
       statements: [statement('st-void', { status: 'void' })],
       groups: [job({}, { currency: 'aud', nextCloseAt: NOVEMBER_CLOSE })],

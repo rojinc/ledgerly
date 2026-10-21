@@ -301,7 +301,8 @@ describe('POST /statements/{id}/refresh', () => {
   })
 
   it('stores nothing when the schema refuses the snapshot (#549)', async () => {
-    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    // A currency the schema refuses (for example, one written outside the API): the snapshot
+    // copies it, and no read could parse it back.
     const services = fakes({
       groups: [job({}, { currency: 'aud' })],
       statements: [statement('st1')],
