@@ -149,10 +149,32 @@ describe('statementSnapshotSchema', () => {
 
   it('has the Profile’s business fields, and the bank’s', () => {
     const keys = (schema: { shape: object }) => Object.keys(schema.shape).sort()
-    expect(keys(snapshotBusinessSchema)).toEqual(keys(businessDetailsSchema))
-    expect(keys(snapshotBusinessSchema.shape.bank.unwrap())).toEqual(
-      keys(businessDetailsSchema.shape.bank.unwrap()),
+    expect(keys(snapshotBusinessSchema)).toEqual(
+      expect.arrayContaining(keys(businessDetailsSchema)),
     )
+    expect(keys(snapshotBusinessSchema.shape.bank.unwrap())).toEqual(
+      expect.arrayContaining(keys(businessDetailsSchema.shape.bank.unwrap())),
+    )
+  })
+
+  it('keeps every business field a stored snapshot may hold, even one the Profile drops (#556)', () => {
+    const keys = (schema: { shape: object }) => Object.keys(schema.shape).sort()
+    // These lists only grow: final invoices hold these keys for good.
+    expect(keys(snapshotBusinessSchema)).toEqual([
+      'abn',
+      'address',
+      'bank',
+      'businessName',
+      'email',
+      'invoiceNotes',
+      'payId',
+      'phone',
+    ])
+    expect(keys(snapshotBusinessSchema.shape.bank.unwrap())).toEqual([
+      'accountName',
+      'accountNumber',
+      'bsb',
+    ])
   })
 
   it('rejects transfers of zero and instants that are not UTC', () => {
