@@ -154,7 +154,7 @@ A restore brings back the rows of every account and group deleted since the back
     --json | jq -r '.["$id"]'
   ```
 
-- **Then run the check again** after the next hourly run. A group still "to mark" was deleted on its own ([deleting a group](../architecture/identity-and-invites.md#deleting-a-group)). Write `DELETE /groups/{id}`'s step 2 mark on it: `deletingAt`, `deletingBy` (the person ID of the member who deleted it, or else of any member row it still has), and a fresh `rev`. The hourly run's group pass then purges it, ending with that member's row.
+- **Then run the check again** after the next hourly run. A group still "to mark" was deleted on its own ([deleting a group](../architecture/identity-and-invites.md#deleting-a-group)). Write `account POST /groups/{id}/delete`'s step 2 mark on it: `deletingAt`, `deletingBy` (the person ID of the member who deleted it, or else of any member row it still has), and a fresh `rev`. The hourly run's group pass then purges it, ending with that member's row.
 - **These marks need a second one-off key with `rows.write` only,** made for this step and deleted in 2f. They're the only rows this runbook writes by hand. Each is the same write a route makes, so everything after it runs as it would for a deletion that was cut off.
 - **Post the person and group IDs on #96,** and the check's next run, which must list neither.
 
