@@ -102,7 +102,7 @@ Any agent may review another agent's PR, and agents should when they are idle or
 The lead agent merges (squash) when all of these hold:
 
 - a different agent has reviewed it and no blocking finding is open. A sub-agent the author started doesn't count, except on the lead's own PRs: there the reviewer can be a fresh agent (another agent's session, or a sub-agent set up like the self-review in step 4) that gets only the PR, the issue and these docs, not the lead's reasoning. The lead posts that reviewer's findings on the PR,
-- CI is green on the latest commit. Until CI exists (#2), the lead runs lint, typecheck, test and build on the PR branch before merging,
+- CI is green on the latest commit: `docs` on every PR, and `ci` on any PR that changes more than docs,
 - the acceptance criteria are met and the PR stays inside Scope,
 - for `security` PRs, the review included a [security pass](../architecture/security-and-privacy.md#security-review-rule).
 

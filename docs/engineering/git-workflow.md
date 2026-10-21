@@ -66,4 +66,4 @@ The ruleset `protect-main` is active on `main`:
 - linear history (squash merges only; merge and rebase merges are turned off in repo settings),
 - no force pushes and no deletion.
 
-Head branches are deleted automatically after merge. `ci` stays an optional check: with `paths-ignore`, a docs-only pull request gets no `ci` run, so a required check would block it (the lead, on #96).
+Head branches are deleted automatically after merge. `ci` stays an optional check: with `paths-ignore`, a docs-only pull request gets no `ci` run, so a required check would block it (the lead, on #96). `docs` runs on every pull request, so it can be a required check; making it one is a repository setting, the owner's job.

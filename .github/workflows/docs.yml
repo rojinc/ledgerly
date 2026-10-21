@@ -1,0 +1,37 @@
+name: Docs
+
+# Checks every Markdown file's relative links (environments-and-deploys.md#cicd-github-actions).
+# Every pull request runs, with no paths filter: a docs-only PR gets no `ci`, and a code PR can
+# break a link by moving a file. A draft runs once it's marked ready.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# A new push to a PR cancels that PR's older runs.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    name: docs
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # Node's built-ins only, so no cache and no `npm ci`.
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+
+      # Names the file: `node --test scripts/` doesn't search a folder on Node 24.
+      - run: node --test scripts/check-links.test.mjs
+
+      - run: node scripts/check-links.mjs
