@@ -39,7 +39,9 @@ jobs:
 
       - run: npm ci
 
-      - run: npx playwright install --with-deps chromium
+      # In the web workspace: Playwright is installed there (apps/web/node_modules), not at the
+      # root, so a bare `npx playwright` finds nothing.
+      - run: npm exec -w @ledgerly/web -- playwright install --with-deps chromium
 
       # Builds the mock from this checkout, then runs every flow against it (E2E_MOCK=1).
       - name: User flows on the mock
