@@ -79,7 +79,7 @@ Rules, in `packages/core/src/export/`:
 - **What a spreadsheet does on opening** is outside the file: Excel may drop the leading zeros of a BSB or account number, show an ABN in scientific notation, read a text like `1/2` as a date, or read `12.30` wrongly where the decimal separator is a comma. The values in the file are exact; CSV has no way to mark a column as text.
 - **Your data** is two files, offered as two links once both are made, since browsers don't reliably allow two downloads from one click.
 - **A group's dates** are the start of this year to today, in the group's time zone, unless the user picks others. A group's delete screen links to `/export?groupId=<id>`, which picks that group, from its first transaction's date to its last's (or today, if that's later), so nothing is left out before the delete ([#535](https://github.com/rojinc/ledgerly/issues/535)). The two dates are read on `idx_group_date`, and Download waits for them. If they can't be read, the page says so and offers this year's dates.
-- **Business details** are read field by field: each of the schema's fields, the bank's included, that's stored as text goes in as stored, so a value a later schema would refuse doesn't drop the others ([#535](https://github.com/rojinc/ledgerly/issues/535)).
+- **Business details** are read field by field: each of the schema's fields, the bank's included, that's stored as text goes in as stored, so a value a later schema would refuse doesn't drop the others ([#535](https://github.com/rojinc/ledgerly/issues/535)). An invoice reads them by a stricter rule, keeping only what passes today's ([snapshot](statements.md#snapshot)), so a detail can show in Profile and `profile.csv` but not on an invoice.
 
 ## Retention
 

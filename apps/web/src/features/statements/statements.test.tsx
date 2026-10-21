@@ -410,6 +410,27 @@ describe('StatementPage: a draft', () => {
     expect(warning !== null).toBe(warned)
   })
 
+  it.each([
+    ['ABN', { abn: 'ร้าน' }],
+    ['BSB', { bank: { accountName: 'Sam', bsb: 'ร้าน', accountNumber: '12345678' } }],
+    ['account number', { bank: { accountName: 'Sam', bsb: '062000', accountNumber: 'ร้าน' } }],
+  ])('warns when the PDF can’t show a character in the %s (#543)', async (_, business) => {
+    const base = snapshot()
+    const issuer = base.issuer && {
+      ...base.issuer,
+      business: { ...base.issuer.business, ...business },
+    }
+    store(statement('s1', {}, snapshot({ issuer })))
+    call.mockReturnValue(new Promise(() => {}))
+    renderAt('/groups/g1/statements/s1')
+    await screen.findByRole('article', { name: 'Draft invoice' })
+    expect(
+      screen.getByText(
+        'Some characters in this invoice can’t be shown in the PDF yet. They’ll print as �.',
+      ),
+    ).toBeTruthy()
+  })
+
   it('says when nothing is owed, or the employer is in credit', async () => {
     store(
       statement('s1', {}, snapshot({ invoice: { balanceDueCents: -500, paymentTermsDays: 14 } })),
