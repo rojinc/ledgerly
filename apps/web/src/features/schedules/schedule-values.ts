@@ -16,6 +16,8 @@ export type ScheduleValues = Repeat & {
   startsOn: string
   skipPublicHolidays: boolean
   autoPost: boolean
+  /** The dates to skip, as stored: the form lists and changes only those from today on (#487). */
+  skipped: string[]
 }
 
 function cents(text: string, currency: string): number {
@@ -36,8 +38,11 @@ export function toScheduleInput(
   ids: { id: string; groupId: string },
   currency: string,
   /** What the stored schedule has that this form doesn't show, kept as it was. */
-  kept: { endsOn?: string; exdates?: string[]; horizonDays?: number } = {},
+  kept: { endsOn?: string; horizonDays?: number } = {},
 ): z.input<typeof scheduleInputSchema> {
+  // Past dates change nothing (PATCH never fills in past dates), but they're sent back, so a
+  // save keeps them. In date order, once each.
+  const exdates = [...new Set(values.skipped)].sort()
   return {
     ...ids,
     kind: 'shift',
@@ -51,6 +56,7 @@ export function toScheduleInput(
     rrule: toRrule(values),
     startsOn: values.startsOn,
     ...kept,
+    ...(exdates.length ? { exdates } : {}),
     skipPublicHolidays: values.skipPublicHolidays,
     autoPost: values.autoPost,
   }
@@ -86,18 +92,15 @@ export function fromSchedule(schedule: Schedules, currency: string): ScheduleVal
     startsOn: schedule.startsOn,
     skipPublicHolidays: schedule.skipPublicHolidays,
     autoPost: schedule.autoPost,
+    // The API takes a date twice, so it's listed and counted once.
+    skipped: [...new Set(schedule.exdates ?? [])],
   }
 }
 
 /** What a stored schedule has that the form doesn't show, which a save keeps as it was. */
-export function keptOf(schedule: Schedules): {
-  endsOn?: string
-  exdates?: string[]
-  horizonDays: number
-} {
+export function keptOf(schedule: Schedules): { endsOn?: string; horizonDays: number } {
   return {
     ...(schedule.endsOn ? { endsOn: schedule.endsOn } : {}),
-    ...(schedule.exdates?.length ? { exdates: schedule.exdates } : {}),
     horizonDays: schedule.horizonDays,
   }
 }
