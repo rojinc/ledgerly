@@ -34,6 +34,7 @@
 * [Testing](engineering/testing.md)
 * [Local setup](engineering/local-setup.md)
 * [Environments and deploys](engineering/environments-and-deploys.md)
+* [First deploy](engineering/first-deploy.md)
 * [Writing docs](engineering/documentation.md)
 
 ## Collaboration
