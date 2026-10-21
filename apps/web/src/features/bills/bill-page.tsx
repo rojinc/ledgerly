@@ -244,7 +244,7 @@ function BillDetails({ row, onDone }: { row: Transactions; onDone: () => void })
     <>
       <p className="text-muted-foreground">{status}</p>
       {/* Mounted from the start, so a change is read out. */}
-      <p role="status" className="text-sm empty:hidden">
+      <p role="status" className="text-sm empty:sr-only">
         {done}
       </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">

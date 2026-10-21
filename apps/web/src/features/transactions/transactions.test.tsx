@@ -2362,7 +2362,7 @@ describe('TransactionPage', () => {
     }
   })
 
-  it('has no Void in an archived group, on a final invoice, for a viewer, or for another member’s row', async () => {
+  it('has no Void in an archived group, on a final invoice or divide, for a viewer, or for another member’s row', async () => {
     const cases: [Groups, Members['role'], Partial<Transactions>, string | null][] = [
       [
         { ...acme, archivedAt: '2026-10-01T00:00:00.000Z' },
@@ -2371,6 +2371,8 @@ describe('TransactionPage', () => {
         'This group is archived. You can see its history but not change it.',
       ],
       [acme, 'admin', { statementId: 'st1' }, 'It’s on a final invoice, so it can’t be changed.'],
+      // A house's final statement is a divide (#545).
+      [house, 'admin', { statementId: 'st1' }, 'It’s on a final divide, so it can’t be changed.'],
       [acme, 'viewer', {}, null],
       [acme, 'member', { createdBy: 'pe' }, null],
     ]

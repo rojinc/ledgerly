@@ -646,6 +646,9 @@ describe('ShiftPage', () => {
       tableId: 'transactions',
       rowId: 't1',
     })
+    // Mounted from the start, so the announcement is read out (#539), and empty until a save.
+    const statuses = screen.getAllByRole('status')
+    expect(statuses.map((node) => node.textContent)).not.toContain('Saved.')
 
     type('Description', 'Late shift')
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
@@ -658,7 +661,7 @@ describe('ShiftPage', () => {
       description: 'Late shift',
       shift: storedShift,
     })
-    expect(await screen.findByText('Saved.')).toBeTruthy()
+    await waitFor(() => expect(statuses.map((node) => node.textContent)).toContain('Saved.'))
     expect(screen.getByRole('heading', { name: 'Late shift' })).toBeTruthy()
   })
 

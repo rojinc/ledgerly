@@ -1,8 +1,14 @@
 import type { Groups, Profiles } from '@ledgerly/core/generated/rows'
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import {
+  focusManager,
+  onlineManager,
+  QueryClient,
+  QueryClientProvider,
+} from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { AppwriteException, Query } from 'appwrite'
 import { StrictMode } from 'react'
+import { MemoryRouter } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { tablesDB } from '../../lib/appwrite'
 import { useCurrentUser } from '../auth/use-current-user'
@@ -135,11 +141,13 @@ const profile = {
   hoursCapStartsOn: null,
 } as Profiles
 
-function renderPage({ strict = false } = {}) {
+function renderPage({ strict = false, path = '/export' } = {}) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   render(
     <QueryClientProvider client={queryClient}>
-      <ExportPage />
+      <MemoryRouter initialEntries={[path]}>
+        <ExportPage />
+      </MemoryRouter>
     </QueryClientProvider>,
     // The app runs in StrictMode, which mounts each effect twice.
     { wrapper: strict ? StrictMode : undefined },
@@ -465,6 +473,148 @@ describe('ExportPage: a group’s records', () => {
   })
 })
 
+/** A group's first and last transactions, as `groupDates` reads them; the rest as `mockTables`. */
+function datesAre(
+  first: string | null,
+  last: string | null,
+  tables: Record<string, object[]> = {},
+) {
+  listRows.mockImplementation((async ({ tableId, queries }: Params) => {
+    if (queries.includes(Query.limit(1))) {
+      const date = queries.includes(Query.orderAsc('date')) ? first : last
+      return { total: date ? 1 : 0, rows: date ? [{ $id: 't0', date }] : [] }
+    }
+    const rows = tables[tableId] ?? []
+    return { total: rows.length, rows }
+  }) as never)
+}
+
+/** The queries of `groupDates`' two reads for `groupId`. */
+const datesRead = (groupId: string) =>
+  [Query.orderAsc('date'), Query.orderDesc('date')].map((order) => ({
+    databaseId: 'main',
+    tableId: 'transactions',
+    queries: [
+      Query.equal('groupId', groupId),
+      Query.select(['$id', 'date']),
+      order,
+      Query.limit(1),
+    ],
+  }))
+
+const fieldValue = (label: string) => (screen.getByLabelText(label) as HTMLInputElement).value
+
+describe('ExportPage: a delete screen’s link (#535)', () => {
+  it('picks the linked group, from its first transaction to its last, past today', async () => {
+    datesAre('2024-03-02', '2027-01-15')
+    renderPage({ path: '/export?groupId=g1' })
+    // Acme Cafe sorts first, but the link names Flat 2/14.
+    expect((screen.getByLabelText('Group') as HTMLSelectElement).value).toBe('g1')
+    await waitFor(() => expect(fieldValue('From')).toBe('2024-03-02'))
+    expect(fieldValue('To')).toBe('2027-01-15')
+    expect(calls()).toEqual(datesRead('g1'))
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    await screen.findByText('Downloaded flat-2-14-2024-03-02-to-2027-01-15.csv.')
+    expect(calls()[2]?.queries.slice(0, 3)).toEqual([
+      Query.equal('groupId', 'g1'),
+      Query.greaterThanEqual('date', '2024-03-02'),
+      Query.lessThanEqual('date', '2027-01-15'),
+    ])
+  })
+
+  it('ends today when the last transaction is earlier', async () => {
+    datesAre('2025-05-01', '2025-06-30')
+    renderPage({ path: '/export?groupId=g1' })
+    await waitFor(() => expect(fieldValue('From')).toBe('2025-05-01'))
+    expect(fieldValue('To')).toBe('2026-10-26')
+  })
+
+  it('offers this year when the linked group has nothing recorded', async () => {
+    datesAre(null, null)
+    renderPage({ path: '/export?groupId=g1' })
+    await screen.findByRole('button', { name: 'Download CSV' })
+    expect(fieldValue('From')).toBe('2026-01-01')
+    expect(fieldValue('To')).toBe('2026-10-26')
+  })
+
+  it('waits for the dates before it downloads anything', async () => {
+    const answers: ((value: unknown) => void)[] = []
+    listRows.mockImplementation((() => new Promise((resolve) => answers.push(resolve))) as never)
+    renderPage({ path: '/export?groupId=g1' })
+    const button = screen.getByRole('button', { name: 'Finding its dates…' })
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    fireEvent.click(button)
+    expect(getRow).not.toHaveBeenCalled()
+    expect(calls()).toHaveLength(2)
+    await act(async () => {
+      for (const answer of answers) answer({ total: 1, rows: [{ $id: 't0', date: '2024-03-02' }] })
+    })
+    expect(await screen.findByRole('button', { name: 'Download CSV' })).toBeTruthy()
+    expect(fieldValue('From')).toBe('2024-03-02')
+  })
+
+  it('says so when the dates can’t be found, and offers this year', async () => {
+    listRows.mockRejectedValue(new Error('offline'))
+    renderPage({ path: '/export?groupId=g1' })
+    expect(
+      (await screen.findByText(/We couldn’t find this group’s first and last dates/)).textContent,
+    ).toBe(
+      'We couldn’t find this group’s first and last dates, so these are this year’s. Change them, or reload the page to try again.',
+    )
+    expect(fieldValue('From')).toBe('2026-01-01')
+    expect(screen.getByRole('button', { name: 'Download CSV' })).toBeTruthy()
+    // Coming back to the tab, or online, doesn't read again and make Download wait.
+    for (const event of [
+      () => focusManager.setFocused(true),
+      () => onlineManager.setOnline(true),
+    ]) {
+      focusManager.setFocused(false)
+      onlineManager.setOnline(false)
+      await act(async () => {
+        event()
+        // A refetch starts on the next tick.
+        await new Promise((resolve) => setTimeout(resolve, 20))
+      })
+      expect(listRows).toHaveBeenCalledTimes(2)
+    }
+    focusManager.setFocused(undefined)
+    expect(screen.getByRole('button', { name: 'Download CSV' })).toBeTruthy()
+  })
+
+  it('downloads the dates typed over the linked group’s', async () => {
+    datesAre('2024-03-02', '2027-01-15')
+    renderPage({ path: '/export?groupId=g1' })
+    await waitFor(() => expect(fieldValue('From')).toBe('2024-03-02'))
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '2025-01-01' } })
+    fireEvent.change(screen.getByLabelText('To'), { target: { value: '2025-12-31' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Download CSV' }))
+    await screen.findByText('Downloaded flat-2-14-2025-01-01-to-2025-12-31.csv.')
+    expect(calls()[2]?.queries.slice(1, 3)).toEqual([
+      Query.greaterThanEqual('date', '2025-01-01'),
+      Query.lessThanEqual('date', '2025-12-31'),
+    ])
+  })
+
+  it('offers this year in another group picked after the link', async () => {
+    datesAre('2024-03-02', '2027-01-15')
+    renderPage({ path: '/export?groupId=g1' })
+    await waitFor(() => expect(fieldValue('From')).toBe('2024-03-02'))
+    fireEvent.change(screen.getByLabelText('Group'), { target: { value: 'g2' } })
+    expect(fieldValue('From')).toBe('2026-01-01')
+    expect(fieldValue('To')).toBe('2026-10-25')
+    expect(calls()).toEqual(datesRead('g1'))
+  })
+
+  it('picks the first group, and reads no dates, for a group not in the list', () => {
+    mockTables({})
+    renderPage({ path: '/export?groupId=gone' })
+    expect((screen.getByLabelText('Group') as HTMLSelectElement).value).toBe('g2')
+    expect(fieldValue('From')).toBe('2026-01-01')
+    expect(screen.getByRole('button', { name: 'Download CSV' })).toBeTruthy()
+    expect(listRows).not.toHaveBeenCalled()
+  })
+})
+
 describe('ExportPage: your data', () => {
   it('offers profile.csv and my-records.csv as links, with only your own shares', async () => {
     mockTables({
@@ -550,7 +700,8 @@ describe('ExportPage: your data', () => {
 
   it.each([
     ['that don’t parse', '{'],
-    ['that the schema refuses', JSON.stringify({ abn: '1' })],
+    ['that aren’t text', JSON.stringify({ abn: 51824753556, bank: { bsb: 62000 } })],
+    ['that aren’t in an object', JSON.stringify('Sam Lee Cleaning')],
     ['that aren’t there', null],
   ])('leaves out business details %s', async (_case, businessJson) => {
     vi.mocked(useProfile).mockReturnValue({ data: { ...profile, businessJson } } as never)
@@ -559,6 +710,57 @@ describe('ExportPage: your data', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
     await screen.findByText('Your files are ready. Download each one:')
     expect(linkLines('profile.csv').some((line) => line.startsWith('business.'))).toBe(false)
+  })
+
+  it('writes every business detail stored, in the schema’s order', async () => {
+    const businessJson = JSON.stringify({
+      businessName: 'Sam Lee Cleaning',
+      abn: '51824753556',
+      address: '1 Example St, Sydney NSW 2000',
+      email: 'sam@example.com',
+      phone: '+61412345678',
+      bank: { accountName: 'Sam Lee', bsb: '062000', accountNumber: '12345678' },
+      payId: 'sam@example.com',
+      invoiceNotes: 'Thanks!',
+    })
+    vi.mocked(useProfile).mockReturnValue({ data: { ...profile, businessJson } } as never)
+    mockTables({})
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await screen.findByText('Your files are ready. Download each one:')
+    expect(linkLines('profile.csv').filter((line) => line.startsWith('business.'))).toEqual([
+      'business.businessName,Sam Lee Cleaning',
+      'business.abn,51824753556',
+      'business.address,"1 Example St, Sydney NSW 2000"',
+      'business.email,sam@example.com',
+      // A leading + could start a formula, so it gets a '.
+      "business.phone,'+61412345678",
+      'business.payId,sam@example.com',
+      'business.invoiceNotes,Thanks!',
+      'business.bank.accountName,Sam Lee',
+      'business.bank.bsb,062000',
+      'business.bank.accountNumber,12345678',
+    ])
+  })
+
+  it('keeps each business detail that’s text, even one the schema would refuse now', async () => {
+    const businessJson = JSON.stringify({
+      businessName: 'Sam Lee Cleaning',
+      abn: '1',
+      email: 5,
+      bank: { bsb: '062000', accountNumber: ['12345678'] },
+      notes: 'not a business detail',
+    })
+    vi.mocked(useProfile).mockReturnValue({ data: { ...profile, businessJson } } as never)
+    mockTables({})
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Make my files' }))
+    await screen.findByText('Your files are ready. Download each one:')
+    expect(linkLines('profile.csv').filter((line) => line.startsWith('business.'))).toEqual([
+      'business.businessName,Sam Lee Cleaning',
+      'business.abn,1',
+      'business.bank.bsb,062000',
+    ])
   })
 
   it('lets go of the last files when new ones are made', async () => {

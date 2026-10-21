@@ -1,4 +1,5 @@
 import { expect, type Page } from '@playwright/test'
+import { archiveGroup } from './groups'
 
 /**
  * Fills in the open New employer form as user flow 2's step 1 does ($25/h, monthly invoices,
@@ -25,11 +26,5 @@ export async function addEmployer(page: Page, name: string, billing: string): Pr
  * invoice for every month (the lead's (b) on #38). Archiving stops its schedules too.
  */
 export async function archiveEmployer(page: Page, groupId: string): Promise<void> {
-  await page.goto(`/groups/${groupId}/settings`)
-  await page.getByRole('button', { name: 'Archive group', exact: true }).click()
-  await page
-    .getByRole('alertdialog')
-    .getByRole('button', { name: 'Archive group', exact: true })
-    .click()
-  await expect(page.getByText(/^This group is archived\./)).toBeVisible()
+  await archiveGroup(page, `/groups/${groupId}/settings`)
 }

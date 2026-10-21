@@ -392,6 +392,9 @@ describe('EmployerSettingsPage', () => {
     expect(input('Payment terms (days)').value).toBe('7')
     expect(input('Finalize invoices automatically when the period ends').checked).toBe(true)
 
+    // Mounted from the start, so the announcement is read out (#539), and empty until a save.
+    const statuses = screen.getAllByRole('status')
+    expect(statuses.map((node) => node.textContent)).not.toContain('Saved.')
     type('Group name', ' Acme ')
     type('Billing emails', 'pay@acme.test,  accounts@acme.test')
     type(/Default hourly rate/, '30')
@@ -409,7 +412,7 @@ describe('EmployerSettingsPage', () => {
         recipients: ['pay@acme.test', 'accounts@acme.test'],
       },
     })
-    expect(await screen.findByText('Saved.')).toBeTruthy()
+    await waitFor(() => expect(statuses.map((node) => node.textContent)).toContain('Saved.'))
     expect(input('Billing emails').value).toBe('pay@acme.test\naccounts@acme.test')
     expect(input(/Default hourly rate/).value).toBe('30.00')
     expect(queryClient.getQueryData(['group', 'g1'])).toEqual(saved)

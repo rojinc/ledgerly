@@ -284,11 +284,10 @@ export function ShiftForm({
         <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : submitLabel}
         </Button>
-        {isSubmitSuccessful && !isDirty && !errors.root && (
-          <p role="status" className="text-sm text-muted-foreground">
-            Saved.
-          </p>
-        )}
+        {/* Mounted from the start, so the announcement is read out (#539). */}
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
+          {isSubmitSuccessful && !isDirty && !errors.root ? 'Saved.' : ''}
+        </p>
       </div>
     </form>
   )

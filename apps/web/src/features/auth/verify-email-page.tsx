@@ -4,7 +4,7 @@ import { Link, useSearchParams } from 'react-router'
 import { account } from '../../lib/appwrite'
 import { queryKeys } from '../../lib/query-keys'
 import { Alert } from '../../ui/alert'
-import { AuthCard } from './auth-card'
+import { AuthCard, focusOnMount } from './auth-card'
 import { authErrorMessage } from './auth-error'
 
 /** Where Appwrite's verification email links back to. */
@@ -44,7 +44,10 @@ export function VerifyEmailPage() {
       ) : verify.isError ? (
         <Alert variant="destructive">{authErrorMessage(verify.error)}</Alert>
       ) : verify.isSuccess ? (
-        <Alert>Your email is verified.</Alert>
+        // Focused, so it's read out: it replaces the page's waiting line (#539).
+        <Alert ref={focusOnMount} tabIndex={-1} className="outline-none">
+          Your email is verified.
+        </Alert>
       ) : (
         <p role="status" className="text-center text-muted-foreground">
           Checking your link…

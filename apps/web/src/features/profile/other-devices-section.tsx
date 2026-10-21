@@ -21,7 +21,7 @@ export function OtherDevicesSection() {
         Signed in somewhere you don’t recognise? Sign out everywhere but here.
       </p>
       {/* Mounted from the start, so the message is read out. */}
-      <p role="status" className="text-sm empty:hidden">
+      <p role="status" className="text-sm empty:sr-only">
         {signOut.isSuccess ? signedOut(signOut.data) : ''}
       </p>
       {signOut.isError && <Alert variant="destructive">{authErrorMessage(signOut.error)}</Alert>}

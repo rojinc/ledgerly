@@ -147,7 +147,7 @@ export function StatementsPage() {
         {house ? 'Statements' : 'Invoices'}
         {group.data ? ` for ${group.data.name}` : ''}
       </h1>
-      <p role="status" className="text-muted-foreground empty:hidden">
+      <p role="status" className="text-muted-foreground empty:sr-only">
         {note}
       </p>
       {kind && <CurrentPeriod groupId={groupId} />}
@@ -355,7 +355,7 @@ function CloseForm({
         error={error ? { type: 'validate', message: error } : undefined}
       />
       {/* Mounted from the start, so a change is read out. */}
-      <p role="status" className="text-sm break-words empty:hidden">
+      <p role="status" className="text-sm break-words empty:sr-only">
         {covers}
       </p>
       {close.error instanceof UnfinishedDraft ? (

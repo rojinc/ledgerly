@@ -15,7 +15,12 @@ export function setupUser(
     | 'dee'
     | 'eve'
     | 'fay'
-    | 'gil',
+    | 'gil'
+    | 'ida'
+    | 'gus'
+    | 'hal'
+    | 'ivy'
+    | 'jon',
 ): TestUser {
   const users = JSON.parse(process.env.E2E_USERS ?? '{}') as Record<string, TestUser>
   const user = users[key]

@@ -185,7 +185,7 @@ export function PairPage() {
       </h1>
       {/* Mounted with the group, so the news is read out. */}
       {group.data && (
-        <p role="status" className="text-sm text-muted-foreground empty:hidden">
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
           {unarchived && !group.data.archivedAt ? UNARCHIVED_NEWS : ''}
         </p>
       )}
@@ -415,14 +415,15 @@ export function EntryForm({
         error={errors.amount}
         {...form.register('amount', { onChange: () => setSaved(false) })}
       />
-      {/* A warning, not an error: paying back more just turns the balance the other way. */}
-      {!edit && type === 'repaid' && Number.isInteger(typed) && typed > owed && (
-        <p role="status" className="text-sm text-muted-foreground">
-          {owed === 0
+      {/* A warning, not an error: paying back more just turns the balance the other way. Mounted
+          with the form, so it's read out when it appears (#539). */}
+      <p role="status" className="text-sm text-muted-foreground empty:sr-only">
+        {!edit && type === 'repaid' && Number.isInteger(typed) && typed > owed
+          ? owed === 0
             ? `Nothing is owed that way right now, so this will be owed the other way.`
-            : `That’s more than ${from === 'them' ? `${name} owes you` : `you owe ${name}`} (${formatNet(owed, group.currency)}). The rest will be owed the other way.`}
-        </p>
-      )}
+            : `That’s more than ${from === 'them' ? `${name} owes you` : `you owe ${name}`} (${formatNet(owed, group.currency)}). The rest will be owed the other way.`
+          : ''}
+      </p>
       <TextField
         id="date"
         type="date"
@@ -460,11 +461,10 @@ export function EntryForm({
             Cancel
           </Button>
         )}
-        {saved && (
-          <p role="status" className="text-sm text-muted-foreground">
-            Added.
-          </p>
-        )}
+        {/* Mounted from the start, so the announcement is read out (#539). */}
+        <p role="status" className="text-sm text-muted-foreground empty:sr-only">
+          {saved ? 'Added.' : ''}
+        </p>
       </div>
     </form>
   )

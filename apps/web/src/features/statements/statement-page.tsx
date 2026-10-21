@@ -223,7 +223,7 @@ function Details({ row, onDone }: { row: Statements; onDone: () => void }) {
         {autoSendNote(row, new Date())}
       </p>
       {/* Mounted from the start, so a change is read out. */}
-      <p role="status" className="text-sm break-words empty:hidden">
+      <p role="status" className="text-sm break-words empty:sr-only">
         {done}
       </p>
       {refused && <Message alert>{refused}</Message>}
@@ -555,7 +555,7 @@ function FinalActions({
       {downloadError && <Message alert>{downloadError}</Message>}
       {send.isError && <Message alert>{send.error.message}</Message>}
       {/* Mounted from the start, so the news is read out. */}
-      <p role="status" className="text-sm break-words text-muted-foreground empty:hidden">
+      <p role="status" className="text-sm break-words text-muted-foreground empty:sr-only">
         {send.isSuccess ? (divide ? `Sent ${sentOn(send.data.sentAt, group)}.` : 'Sent.') : ''}
       </p>
       {/* Gone once it's void, with the Void… button it replaced. */}
