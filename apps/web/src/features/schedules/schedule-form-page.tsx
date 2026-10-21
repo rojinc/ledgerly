@@ -425,8 +425,9 @@ function ScheduleForm({
               id="count"
               inputMode="numeric"
               label="Number of shifts"
-              // scheduling.md: COUNT counts dates before skipped ones are taken out (#523).
-              hint="Skipped dates count toward this number."
+              // scheduling.md: COUNT counts dates before exdates and holidays are taken out, and
+              // the days inside a pause too (#523).
+              hint="Skipped dates, public holidays and paused days count toward this number."
               error={errors.count}
               {...form.register('count')}
             />
@@ -690,7 +691,8 @@ function PreviewPanel({
       ) : (
         !cutFrom && (
           <p className="text-sm text-muted-foreground">
-            {/COUNT|UNTIL/.test(body?.rrule ?? '')
+            {/* It ends by its rule, or by a kept end date this form doesn't show (#523). */}
+            {/COUNT|UNTIL/.test(body?.rrule ?? '') || body?.endsOn
               ? 'No more dates.'
               : 'No dates: it never falls on a day it can.'}
           </p>

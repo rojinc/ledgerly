@@ -232,7 +232,7 @@ describe('NewSchedulePage', () => {
     expect(callsTo('/schedules')).toHaveLength(0)
   })
 
-  it('says under the count that skipped dates count toward it (#523, P6)', () => {
+  it('says under the count what counts toward it (#523, P6)', () => {
     mockGroup(acme)
     mockScheduler()
     renderAt('/schedules/new?groupId=g1')
@@ -241,7 +241,7 @@ describe('NewSchedulePage', () => {
       'count-hint',
     )
     expect(document.getElementById('count-hint')?.textContent).toBe(
-      'Skipped dates count toward this number.',
+      'Skipped dates, public holidays and paused days count toward this number.',
     )
   })
 
@@ -445,6 +445,33 @@ describe('a paused schedule on its form (#523, P2)', () => {
     const preview = await openPaused(null)
     expect(screen.queryByText(/Paused from/)).toBeNull()
     expect(liveText(preview)).toBe('2 dates, 2 skipped')
+  })
+})
+
+describe('the preview with no dates (#523)', () => {
+  const emptyPreview = async (schedule: Schedules) => {
+    mockGroup(acme)
+    mockSchedules([schedule])
+    call.mockResolvedValue({ ok: true, data: { dates: [], skipped: [] } })
+    renderAt(`/schedules/${schedule.$id}`)
+    const preview = await screen.findByRole('region', { name: 'Next shifts' })
+    await within(preview).findByText('0 dates, 0 skipped')
+    return preview
+  }
+
+  it('says there are no more dates once a kept end date has been reached', async () => {
+    const preview = await emptyPreview({
+      ...thursdays,
+      startsOn: '2026-09-03',
+      endsOn: '2026-10-20',
+    })
+    expect(within(preview).getByText('No more dates.')).toBeTruthy()
+    expect(within(preview).queryByText(/^No dates/)).toBeNull()
+  })
+
+  it('says a rule with no end never falls on a day it can', async () => {
+    const preview = await emptyPreview(thursdays)
+    expect(within(preview).getByText('No dates: it never falls on a day it can.')).toBeTruthy()
   })
 })
 
