@@ -131,7 +131,7 @@ Row ID = Appwrite Team ID ([D-004](decisions.md)).
 | `settingsJson` | text | `GroupSettings` (below) |
 | `archivedAt` | datetime? | Archived groups are read-only |
 | `rev` | varchar(20)? | A fresh random value on every guard write, so the write is always a real change ([ledger concurrency](ledger.md#concurrency)) |
-| `deletingAt` | datetime? | Set when its last admin starts [deleting it](identity-and-invites.md#deleting-a-group): an archived group nobody else is in. The point of no return: unarchive refuses it from then on, and the row goes at the end of the [purge](identity-and-invites.md#purging-a-group). Written once, only by `account`, with `deletingBy` and a fresh `rev`. |
+| `deletingAt` | datetime? | Set when the last person in it starts [deleting it](identity-and-invites.md#deleting-a-group) (its admin, or anyone in it once it has no joined admin, [#486](https://github.com/rojinc/ledgerly/issues/486)): an archived group nobody else is in. The point of no return: unarchive refuses it from then on, and the row goes at the end of the [purge](identity-and-invites.md#purging-a-group). Written once, only by `account`, with `deletingBy` and a fresh `rev`. |
 | `deletingBy` | varchar(36)? | personId: who set `deletingAt`. Their member row is the one the purge deletes last, with the group row, whichever call or run carries it on. |
 
 Indexes: `idx_nextCloseAt (nextCloseAt)`, `idx_nextCheckAt (nextCheckAt)`, `idx_owner_type (ownerPersonId, type)` (bootstrap finds the caller's personal group on every login), `idx_deletingAt (deletingAt)` (the hourly job finds group deletes to finish).
