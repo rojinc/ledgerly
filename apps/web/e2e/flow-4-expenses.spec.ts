@@ -79,6 +79,8 @@ test('records each expense preset and a payment, with the balance after each', a
     await expect(rows).toHaveCount(1)
     await expect(rows).toContainText('October pay')
     await page.getByLabel('Kind', { exact: true }).selectOption({ label: 'All' })
+    // Each filter builds on the one before as rendered, so the next waits for this one's rows.
+    await expect(rows).toHaveCount(STEPS.length)
     await page.getByLabel('Search descriptions').fill('boots')
     await expect(rows).toHaveCount(1)
     await expect(rows).toContainText('Work boots')
