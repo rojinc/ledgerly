@@ -78,6 +78,7 @@ const routes = [
           <Link to="/swap">To swap</Link>
           <Link to="/bills">To my bills</Link>
           <Link to="/bills?groupId=g1">To house bills</Link>
+          <Link to="/bills/new">To my new bill</Link>
         </nav>
         <Outlet />
       </>
@@ -98,6 +99,7 @@ const routes = [
       { path: 'none', element: <p>No heading</p> },
       { path: 'swap', element: <SwapPage /> },
       { path: 'bills', element: <BillsPage /> },
+      { path: 'bills/new', element: <BillsPage /> },
       { path: 'home', element: <h1 data-title="Home">Hi, Sam</h1> },
     ],
   },
@@ -230,6 +232,25 @@ describe('followPageHeading (#539)', () => {
     follow('To house bills')
     const house = await screen.findByRole('heading', { name: 'Bills · Flat 3' })
     await waitFor(() => expect(document.activeElement).toBe(house))
+  })
+
+  it('counts it as a move on a page under Bills too (#556)', async () => {
+    renderAt('/bills/new?groupId=g1')
+    await waitFor(() => expect(document.title).toBe('Bills · Flat 3 · Ledgerly'))
+    follow('To my new bill')
+    const heading = await screen.findByRole('heading', { name: 'Bills' })
+    await waitFor(() => expect(document.activeElement).toBe(heading))
+  })
+
+  it('focuses the next page’s h1 after a move from a page whose h1 it focused (#556)', async () => {
+    renderAt('/a')
+    follow('To B')
+    const b = await screen.findByRole('heading', { name: 'Page B' })
+    await waitFor(() => expect(document.activeElement).toBe(b))
+    // That h1 goes with its page while the link keeps focus: no hand-on, a move.
+    follow('To late')
+    const late = await screen.findByRole('heading', { name: 'Late page' })
+    await waitFor(() => expect(document.activeElement).toBe(late))
   })
 
   it('keeps focus on another query change on Bills (#556)', async () => {
