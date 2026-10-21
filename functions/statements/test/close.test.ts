@@ -137,7 +137,8 @@ describe('POST /statements/close', () => {
   })
 
   it('drafts nothing when the schema refuses the snapshot (#549)', async () => {
-    // A currency an older rule allowed: the snapshot copies it, and no read could parse it back.
+    // A currency the schema refuses (for example, one written outside the API): the snapshot
+    // copies it, and no read could parse it back.
     const services = fakes({
       ...rowsOf(shift('s1', '2026-11-01', 60), { statements: [octoberFinal] }),
       groups: [job({}, { currency: 'aud', nextCloseAt: NOVEMBER_CLOSE })],
