@@ -27,7 +27,7 @@ An event is an error unless `LEVELS` in `packages/server/src/http/log.ts` makes 
 
 The nightly check's B reads its three error events: `nightly_check_finding`, `nightly_check_failed` and `team_membership_removed`. This read skips them, so they aren't counted twice.
 
-**The read skips a list of events, not includes one.** So an event added to `LogEvent` later counts as an error here, as it does in `log.ts`, until it's given a level. The list below mirrors `LEVELS` as of #543; when `LEVELS` changes, change it too.
+**The read skips a list of events, not includes one.** So an event added to `LogEvent` later counts as an error here, as it does in `log.ts`, until it's given a level. The list below mirrors `LEVELS` as of #543; when `LEVELS` changes, change it too. `scripts/reads.test.mjs` fails until this list and [`scripts/reads.mjs`](../../scripts/reads.mjs)' own match `LEVELS`.
 
 **A send blocked until #3 is done** ([#3](https://github.com/rojinc/ledgerly/issues/3)). While Resend's sending domain is unverified, or the key is wrong, every send fails with a `cause` of `EmailError <type> 401` or `403`, or `EmailError invalid_api_key`. `sendingBlocked` in `packages/server/src/email/send-email.ts` leaves it for the next run, so it repeats every hour. Until #3 is done, it's counted on its own as `email blocked`, not as an error line.
 - **`missing_config` stays an error:** it's a setting the deploy didn't set.
@@ -35,7 +35,9 @@ The nightly check's B reads its three error events: `nightly_check_finding`, `ni
 
 ## A read
 
-Run it after the nightly-check read, in the same shell, so `FROM` and `TO` are already set.
+**With the script,** it runs right after the nightly-check read, with the same `FROM` and `TO` ([a read](nightly-check.md#a-read)). The blocks below are the fallback.
+
+**By hand:** run it after the nightly-check read, in the same shell, so `FROM` and `TO` are already set.
 
 Fetch every function's runs, of every trigger, newest first, 100 at a time, until a page reaches back past `FROM`. The page that does usually holds the scheduled run before the window too, which the gaps are measured from (see [not covered](#not-covered)).
 
