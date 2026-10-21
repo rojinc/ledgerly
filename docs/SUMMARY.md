@@ -35,6 +35,7 @@
 * [Local setup](engineering/local-setup.md)
 * [Environments and deploys](engineering/environments-and-deploys.md)
 * [First deploy](engineering/first-deploy.md)
+* [Nightly check](engineering/nightly-check.md)
 * [Writing docs](engineering/documentation.md)
 
 ## Collaboration
