@@ -366,6 +366,46 @@ describe('POST /delete: refusals, which change nothing', () => {
   })
 })
 
+describe('POST /delete: refusal 5 and an invoice nobody can finish (#519)', () => {
+  // Kim (p3) made e2, and has left it; Sam (p1), made its admin, is the only joined admin left.
+  // A statement of it has been finalizing for 61 minutes.
+  async function inKimsGroup(type: 'invoice' | 'divide', kimDeleted: boolean) {
+    const services = kept(
+      {},
+      {
+        groups: [group('e2', type === 'invoice' ? 'employer' : 'house', 'p3')],
+        members: [
+          member('e2', 'p1'),
+          member('e2', 'p3', { role: 'viewer', status: 'left', leftOn: '2026-10-01' }),
+        ],
+        statements: [{ ...finalizing('st2', 'e2'), type, $updatedAt: minutesAgo(61) }],
+      },
+    )
+    await services.teams.create({ teamId: 'e2', name: 'e2' })
+    await services.teams.createMembership({ teamId: 'e2', roles: [], userId: 'u1' })
+    if (kimDeleted) await setRow(services, 'persons', 'p3', { deletedAt: EARLIER })
+    return services
+  }
+
+  it('doesn’t count an invoice whose worker has deleted their account: nobody can finish it', async () => {
+    const services = await inKimsGroup('invoice', true)
+    expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
+    // Nobody else is in e2's team, so it's purged, the stuck statement with it.
+    expect(rowOf(services, 'groups', 'e2')).toBeUndefined()
+    expect(rowOf(services, 'statements', 'st2')).toBeUndefined()
+  })
+
+  it.each([
+    ['an invoice whose worker still has their account', 'invoice', false],
+    ['a divide, even with its house’s maker deleted', 'divide', true],
+  ] as const)('still counts %s', async (_, type, kimDeleted) => {
+    const services = await inKimsGroup(type, kimDeleted)
+    const before = state(services)
+    expect(await failure(services)).toMatchObject({ status: 409, code: 'CONFLICT' })
+    expect(state(services)).toEqual(before)
+  })
+})
+
 describe('POST /delete: steps 2 and 3', () => {
   it('marks the person deleted, then labels, blocks and signs out the user', async () => {
     const services = kept({

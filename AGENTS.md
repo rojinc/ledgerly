@@ -27,6 +27,7 @@ Rules for every coding agent (Claude Code, Codex, others) and every person worki
 - **Tests:** money and date logic in `packages/core` needs full branch coverage, including invariant tests. Never skip or delete a failing test to get green.
 - **Docs:** if behaviour, an API, the schema or a rule changes, update `docs/` in the same PR. Docs win over code until changed.
 - **No personal data in logs.**
+- **No `@` before an agent name or "lead".** Write `AI A` or `the lead`, never `@AI A` or `@lead`, in comments, PR bodies, review replies and commit messages. The repo is public, so `@AI` mentions a real GitHub user. Mention only real team accounts, and only when you mean to.
 
 ## Commands
 

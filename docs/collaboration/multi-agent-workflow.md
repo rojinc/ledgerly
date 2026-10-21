@@ -157,3 +157,4 @@ All agents get the same rules from `AGENTS.md`. Don't put rules only in a tool-s
 - Reopen a [recorded decision](../architecture/decisions.md) in code. Propose a new decision instead.
 - Work on an issue someone else has claimed.
 - Add a dependency without justifying it in the PR.
+- Put `@` before an agent name or "lead" (`@AI A`, `@lead`) in a comment, PR body, review reply or commit message. The repo is public, so `@AI` mentions a real GitHub user. Write `AI A` or `the lead`, and mention only real team accounts, only when you mean to.
