@@ -31,7 +31,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | --- | --- | --- |
 | F-20 | An employer group holds you and the employer, who is usually a placeholder with one or more billing emails. | M1 |
 | F-21 | Shifts: date, start and end time or a number of minutes, break minutes, rate and note. Amount = minutes × hourly rate ÷ 60, rounded to the cent, half a cent up. | M1 |
-| F-22 | Schedules: for example "every Thursday, 5h at $25, from 2 Oct until I stop". You can skip public holidays for the region, skip specific dates, pause or end. | M1 |
+| F-22 | Schedules: for example "every Thursday, 5h at $25, from 2 Oct until I stop". You can skip public holidays for the region, skip specific dates (through the API only until [#487](https://github.com/rojinc/ledgerly/issues/487)), pause or end. | M1 |
 | F-23 | Automatic entries: scheduled shifts appear on the calendar ahead of time. After the day passes they are confirmed automatically if the schedule has auto-post on. Cancelled shifts are skipped; changed ones are confirmed with your changes. | M1 |
 | F-24 | Timer: start and stop to record a shift live. You get a reminder if it has been running more than 12 hours. | M1 |
 | F-25 | Extra hours: change the minutes, or add another shift on the same day at a different rate. | M1 |
