@@ -20,6 +20,7 @@ const BASE: ShiftValues = {
   breakMinutes: '30',
   hours: '',
   rate: '25.50',
+  note: '',
 }
 
 describe('shift times', () => {
@@ -105,6 +106,14 @@ describe('toShiftBody', () => {
     )
   })
 
+  it('sends a note trimmed, and none when it is empty (#485)', () => {
+    expect(toShiftBody({ ...BASE, note: '  Covered for Priya ' }, 'x1', 'AUD').note).toBe(
+      'Covered for Priya',
+    )
+    expect(toShiftBody({ ...BASE, note: '   ' }, 'x1', 'AUD')).not.toHaveProperty('note')
+    expect(toShiftBody(BASE, 'x1', 'AUD')).not.toHaveProperty('note')
+  })
+
   it('turns a stored shift back into the same values', () => {
     const body = toShiftBody(BASE, 'x1', 'AUD')
     const values = toShiftValues(
@@ -119,5 +128,13 @@ describe('toShiftBody', () => {
       '25.50',
     )
     expect(hours).toMatchObject({ timing: 'hours', hours: '7:30', startTime: '', breakMinutes: '' })
+    expect(hours.note).toBe('')
+    const noted = toShiftValues(
+      { groupId: 'g1', date: '2026-10-08', description: 'Shift' },
+      { minutes: 450, rateCents: 2550 },
+      '25.50',
+      'Covered for Priya',
+    )
+    expect(noted.note).toBe('Covered for Priya')
   })
 })
