@@ -4,6 +4,7 @@ import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import type { Db } from '@ledgerly/server/appwrite/client'
 import { DATABASE_ID, TABLES } from '@ledgerly/server/appwrite/tables'
 import { withTransaction } from '@ledgerly/server/appwrite/transaction'
+import { sendingBlocked } from '@ledgerly/server/email/send-email'
 import { statementReadyEmail } from '@ledgerly/server/email/templates'
 import { logProblem } from '@ledgerly/server/http/log'
 import { ID, Query } from 'node-appwrite'
@@ -46,10 +47,12 @@ export async function draftDueStatements(
   ])
   let drafted = 0
   let failed = 0
+  // Set once a "ready" email meets a failure every send would meet (#476).
+  const ready = { blocked: false }
   for (const group of due) {
     if (Date.now() - started > BUDGET_MS) break
     try {
-      if (await draftFor(services, group as Groups & { nextCloseAt: string })) drafted += 1
+      if (await draftFor(services, group as Groups & { nextCloseAt: string }, ready)) drafted += 1
     } catch (error) {
       failed += 1
       logProblem('draft_failed', { groupId: group.$id, error })
@@ -74,6 +77,7 @@ export async function draftDueStatements(
 async function draftFor(
   services: Services,
   group: Groups & { nextCloseAt: string },
+  ready: { blocked: boolean },
 ): Promise<boolean> {
   const { db, now } = services
   const period = await closingPeriodOf(db, group)
@@ -123,7 +127,7 @@ async function draftFor(
   // goes only when the admin is needed (statements.md#auto-send).
   if (await autoFinalize(services, group, statementId)) return true
   try {
-    await emailAdmins(services, group, statementId, period)
+    await emailAdmins(services, group, statementId, period, ready)
   } catch (error) {
     // The draft is made; the email is a courtesy, even when it can't be built at all.
     logProblem('ready_email_failed', { statementId, error })
@@ -181,14 +185,17 @@ function autoFinalizes(group: Groups): boolean {
 
 /**
  * "Your October invoice for Acme is ready to review", to every joined admin who hasn't turned it
- * off on Profile. Best effort.
+ * off on Profile. Best effort. Once one meets a failure every send would meet (#469), the run
+ * tries no other (#476).
  */
 async function emailAdmins(
   services: Services,
   group: Groups,
   statementId: string,
   period: { start: LocalDate; end: LocalDate },
+  ready: { blocked: boolean },
 ): Promise<void> {
+  if (ready.blocked) return
   const joined = await joinedAdmins(services.db, group.$id)
   const off = await optedOut(
     services.db,
@@ -220,6 +227,12 @@ async function emailAdmins(
     } catch (error) {
       // The draft is made; the email is a courtesy (the app lists drafts too).
       logProblem('ready_email_failed', { statementId, error })
+      // Our key, domain or settings (#469): this group's other admins, and every later group's,
+      // would fail the same way.
+      if (sendingBlocked(error)) {
+        ready.blocked = true
+        return
+      }
     }
   }
 }
