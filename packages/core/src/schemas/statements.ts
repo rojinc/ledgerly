@@ -18,7 +18,8 @@ const balanceCentsSchema = z.int()
  * (`businessDetailsSchema`), each as plain text, so a stored snapshot still parses whatever the
  * Profile's rules later become (#543). A field added to the Profile is added here too, optional.
  * One the Profile drops or renames stays here, optional, since final invoices hold it for good
- * (#556). The bank is whole or absent, since an invoice prints its three parts together.
+ * (#556). The bank is whole or absent, since an invoice prints its three parts together; a bank
+ * part the Profile drops becomes optional.
  */
 export const snapshotBusinessSchema = z.strictObject({
   businessName: z.string().optional(),
