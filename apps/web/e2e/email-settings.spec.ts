@@ -10,6 +10,11 @@ test('an email turned off stays off after a reload, and turned on again stays on
 }) => {
   await logIn(page, setupUser('eve'))
   await page.goto('/profile')
+  // Profile links both legal pages too (#566).
+  await expect(page.getByRole('link', { name: 'Privacy policy', exact: true })).toHaveAttribute(
+    'href',
+    '/privacy',
+  )
   const ready = page.getByRole('checkbox', { name: /^Statement ready/ })
   await expect(ready).toBeChecked()
   for (const on of [false, true]) {

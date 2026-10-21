@@ -127,6 +127,23 @@ describe('LoginPage', () => {
     expect(document.activeElement).toBe(screen.getByLabelText('Email'))
   })
 
+  it('links both pages, and says what a code agrees to, since it can make an account (#566)', () => {
+    renderAt('/login')
+    const notice = /^By creating an account, you agree to the/
+    expect(screen.queryByText(notice)).toBeNull()
+    expect(screen.getByRole('link', { name: 'Terms of use' }).getAttribute('href')).toBe('/terms')
+    expect(screen.getByRole('link', { name: 'Privacy policy' }).getAttribute('href')).toBe(
+      '/privacy',
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Email code' }))
+    expect(screen.getByText(notice)).toBeTruthy()
+    // The notice's own links, not the footer's as well: a screen reader hears each once.
+    expect(screen.getByRole('link', { name: 'Terms of use' }).getAttribute('href')).toBe('/terms')
+    expect(screen.getByRole('link', { name: 'Privacy policy' }).getAttribute('href')).toBe(
+      '/privacy',
+    )
+  })
+
   it('leaves focus alone on the first email form', () => {
     renderAt('/login')
     const toggle = screen.getByRole('button', { name: 'Email code' })
