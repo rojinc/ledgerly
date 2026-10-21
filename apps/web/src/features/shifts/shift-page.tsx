@@ -18,7 +18,7 @@ import { centsToText } from '../groups/employer-form'
 import { useGroup, useGroups, useMyMember } from '../groups/use-groups'
 import { LedgerError, useTransaction } from '../transactions/use-transactions'
 import { ShiftForm } from './shift-form'
-import { type ShiftValues, toShiftValues } from './shift-values'
+import { type ShiftValues, type StoredShift, toShiftValues } from './shift-values'
 import { markStale, useConfirmShift, useMyRoles, useSaveShift, useVoidShift } from './use-shifts'
 
 /** The group's default hourly rate as text, or empty when it has none. */
@@ -33,11 +33,11 @@ export function defaultRate(group: Groups): string {
   }
 }
 
-// The stored input's shift, or undefined if it can't be read (then the shift isn't editable here).
-function storedShift(inputJson: string) {
+// The stored input, or undefined if it can't be read (then the shift isn't editable here).
+function storedInput(inputJson: string) {
   try {
     const stored = transactionTemplateSchema.safeParse(JSON.parse(inputJson))
-    return stored.success ? stored.data.shift : undefined
+    return stored.success ? stored.data : undefined
   } catch {
     return undefined
   }
@@ -123,6 +123,7 @@ export function NewShiftPage() {
         breakMinutes: '',
         hours: '',
         rate: defaultRate(first),
+        note: '',
       }
       content = (
         <ShiftForm
@@ -221,7 +222,8 @@ function ShiftDetails({ row, onAction }: { row: Transactions; onAction: () => vo
   }
   if (row.kind !== 'shift') return <Message>This isn’t a shift.</Message>
 
-  const shift = storedShift(row.inputJson)
+  const input = storedInput(row.inputJson)
+  const shift = input?.shift
   const role = member.data?.role
   // permissions.md: the creator or an admin, never a viewer; the function checks again.
   const mayChange = role === 'admin' || (role === 'member' && row.createdBy === personId)
@@ -254,6 +256,7 @@ function ShiftDetails({ row, onAction }: { row: Transactions; onAction: () => vo
             row,
             shift,
             centsToText(shift.rateCents, group.data.currency),
+            input?.note,
           )}
           submitLabel="Save"
           rateFor={defaultRate}
@@ -277,7 +280,7 @@ function ShiftSummary({
   group,
 }: {
   row: Transactions
-  shift: ReturnType<typeof storedShift>
+  shift: StoredShift | undefined
   group: Groups
 }) {
   const money = (cents: number) => formatMoney(cents, group.currency)

@@ -14,6 +14,8 @@ export type ShiftValues = {
   breakMinutes: string
   hours: string
   rate: string
+  /** The note, as typed. */
+  note: string
 }
 
 /** The stored `shift` part of a transaction's input. */
@@ -105,14 +107,17 @@ export function toShiftBody(
         ? { startTime: values.startTime, endTime: values.endTime }
         : {}),
     },
+    // `PATCH` replaces the whole input, so a stored note is sent back or it's lost (#485).
+    ...(values.note.trim() === '' ? {} : { note: values.note.trim() }),
   }
 }
 
-/** The form's values for a stored shift. */
+/** The form's values for a stored shift, with the stored input's note. */
 export function toShiftValues(
   transaction: { groupId: string; date: string; description: string },
   shift: StoredShift,
   rateText: string,
+  note = '',
 ): ShiftValues {
   const times = shift.startTime !== undefined && shift.endTime !== undefined
   return {
@@ -125,6 +130,7 @@ export function toShiftValues(
     breakMinutes: shift.breakMinutes === undefined ? '' : String(shift.breakMinutes),
     hours: hoursText(shift.minutes),
     rate: rateText,
+    note,
   }
 }
 

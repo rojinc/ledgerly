@@ -261,6 +261,19 @@ describe('NewShiftPage', () => {
     await waitFor(() => expect(router.state.location.pathname).toBe(`/shifts/${body.id}`))
   })
 
+  it('sends a note when one is typed (#485)', async () => {
+    call.mockResolvedValue(view(shiftRow()))
+    mockRow(shiftRow())
+    await renderNew('/shifts/new')
+    expect(input('Note (optional)').value).toBe('')
+    type('Start', '09:00')
+    type('End', '17:00')
+    type('Note (optional)', ' Covered for Priya ')
+    fireEvent.click(screen.getByRole('button', { name: 'Add shift' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(sentBody().note).toBe('Covered for Priya')
+  })
+
   it.each([
     ['7:30', 450],
     ['7.5', 450],
@@ -639,6 +652,40 @@ describe('ShiftPage', () => {
     })
     expect(await screen.findByText('Saved.')).toBeTruthy()
     expect(screen.getByRole('heading', { name: 'Late shift' })).toBeTruthy()
+  })
+
+  // PATCH replaces the whole input: a stored note the form didn't send back would be lost (#485).
+  it.each([
+    ['keeps a stored note through an edit that leaves it', undefined, 'Covered for Priya'],
+    ['sends a changed note', 'Swapped with Dan', 'Swapped with Dan'],
+    ['clears the note', '', undefined],
+  ])('%s', async (_case, typed, sent) => {
+    mockRow(
+      shiftRow({
+        inputJson: JSON.stringify({
+          payers: [{ personId: 'p1', cents: 20400 }],
+          shift: storedShift,
+          note: 'Covered for Priya',
+        }),
+      }),
+    )
+    call.mockResolvedValue(view(shiftRow({ description: 'Late shift' })))
+    renderAt('/shifts/t1')
+    expect(await screen.findByRole('heading', { name: 'Morning shift' })).toBeTruthy()
+    expect(input('Note (optional)').value).toBe('Covered for Priya')
+    type('Description', 'Late shift')
+    if (typed !== undefined) type('Note (optional)', typed)
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(1))
+    expect(call).toHaveBeenCalledWith('ledger', 'PATCH', '/transactions/t1', {
+      id: 't1',
+      groupId: 'g1',
+      kind: 'shift',
+      date: '2026-10-15',
+      description: 'Late shift',
+      shift: storedShift,
+      ...(sent === undefined ? {} : { note: sent }),
+    })
   })
 
   it('starts a shift stored as hours in hours mode', async () => {

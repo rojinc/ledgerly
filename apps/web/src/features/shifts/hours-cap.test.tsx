@@ -242,6 +242,7 @@ describe('ShiftForm’s line (#53)', () => {
     breakMinutes: '',
     hours: '',
     rate: '30',
+    note: '',
   }
 
   function renderForm(id: string, defaults: Partial<ShiftValues> = {}) {

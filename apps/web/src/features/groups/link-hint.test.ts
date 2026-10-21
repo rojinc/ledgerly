@@ -12,12 +12,17 @@ describe('linkHint', () => {
       'Without an email or mobile number, they can’t be linked to this house if they sign up later.',
     ],
     ['an email', 'sam@example.com', '', 'Once they join with this email, they’ll see the house.'],
-    ['a number', '', '+61 400 000 000', 'Once they join with this number, they’ll see the house.'],
+    [
+      'a number',
+      '',
+      '+61 400 000 000',
+      'They can’t join with only a mobile number yet. Add their email so they can join and see the house.',
+    ],
     [
       'an email of only spaces and a number',
       '  ',
       '+61 400 000 000',
-      'Once they join with this number, they’ll see the house.',
+      'They can’t join with only a mobile number yet. Add their email so they can join and see the house.',
     ],
     [
       'both, where only one is used',

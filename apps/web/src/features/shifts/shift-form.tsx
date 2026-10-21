@@ -40,6 +40,7 @@ const ERROR_FIELD: Record<string, keyof ShiftValues> = {
   'shift.breakMinutes': 'breakMinutes',
   'shift.startTime': 'startTime',
   'shift.endTime': 'endTime',
+  note: 'note',
 }
 
 /** Schema errors on the fields the form shows, in plain words. */
@@ -264,6 +265,7 @@ export function ShiftForm({
           : ' '}
       </p>
       <ShiftCapLine id={id} groupId={values.groupId} date={values.date} minutes={minutes} />
+      <TextField id="note" label="Note (optional)" error={errors.note} {...form.register('note')} />
       <div className="flex items-center gap-3">
         <Button type="submit" aria-disabled={isSubmitting}>
           {isSubmitting ? 'Saving…' : submitLabel}

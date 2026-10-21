@@ -15,6 +15,8 @@ export function linkHint(
     return `Without an email or mobile number, they can’t be linked to ${place.linked} if they sign up later.`
   }
   if (!hasPhone) return `Once they join with this email, they’ll see ${place.seen}.`
-  if (!hasEmail) return `Once they join with this number, they’ll see ${place.seen}.`
+  // Joining with only a number needs a verified phone, which v1 doesn't have (#176, #485).
+  if (!hasEmail)
+    return `They can’t join with only a mobile number yet. Add their email so they can join and see ${place.seen}.`
   return `Once they join, they’ll see ${place.seen}. Only one of them is used: the email, unless only the number already belongs to someone. The other isn’t saved.`
 }
