@@ -42,6 +42,19 @@ test('refuses a delete for 24 hours after a password is set, and keeps the group
   await expect(page.getByRole('alert')).toContainText('changed in the last 24 hours')
   // Still here: the delete never started.
   await expect(page).toHaveURL(`/groups/${groupId}/delete`)
+  // Its admin unarchives it instead (F-15, #428), behind a confirmation. afterEach archives it
+  // again.
+  await page.goto(`/groups/${groupId}/settings`)
+  await page.getByRole('button', { name: 'Unarchive group', exact: true }).click()
+  await page
+    .getByRole('alertdialog')
+    .getByRole('button', { name: 'Unarchive group', exact: true })
+    .click()
+  await expect(
+    page.getByText('This group is unarchived, so it can be changed again.', { exact: true }),
+  ).toBeVisible()
+  await expect(page.getByText(/^This group is archived\./)).toHaveCount(0)
+  archived = false
 })
 
 test('deletes an archived group once DELETE is typed, after a link to Export', async ({ page }) => {
