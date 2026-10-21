@@ -80,13 +80,15 @@ async function sendOne(services: Services, statementId: string): Promise<boolean
     // Every send fails for now (our key, domain or settings, #469): the notice to the admins
     // would fail the same way, and the rest wait for the next run.
     if (sendingBlocked(error)) return false
+    // The admins first: a notice that meets a failure every send would meet waits for the next
+    // run, so the window stays open for it (#494).
+    if (!(await tellAdmins(services, group, current))) return false
     if (isPermanent(error)) {
       // No later run tries.
       await updateStatement(db, current, { autoSendUntil: now.toISOString() }).catch(
         (closing: unknown) => logProblem('auto_send_failed', { statementId, error: closing }),
       )
     }
-    if (!(await tellAdmins(services, group, current))) return false
     // Resend's limit is shared: the rest waits for the next run.
     return !(error instanceof EmailError && error.status === 429)
   }

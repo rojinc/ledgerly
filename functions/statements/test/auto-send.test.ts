@@ -287,6 +287,50 @@ describe('the statements job, with autoSend on', () => {
     expect(keys(services)).toEqual([`auto-send-failed/${invoice?.$id}/sam`])
   })
 
+  it('keeps the window open when a notice after a permanent failure is blocked, so the next run tells the admins (#494)', async () => {
+    const services = octoberDue()
+    // Dan is Acme's second admin, so a notice can be left after the first.
+    const { $id: _, ...dan } = member('m-dan', 'job', 'dan', 'admin')
+    await commitNow(services.db, [
+      op('members', 'm-dan', dan, 'create'),
+      op(
+        'identities',
+        'i-dan',
+        { key: 'email:dan@example.com', type: 'email', personId: 'dan', verified: true },
+        'create',
+      ),
+    ])
+    let blocked = true
+    failing(services, (email) => {
+      if (isInvoice(email)) {
+        return new EmailError('Resend answered 422 validation_error', 'validation_error', 422)
+      }
+      return blocked && email.to.includes('dan@example.com')
+        ? new EmailError('Resend answered 403 validation_error', 'validation_error', 403)
+        : undefined
+    })
+    await runJob(services)
+    const [invoice] = invoices(services)
+    const notice = (admin: string) => `auto-send-failed/${invoice?.$id}/${admin}`
+    // Dan's notice is left for the next run, so the window stays open for it.
+    expect(invoice).toMatchObject({ sentAt: null, autoSendUntil: WINDOW_END })
+    expect(keys(services)).not.toContain(notice('dan'))
+    blocked = false
+    services.now = new Date(NOW.getTime() + HOUR_MS)
+    await runJob(services)
+    // The invoice is refused the same way, and every admin is told, under the same keys: Resend
+    // delivers a key once, so Sam, if told the first time, isn't told twice.
+    expect(new Set(keys(services))).toEqual(new Set([notice('sam'), notice('dan')]))
+    expect(invoices(services)[0]).toMatchObject({
+      sentAt: null,
+      autoSendUntil: services.now.toISOString(),
+    })
+    const told = keys(services).length
+    services.now = new Date(NOW.getTime() + 2 * HOUR_MS)
+    await runJob(services)
+    expect(keys(services)).toHaveLength(told)
+  })
+
   it.each([401, 403])(
     'stops at a validation_error with %i, our key or domain: one line, every window kept (#469)',
     async (status) => {
