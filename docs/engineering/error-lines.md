@@ -131,7 +131,7 @@ jq -rs --arg from "$FROM" --arg to "$TO" --arg capped "$CAPPED" --arg failed "$F
       ($l | ids | select(. != "")),
       "first \(map(.at) | min) last \(map(.at) | max)"
     ] | join(" · ")),
-    ($carried[] | "carried on · \(map(.run) | unique | length) of \($idruns | length) identity runs · personId \(.[0].personId // "-") into \(.[0].intoPersonId // "-")")
+    ($carried[] | "carried on · \(map(.run) | unique | length) of \($idruns | length) identity runs · personId \(.[0].personId // "-") into \(.[0].intoPersonId // "-") · post it if it is carried on at the next read too")
 ' "$RUNS"
 rm "$RUNS"
 ```
