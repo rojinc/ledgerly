@@ -446,6 +446,20 @@ describe('the command', () => {
     assert.match(look.lines[2], / · LOOK$/)
   })
 
+  it('exits 1 for any line under Post on #96, even when it passes and is OK', async () => {
+    const removed = { event: 'team_membership_removed', groupId: 'g2', membershipId: 'm1' }
+    const runs = everyFunction(run('03:10', { lines: [removed] }))
+    const { lines, code } = await read(['--from', FROM, ...files(runs)], {}, NOW)
+    assert.match(lines[1], / · removed 1 · .* · PASS$/)
+    assert.match(lines[2], / · OK$/)
+    assert.deepEqual(lines.slice(3), [
+      '',
+      'Post on #96:',
+      '2026-10-21T03:10:00Z team_membership_removed g2 - m1',
+    ])
+    assert.equal(code, 1)
+  })
+
   it('exits 2 with nothing to post when it’s too early, or the arguments are wrong', async () => {
     const waiting = run('05:50', { status: 'waiting', responseStatusCode: 0 })
     const early = await read(['--from', FROM, ...files(everyFunction(waiting))], {}, NOW)
@@ -489,7 +503,13 @@ describe('--fetch', () => {
     const requests = []
     const server = createServer((request, response) => {
       const url = new URL(request.url, 'http://localhost')
-      requests.push({ method: request.method, path: url.pathname, headers: request.headers })
+      const sent = url.searchParams.getAll('queries[]').map((q) => JSON.parse(q))
+      requests.push({
+        method: request.method,
+        path: url.pathname,
+        headers: request.headers,
+        queries: sent,
+      })
       if (status) {
         response.writeHead(status, { 'content-type': 'application/json' })
         return response.end(
@@ -563,6 +583,19 @@ describe('--fetch', () => {
       assert.equal(pages('/v1/functions/ledger/executions'), 2)
       assert.equal(pages('/v1/functions/account/executions'), 1)
       assert.equal(pages('/v1/tablesdb/main/tables/groups/rows'), 2)
+      // The runbooks' queries: the scheduler's scheduled runs, and C's 2 hours before now.
+      const first = api.requests.find((r) => r.path === '/v1/functions/scheduler/executions')
+      assert.deepEqual(first.queries[0], {
+        method: 'equal',
+        attribute: 'trigger',
+        values: ['schedule'],
+      })
+      const due = api.requests.find((r) => r.path === '/v1/tablesdb/main/tables/groups/rows')
+      assert.deepEqual(due.queries[0], {
+        method: 'lessThan',
+        attribute: 'nextCheckAt',
+        values: ['2026-10-21T04:20:00Z'],
+      })
       assert.ok(!fetched.lines.join('\n').includes(KEY))
     } finally {
       await api.close()

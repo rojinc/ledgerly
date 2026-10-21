@@ -41,14 +41,14 @@ APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… \
   node scripts/reads.mjs --from <the last result's to> --fetch
 ```
 
-- **`--fetch`** makes the same read-only queries as the blocks below, with the read key, and never prints the key. Or fetch with the blocks, and pass the files instead:
+- **`--fetch`** makes the same read-only queries as the blocks below, with the read key, and never prints the key. If the server refuses the order, add `--order-by-id`, as the blocks' own fallback does. Or fetch with the blocks, and pass the files instead, taking them before the blocks' `rm "$RUNS"`:
   - `--runs`: both fetches' `$RUNS` files, this page's and [error lines](error-lines.md#a-read)', joined;
   - `--groups`: C's rows, as JSON lines (`| jq -c '(.rows // [])[]'`);
   - `--capped '<functions>'`, if the error-lines fetch printed `CAPPED`.
 - **The window:** `--from` is the last result's `to`. `--to` is 20 minutes ago unless it's given. `--pending '<IDs>'` takes the last result's pending groups, for C.
 - **It exits:**
   - 0 when this read passes and the error lines are `OK`;
-  - 1 when there's something to post on #96;
+  - 1 when there's something to post on #96, even on a PASS and `OK` (a removed membership, a merge carried on);
   - 2 when there's nothing to post yet: a run hasn't finished (`TOO EARLY`), or a fetch failed (`FETCH FAILED`, with the status and the error's type).
 - **The blocks below are the fallback.** `scripts/reads.test.mjs` runs them and the script on the same made-up runs, and checks they print the same lines.
 

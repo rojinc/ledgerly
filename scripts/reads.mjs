@@ -544,7 +544,8 @@ export async function read(args, env = process.env, now = Date.now()) {
       errors.line,
       ...(notes.length > 0 ? ['', 'Post on #96:', ...notes] : []),
     ],
-    code: nightly.pass && errors.verdict === 'OK' ? 0 : 1,
+    // Exit 1 whenever there's something for #96, a removed membership or a merge carried on included.
+    code: nightly.pass && errors.verdict === 'OK' && notes.length === 0 ? 0 : 1,
   }
 }
 
