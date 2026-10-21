@@ -201,14 +201,17 @@ export function TodayPage() {
                     to={`/shifts/${shift.$id}`}
                     className="flex items-center justify-between gap-3 px-3 py-2 outline-none hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset"
                   >
+                    {/* The description and group name wrap on a phone, so nothing is cut off (#539). */}
                     <span className="min-w-0">
                       <span
-                        className={`block truncate font-medium ${shift.status === 'void' ? 'line-through' : ''}`}
+                        className={`block break-words md:truncate font-medium ${shift.status === 'void' ? 'line-through' : ''}`}
                       >
                         {shift.description}
                       </span>
                       <span className="flex gap-1 text-sm text-muted-foreground">
-                        <span className="truncate">{group?.name ?? 'Employer'}</span>{' '}
+                        <span className="min-w-0 break-words md:truncate">
+                          {group?.name ?? 'Employer'}
+                        </span>{' '}
                         <span className="shrink-0">· {STATUS[shift.status]}</span>
                       </span>
                     </span>

@@ -1687,6 +1687,15 @@ describe('HistoryPage, across groups (F-71)', () => {
     expect(rowOf('t2').getByText('The flat')).toBeTruthy()
     expect(rowOf('t1').getByText('2026-10-17 · Income · Posted')).toBeTruthy()
     expect(rowOf('t1').getByText('Personal')).toBeTruthy()
+    // Wraps on a phone, so a long one isn't cut off at 320 px, and keeps to one line from md (#539).
+    for (const text of ['Power', 'The flat']) {
+      const classes = rowOf('t2')
+        .getByText(text)
+        .closest('[class~="md:truncate"]')
+        ?.className.split(' ')
+      expect(classes, text).toContain('break-words')
+      expect(classes, text).not.toContain('truncate')
+    }
     // One read of every group, which doesn't move when the pair's name arrives.
     expect(calls('transactions')).toEqual([
       [Query.equal('groupId', ['g1', 'pair1', 'me1', 'house1']), COLUMNS, ...NEWEST],
