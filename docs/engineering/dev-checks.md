@@ -11,6 +11,8 @@ The checks on `ledgerly-dev` that only the lead can run, from [#299](https://git
 - **Two test users,** A (with a password) and C (without), at Resend test addresses. Their first sign-in makes their own rows ([bootstrap](../architecture/identity-and-invites.md#first-login-bootstrap)).
 - **As A, in the app:** a house and a pair, each with one placeholder; one transaction in each of A's three groups; one bill; one invite; and A's email change. A's `persons` row counts one wrong address.
 - **As C:** a first password.
+- **In Auth:** A's and C's sessions (3b, 4a), C's sign-in token (4a), A's recovery token (4b), and A's `emailVerification` going false with the email change (4e). They go with the users.
+- **Emails tried:** 4b's recovery link, 4c's invite and 4e's change notice, each to a Resend test address that no one can open.
 - **[First-deploy 3b](first-deploy.md#3b-the-backfills-305-and-342)'s two backfills,** with the owner's second key, if they haven't run.
 - **The owner's one-off keys,** deleted at the end.
 
@@ -128,6 +130,7 @@ export A_ID=$(node -e "console.log(require('node:crypto').randomUUID())")
 export C_ID=$(node -e "console.log(require('node:crypto').randomUUID())")
 read -rs A_PASSWORD   # A's password, typed here and in the app, never in the shell history
 appwrite users create --user-id "$A_ID" --email "delivered+$RUN-a@resend.dev" --password "$A_PASSWORD" --name "A $RUN" --json | jq -r '"made \(.["$id"])"'
+unset A_PASSWORD   # it was on the CLI's command line only while that command ran
 appwrite users create --user-id "$C_ID" --email "delivered+$RUN-c@resend.dev" --name "C $RUN" --json | jq -r '"made \(.["$id"])"'
 for id in "$A_ID" "$C_ID"; do
   appwrite users update-email-verification --user-id "$id" --email-verification=true --json | jq -r '"\(.["$id"]) verified \(.emailVerification)"'
