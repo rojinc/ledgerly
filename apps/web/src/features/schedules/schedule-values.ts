@@ -40,7 +40,8 @@ export function toScheduleInput(
   /** What the stored schedule has that this form doesn't show, kept as it was. */
   kept: { endsOn?: string; horizonDays?: number } = {},
 ): z.input<typeof scheduleInputSchema> {
-  // Past dates change nothing (PATCH never fills in past dates), so they're sent back as stored.
+  // Past dates change nothing (PATCH never fills in past dates), but they're sent back, so a
+  // save keeps them. In date order, once each.
   const exdates = [...new Set(values.skipped)].sort()
   return {
     ...ids,
@@ -91,7 +92,8 @@ export function fromSchedule(schedule: Schedules, currency: string): ScheduleVal
     startsOn: schedule.startsOn,
     skipPublicHolidays: schedule.skipPublicHolidays,
     autoPost: schedule.autoPost,
-    skipped: schedule.exdates ?? [],
+    // The API takes a date twice, so it's listed and counted once.
+    skipped: [...new Set(schedule.exdates ?? [])],
   }
 }
 

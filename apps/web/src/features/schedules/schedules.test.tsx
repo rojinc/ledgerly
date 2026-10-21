@@ -1096,10 +1096,10 @@ describe('SchedulesPage: pause and resume (#430)', () => {
 })
 
 describe('skipped dates on the schedule form (#487)', () => {
-  // 11:00 on Monday 19 Oct 2026 in Sydney.
+  // 01:00 on Monday 19 Oct 2026 in Sydney, the group's time zone, and still Sunday in UTC.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date('2026-10-19T00:00:00.000Z'))
+    vi.setSystemTime(new Date('2026-10-18T14:00:00.000Z'))
   })
   afterEach(() => vi.useRealTimers())
 
@@ -1108,6 +1108,13 @@ describe('skipped dates on the schedule form (#487)', () => {
     fireEvent.change(screen.getByLabelText('Date to skip'), { target: { value: date } })
     fireEvent.click(screen.getByRole('button', { name: 'Skip this date' }))
   }
+  // The reason a date was refused, under the input.
+  const reason = () => document.getElementById('skipDate-error')?.textContent
+  // What the live region reads out.
+  const said = () =>
+    within(screen.getByRole('group', { name: 'Skipped dates' })).getByText(
+      (_, element) => element?.getAttribute('aria-live') === 'polite',
+    ).textContent
   const skippedList = () =>
     within(screen.getByRole('group', { name: 'Skipped dates' }))
       .queryAllByRole('button', { name: /^Remove / })
@@ -1126,12 +1133,16 @@ describe('skipped dates on the schedule form (#487)', () => {
       expect.stringMatching(/^Remove Thu, (5 Nov|Nov 5),? 2026$/),
       expect.stringMatching(/^Remove Thu, (12 Nov|Nov 12),? 2026$/),
     ])
-    expect(screen.getByText(/^Thu, (5 Nov|Nov 5),? 2026 is skipped\.$/)).toBeTruthy()
+    expect(said()).toMatch(/^Thu, (5 Nov|Nov 5),? 2026 is skipped\.$/)
     await waitFor(() => expect(lastPreview().exdates).toEqual(['2026-11-05', '2026-11-12']))
 
-    fireEvent.click(screen.getByRole('button', { name: /^Remove Thu, (5 Nov|Nov 5),? 2026$/ }))
+    const remove = screen.getByRole('button', { name: /^Remove Thu, (5 Nov|Nov 5),? 2026$/ })
+    remove.focus()
+    fireEvent.click(remove)
     expect(skippedList()).toHaveLength(1)
-    expect(screen.getByText(/^Thu, (5 Nov|Nov 5),? 2026 is no longer skipped\.$/)).toBeTruthy()
+    expect(said()).toMatch(/^Thu, (5 Nov|Nov 5),? 2026 is no longer skipped\.$/)
+    // Its button is gone, so the input takes focus.
+    expect(document.activeElement).toBe(screen.getByLabelText('Date to skip'))
     await waitFor(() => expect(lastPreview().exdates).toEqual(['2026-11-12']))
     fireEvent.click(screen.getByRole('button', { name: /^Remove Thu, (12 Nov|Nov 12),? 2026$/ }))
     await waitFor(() => expect(lastPreview()).not.toHaveProperty('exdates'))
@@ -1149,25 +1160,27 @@ describe('skipped dates on the schedule form (#487)', () => {
     renderAt('/schedules/new?groupId=g1')
     fireEvent.change(screen.getByLabelText('Starts on'), { target: { value: '2026-10-22' } })
     skip('2026-10-21')
-    expect(screen.getByText(/^Pick a date from Thu, (22 Oct|Oct 22),? 2026 on\.$/)).toBeTruthy()
+    expect(reason()).toMatch(/^Pick a date from Thu, (22 Oct|Oct 22),? 2026 on\.$/)
+    // Read out too, since focus stays on the button; and cleared once another date is picked.
+    expect(said()).toMatch(/^Pick a date from Thu, (22 Oct|Oct 22),? 2026 on\.$/)
+    fireEvent.change(screen.getByLabelText('Date to skip'), { target: { value: '2026-10-29' } })
+    expect(reason()).toBeUndefined()
     // A start in the past: today is the earliest.
     fireEvent.change(screen.getByLabelText('Starts on'), { target: { value: '2026-10-01' } })
     skip('2026-10-18')
-    expect(screen.getByText(/^Pick a date from Mon, (19 Oct|Oct 19),? 2026 on\.$/)).toBeTruthy()
+    expect(reason()).toMatch(/^Pick a date from Mon, (19 Oct|Oct 19),? 2026 on\.$/)
     skip('2026-10-19')
     expect(skippedList()).toHaveLength(1)
 
     fireEvent.click(screen.getByLabelText('On a date'))
     fireEvent.change(screen.getByLabelText('Last date'), { target: { value: '2026-11-30' } })
     skip('2026-12-01')
-    expect(
-      screen.getByText(/^Pick a date on or before Mon, (30 Nov|Nov 30),? 2026\.$/),
-    ).toBeTruthy()
+    expect(reason()).toMatch(/^Pick a date on or before Mon, (30 Nov|Nov 30),? 2026\.$/)
     skip('2026-11-30')
     skip('2026-11-30')
-    expect(screen.getByText(/^Mon, (30 Nov|Nov 30),? 2026 is already skipped\.$/)).toBeTruthy()
+    expect(reason()).toMatch(/^Mon, (30 Nov|Nov 30),? 2026 is already skipped\.$/)
     skip('')
-    expect(screen.getByText('Pick a date.')).toBeTruthy()
+    expect(reason()).toBe('Pick a date.')
     expect(skippedList()).toHaveLength(2)
   })
 
@@ -1212,38 +1225,55 @@ describe('skipped dates on the schedule form (#487)', () => {
     ])
   })
 
-  it('takes a kept end date as the last date, or the rule’s if that’s earlier', async () => {
+  it('takes the earlier of a kept end date and the rule’s last date', async () => {
     mockGroup(acme)
     mockSchedules([{ ...thursdays, endsOn: '2026-12-31' }])
     mockScheduler()
     renderAt(`/schedules/${thursdays.$id}`)
     await screen.findByRole('heading', { name: 'Thursday shift' })
     skip('2027-01-07')
-    expect(
-      screen.getByText(/^Pick a date on or before Thu, (31 Dec|Dec 31),? 2026\.$/),
-    ).toBeTruthy()
+    expect(reason()).toMatch(/^Pick a date on or before Thu, (31 Dec|Dec 31),? 2026\.$/)
+    // A later last date for the rule changes nothing.
     fireEvent.click(screen.getByLabelText('On a date'))
+    fireEvent.change(screen.getByLabelText('Last date'), { target: { value: '2027-03-01' } })
+    skip('2027-01-07')
+    expect(reason()).toMatch(/^Pick a date on or before Thu, (31 Dec|Dec 31),? 2026\.$/)
     fireEvent.change(screen.getByLabelText('Last date'), { target: { value: '2026-11-30' } })
     skip('2026-12-10')
-    expect(
-      screen.getByText(/^Pick a date on or before Mon, (30 Nov|Nov 30),? 2026\.$/),
-    ).toBeTruthy()
+    expect(reason()).toMatch(/^Pick a date on or before Mon, (30 Nov|Nov 30),? 2026\.$/)
     expect(skippedList()).toHaveLength(1)
   })
 
   it('says so at 366 dates, past ones counted, and adds no more', async () => {
     mockGroup(acme)
-    const past = Array.from({ length: 366 }, (_, day) =>
+    const past = Array.from({ length: 365 }, (_, day) =>
       new Date(Date.UTC(2025, 0, 1 + day)).toISOString().slice(0, 10),
     )
     mockSchedules([{ ...thursdays, exdates: past }])
     mockScheduler()
     renderAt(`/schedules/${thursdays.$id}`)
     await screen.findByRole('heading', { name: 'Thursday shift' })
-    // The hint, before any try.
-    expect(screen.getByText('At most 366 dates can be skipped.')).toBeTruthy()
+    // 365: one more can go in, and then the input says so.
+    expect(screen.queryByText('At most 366 dates can be skipped.')).toBeNull()
     skip('2026-11-12')
-    expect(screen.getAllByText('At most 366 dates can be skipped.')).toHaveLength(2)
+    expect(skippedList()).toHaveLength(1)
+    expect(screen.getAllByText('At most 366 dates can be skipped.')).toHaveLength(1)
+    const button = screen.getByRole('button', { name: 'Skip this date' })
+    expect(button.getAttribute('aria-disabled')).toBe('true')
+    expect(button.getAttribute('aria-describedby')).toBe('skipDate-hint')
+    skip('2026-11-19')
+    expect(skippedList()).toHaveLength(1)
+    expect(screen.getAllByText('At most 366 dates can be skipped.')).toHaveLength(1)
+  })
+
+  it('says a schedule that has ended has no dates left to skip', async () => {
+    mockGroup(acme)
+    mockSchedules([{ ...thursdays, endsOn: '2026-10-15', exdates: [] }])
+    mockScheduler()
+    renderAt(`/schedules/${thursdays.$id}`)
+    await screen.findByRole('heading', { name: 'Thursday shift' })
+    skip('2026-10-22')
+    expect(reason()).toBe('This schedule has no dates left to skip.')
     expect(skippedList()).toEqual([])
   })
 })

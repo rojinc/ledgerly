@@ -91,8 +91,11 @@ describe('fromSchedule', () => {
   })
 
   it('reads every stored skipped date, past ones too, so a save keeps them (#487)', () => {
-    const exdates = ['2026-11-05', '2025-12-25']
-    expect(fromSchedule({ ...stored, exdates }, 'AUD')?.skipped).toEqual(exdates)
+    const exdates = ['2026-11-05', '2025-12-25', '2026-11-05']
+    expect(fromSchedule({ ...stored, exdates }, 'AUD')?.skipped).toEqual([
+      '2026-11-05',
+      '2025-12-25',
+    ])
   })
 
   it('can’t show a rule it never builds, or a template that isn’t a shift', () => {

@@ -6,13 +6,14 @@ import { shiftAmountCents } from '@ledgerly/core/money/shift-amount'
 import { groupSettingsSchema } from '@ledgerly/core/schemas/groups'
 import { type ScheduleInput, scheduleInputSchema } from '@ledgerly/core/schemas/scheduler'
 import { ID } from 'appwrite'
-import { type ReactNode, useState } from 'react'
+import { type ReactNode, useRef, useState } from 'react'
 import { type FieldErrors, get, type Resolver, useForm } from 'react-hook-form'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 import { schemaResolver } from '../../lib/schema-resolver'
 import { Alert } from '../../ui/alert'
 import { Button } from '../../ui/button'
-import { SelectField, TextField } from '../../ui/field'
+import { Field, SelectField, TextField } from '../../ui/field'
+import { Input } from '../../ui/input'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
 import { ARCHIVED_NOTICE } from '../groups/archive-group'
@@ -32,7 +33,6 @@ const ERROR_FIELD: Record<string, keyof ScheduleValues> = {
   description: 'description',
   startsOn: 'startsOn',
   'template.shift.rateCents': 'rate',
-  exdates: 'skipped',
 }
 
 // `exdates`' limit in `scheduleInputSchema`, past dates included.
@@ -436,7 +436,8 @@ function ScheduleForm({
         <SkippedDates
           skipped={values.skipped}
           today={today}
-          // From the later of the start and today, to the rule's last date or a kept end date.
+          // From the later of the start and today, to the earlier of the rule's last date and a
+          // kept end date, if there's either.
           from={values.startsOn > today ? values.startsOn : today}
           last={
             [values.end === 'until' ? values.until : '', schedule?.endsOn ?? '']
@@ -444,7 +445,6 @@ function ScheduleForm({
               .sort()[0]
           }
           editing={schedule !== undefined}
-          error={errors.skipped?.message}
           onChange={(skipped) => form.setValue('skipped', skipped, { shouldDirty: true })}
         />
         <label className="flex items-center gap-2 text-sm">
@@ -489,7 +489,6 @@ function SkippedDates({
   from,
   last,
   editing,
-  error,
   onChange,
 }: {
   skipped: string[]
@@ -497,68 +496,88 @@ function SkippedDates({
   from: string
   last: string | undefined
   editing: boolean
-  error: string | undefined
   onChange: (skipped: string[]) => void
 }) {
+  const input = useRef<HTMLInputElement>(null)
   const [date, setDate] = useState('')
   const [refused, setRefused] = useState<string>()
-  // Read out on each add or remove.
+  // Read out on each add, remove or refusal: focus stays on the button.
   const [said, setSaid] = useState('')
   const listed = skipped.filter((day) => day >= today).sort()
+  // The API's limit counts every date, past ones too.
   const full = skipped.length >= MAX_SKIPPED
 
   const add = () => {
-    const reason = full
-      ? `At most ${MAX_SKIPPED} dates can be skipped.`
-      : !isLocalDate(date)
-        ? 'Pick a date.'
-        : date < from
-          ? `Pick a date from ${formatDate(from)} on.`
-          : last !== undefined && date > last
-            ? `Pick a date on or before ${formatDate(last)}.`
-            : skipped.includes(date)
-              ? `${formatDate(date)} is already skipped.`
-              : undefined
+    if (full) return
+    const reason =
+      last !== undefined && last < from
+        ? 'This schedule has no dates left to skip.'
+        : !isLocalDate(date)
+          ? 'Pick a date.'
+          : date < from
+            ? `Pick a date from ${formatDate(from)} on.`
+            : last !== undefined && date > last
+              ? `Pick a date on or before ${formatDate(last)}.`
+              : skipped.includes(date)
+                ? `${formatDate(date)} is already skipped.`
+                : undefined
     setRefused(reason)
-    if (reason) return
+    if (reason) {
+      setSaid(reason)
+      return
+    }
     onChange([...skipped, date].sort())
     setSaid(`${formatDate(date)} is skipped.`)
     setDate('')
   }
 
   return (
-    <fieldset
-      className="flex flex-col gap-2"
-      aria-describedby={error ? 'skipped-error' : undefined}
-    >
+    <fieldset className="flex flex-col gap-2">
       <legend className="mb-1 text-sm font-medium">Skipped dates</legend>
       <p className="sr-only" aria-live="polite">
         {said}
       </p>
-      <div className="flex flex-wrap items-end gap-2">
-        <div className="min-w-0 flex-1">
-          <TextField
-            id="skipDate"
-            type="date"
-            label="Date to skip"
-            hint={full ? `At most ${MAX_SKIPPED} dates can be skipped.` : undefined}
-            min={from}
-            max={last}
-            value={date}
-            error={refused ? { type: 'validate', message: refused } : undefined}
-            onChange={(event) => setDate(event.target.value)}
-            onKeyDown={(event) => {
-              // Enter skips the date, rather than saving the whole schedule.
-              if (event.key !== 'Enter') return
-              event.preventDefault()
-              add()
-            }}
-          />
-        </div>
-        <Button type="button" variant="outline" onClick={add}>
-          Skip this date
-        </Button>
-      </div>
+      <Field
+        id="skipDate"
+        label="Date to skip"
+        hint={full ? `At most ${MAX_SKIPPED} dates can be skipped.` : undefined}
+        error={refused ? { type: 'validate', message: refused } : undefined}
+      >
+        {(aria) => (
+          // The input and its button on one line, with the hint and any reason under both.
+          <div className="flex gap-2">
+            <Input
+              ref={input}
+              type="date"
+              min={from}
+              max={last}
+              value={date}
+              onChange={(event) => {
+                setDate(event.target.value)
+                setRefused(undefined)
+              }}
+              onKeyDown={(event) => {
+                // Enter skips the date, rather than saving the whole schedule.
+                if (event.key !== 'Enter') return
+                event.preventDefault()
+                add()
+              }}
+              {...aria}
+            />
+            {/* aria-disabled, not disabled: a disabled button loses focus. */}
+            <Button
+              type="button"
+              variant="outline"
+              className="shrink-0"
+              aria-disabled={full}
+              aria-describedby={full ? 'skipDate-hint' : undefined}
+              onClick={add}
+            >
+              Skip this date
+            </Button>
+          </div>
+        )}
+      </Field>
       {listed.length > 0 && (
         <ul className="flex flex-col gap-1 text-sm">
           {listed.map((day) => (
@@ -572,6 +591,8 @@ function SkippedDates({
                 onClick={() => {
                   onChange(skipped.filter((other) => other !== day))
                   setSaid(`${formatDate(day)} is no longer skipped.`)
+                  // This button goes with its date: the input is always there to take focus.
+                  input.current?.focus()
                 }}
               >
                 Remove
@@ -579,11 +600,6 @@ function SkippedDates({
             </li>
           ))}
         </ul>
-      )}
-      {error && (
-        <p id="skipped-error" className="text-sm text-destructive">
-          {error}
-        </p>
       )}
       {editing && (
         <p className="text-sm text-muted-foreground">
