@@ -92,8 +92,8 @@ async function leaveGroup(
     if (!(await isKept(db, person, member))) {
       if (!others) {
         // Nobody else is in the team, as in their personal group: it's purged. `archivedAt`
-        // first, as the keep's archive sets it (so no statement is being finalized, and none
-        // can start), then the team, so jobs and writes stop. A crash between the two leaves
+        // first, as the keep's archive sets it (so no statement is being finalized, bar one
+        // stuck for an hour, and none can start), then the team, so jobs and writes stop. A crash between the two leaves
         // the team, so a rerun decides from it again.
         if (!group.archivedAt) await archive(services, person.$id, group, true)
         await deleteTeam(teams, group.$id)
@@ -102,13 +102,19 @@ async function leaveGroup(
       await keep(services, person, member, group)
     }
     // Then, in this order, on every run once the keep is done (each is safe to repeat): the
-    // schedules, the archive, and leaving the team last, so a crash before it leaves the group to
-    // be finished, never with its schedules still running. The schedules end in an archived group
-    // too (endScheduleOn() doesn't refuse one, only the route does): otherwise an unarchive (#428)
-    // would find occurrences made before the deletion still naming them, and post them.
+    // schedules, the handover or the archive, and leaving the team last, so a crash before it
+    // leaves the group to be finished, never with its schedules still running. The schedules end
+    // in an archived group too (endScheduleOn() doesn't refuse one, only the route does):
+    // otherwise an unarchive (#428) would find occurrences made before the deletion still naming
+    // them, and post them.
     if (!(await endSchedules(services, person, group))) return false
-    if (!group.archivedAt && !(await hasJoinedAdmin(db, group.$id))) {
-      await archive(services, person.$id, group)
+    // With no joined admin left, a house, archived or not, gets an `active` member as admin,
+    // the handover refusal 6 would have asked them for; any other group that isn't
+    // archived yet is archived (#503). A rerun finds the new admin and moves on, so it never makes a second one.
+    if (!(await hasJoinedAdmin(db, group.$id))) {
+      const heir = group.type === 'house' ? await firstActive(db, group.$id) : undefined
+      if (heir) await handOver(services, person.$id, group, heir)
+      else if (!group.archivedAt) await archive(services, person.$id, group)
     }
     await removeFromTeam(teams, group.$id, userId)
     return true
@@ -267,9 +273,10 @@ function namedIn(schedule: Schedules): string[] {
   }
 }
 
-// Whether the group still has a joined admin. A kept group without one (an employer or pair
-// group where they were the only one, or a house where nobody else could be one) is archived,
-// and its last person may delete it (#486).
+// Whether the group still has a joined admin. A kept house without one gets one (`handOver`);
+// any other kept group without one (an employer or pair group where they were the only one, or
+// a house with no `active` member left) is archived, and its last person may delete it (#486).
+// A joined admin whose own deletion is under way counts until their own keep.
 export async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> {
   const { rows } = await db.listRows<Members>({
     databaseId: DATABASE_ID,
@@ -285,25 +292,99 @@ export async function hasJoinedAdmin(db: Db, groupId: string): Promise<boolean> 
   return rows.length > 0
 }
 
+// The `active` member to hand over to: a `member` before a `viewer`, who was made read-only on
+// purpose, then the earliest `joinedOn`, `$createdAt` and `$id`. Never a row that moved out, or
+// a placeholder that hasn't joined (idx_groupId).
+async function firstActive(db: Db, groupId: string): Promise<Members | undefined> {
+  const active = await allRows<Members>(db, TABLES.members, [
+    Query.equal('groupId', groupId),
+    Query.equal('status', 'active'),
+  ])
+  return active.sort(
+    (a, b) =>
+      Number(a.role === 'viewer') - Number(b.role === 'viewer') ||
+      compareDates(a.joinedOn as LocalDate, b.joinedOn as LocalDate) ||
+      compareText(a.$createdAt, b.$createdAt) ||
+      compareText(a.$id, b.$id),
+  )[0]
+}
+
+// Whether a kept group has a joined admin after all, or, if it's a house, an `active` member to
+// hand over to: one that joined since the keep decided to archive it. A join that commits
+// after this read fails the archive's commit instead (the group's `rev`).
+async function managedAfterAll(db: Db, group: Groups): Promise<boolean> {
+  return (
+    (await hasJoinedAdmin(db, group.$id)) ||
+    (group.type === 'house' && (await firstActive(db, group.$id)) !== undefined)
+  )
+}
+
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
+}
+
+// Makes `heir` the house's admin, in one guarded transaction with a member.updated row by them,
+// as `PATCH /groups/{id}/members/{memberId}` writes. A joined admin who appeared meanwhile, or an
+// heir no longer `active` (or merged into another person), throws `Raced`: the group is left for
+// the next run, which moves on or picks again. A join, an archive or another deletion's
+// handover that commits first fails this commit (the group's `rev`).
+async function handOver(
+  { db, now }: Services,
+  personId: string,
+  group: Groups,
+  heir: Members,
+): Promise<void> {
+  await withTransaction(db, async (tx) => {
+    await guardGroup(tx, db, group, [
+      {
+        action: 'update',
+        tableId: TABLES.members,
+        rowId: heir.$id,
+        data: { role: 'admin', rev: randomId() },
+      },
+    ])
+    // Stage, then check (conventions.md#functions): the stored rows, not this transaction's view.
+    const current = await getRowOrNull<Members>(db, TABLES.members, heir.$id)
+    if (
+      current?.personId !== heir.personId ||
+      current.status !== 'active' ||
+      (await hasJoinedAdmin(db, group.$id))
+    ) {
+      throw new Raced()
+    }
+    await tx.write({
+      action: 'create',
+      tableId: TABLES.activity,
+      rowId: ID.unique(),
+      data: {
+        groupId: group.$id,
+        actorPersonId: personId,
+        action: 'member.updated',
+        subjectPersonId: heir.personId,
+        summary: 'was made an admin',
+        changesJson: JSON.stringify({ before: { role: heir.role }, after: { role: 'admin' } }),
+        at: now.toISOString(),
+      },
+      permissions: [Permission.read(Role.team(group.$id))],
+    })
+  })
+}
+
 // Archives the group, with a group.archived row by them, as an admin's archive writes, so the
 // others see why (a purge's goes with the group's rows). One archived meanwhile, with a
 // statement being finalized, or, unless it's for a purge, with a timer someone else started
 // still running (it couldn't be stopped once archived) throws `Raced`: the group is left for the
 // next run, which finds it archived, or waits until the finalize ends or the timer stops. A
 // purge doesn't wait for a timer: nobody else is in the team, and it goes with the group's rows.
-// Nor for a finalize stuck for an hour (see `isStuck`), which a kept group isn't archived over.
+// Nor does either wait for a finalize stuck for an hour (see `isStuck`): a kept group is
+// archived over it, with the statement still `finalizing`, logged by ID (#503).
 async function archive(
   { db, now }: Services,
   personId: string,
   group: Groups,
   purging = false,
 ): Promise<void> {
-  const finalizing = await finalizingStatement(db, group.$id)
-  if (finalizing && isStuck(finalizing, now) && !purging) {
-    logProblem('stuck_finalize_not_archived', { groupId: group.$id, statementId: finalizing.$id })
-    return
-  }
-  await withTransaction(db, async (tx) => {
+  const stuck = await withTransaction(db, async (tx) => {
     await tx.write({
       action: 'update',
       tableId: TABLES.groups,
@@ -314,11 +395,12 @@ async function archive(
     // Stage, then check: finalize step 1 stages the group row in the transaction that sets
     // `finalizing` (statements.md#2-finalize-post-statementsidfinalize).
     const current = await getRowOrNull<Groups>(db, TABLES.groups, group.$id)
-    const stillFinalizing = await finalizingStatement(db, group.$id)
+    const finalizing = await finalizingStatement(db, group.$id)
     if (
       current?.archivedAt ||
-      (stillFinalizing && !(purging && isStuck(stillFinalizing, now))) ||
-      (!purging && (await othersTimerRunning(db, group.$id, personId)))
+      (finalizing && !isStuck(finalizing, now)) ||
+      (!purging &&
+        ((await othersTimerRunning(db, group.$id, personId)) || (await managedAfterAll(db, group))))
     ) {
       throw new Raced()
     }
@@ -335,7 +417,10 @@ async function archive(
       },
       permissions: [Permission.read(Role.team(group.$id))],
     })
+    // A purge's statement goes with the group's rows.
+    return purging ? null : finalizing
   })
+  if (stuck) logProblem('stuck_finalize_archived', { groupId: group.$id, statementId: stuck.$id })
 }
 
 /** A statement of the group that is `finalizing` (`idx_group_period`), or null. */
@@ -351,10 +436,10 @@ export async function finalizingStatement(db: Db, groupId: string): Promise<Stat
 
 // A finalize that hasn't written its statement for an hour has stopped (a crash), and only an
 // admin can resume it. Step 1 refuses while they're the only joined admin of a group with a
-// finalizing statement, so a stuck one here began after it, and nobody left can finish it. The
-// group stays unarchived (archiving would refuse the resume for good), with its ID logged, and
-// the deletion carries on: the statements cron starts nothing new for a group with a
-// finalizing statement, so not archiving it costs nothing.
+// finalizing statement, so a stuck one here began after it, and nobody left can finish it. So
+// it isn't waited for: the group is archived over it, and the deletion carries on. An admin who
+// joins later can unarchive the group, which doesn't wait for a finalize, and resume a divide;
+// an invoice whose worker deleted their account is refused (#503).
 function isStuck(statement: Statements, now: Date): boolean {
   return now.getTime() - Date.parse(statement.$updatedAt) > STUCK_FINALIZE_MS
 }

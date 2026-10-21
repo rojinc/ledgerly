@@ -653,10 +653,14 @@ describe('POST /delete: purging a group nobody else is in', () => {
       await deleteTeam(params)
       return {}
     })
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(await remove(services)).toEqual({ deletedAt: DELETED_AT, finished: true })
     expect(archivedAt.h2).toBe(DELETED_AT)
     expect(leftOf(services, PURGED)).toEqual([])
     expect(services.files.ids()).not.toContain('statements/st3')
+    // The statement goes with the group's rows: nothing to log, as a kept group's would be (#503).
+    expect(errors.mock.calls.join('\n')).not.toMatch(/stuck_finalize/)
+    errors.mockRestore()
   })
 
   it('fails, deleting no row, when a bucket is missing: only a missing file counts as done', async () => {

@@ -486,6 +486,56 @@ describe('POST /statements/{id}/finalize', () => {
     expect(stored(services).status).toBe('draft')
   })
 
+  // #503: Sam, the worker, has deleted their account. Acme joined, and was made admin.
+  async function workerDeleted(services: Services) {
+    await acmeJoins(services)
+    await commitNow(services.db, [
+      op('members', 'm-acme', { role: 'admin' }),
+      op('persons', 'sam', { userId: null }),
+    ])
+  }
+
+  it.each([
+    ['a draft', 'draft'],
+    ['a resume', 'finalizing'],
+  ])(
+    'refuses %s of an invoice whose worker has deleted their account, changing nothing (#503)',
+    async (_, status) => {
+      const services = fakes(
+        rowsOf(shift('s1', '2026-10-02', 240), { statements: [statement('st1', { status })] }),
+      )
+      await workerDeleted(services)
+      const before = stored(services)
+      const refused = await failure(
+        services,
+        'POST',
+        '/statements/st1/finalize',
+        { send: false },
+        'u-acme',
+      )
+      expect(refused).toMatchObject({
+        code: 'CONFLICT',
+        message: 'The worker has deleted their account, so this invoice can’t be finalized.',
+      })
+      expect(stored(services)).toEqual(before)
+      expect(lastNumber(services)).toBe(9)
+      expect(locks(services)).toEqual({ s1: null })
+      expect(services.db.rows('activity')).toEqual([])
+    },
+  )
+
+  it('still finalizes a divide whose house was made by someone who has deleted their account', async () => {
+    const services = fakes({
+      statements: [statement('st-house', { groupId: 'house', type: 'divide' })],
+    })
+    await commitNow(services.db, [
+      op('persons', 'alice', { userId: null }),
+      op('members', 'm-bob', { role: 'admin' }),
+    ])
+    const final = await finalize(services, false, 'st-house', 'u-bob')
+    expect(final).toMatchObject({ status: 'final', finalizedBy: 'bob' })
+  })
+
   it('refuses a house divide to a member who is not an admin', async () => {
     const services = fakes({
       statements: [statement('st-house', { groupId: 'house', type: 'divide' })],
@@ -591,5 +641,24 @@ describe('auto-finalize (the statements job)', () => {
     })
     // Only the "ready to review" email.
     expect(services.sent).toHaveLength(1)
+  })
+
+  it('leaves the new draft for an admin when the worker has deleted their account (#503)', async () => {
+    const services = fakes({
+      ...rowsOf(shift('s1', '2026-10-02', 120)),
+      groups: [job({ autoFinalize: true })],
+    })
+    await commitNow(services.db, [op('persons', 'sam', { userId: null })])
+    expect(await ok(services, 'POST', '/', undefined, null)).toEqual({ drafted: 1, failed: 0 })
+    expect(services.db.rows('statements')[0]).toMatchObject({ status: 'draft', number: null })
+    expect(lastNumber(services)).toBe(9)
+    expect(errors.map((line) => JSON.parse(line))).toEqual([
+      {
+        fn: 'unknown',
+        event: 'auto_finalize_failed',
+        statementId: expect.any(String),
+        cause: 'AppError CONFLICT',
+      },
+    ])
   })
 })
