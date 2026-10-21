@@ -376,6 +376,10 @@ describe('the statements job, for houses', () => {
     expect(divide).toMatchObject({ status: 'final', sentAt: null, finalizedBy: null })
     // Only the "ready" emails: none of the divide itself.
     expect(services.sent.every((email) => email.subject.includes('ready to review'))).toBe(true)
+    // The divide's says it's final, not to finalize it (#523).
+    const ready = services.sent.find((email) => email.subject.includes('divide'))
+    expect(ready?.text).toContain('has been finalized.')
+    expect(ready?.text).not.toContain('Check it before you finalize it.')
   })
 
   it('leaves the period for the next run when a discard moved its start meanwhile', async () => {

@@ -1061,6 +1061,13 @@ describe('SchedulesPage: pause and resume (#430)', () => {
         description: 'Paused earlier',
         pausedFrom: '2026-10-08',
       },
+      // Ten Thursdays from 1 October run to 3 December: not ended, so it can still be paused.
+      {
+        ...running,
+        $id: 'efghijklmn0123456789',
+        description: 'Ten Thursdays',
+        rrule: 'FREQ=WEEKLY;BYDAY=TH;COUNT=10',
+      },
     ])
     renderAt('/schedules?groupId=g1')
     const row = async (name: string) => (await screen.findByText(name)).closest('li') as HTMLElement
@@ -1073,6 +1080,9 @@ describe('SchedulesPage: pause and resume (#430)', () => {
     const earlier = await row('Paused earlier')
     expect(within(earlier).getByText(/· Paused from Thu, (8 Oct|Oct 8),? 2026$/)).toBeTruthy()
     expect(within(earlier).getByRole('button', { name: 'Resume' })).toBeTruthy()
+    const live = await row('Ten Thursdays')
+    expect(within(live).queryByText(/· Ended$/)).toBeNull()
+    expect(within(live).getByRole('button', { name: 'Pause' })).toBeTruthy()
   })
 
   it('lets a member pause and resume a schedule they set up', async () => {
