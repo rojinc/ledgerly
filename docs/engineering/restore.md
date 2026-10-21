@@ -148,6 +148,14 @@ The owner takes a **Manual Backup** of `main` now, and notes its ID on #96. Rest
 A restore brings back the rows of every account and group deleted since the backup, but not their Auth users or teams. So those are exactly the persons whose user is gone, and the groups whose team is gone. The check lists both, and **each must be deleted again before the app is announced as back** (the lead's Q4 on #567, [security and privacy](../architecture/security-and-privacy.md#retention)).
 
 - **Listed as "finishing"** (a person with `deletedAt` set, or a group with `deletingAt` set): the deletion had started before the backup. The `account` function's next hourly run finishes it by itself ([finishing purges](../architecture/identity-and-invites.md#finishing-purges)).
+- **First, the owner points the CLI at the one-off `rows.write` key,** from a checkout's root, so a mark never writes with a key the CLI kept from before. As in [first deploy](first-deploy.md#before-you-start), don't pass `--project-id`:
+
+  ```bash
+  read -rs APPWRITE_API_KEY && export APPWRITE_API_KEY   # the one-off rows.write key
+  appwrite client --endpoint https://syd.cloud.appwrite.io/v1 --key "$APPWRITE_API_KEY"
+  unset APPWRITE_API_KEY
+  ```
+
 - **A person "to mark"** (the user is gone and no `deletedAt`): the account was deleted after the backup. Write on its row exactly the mark that `account POST /delete`'s step 2 writes, `deletedAt`, "Former member" and a fresh `rev` (`delete-account.ts`, `markDeleted`), and the hourly run's account pass does steps 3–7. Step 3 and step 7 count a user who is already gone as done ([order](../architecture/identity-and-invites.md#order)). Step 4 purges, or keeps, each of its groups as the deletion did, so a group purged with that account goes too.
 
   ```bash

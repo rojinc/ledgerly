@@ -678,7 +678,7 @@ describe('fetching', () => {
 
 describe('the command', () => {
   const usage =
-    'Use: APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/restore-check.mjs --database-id <id>'
+    'Use: node scripts/restore-check.mjs --database-id <id>, with APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID and APPWRITE_API_KEY exported as docs/engineering/restore.md shows (the key by read -rs, never typed inline)'
   const env = {
     APPWRITE_ENDPOINT: 'https://cloud.example/v1',
     APPWRITE_PROJECT_ID: 'p',

@@ -36,6 +36,7 @@
 * [Environments and deploys](engineering/environments-and-deploys.md)
 * [First deploy](engineering/first-deploy.md)
 * [Restore from a backup](engineering/restore.md)
+* [Dev checks](engineering/dev-checks.md)
 * [Nightly check](engineering/nightly-check.md)
 * [Error lines](engineering/error-lines.md)
 * [Writing docs](engineering/documentation.md)

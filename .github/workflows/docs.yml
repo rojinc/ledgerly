@@ -1,8 +1,9 @@
 name: Docs
 
-# Checks every Markdown file's relative links (environments-and-deploys.md#cicd-github-actions).
-# Every pull request runs, with no paths filter: a docs-only PR gets no `ci`, and a code PR can
-# break a link by moving a file. A draft runs once it's marked ready.
+# Checks every Markdown file's relative links, and the runbooks' jq blocks against the reads script
+# (environments-and-deploys.md#cicd-github-actions). Every pull request runs, with no paths filter:
+# a docs-only PR gets no `ci` but can change a block, and a code PR can break a link by moving a
+# file. A draft runs once it's marked ready.
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -35,3 +36,7 @@ jobs:
       - run: node --test scripts/check-links.test.mjs
 
       - run: node scripts/check-links.mjs
+
+      # The nightly-check and error-line reads' script, against the jq blocks in nightly-check.md
+      # and error-lines.md (#553), which a docs-only PR can change. jq is on the runner's image.
+      - run: node --test scripts/reads.test.mjs

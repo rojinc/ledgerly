@@ -2,7 +2,9 @@
 // read-only check that the restored database is whole, in Node with built-ins only. The lead runs
 // it with a key of rows.read, files.read, users.read and teams.read only, against the restored
 // database:
-//   APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/restore-check.mjs --database-id <id>
+//   node scripts/restore-check.mjs --database-id <id>
+// with APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID and APPWRITE_API_KEY exported as restore.md shows: the
+// key read with read -rs, never typed inline, so it stays out of the shell history.
 // It counts each table's rows in <id> beside main's, then lists the groups whose `balances` row
 // doesn't match their shares by the nightly check's rule, the final statements whose PDF isn't in
 // the `statements` bucket, and, for privacy, the persons and groups whose user or team was
@@ -262,7 +264,7 @@ export async function check(args, env = process.env) {
   const usage = (problem) => ({
     lines: [
       problem,
-      'Use: APPWRITE_ENDPOINT=… APPWRITE_PROJECT_ID=… APPWRITE_API_KEY=… node scripts/restore-check.mjs --database-id <id>',
+      'Use: node scripts/restore-check.mjs --database-id <id>, with APPWRITE_ENDPOINT, APPWRITE_PROJECT_ID and APPWRITE_API_KEY exported as docs/engineering/restore.md shows (the key by read -rs, never typed inline)',
     ],
     code: 2,
   })

@@ -44,10 +44,6 @@ jobs:
         env:
           TZ: UTC
 
-      # The nightly-check and error-line reads' script, against the runbooks' own jq blocks (#553).
-      # jq is on the runner's image.
-      - run: node --test scripts/reads.test.mjs
-
       # The restore check's script, against a stand-in API and core's balances rule (#567). Its test
       # bundles core with esbuild, so it runs here, after `npm ci`.
       - run: node --test scripts/restore-check.test.mjs
