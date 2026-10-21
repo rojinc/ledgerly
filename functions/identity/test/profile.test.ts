@@ -95,9 +95,10 @@ describe('PATCH /profile', () => {
 
     it('writes no name when the deletion passes it after the lookup, before staging', async () => {
       const services = withProfile()
+      // Just before the name itself is staged, so the guard must share its transaction (#556 P10).
       beforeStaging(
         services.db,
-        (operations) => operations.includes('"tableId":"persons"'),
+        (operations) => operations.includes('"displayName":"Sam"'),
         deletion(services),
       )
       expect(await failure(services, 'PATCH', '/profile', { displayName: 'Sam' })).toEqual(
