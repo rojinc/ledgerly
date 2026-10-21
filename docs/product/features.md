@@ -9,8 +9,8 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-01 | Sign up and log in with email + password or email code (OTP). Google sign-in later. Set a password on Profile (an account made with an email code has none) or change it with the current one. Change the email you sign in with on Profile, with your password (an account with none sets one first); the new address must be verified, and the old verified ones are told ([change notice](../architecture/identity-and-invites.md#email-and-phone-change-notice)). Sign out every other device from Profile. Reset a forgotten password with an emailed link; signing in after a reset signs out every other device too. | M0 |
 | F-02 | Email verification. Required before you can invite people or claim records made with your email. | M0 |
 | F-03 | Profile: display name, timezone, holiday region (e.g. `AU-NSW`), default currency. | M1 |
-| F-04 | Business details printed on invoices: business name, ABN, address, contact email, bank details (account name, BSB, account number) and PayID. | M1 |
-| F-05 | Phone verification (optional). Needed to claim records made with your phone number. | M3 |
+| F-04 | Business details printed on invoices: business name, ABN, address, contact email and phone, bank details (account name, BSB, account number), PayID, and notes for the bottom of the invoice. The invoice number prefix (`INV-` unless changed) is set there too. | M1 |
+| F-05 | Phone verification (optional). Needed to claim records made with your phone number. Cut from v1: it waits on the owner's SMS provider ([#176](https://github.com/rojinc/ledgerly/issues/176), [#175](https://github.com/rojinc/ledgerly/issues/175)). | M3, cut |
 | F-06 | Delete account and export your data. | M4 |
 | F-07 | Getting started: the dashboard asks what you want to track until you've recorded something. | M4 |
 
@@ -18,19 +18,19 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 
 | ID | Feature | Milestone |
 | --- | --- | --- |
-| F-10 | Create a group of a type (`personal`, `house`, `employer`, `pair`) with name, currency and timezone. Defaults come from the profile. | M1 |
+| F-10 | Create a group of a type (`house`, `employer`, `pair`) with name, currency and timezone. Defaults come from the profile. Your `personal` group is made for you ([F-50](#personal)). | M1 |
 | F-11 | Members: add by email, phone or existing account. Each group keeps its own display name for a person. Roles: admin, member, viewer. | M1 |
 | F-12 | People who haven't joined, registered or not, can be members and show as "not joined". Both cases look the same. | M1 |
 | F-13 | Join and leave dates for members (moving in and out). | M3 |
 | F-14 | Activity feed: who added, changed or voided what, and when. | M3 |
-| F-15 | Archive a group, which makes it read-only; an admin can unarchive it ([#428](https://github.com/rojinc/ledgerly/issues/428), post-launch), and the last person in an archived group can delete it, with everything in it, after a link to Export and typing DELETE ([#429](https://github.com/rojinc/ledgerly/issues/429), post-launch). | M2 |
+| F-15 | Archive a group, which makes it read-only; an admin can unarchive it ([#428](https://github.com/rojinc/ledgerly/issues/428), post-launch), and the last person left in an archived group, if they're its admin, can delete it, with everything in it, after a link to Export and typing DELETE ([#429](https://github.com/rojinc/ledgerly/issues/429), post-launch). | M2 |
 
 ## Employer
 
 | ID | Feature | Milestone |
 | --- | --- | --- |
 | F-20 | An employer group holds you and the employer, who is usually a placeholder with one or more billing emails. | M1 |
-| F-21 | Shifts: date, start and end time or a number of minutes, break minutes, rate and note. Amount = minutes × rate, rounded to the cent. | M1 |
+| F-21 | Shifts: date, start and end time or a number of minutes, break minutes, rate and note. Amount = minutes × hourly rate ÷ 60, rounded to the cent, half a cent up. | M1 |
 | F-22 | Schedules: for example "every Thursday, 5h at $25, from 2 Oct until I stop". You can skip public holidays for the region, skip specific dates, pause or end. | M1 |
 | F-23 | Automatic entries: scheduled shifts appear on the calendar ahead of time. After the day passes they are confirmed automatically if the schedule has auto-post on. Cancelled shifts are skipped; changed ones are confirmed with your changes. | M1 |
 | F-24 | Timer: start and stop to record a shift live. You get a reminder if it has been running more than 12 hours. | M1 |
@@ -45,15 +45,15 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 
 | ID | Feature | Milestone |
 | --- | --- | --- |
-| F-40 | House group. Invite housemates by email or phone. Move-in and move-out dates. | M3 |
+| F-40 | House group. Add housemates by email or phone, and invite them by email (by text message after v1, [#40](https://github.com/rojinc/ledgerly/issues/40)). Move-in and move-out dates. | M3 |
 | F-41 | Expenses: one or more payers; split equally, by exact amounts, by percentages or by weights. | M3 |
 | F-42 | Bills with a billing period and due date. Default split: the days each person lived there during the period. | M3 |
 | F-43 | Itemised receipts: each item has its own split (milk for everyone, Bob's beer for Bob only). | M3 |
 | F-44 | Attach receipt photos or PDFs to any transaction. | M3 |
 | F-45 | Recurring bills and expenses (rent, internet). | M3 |
-| F-46 | Balances and settle-up suggestions using the fewest transfers. Record a settlement payment. | M3 |
-| F-47 | Monthly divide: a statement for the month, or for the period so far when an admin closes it now, showing each person's paid, share and net, plus suggested transfers. Comes with a PDF and locks the period. Any member can preview the current period so far. | M3 |
-| F-48 | Anyone can add transactions. You can edit your own; admins can edit everyone's; nobody can edit a locked month. | M3 |
+| F-46 | Balances and settle-up suggestions with few transfers: at most one fewer than the people who owe or are owed, though not always the fewest possible ([ledger](../architecture/ledger.md#settle-up-suggested-transfers)). Record a settlement payment. | M3 |
+| F-47 | Monthly divide: a statement for the month, or for the period so far when an admin closes it now, showing each person's opening, paid, share and closing, plus suggested transfers. Comes with a PDF and locks the period. Any member can preview the current period so far. | M3 |
+| F-48 | Admins and members can add transactions; a viewer can't. You can edit your own; admins can edit everyone's; nobody can edit a locked month. | M3 |
 
 ## Personal
 
@@ -72,7 +72,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | F-60 | A pair group with one other person, registered or added by email or phone. | M2 |
 | F-61 | Lend, borrow and repay, including partial repayments. | M2 |
 | F-62 | Balance with that person. | M2 |
-| F-63 | "Send a reminder" email or SMS, to an address the sender types for that person, sent the same way whether or not they have an account. | M4 |
+| F-63 | "Send a reminder" by email (by text message after v1, [#40](https://github.com/rojinc/ledgerly/issues/40)), to an address the sender types for that person, sent the same way whether or not they have an account. | M4 |
 
 ## Calendar, history and export (every module)
 
@@ -87,7 +87,7 @@ Every feature has an ID (`F-xx`). GitHub issues refer to these IDs. The mileston
 | ID | Feature | Milestone |
 | --- | --- | --- |
 | F-80 | Summary email every week, fortnight or month (user setting). | M2 |
-| F-81 | Notifications for joined members: statement ready, bill due, shift to confirm, someone changed a transaction you're in. Each can be turned off on Profile ([#431](https://github.com/rojinc/ledgerly/issues/431) and [#433](https://github.com/rojinc/ledgerly/issues/433), post-launch). Being added to a group shows only in the app's pending list, never by email, so nobody can tell from it who has an account. | M2–M3 |
+| F-81 | Notifications for joined members: statement ready and bill due (to the group's joined admins), shift to confirm (to its owner), someone changed a transaction you're in. Each can be turned off on Profile ([#431](https://github.com/rojinc/ledgerly/issues/431) and [#433](https://github.com/rojinc/ledgerly/issues/433), post-launch). Being added to a group shows only in the app's pending list, never by email, so nobody can tell from it who has an account. | M2–M3 |
 | F-82 | Work-hours cap alert. The user enters their own limit per week or fortnight on Profile; no visa or award rules are built in. Today, Home and the shift form add up the posted and scheduled shifts that pay them (and, on Today, a running timer) against it, and say when they reach or pass it. It only warns, never blocks a save. | M4 |
 
 ## Later (not v1)
