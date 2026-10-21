@@ -2,7 +2,7 @@ import { formatNet } from '@ledgerly/core/money/format'
 import { expect, type Locator, type Page, test } from '@playwright/test'
 import { expectBalanceShown } from './balances'
 import { runId, testEmail } from './dev-project'
-import { addEmployer, archiveEmployer } from './employer'
+import { addEmployer, archiveEmployer, expectEmployerSettings } from './employer'
 import { logIn, setupUser } from './users'
 
 // User flow 4 (docs/product/user-flows.md#4-employer-expenses-and-payments), in a group with
@@ -49,6 +49,7 @@ test('records each expense preset and a payment, with the balance after each', a
   const employer = `Lumen ${runId()}`
   await page.goto('/groups/new-employer')
   groupId = await addEmployer(page, employer, testEmail('lumen-billing'))
+  await expectEmployerSettings(page, employer)
   const card = page.getByRole('region', { name: `Balance with ${employer}`, exact: true })
   await page.goto(`/transactions?groupId=${groupId}`)
   await expectBalance(page, card, balanceText(0, employer))

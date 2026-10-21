@@ -289,7 +289,7 @@ describe('the statements job, with autoSend on', () => {
     const snapshot = JSON.parse(invoice?.snapshotJson ?? '') as StatementSnapshot
     const issuer = snapshot.issuer && {
       ...snapshot.issuer,
-      business: { businessName: 'Sam Cleans', abn: '1' },
+      business: { businessName: 'Sam Cleans Co', abn: '1' },
     }
     await commitNow(services.db, [
       op('statements', invoice?.$id ?? '', {
@@ -303,7 +303,8 @@ describe('the statements job, with autoSend on', () => {
       `invoice/${invoice?.$id}/first/employer`,
       `invoice/${invoice?.$id}/first/copy`,
     ])
-    expect(services.sent.find(isInvoice)?.subject).toContain('Sam Cleans')
+    // A name only the edited snapshot has, so the subject shows that one was sent.
+    expect(services.sent.find(isInvoice)?.subject).toContain('Sam Cleans Co')
     expect(invoices(services)[0]?.sentAt).toBe(services.now.toISOString())
     expect(logged().map((line) => line.event)).toEqual(['auto_send_failed'])
   })

@@ -66,14 +66,20 @@ export function DeleteGroupPage() {
   const groupId = useParams().groupId ?? ''
   const group = useGroup(groupId)
   if (!group.data) {
-    return group.isError ? (
-      <Alert variant="destructive">
-        We couldn’t load this group. Reload the page to try again.
-      </Alert>
-    ) : (
-      <p role="status" className="text-muted-foreground">
-        Loading…
-      </p>
+    // The page's h1 meanwhile, so the tab is named and a move's focus has somewhere to go (#556).
+    return (
+      <div className="flex flex-col gap-6">
+        <h1 className="text-2xl font-semibold">Delete group</h1>
+        {group.isError ? (
+          <Alert variant="destructive">
+            We couldn’t load this group. Reload the page to try again.
+          </Alert>
+        ) : (
+          <p role="status" className="text-muted-foreground">
+            Loading…
+          </p>
+        )}
+      </div>
     )
   }
   return <DeleteGroup group={group.data} />
@@ -161,12 +167,12 @@ function DeleteGroup({ group }: { group: Groups }) {
         </h2>
         <ul className="list-disc pl-5 text-sm">
           <li>Everything recorded in it, with its receipts.</li>
-          <li>Its statements and invoices, final ones included.</li>
+          <li>Its statements, final ones included.</li>
           <li>Its members, its activity, and the invites and reminders sent in it.</li>
         </ul>
         <p className="text-sm">
           A receipt that’s also on another group’s records stays there. The group is deleted with
-          its invoices, so{' '}
+          its final statements, so{' '}
           <Link
             to={`/export?groupId=${encodeURIComponent(group.$id)}`}
             className="underline underline-offset-4"
