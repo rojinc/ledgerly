@@ -207,8 +207,9 @@ export function TodayPage() {
                       >
                         {shift.description}
                       </span>
-                      <span className="block truncate text-sm text-muted-foreground">
-                        {group?.name ?? 'Employer'} · {STATUS[shift.status]}
+                      <span className="flex gap-1 text-sm text-muted-foreground">
+                        <span className="truncate">{group?.name ?? 'Employer'}</span>{' '}
+                        <span className="shrink-0">· {STATUS[shift.status]}</span>
                       </span>
                     </span>
                     {group && shift.status !== 'running' && (

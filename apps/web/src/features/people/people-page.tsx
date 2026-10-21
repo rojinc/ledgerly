@@ -71,7 +71,7 @@ function PairRow({ group }: { group: Groups }) {
           {name}
           {group.archivedAt ? <span className="text-muted-foreground"> · Archived</span> : null}
         </span>
-        <span className="text-sm">
+        <span className="min-w-0 text-sm break-words">
           {balances.data && net !== undefined ? (
             balanceText(net, name, group.currency)
           ) : balances.isError ? (

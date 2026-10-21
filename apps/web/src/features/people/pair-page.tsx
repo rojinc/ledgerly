@@ -219,7 +219,7 @@ function PairDetails({
         <h2 id="balance-heading" className="text-sm text-muted-foreground">
           Balance
         </h2>
-        <p className="text-xl font-semibold" aria-live="polite">
+        <p className="text-xl font-semibold break-words" aria-live="polite">
           {balances.data
             ? balanceText(net ?? 0, name, group.currency)
             : balances.isError

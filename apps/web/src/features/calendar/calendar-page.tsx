@@ -290,9 +290,11 @@ function DayList({
                       >
                         {item.description}
                       </span>
-                      <span className="block truncate text-sm text-muted-foreground">
-                        {group ? <GroupName group={group} /> : 'Group'}
-                        {` · ${status}`}
+                      <span className="flex gap-1 text-sm text-muted-foreground">
+                        <span className="truncate">
+                          {group ? <GroupName group={group} /> : 'Group'}
+                        </span>{' '}
+                        <span className="shrink-0">· {status}</span>
                       </span>
                     </span>
                   </span>
