@@ -155,7 +155,12 @@ function Details({ row }: { row: Transactions }) {
         {row.status === 'void' && row.voidReason ? `. Reason: ${row.voidReason}` : ''}
       </Message>
       {archived && <Message>{ARCHIVED_NOTICE}</Message>}
-      {!archived && locked && <Message>It’s on a final invoice, so it can’t be changed.</Message>}
+      {!archived && locked && (
+        <Message>
+          It’s on a final {group.data.type === 'house' ? 'divide' : 'invoice'}, so it can’t be
+          changed.
+        </Message>
+      )}
       <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-sm [&>dd]:min-w-0 [&>dd]:break-words">
         <dt className="text-muted-foreground">Amount</dt>
         <dd className="tabular-nums">
