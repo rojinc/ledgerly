@@ -1291,6 +1291,27 @@ describe('PairPage: unarchive (#428)', () => {
     expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
   })
 
+  it('offers Delete group, never Unarchive, to the one left once no admin has joined (#486)', async () => {
+    // Sam made the pair, made Alex a member, then deleted their account: Sam's row is kept, `left`.
+    const sam = { ...members()[1], role: 'viewer', status: 'left' } as Members
+    mockGroup(0, ARCHIVED, 'member')
+    mockRows([], [{ ...members()[0], role: 'member' } as Members, sam])
+    renderAt('/people/g1')
+    const link = await screen.findByRole('link', { name: 'Delete group' })
+    expect(link.getAttribute('href')).toBe('/groups/g1/delete')
+    // The reason is read out with the link.
+    const why = document.getElementById(link.getAttribute('aria-describedby') ?? '')
+    expect(why?.textContent).toBe('This group has no admin any more, so you can delete it.')
+    expect(screen.queryByRole('button', { name: 'Unarchive group' })).toBeNull()
+    cleanup()
+    // Sam is still an admin who has joined: nothing for Alex.
+    mockGroup(0, ARCHIVED, 'member')
+    mockRows([], [{ ...members()[0], role: 'member' } as Members, members('active')[1] as Members])
+    renderAt('/people/g1')
+    await screen.findByText(/This group is archived/)
+    expect(screen.queryByRole('link', { name: 'Delete group' })).toBeNull()
+  })
+
   it('names the pair by the other person, unarchives it, says so and focuses the heading', async () => {
     mockGroup(0, ARCHIVED)
     mockRows()

@@ -14,7 +14,12 @@ import { Button } from '../../ui/button'
 import { SelectField, TextField } from '../../ui/field'
 import { useBootstrap } from '../auth/use-bootstrap'
 import { useCurrentUser } from '../auth/use-current-user'
-import { ARCHIVED_NOTICE, UNARCHIVED_NEWS, UnarchiveGroup } from '../groups/archive-group'
+import {
+  ARCHIVED_NOTICE,
+  DeleteWithoutAdmin,
+  UNARCHIVED_NEWS,
+  UnarchiveGroup,
+} from '../groups/archive-group'
 import { centsToText } from '../groups/employer-form'
 import { useBalances, useGroup, useMyMember } from '../groups/use-groups'
 import { KIND_LABEL, STATUS_LABEL } from '../transactions/history-page'
@@ -240,7 +245,11 @@ function PairDetails({
       {group.archivedAt ? (
         <>
           <Message>{ARCHIVED_NOTICE}</Message>
-          {isAdmin && <UnarchiveGroup group={group} name={name} onUnarchived={onUnarchived} />}
+          {isAdmin ? (
+            <UnarchiveGroup group={group} name={name} onUnarchived={onUnarchived} />
+          ) : (
+            <DeleteWithoutAdmin group={group} personId={people.me} />
+          )}
         </>
       ) : (
         mayAdd &&
