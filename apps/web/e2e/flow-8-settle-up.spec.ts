@@ -100,7 +100,9 @@ test('settles up, then closes the period and finalizes its divide', async ({ pag
     await expect(
       page.getByRole('heading', { level: 1, name: 'Cleaning', exact: true }),
     ).toBeVisible()
-    await expect(page.getByText(/, so it can’t be changed\.$/)).toBeVisible()
+    await expect(
+      page.getByText('It’s on a final divide, so it can’t be changed.', { exact: true }),
+    ).toBeVisible()
     await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0)
   })
 })
